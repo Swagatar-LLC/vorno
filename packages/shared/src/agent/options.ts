@@ -193,6 +193,13 @@ export function getDefaultOptions(): Partial<Options> {
     const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
     const envFileFlag = `--env-file=${nullDevice}`;
 
+    // Strip CLAUDECODE from subprocess env to prevent nested session detection.
+    // The SDK CLI checks for this variable on startup and refuses to run if set,
+    // printing "Claude Code cannot be launched inside another Claude Code session".
+    // This occurs when the server is launched from within a Claude Code session
+    // (e.g., Craft Agent starting the HTTP trigger server as a child process).
+    const { CLAUDECODE: _stripNested, ...cleanProcessEnv } = process.env;
+
     // If custom path is set (e.g., for Electron), use it with minimal options
     if (customPathToClaudeCodeExecutable) {
         const executableArgs = [envFileFlag];
@@ -206,7 +213,7 @@ export function getDefaultOptions(): Partial<Options> {
             executable: (customExecutable || 'bun') as 'bun',
             executableArgs,
             env: {
-                ...process.env,
+                ...cleanProcessEnv,
                 ... optionsEnv,
                 // Propagate debug mode from argv flag OR existing env var
                 CRAFT_DEBUG: (process.argv.includes('--debug') || process.env.CRAFT_DEBUG === '1') ? '1' : '0',
@@ -225,7 +232,7 @@ export function getDefaultOptions(): Partial<Options> {
             // Inject network interceptor into SDK subprocess for API error capture and MCP schema injection
             executableArgs: [envFileFlag, '--preload', join(baseDir, 'network-interceptor.ts')],
             env: {
-                ...process.env,
+                ...cleanProcessEnv,
                 BUN_BE_BUN: '1',
                 ... optionsEnv,
                 // Propagate debug mode from argv flag OR existing env var
@@ -236,7 +243,7 @@ export function getDefaultOptions(): Partial<Options> {
     return {
         executableArgs: [envFileFlag],
         env: {
-            ... process.env,
+            ... cleanProcessEnv,
             ... optionsEnv,
             // Propagate debug mode from argv flag OR existing env var
             CRAFT_DEBUG: (process.argv.includes('--debug') || process.env.CRAFT_DEBUG === '1') ? '1' : '0',

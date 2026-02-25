@@ -12,6 +12,7 @@ import type {
   AgentSessionCallbacks,
   AgentSessionStatus,
 } from './types.ts';
+import { mkdirSync } from 'fs';
 
 // Safe commands that can be auto-allowed with 'allow-safe' policy
 const SAFE_COMMANDS = new Set([
@@ -142,6 +143,12 @@ export class AgentSession {
         this.callbacks.onSdkSessionIdCleared?.();
       },
     };
+
+    // Ensure the session directory exists — the SDK subprocess uses it as cwd
+    // for storing conversation transcripts. Without it, the subprocess hangs silently.
+    const sessionDir = this.config.sdkCwd ??
+      getSessionPath(this.config.workspace.rootPath, this.sessionId);
+    mkdirSync(sessionDir, { recursive: true });
 
     this.agent = new CraftAgent(agentConfig);
 
