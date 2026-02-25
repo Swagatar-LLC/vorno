@@ -54,6 +54,7 @@ export async function handleCreateSession(
   const effectivePolicy = getEffectivePolicy(auth, body.permissionPolicy);
 
   try {
+    let sessionId = 'unknown';
     const session = await pool.create({
       workspace,
       permissionPolicy: effectivePolicy,
@@ -61,8 +62,9 @@ export async function handleCreateSession(
       enabledSourceSlugs: body.enabledSources,
       workingDirectory: body.workingDirectory,
       isHeadless: true,
-      log: (msg) => console.log(`[session:${session.sessionId}] ${msg}`),
+      log: (msg) => console.log(`[session:${sessionId}] ${msg}`),
     }, auth.apiKey.id);
+    sessionId = session.sessionId;
 
     return jsonResponse({
       sessionId: session.sessionId,

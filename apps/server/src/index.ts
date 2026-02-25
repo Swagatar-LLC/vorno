@@ -40,6 +40,7 @@ const server = Bun.serve({
   port: config.port,
   hostname: config.host,
   fetch: router,
+  idleTimeout: 255, // Max value (seconds) — SSE streams are long-lived
 });
 
 console.log(`Craft Agents server running at http://${config.host}:${config.port}`);
