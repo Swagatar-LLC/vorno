@@ -760,6 +760,15 @@ export const IPC_CHANNELS = {
   MENU_COPY: 'menu:copy',
   MENU_PASTE: 'menu:paste',
   MENU_SELECT_ALL: 'menu:selectAll',
+
+  // Remote Access Settings
+  REMOTE_ACCESS_GET_CONFIG: 'remoteAccess:getConfig',
+  REMOTE_ACCESS_UPDATE_CONFIG: 'remoteAccess:updateConfig',
+  REMOTE_ACCESS_CREATE_API_KEY: 'remoteAccess:createApiKey',
+  REMOTE_ACCESS_REVOKE_API_KEY: 'remoteAccess:revokeApiKey',
+  REMOTE_ACCESS_START_SERVER: 'remoteAccess:startServer',
+  REMOTE_ACCESS_STOP_SERVER: 'remoteAccess:stopServer',
+  REMOTE_ACCESS_GET_STATUS: 'remoteAccess:getStatus',
 } as const
 
 // Re-import types for ElectronAPI
@@ -1048,6 +1057,60 @@ export interface ElectronAPI {
   menuCopy(): Promise<void>
   menuPaste(): Promise<void>
   menuSelectAll(): Promise<void>
+
+  // Remote Access Settings
+  getRemoteAccessConfig(): Promise<RemoteAccessConfig>
+  updateRemoteAccessConfig(config: Partial<RemoteAccessConfig>): Promise<void>
+  createRemoteAccessApiKey(name: string, permissions: RemoteAccessApiKeyPermissions): Promise<{ fullKey: string; keyId: string }>
+  revokeRemoteAccessApiKey(keyId: string): Promise<boolean>
+  startRemoteAccessServer(): Promise<{ success: boolean; error?: string }>
+  stopRemoteAccessServer(): Promise<{ success: boolean; error?: string }>
+  getRemoteAccessStatus(): Promise<RemoteAccessStatus>
+}
+
+/**
+ * Remote access configuration (mirrors server-config.json)
+ */
+export interface RemoteAccessConfig {
+  enabled: boolean
+  port: number
+  host: string
+  apiKeys: RemoteAccessApiKeyInfo[]
+  rateLimits: {
+    requestsPerMinute: number
+    concurrentSessions: number
+  }
+}
+
+/**
+ * API key info (never includes the actual key, only display info)
+ */
+export interface RemoteAccessApiKeyInfo {
+  id: string
+  name: string
+  keyPrefix: string
+  createdAt: number
+  lastUsedAt: number | null
+  permissions: RemoteAccessApiKeyPermissions
+}
+
+/**
+ * API key permissions
+ */
+export interface RemoteAccessApiKeyPermissions {
+  workspaceIds: string[]
+  permissionPolicy: 'deny-all' | 'allow-safe' | 'allow-all'
+  maxConcurrentSessions: number
+}
+
+/**
+ * Remote access server status
+ */
+export interface RemoteAccessStatus {
+  running: boolean
+  port?: number
+  host?: string
+  activeSessions: number
 }
 
 /**
@@ -1150,7 +1213,7 @@ export type ChatFilter =
 /**
  * Settings subpage options
  */
-export type SettingsSubpage = 'app' | 'appearance' | 'input' | 'workspace' | 'permissions' | 'labels' | 'shortcuts' | 'preferences'
+export type SettingsSubpage = 'app' | 'appearance' | 'input' | 'workspace' | 'permissions' | 'labels' | 'shortcuts' | 'preferences' | 'remote-access'
 
 /**
  * Chats navigation state - shows SessionList in navigator

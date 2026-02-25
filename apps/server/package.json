@@ -1,0 +1,21 @@
+{
+  "name": "@craft-agent/server",
+  "version": "0.3.4",
+  "license": "Apache-2.0",
+  "description": "HTTP trigger server for Craft Agents - REST + SSE API for external triggers",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test",
+    "test:watch": "bun test --watch"
+  },
+  "dependencies": {
+    "@craft-agent/core": "workspace:*",
+    "@craft-agent/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

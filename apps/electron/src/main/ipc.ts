@@ -2536,4 +2536,78 @@ export function registerIpcHandlers(sessionManager: SessionManager, windowManage
   // Note: Permission mode cycling settings (cyclablePermissionModes) are now workspace-level
   // and managed via WORKSPACE_SETTINGS_GET/UPDATE channels
 
+  // ============================================
+  // Remote Access Settings
+  // ============================================
+
+  ipcMain.handle(IPC_CHANNELS.REMOTE_ACCESS_GET_CONFIG, async () => {
+    const { loadServerConfig } = await import('../../server/src/config')
+    const config = loadServerConfig()
+    return {
+      enabled: config.enabled,
+      port: config.port,
+      host: config.host,
+      apiKeys: config.apiKeys.map(k => ({
+        id: k.id,
+        name: k.name,
+        keyPrefix: k.keyPrefix,
+        createdAt: k.createdAt,
+        lastUsedAt: k.lastUsedAt,
+        permissions: k.permissions,
+      })),
+      rateLimits: config.rateLimits,
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.REMOTE_ACCESS_UPDATE_CONFIG, async (_event, updates: Record<string, unknown>) => {
+    const { loadServerConfig, saveServerConfig } = await import('../../server/src/config')
+    const config = loadServerConfig()
+    Object.assign(config, updates)
+    saveServerConfig(config)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.REMOTE_ACCESS_CREATE_API_KEY, async (_event, name: string, permissions: { workspaceIds: string[]; permissionPolicy: string; maxConcurrentSessions: number }) => {
+    const { loadServerConfig, generateApiKey, addApiKey } = await import('../../server/src/config')
+    const config = loadServerConfig()
+    const { fullKey, stored } = generateApiKey(name, permissions as import('../../server/src/config').ApiKeyPermissions)
+    addApiKey(config, stored)
+    return { fullKey, keyId: stored.id }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.REMOTE_ACCESS_REVOKE_API_KEY, async (_event, keyId: string) => {
+    const { loadServerConfig, revokeApiKey } = await import('../../server/src/config')
+    const config = loadServerConfig()
+    return revokeApiKey(config, keyId)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.REMOTE_ACCESS_START_SERVER, async () => {
+    const { loadServerConfig, saveServerConfig } = await import('../../server/src/config')
+    const { startServer } = await import('./server-lifecycle')
+    const config = loadServerConfig()
+    config.enabled = true
+    saveServerConfig(config)
+    return startServer()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.REMOTE_ACCESS_STOP_SERVER, async () => {
+    const { loadServerConfig, saveServerConfig } = await import('../../server/src/config')
+    const { stopServer } = await import('./server-lifecycle')
+    const config = loadServerConfig()
+    config.enabled = false
+    saveServerConfig(config)
+    return stopServer()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.REMOTE_ACCESS_GET_STATUS, async () => {
+    const { isServerRunning } = await import('./server-lifecycle')
+    const { loadServerConfig } = await import('../../server/src/config')
+    const config = loadServerConfig()
+    return {
+      running: isServerRunning(),
+      port: config.port,
+      host: config.host,
+      activeSessions: 0, // TODO: Query server for active session count
+    }
+  })
+
 }

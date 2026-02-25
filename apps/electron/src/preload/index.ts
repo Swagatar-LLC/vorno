@@ -481,6 +481,15 @@ const api: ElectronAPI = {
   menuCopy: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_COPY),
   menuPaste: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_PASTE),
   menuSelectAll: () => ipcRenderer.invoke(IPC_CHANNELS.MENU_SELECT_ALL),
+
+  // Remote Access Settings
+  getRemoteAccessConfig: () => ipcRenderer.invoke(IPC_CHANNELS.REMOTE_ACCESS_GET_CONFIG),
+  updateRemoteAccessConfig: (config: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.REMOTE_ACCESS_UPDATE_CONFIG, config),
+  createRemoteAccessApiKey: (name: string, permissions: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.REMOTE_ACCESS_CREATE_API_KEY, name, permissions),
+  revokeRemoteAccessApiKey: (keyId: string) => ipcRenderer.invoke(IPC_CHANNELS.REMOTE_ACCESS_REVOKE_API_KEY, keyId),
+  startRemoteAccessServer: () => ipcRenderer.invoke(IPC_CHANNELS.REMOTE_ACCESS_START_SERVER),
+  stopRemoteAccessServer: () => ipcRenderer.invoke(IPC_CHANNELS.REMOTE_ACCESS_STOP_SERVER),
+  getRemoteAccessStatus: () => ipcRenderer.invoke(IPC_CHANNELS.REMOTE_ACCESS_GET_STATUS),
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)
