@@ -1,12 +1,10 @@
-import { CraftAgent, type CraftAgentConfig, AbortReason } from '../agent/claude-agent.ts';
-import type { AgentEvent } from '@craft-agent/core/types';
-import type { PermissionMode } from '../agent/mode-manager.ts';
-import type { FileAttachment } from '../utils/files.ts';
-import { loadStoredConfig } from '../config/storage.ts';
-import type { Workspace } from '@craft-agent/core/types';
-import { DEFAULT_MODEL } from '../config/models.ts';
-import { getSessionPath } from '../sessions/storage.ts';
-import { TokenRefreshManager, getSourceCredentialManager } from '../sources/index.ts';
+import { CraftAgent, type CraftAgentConfig, AbortReason } from '@craft-agent/shared/agent';
+import type { AgentEvent, Workspace } from '@craft-agent/core/types';
+import type { PermissionMode } from '@craft-agent/shared/agent/mode-types';
+import type { FileAttachment } from '@craft-agent/shared/utils';
+import { loadStoredConfig, DEFAULT_MODEL } from '@craft-agent/shared/config';
+import { getSessionPath } from '@craft-agent/shared/sessions';
+import { TokenRefreshManager, getSourceCredentialManager } from '@craft-agent/shared/sources';
 import { SourceOrchestrator } from './source-orchestrator.ts';
 import type {
   AgentSessionConfig,
@@ -38,8 +36,7 @@ function policyToPermissionMode(policy: AgentSessionConfig['permissionPolicy']):
 
 /**
  * AgentSession manages a single agent session lifecycle.
- * Extracted from SessionManager to be reusable across both
- * the Electron app and the HTTP server.
+ * Used by the HTTP trigger server for REST+SSE access.
  *
  * Responsibilities:
  * - Create and configure CraftAgent

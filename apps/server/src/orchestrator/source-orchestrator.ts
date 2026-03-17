@@ -1,5 +1,5 @@
-import type { Workspace } from '../config/storage.ts';
-import type { LoadedSource } from '../sources/types.ts';
+import type { Workspace } from '@craft-agent/core/types';
+import type { LoadedSource, SourceWithCredential } from '@craft-agent/shared/sources';
 import {
   loadWorkspaceSources,
   loadAllSources,
@@ -10,15 +10,13 @@ import {
   TokenRefreshManager,
   createTokenGetter,
   SERVER_BUILD_ERRORS,
-} from '../sources/index.ts';
-import type { SourceWithCredential } from '../sources/server-builder.ts';
-import type { CraftAgent } from '../agent/claude-agent.ts';
+} from '@craft-agent/shared/sources';
+import type { CraftAgent } from '@craft-agent/shared/agent';
 import type { SourceOrchestratorConfig, BuildServersResult, TokenRefreshResult } from './types.ts';
 
 /**
  * SourceOrchestrator handles the loading, credential injection, and server building
- * for workspace sources. Extracted from SessionManager to be reusable across
- * both the Electron app and the HTTP server.
+ * for workspace sources. Used by the HTTP trigger server.
  *
  * Responsibilities:
  * - Load all sources from a workspace

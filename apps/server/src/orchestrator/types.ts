@@ -1,10 +1,9 @@
 import type { Workspace } from '@craft-agent/core/types';
-import type { LoadedSource } from '../sources/types.ts';
-import type { PermissionMode } from '../agent/mode-manager.ts';
-import type { ThinkingLevel } from '../agent/thinking-levels.ts';
+import type { LoadedSource, McpServerConfig, BuiltServers } from '@craft-agent/shared/sources';
+import type { PermissionMode } from '@craft-agent/shared/agent/mode-types';
+import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels';
 import type { AgentEvent } from '@craft-agent/core/types';
-import type { McpServerConfig, SourceWithCredential, BuiltServers } from '../sources/server-builder.ts';
-import type { FileAttachment } from '../utils/files.ts';
+import type { FileAttachment } from '@craft-agent/shared/utils';
 
 /**
  * Configuration for SourceOrchestrator.
@@ -67,7 +66,7 @@ export interface AgentSessionConfig {
 
 /**
  * Callbacks for AgentSession events that require external handling.
- * The HTTP server and Electron app wire these differently.
+ * The HTTP server wires these to EventBus for SSE streaming.
  */
 export interface AgentSessionCallbacks {
   /** Called when the agent requests permission for a tool operation */

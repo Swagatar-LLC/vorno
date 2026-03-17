@@ -5,9 +5,6 @@
   "description": "HTTP trigger server for Craft Agents - REST + SSE API for external triggers",
   "type": "module",
   "main": "src/index.ts",
-  "bin": {
-    "craft-remote": "./src/cli.ts"
-  },
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun --watch src/index.ts",

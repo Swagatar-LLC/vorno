@@ -1,8 +1,8 @@
 /**
- * Orchestrator Module
+ * Orchestrator Module — HTTP Trigger Server
  *
- * Reusable session and source orchestration extracted from SessionManager.
- * Used by both the Electron app and the HTTP server.
+ * Lightweight session and source orchestration for the REST+SSE server.
+ * Uses CraftAgent from @craft-agent/shared/agent underneath.
  */
 
 export { SourceOrchestrator } from './source-orchestrator.ts';

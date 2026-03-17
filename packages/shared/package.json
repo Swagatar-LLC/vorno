@@ -59,8 +59,7 @@
     "./skills/types": "./src/skills/types.ts",
     "./automations": "./src/automations/index.ts",
     "./automations/resolve-config-path": "./src/automations/resolve-config-path.ts",
-    "./protocol": "./src/protocol/index.ts",
-    "./orchestrator": "./src/orchestrator/index.ts"
+    "./protocol": "./src/protocol/index.ts"
   },
   "dependencies": {
     "@craft-agent/core": "workspace:*",

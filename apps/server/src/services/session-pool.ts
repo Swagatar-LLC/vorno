@@ -1,4 +1,4 @@
-import { AgentSession, type AgentSessionConfig } from '@craft-agent/shared/orchestrator';
+import { AgentSession, type AgentSessionConfig } from '../orchestrator/index.ts';
 import { EventBus } from './event-bus.ts';
 
 export interface PoolStats {
