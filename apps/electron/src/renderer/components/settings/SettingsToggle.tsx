@@ -11,8 +11,8 @@ import { cn } from '@/lib/utils'
 import { settingsUI } from './SettingsUIConstants'
 
 export interface SettingsToggleProps {
-  /** Toggle label */
-  label: string
+  /** Toggle label (string or JSX for custom rendering) */
+  label: React.ReactNode
   /** Optional description below label */
   description?: string
   /** Current checked state */

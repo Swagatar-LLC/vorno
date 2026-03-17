@@ -11,8 +11,8 @@ import { describe, test, expect } from 'bun:test';
 import {
   detectCredentialMode,
   getEffectiveHeaderNames,
-  type CredentialInputMode,
-} from '../session-scoped-tools.ts';
+} from '../../../../session-tools-core/src/source-helpers.ts';
+import type { CredentialInputMode } from '../../../../session-tools-core/src/types.ts';
 
 describe('detectCredentialMode', () => {
   test('should auto-upgrade to multi-header when source has headerNames', () => {
@@ -167,12 +167,10 @@ describe('Real-world scenarios', () => {
   });
 
   test('Simple API key source should use header mode', () => {
+    // Source without headerNames - only the api.headerNames field matters for detection
     const simpleSource = {
       api: {
-        baseUrl: 'https://api.example.com/',
-        authType: 'header',
-        headerName: 'X-API-Key',
-        // No headerNames
+        // No headerNames property
       },
     };
 

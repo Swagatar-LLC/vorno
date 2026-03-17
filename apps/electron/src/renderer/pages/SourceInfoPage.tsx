@@ -270,11 +270,11 @@ export default function SourceInfoPage({ sourceSlug, workspaceId, onDelete }: So
   useEffect(() => {
     if (!window.electronAPI?.onSourcesChanged) return
 
-    const cleanup = window.electronAPI.onSourcesChanged((sources) => {
+    const cleanup = window.electronAPI.onSourcesChanged((changedWorkspaceId, sources) => {
+      if (changedWorkspaceId !== workspaceId) return
       const updated = sources.find((s) => s.config.slug === sourceSlug)
 
       if (updated) {
-        console.log('[SourceInfoPage] Source changed, reloading...')
         setSource(updated)
 
         const loadPermissionsConfig = async () => {

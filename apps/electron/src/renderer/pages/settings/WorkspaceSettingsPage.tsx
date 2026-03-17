@@ -5,9 +5,10 @@
  *
  * Settings:
  * - Identity (Name, Icon)
- * - Model
  * - Permissions (Default mode, Mode cycling)
  * - Advanced (Working directory, Local MCP servers)
+ *
+ * Note: AI settings (model, thinking, connection) have been moved to AiSettingsPage.
  */
 
 import * as React from 'react'
@@ -21,10 +22,10 @@ import { cn } from '@/lib/utils'
 import { routes } from '@/lib/navigate'
 import { Spinner } from '@craft-agent/ui'
 import { RenameDialog } from '@/components/ui/rename-dialog'
-import type { PermissionMode, ThinkingLevel, WorkspaceSettings } from '../../../shared/types'
+import type { PermissionMode, WorkspaceSettings, LoadedSource } from '../../../shared/types'
 import { PERMISSION_MODE_CONFIG } from '@craft-agent/shared/agent/mode-types'
-import { DEFAULT_THINKING_LEVEL, THINKING_LEVELS } from '@craft-agent/shared/agent/thinking-levels'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
+import { SourceAvatar } from '@/components/ui/source-avatar'
 
 import {
   SettingsSection,
@@ -44,12 +45,10 @@ export const meta: DetailsPageMeta = {
 // ============================================
 
 export default function WorkspaceSettingsPage() {
-  // Get model, onModelChange, and active workspace from context
+  // Get active workspace from context
   const appShellContext = useAppShellContext()
-  const onModelChange = appShellContext.onModelChange
   const activeWorkspaceId = appShellContext.activeWorkspaceId
   const onRefreshWorkspaces = appShellContext.onRefreshWorkspaces
-  const customModel = appShellContext.customModel
 
   // Workspace settings state
   const [wsName, setWsName] = useState('')
@@ -57,12 +56,14 @@ export default function WorkspaceSettingsPage() {
   const [renameDialogOpen, setRenameDialogOpen] = useState(false)
   const [wsIconUrl, setWsIconUrl] = useState<string | null>(null)
   const [isUploadingIcon, setIsUploadingIcon] = useState(false)
-  const [wsModel, setWsModel] = useState('claude-sonnet-4-5-20250929')
-  const [wsThinkingLevel, setWsThinkingLevel] = useState<ThinkingLevel>(DEFAULT_THINKING_LEVEL)
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
   const [workingDirectory, setWorkingDirectory] = useState('')
   const [localMcpEnabled, setLocalMcpEnabled] = useState(true)
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true)
+
+  // Default sources state
+  const [availableSources, setAvailableSources] = useState<LoadedSource[]>([])
+  const [enabledSourceSlugs, setEnabledSourceSlugs] = useState<string[]>([])
 
   // Mode cycling state
   const [enabledModes, setEnabledModes] = useState<PermissionMode[]>(['safe', 'ask', 'allow-all'])
@@ -82,14 +83,27 @@ export default function WorkspaceSettingsPage() {
         if (settings) {
           setWsName(settings.name || '')
           setWsNameEditing(settings.name || '')
-          setWsModel(settings.model || 'claude-sonnet-4-5-20250929')
-          setWsThinkingLevel(settings.thinkingLevel || DEFAULT_THINKING_LEVEL)
           setPermissionMode(settings.permissionMode || 'ask')
           setWorkingDirectory(settings.workingDirectory || '')
           setLocalMcpEnabled(settings.localMcpEnabled ?? true)
           // Load cyclable permission modes from workspace settings
           if (settings.cyclablePermissionModes && settings.cyclablePermissionModes.length >= 2) {
             setEnabledModes(settings.cyclablePermissionModes)
+          }
+
+          // Load default source slugs
+          const savedSlugs = settings.enabledSourceSlugs ?? []
+
+          // Load available sources and auto-heal stale slugs
+          const sources = await window.electronAPI.getSources(activeWorkspaceId)
+          setAvailableSources(sources)
+          const validSlugs = new Set(sources.map(s => s.config.slug))
+          const healedSlugs = savedSlugs.filter(s => validSlugs.has(s))
+          setEnabledSourceSlugs(healedSlugs)
+
+          // Persist cleaned list if stale slugs were removed
+          if (healedSlugs.length !== savedSlugs.length) {
+            window.electronAPI.updateWorkspaceSetting(activeWorkspaceId, 'enabledSourceSlugs', healedSlugs)
           }
         }
 
@@ -126,6 +140,25 @@ export default function WorkspaceSettingsPage() {
     }
 
     loadWorkspaceSettings()
+  }, [activeWorkspaceId])
+
+  // Subscribe to live source changes (additions/removals)
+  useEffect(() => {
+    if (!window.electronAPI) return
+    const cleanup = window.electronAPI.onSourcesChanged((workspaceId: string, sources: LoadedSource[]) => {
+      if (workspaceId !== activeWorkspaceId) return
+      setAvailableSources(sources)
+      // Auto-heal: remove slugs for sources that no longer exist
+      const validSlugs = new Set(sources.map(s => s.config.slug))
+      setEnabledSourceSlugs(prev => {
+        const healed = prev.filter(s => validSlugs.has(s))
+        if (healed.length !== prev.length && activeWorkspaceId) {
+          window.electronAPI.updateWorkspaceSetting(activeWorkspaceId, 'enabledSourceSlugs', healed)
+        }
+        return healed
+      })
+    })
+    return cleanup
   }, [activeWorkspaceId])
 
   // Save workspace setting
@@ -197,24 +230,6 @@ export default function WorkspaceSettingsPage() {
   }, [activeWorkspaceId, onRefreshWorkspaces])
 
   // Workspace settings handlers
-  const handleModelChange = useCallback(
-    async (newModel: string) => {
-      setWsModel(newModel)
-      await updateWorkspaceSetting('model', newModel)
-      // Also update the global model context so it takes effect immediately
-      onModelChange?.(newModel)
-    },
-    [updateWorkspaceSetting, onModelChange]
-  )
-
-  const handleThinkingLevelChange = useCallback(
-    async (newLevel: ThinkingLevel) => {
-      setWsThinkingLevel(newLevel)
-      await updateWorkspaceSetting('thinkingLevel', newLevel)
-    },
-    [updateWorkspaceSetting]
-  )
-
   const handlePermissionModeChange = useCallback(
     async (newMode: PermissionMode) => {
       setPermissionMode(newMode)
@@ -254,6 +269,17 @@ export default function WorkspaceSettingsPage() {
       await updateWorkspaceSetting('localMcpEnabled', enabled)
     },
     [updateWorkspaceSetting]
+  )
+
+  const handleSourceToggle = useCallback(
+    async (slug: string, checked: boolean) => {
+      const newSlugs = checked
+        ? [...enabledSourceSlugs, slug]
+        : enabledSourceSlugs.filter(s => s !== slug)
+      setEnabledSourceSlugs(newSlugs)
+      await updateWorkspaceSetting('enabledSourceSlugs', newSlugs)
+    },
+    [enabledSourceSlugs, updateWorkspaceSetting]
   )
 
   const handleModeToggle = useCallback(
@@ -392,44 +418,6 @@ export default function WorkspaceSettingsPage() {
               />
             </SettingsSection>
 
-            {/* Model */}
-            <SettingsSection title="Model">
-              <SettingsCard>
-                {/* When a custom API connection is active, model is fixed — show info instead of selector */}
-                {customModel ? (
-                  <SettingsRow
-                    label="Default model"
-                    description="Set via API connection"
-                  >
-                    <span className="text-sm text-muted-foreground">{customModel}</span>
-                  </SettingsRow>
-                ) : (
-                  <SettingsMenuSelectRow
-                    label="Default model"
-                    description="AI model for new chats"
-                    value={wsModel}
-                    onValueChange={handleModelChange}
-                    options={[
-                      { value: 'claude-opus-4-5-20251101', label: 'Opus 4.5', description: 'Most capable for complex work' },
-                      { value: 'claude-sonnet-4-5-20250929', label: 'Sonnet 4.5', description: 'Best for everyday tasks' },
-                      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', description: 'Fastest for quick answers' },
-                    ]}
-                  />
-                )}
-                <SettingsMenuSelectRow
-                  label="Thinking level"
-                  description="Reasoning depth for new chats"
-                  value={wsThinkingLevel}
-                  onValueChange={(v) => handleThinkingLevelChange(v as ThinkingLevel)}
-                  options={THINKING_LEVELS.map(({ id, name, description }) => ({
-                    value: id,
-                    label: name,
-                    description,
-                  }))}
-                />
-              </SettingsCard>
-            </SettingsSection>
-
             {/* Permissions */}
             <SettingsSection title="Permissions">
               <SettingsCard>
@@ -480,6 +468,33 @@ export default function WorkspaceSettingsPage() {
                   </motion.p>
                 )}
               </AnimatePresence>
+            </SettingsSection>
+
+            {/* Default Sources */}
+            <SettingsSection
+              title="Default Sources"
+              description="Sources auto-enabled for new sessions"
+            >
+              {availableSources.length > 0 ? (
+                <SettingsCard>
+                  {availableSources.map((source) => (
+                    <SettingsToggle
+                      key={source.config.slug}
+                      label={
+                        <span className="inline-flex items-center gap-2">
+                          <SourceAvatar source={source} size="xs" />
+                          {source.config.name}
+                        </span>
+                      }
+                      description={source.config.tagline}
+                      checked={enabledSourceSlugs.includes(source.config.slug)}
+                      onCheckedChange={(checked) => handleSourceToggle(source.config.slug, checked)}
+                    />
+                  ))}
+                </SettingsCard>
+              ) : (
+                <p className="text-sm text-muted-foreground">No sources configured in this workspace.</p>
+              )}
             </SettingsSection>
 
             {/* Advanced */}

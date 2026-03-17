@@ -24,7 +24,10 @@ import {
   SettingsRow,
   SettingsSegmentedControl,
   SettingsMenuSelect,
+  SettingsToggle,
 } from '@/components/settings'
+import * as storage from '@/lib/local-storage'
+import { useWorkspaceIcons } from '@/hooks/useWorkspaceIcon'
 import { Info_DataTable, SortableHeader } from '@/components/info/Info_DataTable'
 import { Info_Badge } from '@/components/info/Info_Badge'
 import type { PresetTheme } from '@config/theme'
@@ -90,8 +93,22 @@ const toolIconColumns: ColumnDef<ToolIconMapping>[] = [
 // ============================================
 
 export default function AppearanceSettingsPage() {
-  const { mode, setMode, colorTheme, setColorTheme, font, setFont, activeWorkspaceId, setWorkspaceColorTheme } = useTheme()
+  const {
+    mode,
+    setMode,
+    colorTheme,
+    setColorTheme,
+    font,
+    setFont,
+    activeWorkspaceId,
+    setWorkspaceColorTheme,
+    themeLoadError,
+    themeResolvedFrom,
+  } = useTheme()
   const { workspaces } = useAppShellContext()
+
+  // Fetch workspace icons as data URLs (file:// URLs don't work in renderer)
+  const workspaceIconMap = useWorkspaceIcons(workspaces)
 
   // Preset themes for the color theme dropdown
   const [presetThemes, setPresetThemes] = useState<PresetTheme[]>([])
@@ -104,6 +121,25 @@ export default function AppearanceSettingsPage() {
 
   // Resolved path to tool-icons.json (needed for EditPopover and "Edit File" action)
   const [toolIconsJsonPath, setToolIconsJsonPath] = useState<string | null>(null)
+
+  // Connection icon visibility toggle
+  const [showConnectionIcons, setShowConnectionIcons] = useState(() =>
+    storage.get(storage.KEYS.showConnectionIcons, true)
+  )
+  const handleConnectionIconsChange = useCallback((checked: boolean) => {
+    setShowConnectionIcons(checked)
+    storage.set(storage.KEYS.showConnectionIcons, checked)
+  }, [])
+
+  // Rich tool descriptions toggle (persisted in config.json, read by SDK subprocess)
+  const [richToolDescriptions, setRichToolDescriptions] = useState(true)
+  useEffect(() => {
+    window.electronAPI?.getRichToolDescriptions?.().then(setRichToolDescriptions)
+  }, [])
+  const handleRichToolDescriptionsChange = useCallback(async (checked: boolean) => {
+    setRichToolDescriptions(checked)
+    await window.electronAPI?.setRichToolDescriptions?.(checked)
+  }, [])
 
   // Load preset themes on mount
   useEffect(() => {
@@ -240,6 +276,11 @@ export default function AppearanceSettingsPage() {
                     />
                   </SettingsRow>
                 </SettingsCard>
+                {themeLoadError && (
+                  <p className="mt-2 text-xs text-info">
+                    Theme warning: {themeLoadError} ({themeResolvedFrom === 'fallback' ? 'using bundled fallback' : 'using default theme'})
+                  </p>
+                )}
               </SettingsSection>
 
               {/* Workspace Themes */}
@@ -257,9 +298,9 @@ export default function AppearanceSettingsPage() {
                           key={workspace.id}
                           label={
                             <div className="flex items-center gap-2">
-                              {workspace.iconUrl ? (
+                              {workspaceIconMap.get(workspace.id) ? (
                                 <img
-                                  src={workspace.iconUrl}
+                                  src={workspaceIconMap.get(workspace.id)}
                                   alt=""
                                   className="w-4 h-4 rounded object-cover"
                                 />
@@ -289,6 +330,24 @@ export default function AppearanceSettingsPage() {
                   </SettingsCard>
                 </SettingsSection>
               )}
+
+              {/* Interface */}
+              <SettingsSection title="Interface">
+                <SettingsCard>
+                  <SettingsToggle
+                    label="Connection icons"
+                    description="Show provider icons in the session list and model selector"
+                    checked={showConnectionIcons}
+                    onCheckedChange={handleConnectionIconsChange}
+                  />
+                  <SettingsToggle
+                    label="Rich tool descriptions"
+                    description="Add action names and intent descriptions to all tool calls. Provides richer activity context in sessions."
+                    checked={richToolDescriptions}
+                    onCheckedChange={handleRichToolDescriptionsChange}
+                  />
+                </SettingsCard>
+              </SettingsSection>
 
               {/* Tool Icons — shows the command → icon mapping used in turn cards */}
               <SettingsSection

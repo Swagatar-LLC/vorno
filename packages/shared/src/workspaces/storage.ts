@@ -19,11 +19,11 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { expandPath, toPortablePath } from '../utils/paths.ts';
-import { atomicWriteFileSync } from '../utils/files.ts';
+import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
 import { getDefaultStatusConfig, saveStatusConfig, ensureDefaultIconFiles } from '../statuses/storage.ts';
 import { getDefaultLabelConfig, saveLabelConfig } from '../labels/storage.ts';
 import { loadConfigDefaults } from '../config/storage.ts';
-import { DEFAULT_MODEL } from '../config/models.ts';
+import { parsePermissionMode, PERMISSION_MODE_ORDER } from '../agent/mode-types.ts';
 import type {
   WorkspaceConfig,
   CreateWorkspaceInput,
@@ -100,11 +100,28 @@ export function loadWorkspaceConfig(rootPath: string): WorkspaceConfig | null {
   if (!existsSync(configPath)) return null;
 
   try {
-    const config = JSON.parse(readFileSync(configPath, 'utf-8')) as WorkspaceConfig;
+    const config = readJsonFileSync<WorkspaceConfig>(configPath);
 
     // Expand path variables in defaults for portability
     if (config.defaults?.workingDirectory) {
       config.defaults.workingDirectory = expandPath(config.defaults.workingDirectory);
+    }
+
+    // Compatibility: accept canonical or legacy permission mode names on read
+    if (config.defaults?.permissionMode && typeof config.defaults.permissionMode === 'string') {
+      const parsed = parsePermissionMode(config.defaults.permissionMode);
+      config.defaults.permissionMode = parsed ?? undefined;
+    }
+
+    if (Array.isArray(config.defaults?.cyclablePermissionModes)) {
+      const normalized = config.defaults.cyclablePermissionModes
+        .map(mode => (typeof mode === 'string' ? parsePermissionMode(mode) : null))
+        .filter((mode): mode is NonNullable<typeof mode> => !!mode)
+        .filter((mode, index, arr) => arr.indexOf(mode) === index);
+
+      config.defaults.cyclablePermissionModes = normalized.length >= 2
+        ? normalized
+        : [...PERMISSION_MODE_ORDER];
     }
 
     return config;
@@ -277,11 +294,14 @@ export function createWorkspaceAtPath(
   const globalDefaults = loadConfigDefaults();
 
   // Merge global defaults with provided defaults
+  // AI settings (model, thinkingLevel, defaultLlmConnection) are left undefined
+  // so they fall back to app-level defaults
   const workspaceDefaults: WorkspaceConfig['defaults'] = {
-    model: DEFAULT_MODEL,
+    model: undefined,
+    thinkingLevel: undefined,
+    // defaultLlmConnection: undefined - falls back to app default
     permissionMode: globalDefaults.workspaceDefaults.permissionMode,
     cyclablePermissionModes: globalDefaults.workspaceDefaults.cyclablePermissionModes,
-    thinkingLevel: globalDefaults.workspaceDefaults.thinkingLevel,
     enabledSourceSlugs: [],
     workingDirectory: undefined,
     ...defaults, // User-provided defaults override global defaults

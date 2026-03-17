@@ -40,6 +40,8 @@ export interface WorkspaceConfig {
    */
   defaults?: {
     model?: string;
+    /** Default LLM connection for new sessions (slug). Overrides global default. */
+    defaultLlmConnection?: string;
     enabledSourceSlugs?: string[]; // Sources to enable by default
     permissionMode?: PermissionMode; // Default permission mode ('safe', 'ask', 'allow-all')
     cyclablePermissionModes?: PermissionMode[]; // Which modes can be cycled with SHIFT+TAB (min 2, default: all 3)

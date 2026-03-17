@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { isMac } from "@/lib/platform"
+import { useActionLabel } from "@/actions"
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -12,6 +13,7 @@ import {
   StyledDropdownMenuSubContent,
 } from "@/components/ui/styled-dropdown"
 import * as Icons from "lucide-react"
+import { Tooltip, TooltipTrigger, TooltipContent } from "@craft-agent/ui"
 import { CraftAgentsSymbol } from "./icons/CraftAgentsSymbol"
 import { SquarePenRounded } from "./icons/SquarePenRounded"
 import { TopBarButton } from "./ui/TopBarButton"
@@ -24,6 +26,7 @@ import {
 } from "../../shared/menu-schema"
 import type { MenuItem, MenuSection, SettingsMenuItem } from "../../shared/menu-schema"
 import { SETTINGS_ICONS } from "./icons/SettingsIcons"
+import { getDocUrl } from '@craft-agent/shared/docs/doc-links'
 
 // Map of action handlers for menu items that need custom behavior
 type MenuActionHandlers = {
@@ -171,7 +174,15 @@ export function AppMenu({
   onToggleFocusMode,
 }: AppMenuProps) {
   const [isDebugMode, setIsDebugMode] = useState(false)
-  const modKey = isMac ? '⌘' : 'Ctrl+'
+
+  // Get hotkey labels from centralized action registry
+  const newChatHotkey = useActionLabel('app.newChat').hotkey
+  const newWindowHotkey = useActionLabel('app.newWindow').hotkey
+  const settingsHotkey = useActionLabel('app.settings').hotkey
+  const keyboardShortcutsHotkey = useActionLabel('app.keyboardShortcuts').hotkey
+  const quitHotkey = useActionLabel('app.quit').hotkey
+  const goBackHotkey = useActionLabel('nav.goBackAlt').hotkey
+  const goForwardHotkey = useActionLabel('nav.goForwardAlt').hotkey
 
   useEffect(() => {
     window.electronAPI.isDebugMode().then(setIsDebugMode)
@@ -185,7 +196,8 @@ export function AppMenu({
 
   return (
     <div className="flex items-center gap-[5px] w-full">
-      {/* Craft Logo Menu */}
+      {/* Craft Logo Menu - interactive island */}
+      <div className="pointer-events-auto titlebar-no-drag">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <TopBarButton aria-label="Craft menu">
@@ -197,13 +209,13 @@ export function AppMenu({
           <StyledDropdownMenuItem onClick={onNewChat}>
             <SquarePenRounded className="h-3.5 w-3.5" />
             New Chat
-            <DropdownMenuShortcut className="pl-6">{modKey}N</DropdownMenuShortcut>
+            {newChatHotkey && <DropdownMenuShortcut className="pl-6">{newChatHotkey}</DropdownMenuShortcut>}
           </StyledDropdownMenuItem>
           {onNewWindow && (
             <StyledDropdownMenuItem onClick={onNewWindow}>
               <Icons.AppWindow className="h-3.5 w-3.5" />
               New Window
-              <DropdownMenuShortcut className="pl-6">{modKey}⇧N</DropdownMenuShortcut>
+              {newWindowHotkey && <DropdownMenuShortcut className="pl-6">{newWindowHotkey}</DropdownMenuShortcut>}
             </StyledDropdownMenuItem>
           )}
 
@@ -227,7 +239,7 @@ export function AppMenu({
               <StyledDropdownMenuItem onClick={onOpenSettings}>
                 <Icons.Settings className="h-3.5 w-3.5" />
                 Settings...
-                <DropdownMenuShortcut className="pl-6">{modKey},</DropdownMenuShortcut>
+                {settingsHotkey && <DropdownMenuShortcut className="pl-6">{settingsHotkey}</DropdownMenuShortcut>}
               </StyledDropdownMenuItem>
               <StyledDropdownMenuSeparator />
               {/* All settings subpages from shared schema */}
@@ -258,10 +270,16 @@ export function AppMenu({
                 Help & Documentation
                 <Icons.ExternalLink className="h-3 w-3 ml-auto text-muted-foreground" />
               </StyledDropdownMenuItem>
+              <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl(getDocUrl('automations'))}>
+                <Icons.Webhook className="h-3.5 w-3.5" />
+                Automations
+                <Icons.ExternalLink className="h-3 w-3 ml-auto text-muted-foreground" />
+              </StyledDropdownMenuItem>
+              <StyledDropdownMenuSeparator />
               <StyledDropdownMenuItem onClick={onOpenKeyboardShortcuts}>
                 <Icons.Keyboard className="h-3.5 w-3.5" />
                 Keyboard Shortcuts
-                <DropdownMenuShortcut className="pl-6">{modKey}/</DropdownMenuShortcut>
+                {keyboardShortcutsHotkey && <DropdownMenuShortcut className="pl-6">{keyboardShortcutsHotkey}</DropdownMenuShortcut>}
               </StyledDropdownMenuItem>
             </StyledDropdownMenuSubContent>
           </DropdownMenuSub>
@@ -300,31 +318,45 @@ export function AppMenu({
           <StyledDropdownMenuItem onClick={() => window.electronAPI.menuQuit()}>
             <Icons.LogOut className="h-3.5 w-3.5" />
             Quit Craft Agents
-            <DropdownMenuShortcut className="pl-6">{modKey}Q</DropdownMenuShortcut>
+            {quitHotkey && <DropdownMenuShortcut className="pl-6">{quitHotkey}</DropdownMenuShortcut>}
           </StyledDropdownMenuItem>
         </StyledDropdownMenuContent>
       </DropdownMenu>
+      </div>
 
-      {/* Spacer to push nav buttons right */}
+      {/* Spacer - pointer-events-none inherited from parent, drag passes through */}
       <div className="flex-1" />
 
-      {/* Back Navigation */}
-      <TopBarButton
-        onClick={onBack}
-        disabled={!canGoBack}
-        aria-label="Go back"
-      >
-        <Icons.ChevronLeft className="h-[22px] w-[22px] text-foreground/70" strokeWidth={1.5} />
-      </TopBarButton>
+      {/* Nav Buttons - interactive island */}
+      <div className="pointer-events-auto titlebar-no-drag flex items-center gap-[5px]">
+        {/* Back Navigation */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <TopBarButton
+              onClick={onBack}
+              disabled={!canGoBack}
+              aria-label="Go back"
+            >
+              <Icons.ChevronLeft className="h-[22px] w-[22px] text-foreground/70" strokeWidth={1.5} />
+            </TopBarButton>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Back {goBackHotkey}</TooltipContent>
+        </Tooltip>
 
-      {/* Forward Navigation */}
-      <TopBarButton
-        onClick={onForward}
-        disabled={!canGoForward}
-        aria-label="Go forward"
-      >
-        <Icons.ChevronRight className="h-[22px] w-[22px] text-foreground/70" strokeWidth={1.5} />
-      </TopBarButton>
+        {/* Forward Navigation */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <TopBarButton
+              onClick={onForward}
+              disabled={!canGoForward}
+              aria-label="Go forward"
+            >
+              <Icons.ChevronRight className="h-[22px] w-[22px] text-foreground/70" strokeWidth={1.5} />
+            </TopBarButton>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Forward {goForwardHotkey}</TooltipContent>
+        </Tooltip>
+      </div>
     </div>
   )
 }

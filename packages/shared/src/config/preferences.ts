@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { ensureConfigDir } from './storage.ts';
 import { CONFIG_DIR } from './paths.ts';
+import { readJsonFileSync } from '../utils/files.ts';
 
 export interface UserLocation {
   city?: string;
@@ -40,8 +41,7 @@ export function loadPreferences(): UserPreferences {
     if (!existsSync(PREFERENCES_FILE)) {
       return {};
     }
-    const content = readFileSync(PREFERENCES_FILE, 'utf-8');
-    return JSON.parse(content) as UserPreferences;
+    return readJsonFileSync<UserPreferences>(PREFERENCES_FILE);
   } catch {
     return {};
   }

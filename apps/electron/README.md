@@ -252,10 +252,10 @@ External apps can navigate using `craftagents://` URLs:
 
 ```
 craftagents://settings
-craftagents://allChats/chat/session123
+craftagents://allSessions/session/session123
 craftagents://sources/source/github
 craftagents://action/new-chat
-craftagents://workspace/{id}/allChats/chat/abc123
+craftagents://workspace/{id}/allSessions/session/abc123
 ```
 
 See `CLAUDE.md` for complete route reference.

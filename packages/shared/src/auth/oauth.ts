@@ -4,6 +4,7 @@ import { randomBytes, createHash } from 'crypto';
 import { openUrl } from '../utils/open-url.ts';
 import { generateCallbackPage } from './callback-page.ts';
 import { type OAuthSessionContext, buildOAuthDeeplinkUrl } from './types.ts';
+import type { PreparedOAuthFlow, OAuthExchangeParams, OAuthExchangeResult } from './oauth-flow-types.ts';
 
 export interface OAuthConfig {
   mcpUrl: string; // Full MCP URL including path (e.g., https://mcp.craft.do/my/mcp)
@@ -131,10 +132,15 @@ export class CraftOAuth {
       token_type?: string;
     };
 
+    // Default to 3600s (1 hour) if server doesn't return expires_in.
+    // Most OAuth access tokens expire in 1 hour per RFC 6749.
+    // Without this, tokens with no expiresAt are never detected as needing refresh.
+    const expiresIn = data.expires_in ?? 3600;
+
     return {
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
-      expiresAt: data.expires_in ? Date.now() + data.expires_in * 1000 : undefined,
+      expiresAt: Date.now() + expiresIn * 1000,
       tokenType: data.token_type || 'Bearer',
     };
   }
@@ -169,10 +175,12 @@ export class CraftOAuth {
       token_type?: string;
     };
 
+    const expiresIn = data.expires_in ?? 3600;
+
     return {
       accessToken: data.access_token,
       refreshToken: data.refresh_token || refreshToken,
-      expiresAt: data.expires_in ? Date.now() + data.expires_in * 1000 : undefined,
+      expiresAt: Date.now() + expiresIn * 1000,
       tokenType: data.token_type || 'Bearer',
     };
   }
@@ -370,7 +378,7 @@ export class CraftOAuth {
             return;
           }
 
-          // Success! Include deeplink to return user to their chat session
+          // Success!
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end(generateCallbackPage({
             title: 'Authorization Successful',
@@ -433,6 +441,165 @@ export class CraftOAuth {
   // Cancel the OAuth flow
   cancel(): void {
     this.stopServer();
+  }
+}
+
+/**
+ * Register an MCP OAuth client dynamically.
+ * Extracted from CraftOAuth.registerClient for reuse in prepareMcpOAuth.
+ */
+async function registerMcpOAuthClient(
+  registrationEndpoint: string,
+  redirectUri: string
+): Promise<{ client_id: string; client_secret?: string }> {
+  const response = await fetch(registrationEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_name: CLIENT_NAME,
+      redirect_uris: [redirectUri],
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to register OAuth client: ${error}`);
+  }
+
+  return response.json() as Promise<{ client_id: string; client_secret?: string }>;
+}
+
+/**
+ * Exchange an MCP authorization code for tokens (standalone, no class instance needed).
+ */
+async function exchangeMcpCodeForTokens(
+  tokenEndpoint: string,
+  code: string,
+  codeVerifier: string,
+  clientId: string,
+  redirectUri: string
+): Promise<OAuthTokens> {
+  const params = new URLSearchParams({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: redirectUri,
+    client_id: clientId,
+    code_verifier: codeVerifier,
+  });
+
+  const response = await fetch(tokenEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Failed to exchange code for tokens: ${error}`);
+  }
+
+  const data = await response.json() as {
+    access_token: string;
+    refresh_token?: string;
+    expires_in?: number;
+    token_type?: string;
+  };
+
+  const expiresIn = data.expires_in ?? 3600;
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    expiresAt: Date.now() + expiresIn * 1000,
+    tokenType: data.token_type || 'Bearer',
+  };
+}
+
+/**
+ * Prepare an MCP OAuth flow without starting a callback server or opening a browser.
+ *
+ * Performs metadata discovery, PKCE generation, optional client registration,
+ * and auth URL construction. The caller provides callbackPort; this function
+ * builds the provider-specific redirectUri from it.
+ */
+export async function prepareMcpOAuth(mcpUrl: string, callbackPort: number): Promise<PreparedOAuthFlow> {
+  const metadata = await discoverOAuthMetadata(mcpUrl);
+  if (!metadata) {
+    throw new Error(`No OAuth metadata found for ${mcpUrl}`);
+  }
+
+  const pkce = generatePKCE();
+  const state = generateState();
+  const redirectUri = `http://localhost:${callbackPort}${CALLBACK_PATH}`;
+
+  let clientId: string;
+  if (metadata.registration_endpoint) {
+    const client = await registerMcpOAuthClient(metadata.registration_endpoint, redirectUri);
+    clientId = client.client_id;
+  } else {
+    clientId = 'craft-agent';
+  }
+
+  const authUrl = new URL(metadata.authorization_endpoint);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('client_id', clientId);
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set('code_challenge', pkce.challenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+
+  return {
+    authUrl: authUrl.toString(),
+    state,
+    codeVerifier: pkce.verifier,
+    tokenEndpoint: metadata.token_endpoint,
+    clientId,
+    redirectUri,
+    provider: 'mcp',
+  };
+}
+
+/**
+ * Exchange an MCP authorization code for tokens (server-side).
+ */
+export async function exchangeMcpOAuth(params: OAuthExchangeParams): Promise<OAuthExchangeResult> {
+  try {
+    const tokens = await exchangeMcpCodeForTokens(
+      params.tokenEndpoint,
+      params.code,
+      params.codeVerifier,
+      params.clientId,
+      params.redirectUri
+    );
+
+    return {
+      success: true,
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresAt: tokens.expiresAt,
+      oauthClientId: params.clientId,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'MCP OAuth exchange failed',
+    };
+  }
+}
+
+/**
+ * Extract the origin (scheme + host + port) from an MCP URL.
+ * This is the base URL for OAuth discovery per RFC 8414.
+ */
+export function getMcpBaseUrl(mcpUrl: string): string {
+  try {
+    return new URL(mcpUrl).origin;
+  } catch {
+    // If URL parsing fails, return as-is and let caller handle it
+    return mcpUrl;
   }
 }
 
@@ -510,8 +677,10 @@ function isUrlSafeToFetch(urlString: string): { safe: boolean; reason?: string }
   // This catches: 10.x.x.x, 172.16-31.x.x, 192.168.x.x, 169.254.x.x
   const ipMatch = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   if (ipMatch) {
-    const [, a, b] = ipMatch.map(Number);
+    const a = Number(ipMatch[1]);
+    const b = Number(ipMatch[2]);
     if (
+      a === 0 ||                             // 0.0.0.0/8
       a === 10 ||                           // 10.0.0.0/8
       a === 127 ||                          // 127.0.0.0/8
       (a === 172 && b >= 16 && b <= 31) ||  // 172.16.0.0/12
@@ -584,7 +753,7 @@ function parseResourceMetadataFromHeader(wwwAuthenticate: string | null): string
   // Look for resource_metadata="..." or resource_metadata='...' in the header
   // Also handles optional spaces around the equals sign
   const match = wwwAuthenticate.match(/resource_metadata\s*=\s*["']([^"']+)["']/);
-  return match ? match[1] : null;
+  return match?.[1] ?? null;
 }
 
 /**
@@ -624,7 +793,7 @@ async function fetchProtectedResourceMetadata(
       return null;
     }
 
-    const authServer = data.authorization_servers[0];
+    const authServer = data.authorization_servers[0]!;
 
     // Validate the auth server URL too
     const authServerCheck = isUrlSafeToFetch(authServer);

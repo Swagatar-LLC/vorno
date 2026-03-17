@@ -1,11 +1,13 @@
-export * from './craft-agent.ts';
+// Export ClaudeAgent (renamed from CraftAgent) and backward-compatible aliases
+export * from './claude-agent.ts';
+
+// Export PiAgent for direct use
+export { PiAgent, PiBackend } from './pi-agent.ts';
 export * from './errors.ts';
 export * from './options.ts';
 
 // Export session-scoped-tools - tools scoped to a specific session
 export {
-  // Tool factories (creates session-scoped tools)
-  createSubmitPlanTool,
   // Session-scoped tools provider
   getSessionScopedTools,
   cleanupSessionScopedTools,
@@ -17,8 +19,10 @@ export {
   // Callback registry for session-scoped tool notifications
   registerSessionScopedToolCallbacks,
   unregisterSessionScopedToolCallbacks,
+  mergeSessionScopedToolCallbacks,
   // Types
   type SessionScopedToolCallbacks,
+  type BrowserPaneFns,
   // Auth request types (unified auth flow)
   type AuthRequest,
   type AuthRequestType,
@@ -42,6 +46,8 @@ export {
   PERMISSION_MODE_CONFIG,
   type PermissionMode,
   getModeState,
+  hydratePreviousPermissionMode,
+  getPermissionModeDiagnostics,
   initializeModeState,
   cleanupModeState,
   // Tool blocking (centralized)
@@ -58,6 +64,7 @@ export {
   type ModeState,
   type ModeCallbacks,
   type ModeConfig,
+  type PermissionModeChangedBy,
 } from './mode-manager.ts';
 
 // Export plan types and permission mode messages
@@ -88,6 +95,11 @@ export {
   loadSourcePermissionsConfig,
   getWorkspacePermissionsPath,
   getSourcePermissionsPath,
+  // Raw load/save (for CLI CRUD)
+  loadRawWorkspacePermissions,
+  loadRawSourcePermissions,
+  saveWorkspacePermissions,
+  saveSourcePermissions,
   // App-level default permissions (at ~/.craft-agent/permissions/)
   getAppPermissionsDir,
   ensureDefaultPermissions,
@@ -103,5 +115,50 @@ export {
   type PermissionsContext,
 } from './permissions-config.ts';
 
-// Export LLM tool - secondary Claude calls for subtasks
-export { createLLMTool, type LLMToolOptions } from './llm-tool.ts';
+// Export BaseAgent - shared abstract class for all agent backends
+export {
+  BaseAgent,
+  // Mini agent configuration (centralized for all backends)
+  type MiniAgentConfig,
+  MINI_AGENT_TOOLS,
+  MINI_AGENT_MCP_KEYS,
+} from './base-agent.ts';
+
+// Export backend abstraction - unified interface for AI agents
+// This module enables switching between Claude (Anthropic) and Pi agents
+export {
+  // Factory (createAgent is the preferred name, createBackend is kept for backward compat)
+  createBackend,
+  createAgent,
+  detectProvider,
+  getAvailableProviders,
+  // Types
+  type AgentBackend,
+  type AgentProvider,
+  type BackendConfig,
+  type PermissionCallback,
+  type PlanCallback,
+  type AuthCallback,
+  type SourceChangeCallback,
+  type SourceActivationCallback,
+  type ChatOptions,
+  type RecoveryMessage,
+  type SdkMcpServerConfig as BackendMcpServerConfig,
+  // Enums
+  AbortReason as BackendAbortReason,
+} from './backend/index.ts';
+
+// Export core utilities for shared agent logic
+export * from './core/index.ts';
+
+// Export browser tool name normalization helpers
+export {
+  LEGACY_BROWSER_TOOL_ALIASES,
+  normalizeCanonicalBrowserToolName,
+  normalizeBrowserToolName,
+  isCanonicalBrowserToolName,
+  isBrowserToolNameOrAlias,
+} from './browser-tool-names.ts';
+
+// Export PowerShell validator root setter (for Electron startup on Windows)
+export { setPowerShellValidatorRoot } from './powershell-validator.ts';

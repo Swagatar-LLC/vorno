@@ -10,14 +10,18 @@
 
 // Types
 export type {
-  TodoState,
+  SessionStatus,
   SessionTokenUsage,
   StoredMessage,
   SessionConfig,
   StoredSession,
   SessionMetadata,
   SessionHeader,
+  SessionPersistentField,
 } from './types.ts';
+
+// Field constants
+export { SESSION_PERSISTENT_FIELDS } from './types.ts';
 
 // Storage functions
 export {
@@ -43,9 +47,10 @@ export {
   // Metadata updates
   updateSessionSdkId,
   updateSessionMetadata,
+  canUpdateSdkCwd,
   flagSession,
   unflagSession,
-  setSessionTodoState,
+  setSessionStatus,
   // Pending plan execution (Accept & Compact flow)
   setPendingPlanExecution,
   markCompactionComplete,
@@ -55,6 +60,12 @@ export {
   listFlaggedSessions,
   listCompletedSessions,
   listInboxSessions,
+  // Archive management
+  archiveSession,
+  unarchiveSession,
+  listArchivedSessions,
+  listActiveSessions,
+  deleteOldArchivedSessions,
   // Plan storage
   formatPlanAsMarkdown,
   parsePlanFromMarkdown,
@@ -66,6 +77,8 @@ export {
   getMostRecentPlanFile,
   // Async persistence queue
   sessionPersistenceQueue,
+  // Header metadata signature (for self-triggered event suppression)
+  getHeaderMetadataSignature,
 } from './storage.ts';
 
 // JSONL helpers (for direct access if needed)
@@ -75,6 +88,9 @@ export {
   writeSessionJsonl,
   createSessionHeader,
 } from './jsonl.ts';
+
+// Field utilities
+export { pickSessionFields } from './utils.ts';
 
 // Slug generator utilities
 export {

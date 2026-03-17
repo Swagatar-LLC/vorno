@@ -14,16 +14,18 @@
 
 import type { SessionState, AgentEvent, ProcessResult } from './types'
 import { handleTextDelta, handleTextComplete } from './handlers/text'
-import { handleToolStart, handleToolResult, handleTaskBackgrounded, handleShellBackgrounded, handleTaskProgress } from './handlers/tool'
+import { handleToolStart, handleToolResult, handleTaskBackgrounded, handleShellBackgrounded, handleTaskProgress, handleTaskCompleted } from './handlers/tool'
 import {
   handleComplete,
   handleError,
   handleTypedError,
   handleSourcesChanged,
   handleLabelsChanged,
-  handleTodoStateChanged,
+  handleSessionStatusChanged,
   handleSessionFlagged,
   handleSessionUnflagged,
+  handleSessionArchived,
+  handleSessionUnarchived,
   handleNameChanged,
   handlePermissionRequest,
   handleCredentialRequest,
@@ -37,7 +39,9 @@ import {
   handleWorkingDirectoryChanged,
   handlePermissionModeChanged,
   handleSessionModelChanged,
+  handleConnectionChanged,
   handleUserMessage,
+  handleMessageAnnotationsUpdated,
   handleSessionShared,
   handleSessionUnshared,
   handleAuthRequest,
@@ -95,6 +99,11 @@ export function processEvent(
       return { state: newState, effects: [] }
     }
 
+    case 'task_completed': {
+      const newState = handleTaskCompleted(state, event)
+      return { state: newState, effects: [] }
+    }
+
     case 'complete':
       return handleComplete(state, event)
 
@@ -131,20 +140,29 @@ export function processEvent(
     case 'session_model_changed':
       return handleSessionModelChanged(state, event)
 
+    case 'connection_changed':
+      return handleConnectionChanged(state, event)
+
     case 'sources_changed':
       return handleSourcesChanged(state, event)
 
     case 'labels_changed':
       return handleLabelsChanged(state, event)
 
-    case 'todo_state_changed':
-      return handleTodoStateChanged(state, event)
+    case 'session_status_changed':
+      return handleSessionStatusChanged(state, event)
 
     case 'session_flagged':
       return handleSessionFlagged(state, event)
 
     case 'session_unflagged':
       return handleSessionUnflagged(state, event)
+
+    case 'session_archived':
+      return handleSessionArchived(state, event)
+
+    case 'session_unarchived':
+      return handleSessionUnarchived(state, event)
 
     case 'name_changed':
       return handleNameChanged(state, event)
@@ -160,6 +178,9 @@ export function processEvent(
 
     case 'user_message':
       return handleUserMessage(state, event)
+
+    case 'message_annotations_updated':
+      return handleMessageAnnotationsUpdated(state, event)
 
     case 'session_shared':
       return handleSessionShared(state, event)

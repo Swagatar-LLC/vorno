@@ -165,12 +165,6 @@ export function generateCallbackPage(options: {
       .hint {
         color: rgba(255, 255, 255, 0.4);
       }
-      .return-link {
-        background-color: #a882c9;
-      }
-      .return-link:hover {
-        background-color: #9a72bb;
-      }
     }
   </style>
 </head>
@@ -180,8 +174,8 @@ export function generateCallbackPage(options: {
     <div class="card">
       <div class="status">${statusMessage}</div>
     </div>
-    <div class="hint">You can now return to the application.</div>
-    ${isSuccess && deeplinkUrl ? `<a href="${deeplinkUrl}" class="return-link">Craft Agents</a>` : ''}
+    <div class="hint">${isSuccess ? 'You can now return to the application.' : 'Please close this window and try again.'}</div>
+    ${deeplinkUrl ? `<a href="${deeplinkUrl}" class="return-link">Craft Agents</a>` : ''}
   </div>
   <script>${autoCloseScript}</script>
 </body>

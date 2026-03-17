@@ -268,7 +268,7 @@ describe('Real-world API scenarios', () => {
 describe('Auth type verification', () => {
   const serverBuilder = new SourceServerBuilder();
 
-  test.each([
+  test.each<['bearer' | 'header' | 'query' | 'basic' | 'none', 'bearer' | 'header' | 'query' | 'basic' | 'none']>([
     ['bearer', 'bearer'],
     ['header', 'header'],
     ['query', 'query'],
@@ -278,7 +278,7 @@ describe('Auth type verification', () => {
     const source = createMockSource({
       api: {
         baseUrl: 'https://api.example.com/',
-        authType: sourceAuthType as 'bearer' | 'header' | 'query' | 'basic' | 'none',
+        authType: sourceAuthType,
       },
     });
 

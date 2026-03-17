@@ -19,6 +19,7 @@ import type {
 } from './types.ts';
 import { validateSourceConfig } from '../config/validators.ts';
 import { debug } from '../utils/debug.ts';
+import { readJsonFileSync } from '../utils/files.ts';
 import { getBuiltinSources, isBuiltinSource, getDocsSource } from './builtin-sources.ts';
 import { expandPath, toPortablePath } from '../utils/paths.ts';
 import { getWorkspaceSourcesPath } from '../workspaces/storage.ts';
@@ -66,7 +67,7 @@ export function loadSourceConfig(
   if (!existsSync(configPath)) return null;
 
   try {
-    const config = JSON.parse(readFileSync(configPath, 'utf-8')) as FolderSourceConfig;
+    const config = readJsonFileSync<FolderSourceConfig>(configPath);
 
     // Expand path variables in local source paths for portability
     if (config.type === 'local' && config.local?.path) {
@@ -350,6 +351,26 @@ export function loadWorkspaceSources(workspaceRootPath: string): LoadedSource[] 
  */
 export function getEnabledSources(workspaceRootPath: string): LoadedSource[] {
   return loadWorkspaceSources(workspaceRootPath).filter((s) => s.config.enabled);
+}
+
+/**
+ * Check if a source is ready for use (enabled and authenticated).
+ * Sources with authType: 'none' or undefined are considered authenticated.
+ *
+ * Use this instead of inline `s.config.enabled && s.config.isAuthenticated` checks
+ * to ensure consistent handling of no-auth sources.
+ */
+export function isSourceUsable(source: LoadedSource): boolean {
+  if (!source.config.enabled) return false;
+
+  // Get auth type from MCP or API config
+  const authType = source.config.mcp?.authType || source.config.api?.authType;
+
+  // Sources with no auth requirement are always usable when enabled
+  if (authType === 'none' || authType === undefined) return true;
+
+  // Sources requiring auth must be authenticated
+  return source.config.isAuthenticated === true;
 }
 
 /**

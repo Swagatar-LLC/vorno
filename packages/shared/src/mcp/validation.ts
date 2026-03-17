@@ -10,10 +10,9 @@ import { spawn, type ChildProcess } from 'child_process';
 import { getDefaultOptions } from '../agent/options.ts';
 import { CraftMcpClient } from './client.js';
 import { debug } from '../utils/debug.ts';
-import { DEFAULT_MODEL } from '../config/models.ts';
-import { resolveModelId } from '../config/storage.ts';
+import { getDefaultSummarizationModel } from '../config/models.ts';
 import { parseError, type AgentError } from '../agent/errors.ts';
-import { getLastApiError } from '../network-interceptor.ts';
+import { getLastApiError } from '../interceptor-common.ts';
 
 export interface InvalidProperty {
   toolName: string;
@@ -24,7 +23,7 @@ export interface InvalidProperty {
 export interface McpValidationResult {
   success: boolean;
   error?: string;
-  errorType?: 'failed' | 'needs-auth' | 'pending' | 'invalid-schema' | 'unknown';
+  errorType?: 'failed' | 'needs-auth' | 'pending' | 'invalid-schema' | 'disabled' | 'unknown';
   /** Typed error for API/billing failures - display as ErrorBanner */
   typedError?: AgentError;
   serverInfo?: {
@@ -118,6 +117,8 @@ function findInvalidProperties(
 export interface McpValidationConfig {
   /** MCP server URL */
   mcpUrl: string;
+  /** Custom headers for MCP requests (merged before auth headers) */
+  mcpHeaders?: Record<string, string>;
   /** Access token for MCP server (OAuth or bearer) */
   mcpAccessToken?: string;
   /** Anthropic API key (for API key auth) */
@@ -161,14 +162,16 @@ export async function validateMcpConnection(
       mcpUrl = mcpUrl.replace(/\/$/, '') + '/mcp';
     }
 
-    // Build MCP server config
+    // Build MCP server config (custom headers first, auth headers override)
+    const headers = {
+      ...config.mcpHeaders,
+      ...(config.mcpAccessToken ? { Authorization: `Bearer ${config.mcpAccessToken}` } : {}),
+    };
     const mcpServers = {
       validation_target: {
         type: 'http' as const,
         url: mcpUrl,
-        ...(config.mcpAccessToken
-          ? { headers: { Authorization: `Bearer ${config.mcpAccessToken}` } }
-          : {}),
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
       },
     };
 
@@ -181,7 +184,7 @@ export async function validateMcpConnection(
       options: {
         ...getDefaultOptions(),
         mcpServers,
-        model: resolveModelId(config.model || DEFAULT_MODEL),
+        model: config.model || getDefaultSummarizationModel(),
         abortController,
       },
     });
@@ -205,12 +208,14 @@ export async function validateMcpConnection(
       if (status.status === 'connected') {
         // Connection successful - now validate tool schemas
         // Use direct MCP client to fetch tools (SDK already validated connection)
+        const clientHeaders = {
+          ...config.mcpHeaders,
+          ...(config.mcpAccessToken ? { Authorization: `Bearer ${config.mcpAccessToken}` } : {}),
+        };
         const mcpClient = new CraftMcpClient({
           transport: 'http',
           url: mcpUrl,
-          headers: config.mcpAccessToken
-            ? { Authorization: `Bearer ${config.mcpAccessToken}` }
-            : undefined,
+          headers: Object.keys(clientHeaders).length > 0 ? clientHeaders : undefined,
         });
 
         try {
@@ -385,11 +390,20 @@ export async function validateStdioMcpConnection(
       client = null;
     }
     if (childProcess && !childProcess.killed) {
-      childProcess.kill('SIGTERM');
+      // Platform-aware process termination (SIGTERM/SIGKILL don't exist on Windows)
+      if (process.platform === 'win32') {
+        childProcess.kill();
+      } else {
+        childProcess.kill('SIGTERM');
+      }
       // Force kill after 1s if still alive
       setTimeout(() => {
         if (childProcess && !childProcess.killed) {
-          childProcess.kill('SIGKILL');
+          if (process.platform === 'win32') {
+            childProcess.kill();
+          } else {
+            childProcess.kill('SIGKILL');
+          }
         }
       }, 1000);
     }

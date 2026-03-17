@@ -1,5 +1,7 @@
-import type { Session } from "../../shared/types"
+import * as React from "react"
+import type { Session, Message } from "../../shared/types"
 import type { SessionMeta } from "../atoms/sessions"
+import type { SessionStatusId } from "../config/session-status-config"
 
 /** Common session fields used by getSessionTitle */
 type SessionLike = Pick<Session, 'name' | 'preview'> & { messages?: Session['messages'] }
@@ -12,10 +14,6 @@ function sanitizePreview(content: string): string {
   return content
     .replace(/<edit_request>[\s\S]*?<\/edit_request>/g, '') // Strip entire edit_request blocks
     .replace(/<[^>]+>/g, '')     // Strip remaining XML/HTML tags
-    .replace(/\[skill:(?:[\w-]+:)?[\w-]+\]/g, '')   // Strip [skill:...] mentions
-    .replace(/\[source:[\w-]+\]/g, '')                // Strip [source:...] mentions
-    .replace(/\[file:[^\]]+\]/g, '')                  // Strip [file:...] mentions
-    .replace(/\[folder:[^\]]+\]/g, '')                // Strip [folder:...] mentions
     .replace(/\s+/g, ' ')        // Collapse whitespace
     .trim()
 }
@@ -55,13 +53,14 @@ export function getSessionTitle(session: SessionLike | SessionMeta): string {
 }
 
 /**
- * Get the ID of the last final assistant message (not intermediate)
+ * Get the ID of the last final assistant or plan message (not intermediate)
  * Used for unread message tracking
  */
 export function getLastFinalAssistantMessageId(session: Session): string | undefined {
   for (let i = session.messages.length - 1; i >= 0; i--) {
     const msg = session.messages[i]
-    if (msg.role === 'assistant' && !msg.isIntermediate) {
+    // Include plan messages as final responses (they're AI-generated content)
+    if ((msg.role === 'assistant' || msg.role === 'plan') && !msg.isIntermediate) {
       return msg.id
     }
   }
@@ -85,25 +84,86 @@ export function hasUnreadMessages(session: Session): boolean {
  * Returns the count of final assistant messages after lastReadMessageId
  */
 export function countUnreadMessages(session: Session): number {
+  // Helper to check if message is a final response (assistant or plan)
+  const isFinalResponse = (msg: Message) =>
+    (msg.role === 'assistant' || msg.role === 'plan') && !msg.isIntermediate
+
   if (!session.lastReadMessageId) {
-    // Never read - count all final assistant messages
-    return session.messages.filter(msg => msg.role === 'assistant' && !msg.isIntermediate).length
+    // Never read - count all final messages
+    return session.messages.filter(isFinalResponse).length
   }
 
   // Find the index of the last read message
   const lastReadIndex = session.messages.findIndex(msg => msg.id === session.lastReadMessageId)
   if (lastReadIndex === -1) {
-    // Last read message not found - count all final assistant messages
-    return session.messages.filter(msg => msg.role === 'assistant' && !msg.isIntermediate).length
+    // Last read message not found - count all final messages
+    return session.messages.filter(isFinalResponse).length
   }
 
-  // Count final assistant messages after the last read index
+  // Count final messages after the last read index
   let count = 0
   for (let i = lastReadIndex + 1; i < session.messages.length; i++) {
-    const msg = session.messages[i]
-    if (msg.role === 'assistant' && !msg.isIntermediate) {
+    if (isFinalResponse(session.messages[i])) {
       count++
     }
   }
   return count
+}
+
+// ---------------------------------------------------------------------------
+// SessionMeta helpers (lightweight, no full Session needed)
+// ---------------------------------------------------------------------------
+
+export function getSessionStatus(session: SessionMeta): SessionStatusId {
+  return (session.sessionStatus as SessionStatusId) || 'todo'
+}
+
+export function hasUnreadMeta(session: SessionMeta): boolean {
+  return session.hasUnread === true
+}
+
+export function hasMessagesMeta(session: SessionMeta): boolean {
+  return session.lastFinalMessageId !== undefined
+}
+
+// ---------------------------------------------------------------------------
+// Display helpers
+// ---------------------------------------------------------------------------
+
+/** Short relative time locale for date-fns formatDistanceToNowStrict.
+ *  Produces compact strings: "7m", "2h", "3d", "2w", "5mo", "1y" */
+export const shortTimeLocale = {
+  formatDistance: (token: string, count: number) => {
+    const units: Record<string, string> = {
+      xSeconds: `${count}s`,
+      xMinutes: `${count}m`,
+      xHours: `${count}h`,
+      xDays: `${count}d`,
+      xWeeks: `${count}w`,
+      xMonths: `${count}mo`,
+      xYears: `${count}y`,
+    }
+    return units[token] || `${count}`
+  },
+}
+
+/** Highlight matching text in a string with yellow background spans. */
+export function highlightMatch(text: string, query: string): React.ReactNode {
+  if (!query.trim()) return text
+
+  const lowerText = text.toLowerCase()
+  const lowerQuery = query.toLowerCase()
+  const index = lowerText.indexOf(lowerQuery)
+
+  if (index === -1) return text
+
+  const before = text.slice(0, index)
+  const match = text.slice(index, index + query.length)
+  const after = text.slice(index + query.length)
+
+  return React.createElement(React.Fragment, null,
+    before,
+    React.createElement('span', { className: 'bg-yellow-300/30 rounded-[2px]' }, match),
+    highlightMatch(after, query),
+  )
 }

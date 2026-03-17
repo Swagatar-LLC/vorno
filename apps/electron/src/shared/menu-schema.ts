@@ -8,7 +8,7 @@
  * Single source of truth for labels, shortcuts, icons, and IPC channels.
  */
 
-import { IPC_CHANNELS } from './types'
+import { RPC_CHANNELS } from './types'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -18,6 +18,9 @@ export interface MenuItemAction {
   type: 'action'
   id: string
   label: string
+  /** Link to the action registry (e.g., 'view.toggleSidebar').
+   *  Enables future: derive display shortcuts from registry + propagate user overrides. */
+  actionId?: string
   shortcut: string              // Electron accelerator: 'CmdOrCtrl+B'
   shortcutDisplayMac: string    // Display on macOS: '⌘B'
   shortcutDisplayOther: string  // Display on Windows/Linux: 'Ctrl+B'
@@ -64,7 +67,7 @@ export const EDIT_MENU: MenuSection = {
       icon: 'Undo2',
       shortcutDisplayMac: '⌘Z',
       shortcutDisplayOther: 'Ctrl+Z',
-      ipcChannel: IPC_CHANNELS.MENU_UNDO,
+      ipcChannel: RPC_CHANNELS.menu.UNDO,
     },
     {
       type: 'role',
@@ -73,7 +76,7 @@ export const EDIT_MENU: MenuSection = {
       icon: 'Redo2',
       shortcutDisplayMac: '⌘⇧Z',
       shortcutDisplayOther: 'Ctrl+Shift+Z',
-      ipcChannel: IPC_CHANNELS.MENU_REDO,
+      ipcChannel: RPC_CHANNELS.menu.REDO,
     },
     { type: 'separator' },
     {
@@ -83,7 +86,7 @@ export const EDIT_MENU: MenuSection = {
       icon: 'Scissors',
       shortcutDisplayMac: '⌘X',
       shortcutDisplayOther: 'Ctrl+X',
-      ipcChannel: IPC_CHANNELS.MENU_CUT,
+      ipcChannel: RPC_CHANNELS.menu.CUT,
     },
     {
       type: 'role',
@@ -92,7 +95,7 @@ export const EDIT_MENU: MenuSection = {
       icon: 'Copy',
       shortcutDisplayMac: '⌘C',
       shortcutDisplayOther: 'Ctrl+C',
-      ipcChannel: IPC_CHANNELS.MENU_COPY,
+      ipcChannel: RPC_CHANNELS.menu.COPY,
     },
     {
       type: 'role',
@@ -101,7 +104,7 @@ export const EDIT_MENU: MenuSection = {
       icon: 'ClipboardPaste',
       shortcutDisplayMac: '⌘V',
       shortcutDisplayOther: 'Ctrl+V',
-      ipcChannel: IPC_CHANNELS.MENU_PASTE,
+      ipcChannel: RPC_CHANNELS.menu.PASTE,
     },
     { type: 'separator' },
     {
@@ -111,7 +114,7 @@ export const EDIT_MENU: MenuSection = {
       icon: 'TextSelect',
       shortcutDisplayMac: '⌘A',
       shortcutDisplayOther: 'Ctrl+A',
-      ipcChannel: IPC_CHANNELS.MENU_SELECT_ALL,
+      ipcChannel: RPC_CHANNELS.menu.SELECT_ALL,
     },
   ],
 }
@@ -128,7 +131,7 @@ export const VIEW_MENU: MenuSection = {
       icon: 'ZoomIn',
       shortcutDisplayMac: '⌘+',
       shortcutDisplayOther: 'Ctrl++',
-      ipcChannel: IPC_CHANNELS.MENU_ZOOM_IN,
+      ipcChannel: RPC_CHANNELS.menu.ZOOM_IN,
     },
     {
       type: 'role',
@@ -137,7 +140,7 @@ export const VIEW_MENU: MenuSection = {
       icon: 'ZoomOut',
       shortcutDisplayMac: '⌘-',
       shortcutDisplayOther: 'Ctrl+-',
-      ipcChannel: IPC_CHANNELS.MENU_ZOOM_OUT,
+      ipcChannel: RPC_CHANNELS.menu.ZOOM_OUT,
     },
     {
       type: 'role',
@@ -146,27 +149,29 @@ export const VIEW_MENU: MenuSection = {
       icon: 'RotateCcw',
       shortcutDisplayMac: '⌘0',
       shortcutDisplayOther: 'Ctrl+0',
-      ipcChannel: IPC_CHANNELS.MENU_ZOOM_RESET,
+      ipcChannel: RPC_CHANNELS.menu.ZOOM_RESET,
     },
     { type: 'separator' },
     {
       type: 'action',
       id: 'toggleFocusMode',
+      actionId: 'view.toggleFocusMode',
       label: 'Toggle Focus Mode',
       shortcut: 'CmdOrCtrl+.',
       shortcutDisplayMac: '⌘.',
       shortcutDisplayOther: 'Ctrl+.',
-      ipcChannel: IPC_CHANNELS.MENU_TOGGLE_FOCUS_MODE,
+      ipcChannel: RPC_CHANNELS.menu.TOGGLE_FOCUS_MODE,
       icon: 'Focus',
     },
     {
       type: 'action',
       id: 'toggleSidebar',
+      actionId: 'view.toggleSidebar',
       label: 'Toggle Sidebar',
       shortcut: 'CmdOrCtrl+B',
       shortcutDisplayMac: '⌘B',
       shortcutDisplayOther: 'Ctrl+B',
-      ipcChannel: IPC_CHANNELS.MENU_TOGGLE_SIDEBAR,
+      ipcChannel: RPC_CHANNELS.menu.TOGGLE_SIDEBAR,
       icon: 'PanelLeft',
     },
   ],
@@ -184,14 +189,14 @@ export const WINDOW_MENU: MenuSection = {
       icon: 'Minimize2',
       shortcutDisplayMac: '⌘M',
       shortcutDisplayOther: '',
-      ipcChannel: IPC_CHANNELS.MENU_MINIMIZE,
+      ipcChannel: RPC_CHANNELS.menu.MINIMIZE,
     },
     {
       type: 'role',
       role: 'zoom',
       label: 'Maximize',
       icon: 'Maximize2',
-      ipcChannel: IPC_CHANNELS.MENU_MAXIMIZE,
+      ipcChannel: RPC_CHANNELS.menu.MAXIMIZE,
     },
   ],
 }
@@ -207,73 +212,41 @@ export const MENU_SECTIONS: MenuSection[] = [EDIT_MENU, VIEW_MENU, WINDOW_MENU]
  * Settings item definition
  * Used by both AppMenu (logo dropdown) and SettingsNavigator (sidebar panel)
  */
+import { SETTINGS_PAGES, type SettingsSubpage } from './settings-registry'
+
 export interface SettingsMenuItem {
-  id: 'app' | 'appearance' | 'input' | 'workspace' | 'permissions' | 'labels' | 'shortcuts' | 'preferences' | 'remote-access'
+  id: SettingsSubpage
   label: string
   icon: string        // Lucide icon name for AppMenu
   description: string // Shown in SettingsNavigator
 }
 
 /**
- * All settings pages - single source of truth
- * Order here determines display order in both menus
+ * Icon mapping for settings pages (Lucide icon names)
+ * Only icons need to be defined here - page data comes from settings-registry
  */
-export const SETTINGS_ITEMS: SettingsMenuItem[] = [
-  {
-    id: 'app',
-    label: 'App',
-    icon: 'ToggleRight',
-    description: 'Notifications, API connection, updates',
-  },
-  {
-    id: 'appearance',
-    label: 'Appearance',
-    icon: 'Palette',
-    description: 'Theme, font, tool icons',
-  },
-  {
-    id: 'input',
-    label: 'Input',
-    icon: 'Keyboard',
-    description: 'Typing behavior and message sending',
-  },
-  {
-    id: 'workspace',
-    label: 'Workspace',
-    icon: 'Building2',
-    description: 'Model, mode cycling, advanced',
-  },
-  {
-    id: 'permissions',
-    label: 'Permissions',
-    icon: 'ShieldCheck',
-    description: 'Allowed commands in Explore mode',
-  },
-  {
-    id: 'labels',
-    label: 'Labels',
-    icon: 'Tag',
-    description: 'Label hierarchy and auto-apply rules',
-  },
-  {
-    id: 'shortcuts',
-    label: 'Shortcuts',
-    icon: 'Keyboard',
-    description: 'Keyboard shortcuts reference',
-  },
-  {
-    id: 'preferences',
-    label: 'Preferences',
-    icon: 'UserCircle',
-    description: 'Your personal preferences',
-  },
-  {
-    id: 'remote-access',
-    label: 'Remote Access',
-    icon: 'Globe',
-    description: 'HTTP server for external triggers',
-  },
-]
+const SETTINGS_ICONS: Record<SettingsSubpage, string> = {
+  app: 'ToggleRight',
+  ai: 'Sparkles',
+  appearance: 'Palette',
+  input: 'Keyboard',
+  workspace: 'Building2',
+  permissions: 'ShieldCheck',
+  labels: 'Tag',
+  shortcuts: 'Keyboard',
+  preferences: 'UserCircle',
+}
+
+/**
+ * All settings pages - derived from settings-registry (single source of truth)
+ * Order is determined by SETTINGS_PAGES in settings-registry.ts
+ */
+export const SETTINGS_ITEMS: SettingsMenuItem[] = SETTINGS_PAGES.map(page => ({
+  id: page.id,
+  label: page.label,
+  icon: SETTINGS_ICONS[page.id],
+  description: page.description,
+}))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers

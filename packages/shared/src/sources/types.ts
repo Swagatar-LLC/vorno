@@ -24,7 +24,7 @@ export type SourceMcpAuthType = 'oauth' | 'bearer' | 'none';
 /**
  * API authentication types
  */
-export type ApiAuthType = 'bearer' | 'header' | 'query' | 'basic' | 'none';
+export type ApiAuthType = 'bearer' | 'header' | 'query' | 'basic' | 'oauth' | 'none';
 
 /**
  * Google service types for OAuth scope selection
@@ -178,6 +178,27 @@ export function isApiOAuthProvider(provider: string | undefined): provider is Ap
 }
 
 /**
+ * Check if a source uses OAuth authentication (for proactive token refresh).
+ *
+ * Returns true for:
+ * - MCP sources with authType: 'oauth'
+ * - API sources with OAuth providers (google, slack, microsoft)
+ */
+export function isOAuthSource(source: LoadedSource): boolean {
+  // MCP OAuth sources
+  if (source.config.type === 'mcp') {
+    return source.config.mcp?.authType === 'oauth';
+  }
+
+  // API OAuth sources (Google, Slack, Microsoft)
+  if (source.config.type === 'api') {
+    return isApiOAuthProvider(source.config.provider);
+  }
+
+  return false;
+}
+
+/**
  * MCP transport type for sources
  * - 'http': HTTP-based MCP server (URL endpoint)
  * - 'sse': Server-Sent Events MCP server (URL endpoint)
@@ -228,6 +249,20 @@ export interface McpSourceConfig {
    * Environment variables for the spawned process.
    */
   env?: Record<string, string>;
+
+  // === HTTP/SSE custom headers ===
+  /**
+   * Custom headers to include in every MCP request.
+   * Auth headers (e.g. Authorization) are merged on top when authType is set.
+   */
+  headers?: Record<string, string>;
+
+  /**
+   * Header names for credential-store auth (e.g., ["X-API-Key"]).
+   * Values are stored as JSON in the credential store, same as API multi-header auth.
+   * Precedence: static headers < credential-store headerNames < Authorization bearer.
+   */
+  headerNames?: string[];
 }
 
 /**
@@ -288,6 +323,25 @@ export interface LocalSourceConfig {
  */
 export type SourceConnectionStatus = 'connected' | 'needs_auth' | 'failed' | 'untested' | 'local_disabled';
 
+// ============================================================================
+// Source Brand
+// ============================================================================
+
+/**
+ * Brand theming for a source's UI elements.
+ * Uses the EntityColor system for light/dark mode support.
+ */
+export interface SourceBrand {
+  /** Primary brand color — used for source-branded UI elements.
+   *  Can be a system color name ("accent", "info") or custom { light, dark } values.
+   *  Defaults to "accent" if not set. */
+  color?: import('../colors/types').EntityColor;
+}
+
+// ============================================================================
+// Main Source Config
+// ============================================================================
+
 /**
  * Main source configuration (stored in config.json)
  */
@@ -316,6 +370,9 @@ export interface FolderSourceConfig {
   // Short description for agent context (e.g., "Issue tracking, bugs, tasks, sprints")
   // If not set, extracted from guide.md first paragraph
   tagline?: string;
+
+  // Brand theming for this source's UI elements
+  brand?: SourceBrand;
 
   // Status tracking
   isAuthenticated?: boolean;

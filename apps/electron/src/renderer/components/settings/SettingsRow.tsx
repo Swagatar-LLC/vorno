@@ -10,8 +10,8 @@ import { cn } from '@/lib/utils'
 import { settingsUI } from './SettingsUIConstants'
 
 export interface SettingsRowProps {
-  /** Row label */
-  label: string
+  /** Row label (can be string or JSX for custom rendering) */
+  label: React.ReactNode
   /** Optional description below label */
   description?: string
   /** Content on the right side */

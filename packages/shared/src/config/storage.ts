@@ -1,21 +1,28 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, basename } from 'path';
 import { getCredentialManager } from '../credentials/index.ts';
 import { getOrCreateLatestSession, type SessionConfig } from '../sessions/index.ts';
 import {
   discoverWorkspacesInDefaultLocation,
   loadWorkspaceConfig,
+  saveWorkspaceConfig,
   createWorkspaceAtPath,
   isValidWorkspace,
 } from '../workspaces/storage.ts';
 import { findIconFile } from '../utils/icon.ts';
 import { initializeDocs } from '../docs/index.ts';
 import { expandPath, toPortablePath, getBundledAssetsDir } from '../utils/paths.ts';
+import { debug } from '../utils/debug.ts';
+import { readJsonFileSync } from '../utils/files.ts';
 import { CONFIG_DIR } from './paths.ts';
 import type { StoredAttachment, StoredMessage } from '@craft-agent/core/types';
 import type { Plan } from '../agent/plan-types.ts';
 import type { PermissionMode } from '../agent/mode-manager.ts';
-import { BUNDLED_CONFIG_DEFAULTS, type ConfigDefaults } from './config-defaults-schema.ts';
+import type { ThinkingLevel } from '../agent/thinking-levels.ts';
+import { isValidThinkingLevel } from '../agent/thinking-levels.ts';
+import { parsePermissionMode, PERMISSION_MODE_ORDER } from '../agent/mode-types.ts';
+import { type ConfigDefaults } from './config-defaults-schema.ts';
+import { isValidThemeFile } from './validators.ts';
 
 // Re-export CONFIG_DIR for convenience (centralized in paths.ts)
 export { CONFIG_DIR } from './paths.ts';
@@ -31,15 +38,23 @@ export type {
 // Import for local use
 import type { Workspace, AuthType } from '@craft-agent/core/types';
 
+// Import LLM connection types and constants
+import type { LlmConnection } from './llm-connections.ts';
+import { isValidProviderAuthCombination, getDefaultModelsForConnection, getDefaultModelForConnection, isPiProvider } from './llm-connections.ts';
+import {
+  getModelProvider,
+} from './models.ts';
+
 // Config stored in JSON file (credentials stored in encrypted file, not here)
 export interface StoredConfig {
-  authType?: AuthType;
-  anthropicBaseUrl?: string;  // Custom Anthropic API base URL (for third-party compatible APIs)
-  customModel?: string;  // Custom model ID override (for third-party APIs like OpenRouter, Ollama)
+  // LLM Connections (authoritative source for auth and model config)
+  llmConnections?: LlmConnection[];
+  defaultLlmConnection?: string;  // Slug of default connection for new sessions
+  defaultThinkingLevel?: ThinkingLevel;  // App-level default thinking level for new sessions
+
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
   activeSessionId: string | null;  // Currently active session (primary scope)
-  model?: string;
   // Notifications
   notificationsEnabled?: boolean;  // Desktop notifications for task completion (default: true)
   // Appearance
@@ -50,40 +65,95 @@ export interface StoredConfig {
   autoCapitalisation?: boolean;  // Auto-capitalize first letter when typing (default: true)
   sendMessageKey?: 'enter' | 'cmd-enter';  // Key to send messages (default: 'enter')
   spellCheck?: boolean;  // Enable spell check in input (default: false)
+  // Power settings
+  keepAwakeWhileRunning?: boolean;  // Prevent screen sleep while sessions are running (default: false)
+  // Tool metadata
+  richToolDescriptions?: boolean;  // Add intent/action metadata to all tool calls (default: true)
+  // Network proxy
+  networkProxy?: import('./types.ts').NetworkProxySettings;
+  // Windows: path to Git Bash (bash.exe) for the SDK subprocess
+  gitBashPath?: string;
 }
 
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 const CONFIG_DEFAULTS_FILE = join(CONFIG_DIR, 'config-defaults.json');
 
+// Track if config-defaults have been synced this session (prevents re-sync on hot reload)
+let configDefaultsSynced = false;
+
 /**
- * Load config defaults from file, or use bundled defaults as fallback.
+ * Sync config-defaults.json from bundled assets.
+ * Always writes on launch to ensure defaults are up-to-date with the running version.
+ * Follows the same pattern as docs, themes, and other bundled assets.
+ *
+ * Source of truth: apps/electron/resources/config-defaults.json
  */
-export function loadConfigDefaults(): ConfigDefaults {
-  try {
-    if (existsSync(CONFIG_DEFAULTS_FILE)) {
-      const content = readFileSync(CONFIG_DEFAULTS_FILE, 'utf-8');
-      return JSON.parse(content) as ConfigDefaults;
-    }
-  } catch {
-    // Fall through to bundled defaults
+function syncConfigDefaults(): void {
+  if (configDefaultsSynced) return;
+  configDefaultsSynced = true;
+
+  // Get bundled config-defaults.json from resources folder
+  const bundledDir = getBundledAssetsDir('.');
+  if (!bundledDir) {
+    debug('[config] No bundled assets dir found - config-defaults will not be synced');
+    return;
   }
-  return BUNDLED_CONFIG_DEFAULTS;
+
+  const bundledFile = join(bundledDir, 'config-defaults.json');
+  if (!existsSync(bundledFile)) {
+    debug('[config] Bundled config-defaults.json not found at: ' + bundledFile);
+    return;
+  }
+
+  // Sync from bundled file (same pattern as docs)
+  const content = readFileSync(bundledFile, 'utf-8');
+  writeFileSync(CONFIG_DEFAULTS_FILE, content, 'utf-8');
+  debug('[config] Synced config-defaults.json from bundled assets');
 }
 
 /**
- * Ensure config-defaults.json exists.
- * Writes from the BUNDLED_CONFIG_DEFAULTS constant (single source of truth).
+ * Load config defaults from ~/.craft-agent/config-defaults.json
+ * This file is synced from bundled assets on every launch.
  */
-export function ensureConfigDefaults(): void {
-  if (existsSync(CONFIG_DEFAULTS_FILE)) {
-    return; // Already exists, don't overwrite
+export function loadConfigDefaults(): ConfigDefaults {
+  if (!existsSync(CONFIG_DEFAULTS_FILE)) {
+    throw new Error('config-defaults.json not found at ' + CONFIG_DEFAULTS_FILE + '. Ensure ensureConfigDir() was called at startup.');
   }
 
-  writeFileSync(
-    CONFIG_DEFAULTS_FILE,
-    JSON.stringify(BUNDLED_CONFIG_DEFAULTS, null, 2),
-    'utf-8'
-  );
+  const defaults = readJsonFileSync<ConfigDefaults>(CONFIG_DEFAULTS_FILE);
+
+  const parsedPermissionMode =
+    typeof defaults.workspaceDefaults?.permissionMode === 'string'
+      ? parsePermissionMode(defaults.workspaceDefaults.permissionMode)
+      : null;
+  defaults.workspaceDefaults.permissionMode = parsedPermissionMode ?? 'ask';
+
+  const rawCyclable = Array.isArray(defaults.workspaceDefaults?.cyclablePermissionModes)
+    ? defaults.workspaceDefaults.cyclablePermissionModes
+    : [];
+
+  const normalizedCyclable: PermissionMode[] = [];
+  for (const mode of rawCyclable) {
+    if (typeof mode !== 'string') continue;
+    const parsed = parsePermissionMode(mode);
+    if (!parsed) continue;
+    if (!normalizedCyclable.includes(parsed)) {
+      normalizedCyclable.push(parsed);
+    }
+  }
+
+  defaults.workspaceDefaults.cyclablePermissionModes =
+    normalizedCyclable.length >= 2 ? normalizedCyclable : [...PERMISSION_MODE_ORDER];
+
+  return defaults;
+}
+
+/**
+ * Ensure config-defaults.json exists and is up-to-date.
+ * Syncs from bundled assets on every launch (like docs, themes, permissions).
+ */
+export function ensureConfigDefaults(): void {
+  syncConfigDefaults();
 }
 
 export function ensureConfigDir(): void {
@@ -105,8 +175,7 @@ export function loadStoredConfig(): StoredConfig | null {
     if (!existsSync(CONFIG_FILE)) {
       return null;
     }
-    const content = readFileSync(CONFIG_FILE, 'utf-8');
-    const config = JSON.parse(content) as StoredConfig;
+    const config = readJsonFileSync<StoredConfig>(CONFIG_FILE);
 
     // Must have workspaces array
     if (!Array.isArray(config.workspaces)) {
@@ -125,36 +194,28 @@ export function loadStoredConfig(): StoredConfig | null {
       config.activeWorkspaceId = config.workspaces[0]?.id || null;
     }
 
-    // Ensure workspace folder structure exists for all workspaces
+    // Ensure workspace folder structure exists for all workspaces.
+    // Failures here are non-fatal — the workspace will be re-created on next access.
     for (const workspace of config.workspaces) {
       if (!isValidWorkspace(workspace.rootPath)) {
-        createWorkspaceAtPath(workspace.rootPath, workspace.name);
+        try {
+          createWorkspaceAtPath(workspace.rootPath, workspace.name);
+        } catch (wsError) {
+          debug('[config] Failed to create workspace at', workspace.rootPath, ':', wsError instanceof Error ? wsError.message : wsError);
+        }
       }
     }
 
     return config;
-  } catch {
+  } catch (error) {
+    debug('[config] loadStoredConfig failed:', error instanceof Error ? error.message : error);
     return null;
   }
 }
 
-/**
- * Get the Anthropic API key from credential store
- */
-export async function getAnthropicApiKey(): Promise<string | null> {
-  const manager = getCredentialManager();
-  return manager.getApiKey();
-}
-
-/**
- * Get the Claude OAuth token from credential store
- */
-export async function getClaudeOAuthToken(): Promise<string | null> {
-  const manager = getCredentialManager();
-  return manager.getClaudeOAuth();
-}
-
-
+// Legacy credential helpers removed - use connection-aware credential lookup instead:
+// - getAnthropicApiKey() → credentialManager.getLlmApiKey(connectionSlug)
+// - getClaudeOAuthToken() → credentialManager.getLlmOAuth(connectionSlug)
 
 export function saveConfig(config: StoredConfig): void {
   ensureConfigDir();
@@ -171,66 +232,12 @@ export function saveConfig(config: StoredConfig): void {
   writeFileSync(CONFIG_FILE, JSON.stringify(storageConfig, null, 2), 'utf-8');
 }
 
-export async function updateApiKey(newApiKey: string): Promise<boolean> {
-  const config = loadStoredConfig();
-  if (!config) return false;
+// Legacy updateApiKey() removed - use setupLlmConnection IPC handler instead.
 
-  // Save API key to credential store
-  const manager = getCredentialManager();
-  await manager.setApiKey(newApiKey);
-
-  // Update auth type in config (but not the key itself)
-  config.authType = 'api_key';
-  saveConfig(config);
-  return true;
-}
-
-export function getAuthType(): AuthType {
-  const config = loadStoredConfig();
-  if (config?.authType !== undefined) {
-    return config.authType;
-  }
-  const defaults = loadConfigDefaults();
-  return defaults.defaults.authType;
-}
-
-export function setAuthType(authType: AuthType): void {
-  const config = loadStoredConfig();
-  if (!config) return;
-  config.authType = authType;
-  saveConfig(config);
-}
-
-export function setAnthropicBaseUrl(baseUrl: string | null): void {
-  const config = loadStoredConfig();
-  if (!config) return;
-
-  if (baseUrl) {
-    const trimmed = baseUrl.trim();
-    // URL validation deferred to Test Connection button
-    config.anthropicBaseUrl = trimmed;
-  } else {
-    delete config.anthropicBaseUrl;
-  }
-  saveConfig(config);
-}
-
-export function getAnthropicBaseUrl(): string | null {
-  const config = loadStoredConfig();
-  return config?.anthropicBaseUrl ?? null;
-}
-
-export function getModel(): string | null {
-  const config = loadStoredConfig();
-  return config?.model ?? null;
-}
-
-export function setModel(model: string): void {
-  const config = loadStoredConfig();
-  if (!config) return;
-  config.model = model;
-  saveConfig(config);
-}
+// Legacy getters/setters removed - use LLM connections instead:
+// - getAuthType/setAuthType -> derive from getDefaultLlmConnection()/getLlmConnection()
+// - getAnthropicBaseUrl/setAnthropicBaseUrl -> use connection.baseUrl
+// - getCustomModel/setCustomModel -> use connection.defaultModel
 
 
 /**
@@ -324,6 +331,88 @@ export function setSpellCheck(enabled: boolean): void {
   saveConfig(config);
 }
 
+/**
+ * Get whether screen should stay awake while sessions are running.
+ * Defaults to false if not set.
+ */
+export function getKeepAwakeWhileRunning(): boolean {
+  const config = loadStoredConfig();
+  if (config?.keepAwakeWhileRunning !== undefined) {
+    return config.keepAwakeWhileRunning;
+  }
+  const defaults = loadConfigDefaults();
+  return defaults.defaults.keepAwakeWhileRunning;
+}
+
+/**
+ * Set whether screen should stay awake while sessions are running.
+ */
+export function setKeepAwakeWhileRunning(enabled: boolean): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.keepAwakeWhileRunning = enabled;
+  saveConfig(config);
+}
+
+/**
+ * Get whether rich tool descriptions are enabled.
+ * When enabled, all tool calls include intent and display name metadata.
+ * Defaults to true if not set.
+ */
+export function getRichToolDescriptions(): boolean {
+  const config = loadStoredConfig();
+  if (config?.richToolDescriptions !== undefined) {
+    return config.richToolDescriptions;
+  }
+  return true;
+}
+
+/**
+ * Set whether rich tool descriptions are enabled.
+ */
+export function setRichToolDescriptions(enabled: boolean): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.richToolDescriptions = enabled;
+  saveConfig(config);
+}
+
+/**
+ * Get persisted Git Bash path (Windows only).
+ * Used to set CLAUDE_CODE_GIT_BASH_PATH for the SDK subprocess.
+ */
+export function getGitBashPath(): string | undefined {
+  const config = loadStoredConfig();
+  return config?.gitBashPath;
+}
+
+/**
+ * Set Git Bash path (Windows only).
+ * Persists to config so it survives app restarts.
+ * Returns false if the config could not be loaded (path not persisted).
+ */
+export function setGitBashPath(path: string): boolean {
+  const config = loadStoredConfig();
+  if (!config) {
+    console.warn('[storage] Failed to persist Git Bash path: config could not be loaded');
+    return false;
+  }
+  config.gitBashPath = path;
+  saveConfig(config);
+  return true;
+}
+
+/**
+ * Clear persisted Git Bash path (Windows only).
+ * Used when the stored path is stale or invalid.
+ */
+export function clearGitBashPath(): void {
+  const config = loadStoredConfig();
+  if (!config || !config.gitBashPath) return;
+  delete config.gitBashPath;
+  saveConfig(config);
+}
+
 // Note: getDefaultWorkingDirectory/setDefaultWorkingDirectory removed
 // Working directory is now stored per-workspace in workspace config.json (defaults.workingDirectory)
 // Note: getDefaultPermissionMode/getEnabledPermissionModes removed
@@ -388,7 +477,7 @@ export function getWorkspaces(): Workspace[] {
   return workspaces.map(w => {
     // Read name from workspace folder config (single source of truth)
     const wsConfig = loadWorkspaceConfig(w.rootPath);
-    const name = wsConfig?.name || w.rootPath.split('/').pop() || 'Untitled';
+    const name = wsConfig?.name || basename(w.rootPath) || 'Untitled';
 
     // If workspace has a stored iconUrl that's a remote URL, use it
     // Otherwise check for local icon file
@@ -575,6 +664,16 @@ export async function removeWorkspace(workspaceId: string): Promise<boolean> {
   const manager = getCredentialManager();
   await manager.deleteWorkspaceCredentials(workspaceId);
 
+  // Delete workspace data directory (sessions, plans, etc.)
+  const workspaceDataDir = join(WORKSPACES_DIR, workspaceId);
+  if (existsSync(workspaceDataDir)) {
+    try {
+      rmSync(workspaceDataDir, { recursive: true });
+    } catch (error) {
+      console.error(`[storage] Failed to delete workspace data directory: ${workspaceDataDir}`, error);
+    }
+  }
+
   return true;
 }
 
@@ -669,8 +768,7 @@ export function loadWorkspaceConversation(workspaceId: string): WorkspaceConvers
     if (!existsSync(filePath)) {
       return null;
     }
-    const content = readFileSync(filePath, 'utf-8');
-    return JSON.parse(content) as WorkspaceConversation;
+    return readJsonFileSync<WorkspaceConversation>(filePath);
   } catch {
     return null;
   }
@@ -719,8 +817,7 @@ export function loadWorkspacePlan(workspaceId: string): Plan | null {
     if (!existsSync(filePath)) {
       return null;
     }
-    const content = readFileSync(filePath, 'utf-8');
-    return JSON.parse(content) as Plan;
+    return readJsonFileSync<Plan>(filePath);
   } catch {
     return null;
   }
@@ -757,8 +854,7 @@ function loadDraftsData(): DraftsData {
     if (!existsSync(DRAFTS_FILE)) {
       return { drafts: {}, updatedAt: 0 };
     }
-    const content = readFileSync(DRAFTS_FILE, 'utf-8');
-    return JSON.parse(content) as DraftsData;
+    return readJsonFileSync<DraftsData>(DRAFTS_FILE);
   } catch {
     return { drafts: {}, updatedAt: 0 };
   }
@@ -822,6 +918,13 @@ import { readdirSync } from 'fs';
 const APP_THEME_FILE = join(CONFIG_DIR, 'theme.json');
 const APP_THEMES_DIR = join(CONFIG_DIR, 'themes');
 
+/**
+ * Get the path to the app-level theme override file (~/.craft-agent/theme.json).
+ */
+export function getAppThemePath(): string {
+  return APP_THEME_FILE;
+}
+
 // Track if preset themes have been synced this session (prevents re-init on hot reload)
 let presetsInitialized = false;
 
@@ -841,8 +944,7 @@ export function loadAppTheme(): ThemeOverrides | null {
     if (!existsSync(APP_THEME_FILE)) {
       return null;
     }
-    const content = readFileSync(APP_THEME_FILE, 'utf-8');
-    return JSON.parse(content) as ThemeOverrides;
+    return readJsonFileSync<ThemeOverrides>(APP_THEME_FILE);
   } catch {
     return null;
   }
@@ -863,8 +965,11 @@ export function saveAppTheme(theme: ThemeOverrides): void {
 
 /**
  * Sync bundled preset themes to disk on launch.
- * Always overwrites to ensure presets stay current with the running app version
- * (e.g., updated color tokens or new preset themes added in a new release).
+ * Preserves user customizations:
+ * - If file doesn't exist → copy from bundle
+ * - If file exists but is invalid/corrupt → copy from bundle (auto-heal)
+ * - If file exists and is valid → skip (preserve user changes)
+ *
  * User-created custom theme files (with non-bundled filenames) are untouched.
  * User color overrides live in theme.json (separate file) and are never touched.
  */
@@ -888,14 +993,22 @@ export function ensurePresetThemes(): void {
     return;
   }
 
-  // Always write bundled preset themes to disk on launch.
-  // This ensures theme updates from new app versions are applied immediately.
-  // Only bundled filenames are overwritten — user-created custom themes are untouched.
+  // Copy bundled preset themes to disk, preserving user customizations.
+  // - If file doesn't exist → copy from bundle
+  // - If file exists but is invalid/corrupt → copy from bundle (auto-heal)
+  // - If file exists and is valid → skip (preserve user changes)
   try {
     const bundledFiles = readdirSync(bundledThemesDir).filter(f => f.endsWith('.json'));
     for (const file of bundledFiles) {
       const srcPath = join(bundledThemesDir, file);
       const destPath = join(themesDir, file);
+
+      // Skip if file exists and is valid (preserve user customizations)
+      if (existsSync(destPath) && isValidThemeFile(destPath)) {
+        continue;
+      }
+
+      // Copy from bundle (new file or auto-heal corrupt file)
       const content = readFileSync(srcPath, 'utf-8');
       writeFileSync(destPath, content, 'utf-8');
     }
@@ -924,8 +1037,7 @@ export function loadPresetThemes(): PresetTheme[] {
       const id = file.replace('.json', '');
       const path = join(themesDir, file);
       try {
-        const content = readFileSync(path, 'utf-8');
-        const theme = JSON.parse(content) as ThemeFile;
+        const theme = readJsonFileSync<ThemeFile>(path);
         // Resolve relative backgroundImage paths to file:// URLs
         const resolvedTheme = resolveThemeBackgroundImage(theme, path);
         themes.push({ id, path, theme: resolvedTheme });
@@ -1020,8 +1132,7 @@ export function loadPresetTheme(id: string): PresetTheme | null {
   }
 
   try {
-    const content = readFileSync(path, 'utf-8');
-    const theme = JSON.parse(content) as ThemeFile;
+    const theme = readJsonFileSync<ThemeFile>(path);
     // Resolve relative backgroundImage paths to file:// URLs
     const resolvedTheme = resolveThemeBackgroundImage(theme, path);
     return { id, path, theme: resolvedTheme };
@@ -1133,45 +1244,1148 @@ export function clearDismissedUpdateVersion(): void {
 }
 
 // ============================================
-// Custom Model (for third-party APIs)
+// LLM Connections
 // ============================================
 
+// Re-export types for convenience (imports are at top of file)
+export type {
+  LlmConnection,
+  LlmProviderType,
+  LlmAuthType,
+  LlmConnectionWithStatus,
+} from './llm-connections.ts';
+
 /**
- * Get custom model ID override for third-party APIs.
- * When set, this single model is used for ALL API calls (main, summarization, etc.)
+ * Migrate Codex (OpenAI) and Copilot connections to Pi backend.
+ * Runs on startup — transparently routes existing users through PiAgent.
+ *
+ * No re-auth needed: credentials are keyed by connection slug (not provider),
+ * and PiAgent reads the same OAuth tokens via piAuthProvider.
+ *
+ * Migration rules:
+ * - openai + oauth       → pi + openai-codex
+ * - openai + api_key     → pi + openai
+ * - openai_compat        → pi + openai  (keep baseUrl)
+ * - copilot              → pi + github-copilot
+ * - defaultModel reset to Pi's default (stale Codex/Copilot model IDs dropped)
+ * - codexPath removed (no longer needed)
  */
-export function getCustomModel(): string | null {
-  const config = loadStoredConfig();
-  return config?.customModel?.trim() || null;
+function migrateCodexCopilotToPi(config: StoredConfig): boolean {
+  if (!config.llmConnections) return false;
+  let changed = false;
+
+  for (const connection of config.llmConnections) {
+    // Cast to string for legacy providerType values that were removed from LlmProviderType
+    // but may still exist on disk in old configs. Cast to any for legacy codexPath field.
+    const providerStr = connection.providerType as string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const connAny = connection as any;
+    if (providerStr === 'openai' && connection.authType === 'oauth') {
+      connection.providerType = 'pi';
+      connection.piAuthProvider = 'openai-codex';
+      connection.name = 'ChatGPT Plus (via Pi)';
+      delete connAny.codexPath;
+      connection.defaultModel = undefined; // reset — backfill picks Pi default
+      connection.models = undefined;
+      changed = true;
+    } else if (providerStr === 'openai' && (connection.authType === 'api_key' || connection.authType === 'api_key_with_endpoint')) {
+      connection.providerType = 'pi';
+      connection.piAuthProvider = 'openai';
+      connection.name = 'OpenAI API (via Pi)';
+      delete connAny.codexPath;
+      connection.defaultModel = undefined;
+      connection.models = undefined;
+      changed = true;
+    } else if (providerStr === 'openai_compat') {
+      connection.providerType = 'pi';
+      connection.piAuthProvider = 'openai';
+      // keep baseUrl for custom endpoints
+      delete connAny.codexPath;
+      connection.defaultModel = undefined;
+      connection.models = undefined;
+      changed = true;
+    } else if (providerStr === 'copilot') {
+      connection.providerType = 'pi';
+      connection.piAuthProvider = 'github-copilot';
+      connection.name = 'GitHub Copilot (via Pi)';
+      delete connAny.codexPath;
+      connection.defaultModel = undefined;
+      connection.models = undefined;
+      changed = true;
+    }
+  }
+
+  // Clean up openaiVariant config field (Codex-specific A/B testing, no longer relevant)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const configAny = config as any;
+  if (configAny.openaiVariant) {
+    delete configAny.openaiVariant;
+    changed = true;
+  }
+
+  return changed;
 }
 
 /**
- * Set custom model ID for third-party APIs.
- * Pass null to clear and use default Anthropic models.
+ * Backfill models and defaultModel on ALL connections.
+ * Ensures built-in connections (anthropic, openai) always have models populated,
+ * not just compat connections.
  */
-export function setCustomModel(model: string | null): void {
+export function shouldMigratePiOpenAiProvider(connection: Pick<LlmConnection, 'providerType' | 'piAuthProvider' | 'authType' | 'baseUrl'>): boolean {
+  // Legacy cleanup: old ChatGPT Plus OAuth connections may still be tagged as `openai`.
+  // Only migrate those to `openai-codex`.
+  //
+  // IMPORTANT: Do NOT migrate API-key or custom-endpoint connections:
+  // - `api_key` / `api_key_with_endpoint` with `openai` must remain regular OpenAI API auth.
+  // - forcing them to `openai-codex` routes requests to ChatGPT backend auth and breaks on restart.
+  if (!isPiProvider(connection.providerType)) return false;
+  if (connection.piAuthProvider !== 'openai') return false;
+  if (connection.authType !== 'oauth') return false;
+  if (typeof connection.baseUrl === 'string' && connection.baseUrl.trim().length > 0) return false;
+  return true;
+}
+
+export function shouldRepairPiApiKeyCodexProvider(connection: Pick<LlmConnection, 'providerType' | 'piAuthProvider' | 'authType'>): boolean {
+  // Repair broken state from previous startup migrations:
+  // API-key connections tagged as `openai-codex` try ChatGPT backend JWT auth and fail.
+  if (!isPiProvider(connection.providerType)) return false;
+  if (connection.piAuthProvider !== 'openai-codex') return false;
+  return connection.authType === 'api_key' || connection.authType === 'api_key_with_endpoint';
+}
+
+function normalizeModelIds(models?: Array<{ id: string } | string>): string[] {
+  if (!models) return [];
+  return models
+    .map(m => typeof m === 'string' ? m : m.id)
+    .filter((id): id is string => !!id && id.trim().length > 0);
+}
+
+function modelSetEquals(a: string[], b: string[]): boolean {
+  const as = new Set(a);
+  const bs = new Set(b);
+  if (as.size !== bs.size) return false;
+  for (const id of as) {
+    if (!bs.has(id)) return false;
+  }
+  return true;
+}
+
+export function inferModelSelectionMode(
+  connection: Pick<LlmConnection, 'models'>,
+  providerDefaultModelIds: string[],
+): 'automaticallySyncedFromProvider' | 'userDefined3Tier' {
+  const currentIds = normalizeModelIds(connection.models);
+  if (currentIds.length === 0) return 'automaticallySyncedFromProvider';
+  return modelSetEquals(currentIds, providerDefaultModelIds)
+    ? 'automaticallySyncedFromProvider'
+    : 'userDefined3Tier';
+}
+
+function backfillAllConnectionModels(config: StoredConfig): boolean {
+  if (!config.llmConnections) return false;
+  let changed = false;
+  for (const connection of config.llmConnections) {
+    // Repair previously broken API-key migration first.
+    if (shouldRepairPiApiKeyCodexProvider(connection)) {
+      connection.piAuthProvider = 'openai';
+      changed = true;
+    }
+
+    // Migrate only legacy OAuth-backed Pi OpenAI connections to ChatGPT backend provider key.
+    if (shouldMigratePiOpenAiProvider(connection)) {
+      connection.piAuthProvider = 'openai-codex';
+      changed = true;
+    }
+
+    const defaultModels = getDefaultModelsForConnection(connection.providerType, connection.piAuthProvider);
+    const defaultModel = getDefaultModelForConnection(connection.providerType, connection.piAuthProvider);
+    const providerDefaultModelIds = normalizeModelIds(defaultModels as Array<{ id: string } | string>);
+
+    if (isPiProvider(connection.providerType) && connection.piAuthProvider) {
+      const mode = connection.modelSelectionMode
+        ?? inferModelSelectionMode(connection, providerDefaultModelIds);
+      if (connection.modelSelectionMode !== mode) {
+        debug('[storage] backfill mode inferred', {
+          slug: connection.slug,
+          piAuthProvider: connection.piAuthProvider,
+          from: connection.modelSelectionMode,
+          to: mode,
+          currentModelCount: normalizeModelIds(connection.models).length,
+        });
+        connection.modelSelectionMode = mode;
+        changed = true;
+      }
+
+      if (mode === 'automaticallySyncedFromProvider') {
+        const currentIds = normalizeModelIds(connection.models);
+        if (providerDefaultModelIds.length > 0 && !modelSetEquals(currentIds, providerDefaultModelIds)) {
+          connection.models = defaultModels;
+          changed = true;
+        }
+      } else {
+        const currentIds = normalizeModelIds(connection.models);
+        if (providerDefaultModelIds.length > 0) {
+          const allowedIds = new Set(providerDefaultModelIds);
+          const canonicalCurrentIds = currentIds.map((id) => {
+            if (allowedIds.has(id)) return id;
+            if (!id.startsWith('pi/')) {
+              const prefixed = `pi/${id}`;
+              if (allowedIds.has(prefixed)) return prefixed;
+            }
+            return id;
+          });
+          const filtered = canonicalCurrentIds.filter(id => allowedIds.has(id));
+
+          if (!modelSetEquals(canonicalCurrentIds, currentIds) || filtered.length !== currentIds.length) {
+            debug('[storage] backfill userDefined filtered', {
+              slug: connection.slug,
+              piAuthProvider: connection.piAuthProvider,
+              beforeCount: currentIds.length,
+              canonicalCount: canonicalCurrentIds.length,
+              afterCount: filtered.length,
+              beforeFirst5: currentIds.slice(0, 5),
+              afterFirst5: filtered.slice(0, 5),
+            });
+            connection.models = filtered;
+            changed = true;
+          }
+
+          if (filtered.length === 0) {
+            debug('[storage] backfill userDefined fallback-to-defaults', {
+              slug: connection.slug,
+              piAuthProvider: connection.piAuthProvider,
+              defaultCount: providerDefaultModelIds.length,
+            });
+            connection.models = defaultModels;
+            changed = true;
+          }
+        }
+      }
+    }
+
+    if (defaultModels.length > 0 && (!connection.models || (Array.isArray(connection.models) && connection.models.length === 0))) {
+      connection.models = defaultModels;
+      changed = true;
+    }
+
+    if (!connection.defaultModel && defaultModel) {
+      connection.defaultModel = defaultModel;
+      changed = true;
+    }
+
+    // Validate that existing defaultModel is in the models list
+    if (connection.defaultModel && connection.models && Array.isArray(connection.models) && connection.models.length > 0) {
+      const modelIds = connection.models.map(m => typeof m === 'string' ? m : m.id);
+      if (!modelIds.includes(connection.defaultModel)) {
+        // Reset to first available model in the list
+        const firstModelId = modelIds[0];
+        if (firstModelId) {
+          connection.defaultModel = firstModelId;
+        }
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+/**
+ * Migrate Opus 4.5 to Opus 4.6 for direct Anthropic connections (API key or OAuth).
+ * Only applies to anthropic provider type (not compat), as third-party providers
+ * like OpenRouter may not support the new model ID yet.
+ */
+function migrateOpus45ToOpus46(config: StoredConfig): boolean {
+  if (!config.llmConnections) return false;
+
+  const OPUS_45_ID = 'claude-opus-4-5-20251101';
+  const OPUS_46_ID = 'claude-opus-4-6';
+
+  let changed = false;
+
+  for (const connection of config.llmConnections) {
+    // Only migrate direct Anthropic connections (not compat/third-party)
+    if (connection.providerType !== 'anthropic') continue;
+
+    // Migrate defaultModel
+    if (connection.defaultModel === OPUS_45_ID) {
+      connection.defaultModel = OPUS_46_ID;
+      changed = true;
+    }
+
+    // Migrate models array
+    if (connection.models && Array.isArray(connection.models)) {
+      const hasNew = connection.models.some(m =>
+        (typeof m === 'string' ? m : m.id) === OPUS_46_ID
+      );
+
+      if (hasNew) {
+        // New model already exists — just remove the old entry to avoid duplicates
+        const before = connection.models.length;
+        connection.models = connection.models.filter(m =>
+          (typeof m === 'string' ? m : m.id) !== OPUS_45_ID
+        );
+        if (connection.models.length !== before) changed = true;
+      } else {
+        // New model doesn't exist — rename the old entry in place
+        for (let i = 0; i < connection.models.length; i++) {
+          const model = connection.models[i];
+          if (typeof model === 'string' && model === OPUS_45_ID) {
+            connection.models[i] = OPUS_46_ID;
+            changed = true;
+          } else if (typeof model === 'object' && model.id === OPUS_45_ID) {
+            model.id = OPUS_46_ID;
+            if (model.name?.includes('4.5')) {
+              model.name = model.name.replace('4.5', '4.6');
+            }
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+
+  return changed;
+}
+
+/**
+ * Migrate Sonnet 4.5 to Sonnet 4.6 for direct Anthropic connections.
+ * Same pattern as migrateOpus45ToOpus46 — updates stored model IDs and names.
+ */
+function migrateSonnet45ToSonnet46(config: StoredConfig): boolean {
+  if (!config.llmConnections) return false;
+
+  const SONNET_45_ID = 'claude-sonnet-4-5-20250929';
+  const SONNET_46_ID = 'claude-sonnet-4-6';
+
+  let changed = false;
+
+  for (const connection of config.llmConnections) {
+    // Only migrate direct Anthropic connections (not compat/third-party)
+    if (connection.providerType !== 'anthropic') continue;
+
+    // Migrate defaultModel
+    if (connection.defaultModel === SONNET_45_ID) {
+      connection.defaultModel = SONNET_46_ID;
+      changed = true;
+    }
+
+    // Migrate models array
+    if (connection.models && Array.isArray(connection.models)) {
+      const hasNew = connection.models.some(m =>
+        (typeof m === 'string' ? m : m.id) === SONNET_46_ID
+      );
+
+      if (hasNew) {
+        // New model already exists — just remove the old entry to avoid duplicates
+        const before = connection.models.length;
+        connection.models = connection.models.filter(m =>
+          (typeof m === 'string' ? m : m.id) !== SONNET_45_ID
+        );
+        if (connection.models.length !== before) changed = true;
+      } else {
+        // New model doesn't exist — rename the old entry in place
+        for (let i = 0; i < connection.models.length; i++) {
+          const model = connection.models[i];
+          if (typeof model === 'string' && model === SONNET_45_ID) {
+            connection.models[i] = SONNET_46_ID;
+            changed = true;
+          } else if (typeof model === 'object' && model.id === SONNET_45_ID) {
+            model.id = SONNET_46_ID;
+            if (model.name?.includes('4.5')) {
+              model.name = model.name.replace('4.5', '4.6');
+            }
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+
+  return changed;
+}
+
+/**
+ * Migrate Sonnet 4.5 to Sonnet 4.6 in workspace default models.
+ */
+function migrateWorkspaceSonnet45ToSonnet46(config: StoredConfig): void {
+  if (!config.workspaces) return;
+
+  const SONNET_45_ID = 'claude-sonnet-4-5-20250929';
+  const SONNET_46_ID = 'claude-sonnet-4-6';
+
+  for (const workspace of config.workspaces) {
+    const wsConfig = loadWorkspaceConfig(workspace.rootPath);
+    if (!wsConfig?.defaults?.model) continue;
+
+    if (wsConfig.defaults.model === SONNET_45_ID) {
+      wsConfig.defaults.model = SONNET_46_ID;
+      saveWorkspaceConfig(workspace.rootPath, wsConfig);
+    }
+  }
+}
+
+/**
+ * Migrate Opus 4.5 to Opus 4.6 in workspace default models.
+ * Iterates over all workspaces and updates defaults.model if it's Opus 4.5.
+ */
+function migrateWorkspaceOpus45ToOpus46(config: StoredConfig): void {
+  if (!config.workspaces) return;
+
+  const OPUS_45_ID = 'claude-opus-4-5-20251101';
+  const OPUS_46_ID = 'claude-opus-4-6';
+
+  for (const workspace of config.workspaces) {
+    const wsConfig = loadWorkspaceConfig(workspace.rootPath);
+    if (!wsConfig?.defaults?.model) continue;
+
+    if (wsConfig.defaults.model === OPUS_45_ID) {
+      wsConfig.defaults.model = OPUS_46_ID;
+      saveWorkspaceConfig(workspace.rootPath, wsConfig);
+    }
+  }
+}
+
+/**
+ * Migrate modelDefaults onto connection.defaultModel, then delete modelDefaults.
+ * If user had set modelDefaults.anthropic, apply it to the default anthropic connection.
+ * Same for openai. Then remove modelDefaults from config.
+ */
+function migrateModelDefaultsToConnections(config: StoredConfig): boolean {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const configAny = config as any;
+  if (!configAny.modelDefaults || !config.llmConnections) return false;
+  let changed = false;
+
+  // Apply anthropic model default to the default anthropic connection
+  if (configAny.modelDefaults.anthropic) {
+    const defaultSlug = config.defaultLlmConnection;
+    const anthropicConn = config.llmConnections.find(c =>
+      c.slug === defaultSlug && (c.providerType === 'anthropic' || c.providerType === 'anthropic_compat')
+    ) || config.llmConnections.find(c =>
+      c.providerType === 'anthropic' || c.providerType === 'anthropic_compat'
+    );
+    if (anthropicConn) {
+      anthropicConn.defaultModel = configAny.modelDefaults.anthropic;
+      changed = true;
+    }
+  }
+
+  // Apply openai model default to the default openai connection
+  // Cast providerType to string for legacy values removed from LlmProviderType
+  if (configAny.modelDefaults.openai) {
+    const openaiConn = config.llmConnections.find(c =>
+      (c.providerType as string) === 'openai' || (c.providerType as string) === 'openai_compat'
+    );
+    if (openaiConn) {
+      openaiConn.defaultModel = configAny.modelDefaults.openai;
+      changed = true;
+    }
+  }
+
+  // Delete modelDefaults
+  delete configAny.modelDefaults;
+  changed = true;
+
+  return changed;
+}
+
+/**
+ * Migrate legacy auth config to LLM connections.
+ * Call this on app startup before any getLlmConnections() calls.
+ *
+ * This is a one-time migration that converts:
+ * - Legacy authType field → LlmConnection in llmConnections array
+ * - Legacy anthropicBaseUrl → LlmConnection.baseUrl
+ * - Legacy customModel → LlmConnection.defaultModel
+ * - Legacy model → modelDefaults (per provider)
+ *
+ * After migration, the legacy fields are deleted since they are no longer used.
+ */
+export function migrateLegacyLlmConnectionsConfig(): void {
   const config = loadStoredConfig();
   if (!config) return;
 
-  if (model?.trim()) {
-    config.customModel = model.trim();
-  } else {
-    delete config.customModel;
+  const normalizeModelList = (models?: Array<{ id: string } | string>): string[] => {
+    if (!models) return [];
+    return models
+      .map(model => (typeof model === 'string' ? model : model.id))
+      .filter(Boolean);
+  };
+
+  const applyCompatDefaults = (target: StoredConfig): boolean => {
+    if (!target.llmConnections) return false;
+    let changed = false;
+    for (const connection of target.llmConnections) {
+      // Cast to string for legacy 'openai_compat' values that may still exist on disk
+      const providerStr = connection.providerType as string;
+      if (providerStr !== 'anthropic_compat' && providerStr !== 'openai_compat') {
+        continue;
+      }
+      const compatDefaults = getDefaultModelsForConnection(connection.providerType).map(
+        m => typeof m === 'string' ? m : m.id
+      );
+      const normalizedModels = normalizeModelList(connection.models);
+      if (normalizedModels.length === 0) {
+        connection.models = [...compatDefaults];
+        changed = true;
+      } else if (normalizedModels.length !== (connection.models?.length ?? 0)) {
+        connection.models = [...normalizedModels];
+        changed = true;
+      }
+      // Backfill any new default models that are missing from existing connections
+      // (e.g., Sonnet added to compat defaults after user already created connection)
+      let currentModels = normalizeModelList(connection.models);
+      for (const defaultModel of compatDefaults) {
+        if (!currentModels.includes(defaultModel)) {
+          currentModels = [...currentModels, defaultModel];
+          changed = true;
+        }
+      }
+      if (changed) {
+        connection.models = currentModels;
+      }
+      const currentDefault = connection.defaultModel?.trim();
+      if (!currentDefault) {
+        connection.defaultModel = (normalizeModelList(connection.models)[0] ?? compatDefaults[0]);
+        changed = true;
+      } else if (!normalizeModelList(connection.models).includes(currentDefault)) {
+        connection.models = [currentDefault, ...normalizeModelList(connection.models).filter(m => m !== currentDefault)];
+        changed = true;
+      }
+    }
+    return changed;
+  };
+
+  // Already migrated - llmConnections array exists
+  if (config.llmConnections !== undefined) {
+    // Clean up any remaining legacy fields from previous runs
+    let needsSave = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const configAny = config as any;
+    if ('authType' in config) {
+      delete configAny.authType;
+      needsSave = true;
+    }
+    if ('anthropicBaseUrl' in config) {
+      delete configAny.anthropicBaseUrl;
+      needsSave = true;
+    }
+    if ('customModel' in config) {
+      delete configAny.customModel;
+      needsSave = true;
+    }
+    if ('model' in config) {
+      const legacyModel = configAny.model as string | undefined;
+      if (legacyModel) {
+        const provider = getModelProvider(legacyModel) ?? 'anthropic';
+        configAny.modelDefaults = { ...(configAny.modelDefaults ?? {}), [provider]: legacyModel };
+      }
+      delete configAny.model;
+      needsSave = true;
+    }
+    // Note: applyCompatDefaults() is NOT called here for already-migrated configs.
+    // Compat connections are user-owned after creation — the app should not
+    // silently extend or override the user's model list on every startup.
+    // Compat defaults are only applied during fresh connection creation or
+    // first-time legacy migration (the config.llmConnections === undefined path below).
+
+    // Phase 1a-bis: Migrate Codex/Copilot connections to Pi backend
+    if (migrateCodexCopilotToPi(config)) {
+      needsSave = true;
+    }
+
+    // Phase 1b: Backfill models/defaultModel on ALL connections (not just compat)
+    // This ensures built-in connections (anthropic, openai) always have models populated
+    if (backfillAllConnectionModels(config)) {
+      needsSave = true;
+    }
+    // Phase 1c: Migrate modelDefaults onto connection.defaultModel, then delete modelDefaults
+    if (migrateModelDefaultsToConnections(config)) {
+      needsSave = true;
+    }
+    // Phase 1d: Migrate Opus 4.5 → Opus 4.6 for direct Anthropic connections
+    if (migrateOpus45ToOpus46(config)) {
+      needsSave = true;
+    }
+    // Phase 1e: Migrate Opus 4.5 → Opus 4.6 in workspace default models
+    migrateWorkspaceOpus45ToOpus46(config);
+    // Phase 1f: Migrate Sonnet 4.5 → Sonnet 4.6 for direct Anthropic connections
+    if (migrateSonnet45ToSonnet46(config)) {
+      needsSave = true;
+    }
+    // Phase 1g: Migrate Sonnet 4.5 → Sonnet 4.6 in workspace default models
+    migrateWorkspaceSonnet45ToSonnet46(config);
+
+    if (needsSave) {
+      saveConfig(config);
+    }
+    return;
   }
+
+  // Initialize empty array
+  config.llmConnections = [];
+
+  // Legacy migration: if user had authType set, create a connection for them
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const configAny = config as any;
+  const legacyAuthType = configAny.authType as AuthType | undefined;
+  const legacyBaseUrl = configAny.anthropicBaseUrl as string | undefined;
+  const legacyCustomModel = configAny.customModel as string | undefined;
+  const legacyModel = configAny.model as string | undefined;
+
+  if (legacyAuthType) {
+    let migrated: LlmConnection | null = null;
+
+    if (legacyAuthType === 'oauth_token') {
+      // Claude Max OAuth
+      migrated = {
+        slug: 'claude-max',
+        name: 'Claude Max',
+        providerType: 'anthropic',
+        authType: 'oauth',
+        models: getDefaultModelsForConnection('anthropic'),
+        createdAt: Date.now(),
+      };
+    } else if (legacyAuthType === 'codex_oauth') {
+      // ChatGPT Plus OAuth → Pi backend
+      migrated = {
+        slug: 'codex',
+        name: 'ChatGPT Plus (via Pi)',
+        providerType: 'pi',
+        authType: 'oauth',
+        piAuthProvider: 'openai-codex',
+        modelSelectionMode: 'automaticallySyncedFromProvider',
+        models: getDefaultModelsForConnection('pi', 'openai-codex'),
+        createdAt: Date.now(),
+      };
+    } else if (legacyAuthType === 'codex_api_key') {
+      // OpenAI API Key → Pi backend
+      migrated = {
+        slug: 'codex-api',
+        name: 'OpenAI API (via Pi)',
+        providerType: 'pi',
+        authType: 'api_key',
+        piAuthProvider: 'openai',
+        modelSelectionMode: 'automaticallySyncedFromProvider',
+        models: getDefaultModelsForConnection('pi', 'openai'),
+        createdAt: Date.now(),
+      };
+    } else if (legacyAuthType === 'api_key') {
+      // Anthropic API Key - check if custom endpoint (compat mode)
+      const hasCustomEndpoint = !!legacyBaseUrl;
+      const providerType = hasCustomEndpoint ? 'anthropic_compat' as const : 'anthropic' as const;
+      migrated = {
+        slug: 'anthropic-api',
+        name: hasCustomEndpoint ? 'Custom Anthropic-Compatible' : 'Anthropic (API Key)',
+        providerType,
+        authType: hasCustomEndpoint ? 'api_key_with_endpoint' : 'api_key',
+        models: getDefaultModelsForConnection(providerType),
+        createdAt: Date.now(),
+      };
+    }
+
+    if (migrated) {
+      // Validate the migrated connection has a valid provider/auth combination
+      if (!isValidProviderAuthCombination(migrated.providerType, migrated.authType)) {
+        console.warn(
+          `[config] Legacy migration created invalid provider/auth combination: ` +
+          `providerType=${migrated.providerType}, authType=${migrated.authType} ` +
+          `(slug: ${migrated.slug}). Skipping migration for this connection.`
+        );
+      } else {
+        // Apply legacy baseUrl if set
+        if (legacyBaseUrl) {
+          migrated.baseUrl = legacyBaseUrl;
+        }
+
+        // Apply legacy customModel if set
+        if (legacyCustomModel) {
+          migrated.defaultModel = legacyCustomModel;
+        }
+
+        config.llmConnections.push(migrated);
+        config.defaultLlmConnection = migrated.slug;
+      }
+    }
+  }
+
+  // Delete legacy fields after migration
+  delete configAny.authType;
+  delete configAny.anthropicBaseUrl;
+  delete configAny.customModel;
+  delete configAny.model;
+
+  if (legacyModel) {
+    const provider = getModelProvider(legacyModel) ?? 'anthropic';
+    configAny.modelDefaults = { ...(configAny.modelDefaults ?? {}), [provider]: legacyModel };
+  }
+
+  // Run the same backfill and migration on newly created connections
+  migrateCodexCopilotToPi(config);
+  backfillAllConnectionModels(config);
+  migrateModelDefaultsToConnections(config);
+
   saveConfig(config);
 }
 
 /**
- * Resolve model ID based on custom model override.
- * When a custom model is configured (for OpenRouter, Ollama, etc.),
- * it overrides ALL model calls (main, summarization, extraction).
- * @param defaultModelId - The default Anthropic model ID
- * @returns The custom model if set, otherwise the default
+ * Fix defaultLlmConnection references that point to non-existent connections.
+ * This can happen when a connection is removed or was never created
+ * (e.g. "anthropic-api" is set as default but only "claude-max" exists).
+ *
+ * Fixes both the global defaultLlmConnection and per-workspace defaults.
+ * Called on app startup alongside other migrations.
  */
-export function resolveModelId(defaultModelId: string): string {
-  const customModel = getCustomModel();
-  if (customModel) return customModel;
-  return defaultModelId;
+export function migrateOrphanedDefaultConnections(): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  if (!config.llmConnections || config.llmConnections.length === 0) return;
+
+  let changed = false;
+
+  // Fix global default if it points to a non-existent connection
+  if (ensureDefaultLlmConnection(config)) {
+    changed = true;
+  }
+
+  // Fix workspace defaults that point to non-existent connections
+  try {
+    const workspaces = getWorkspaces();
+    for (const ws of workspaces) {
+      const wsConfig = loadWorkspaceConfig(ws.rootPath);
+      if (wsConfig?.defaults?.defaultLlmConnection) {
+        const exists = config.llmConnections.some(
+          c => c.slug === wsConfig.defaults!.defaultLlmConnection
+        );
+        if (!exists) {
+          delete wsConfig.defaults.defaultLlmConnection;
+          saveWorkspaceConfig(ws.rootPath, wsConfig);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Failed to clean up workspace default connection references:', error);
+  }
+
+  if (changed) {
+    saveConfig(config);
+  }
+}
+
+/**
+ * Ensure default LLM connection is set correctly.
+ * Called internally by write operations to fix inconsistent state.
+ * This is NOT called on read - reads never modify config.
+ */
+function ensureDefaultLlmConnection(config: StoredConfig): boolean {
+  if (!config.llmConnections || config.llmConnections.length === 0) {
+    return false;
+  }
+
+  const defaultExists = config.llmConnections.some(c => c.slug === config.defaultLlmConnection);
+  if (!config.defaultLlmConnection || !defaultExists) {
+    config.defaultLlmConnection = config.llmConnections[0]!.slug;
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Migrate legacy global credentials to LLM connection-scoped credentials.
+ * This ensures that credentials saved before the LLM connections system
+ * are available through the new connection-based auth.
+ *
+ * Called on app startup (async operation, credentials use encrypted storage).
+ *
+ * Migration mapping:
+ * - claude_oauth::global → llm_oauth::claude-max
+ * - anthropic_api_key::global → llm_api_key::anthropic-api
+ *
+ * After successful migration, legacy credentials are deleted to prevent
+ * stale data and reduce credential store clutter.
+ */
+export async function migrateLegacyCredentials(): Promise<void> {
+  const manager = getCredentialManager();
+  const debug = (await import('../utils/debug.ts')).debug;
+
+  // Migrate Claude OAuth: claude_oauth::global → llm_oauth::claude-max
+  const legacyClaudeOAuth = await manager.getClaudeOAuthCredentials();
+  if (legacyClaudeOAuth?.accessToken) {
+    // Only migrate if llm_oauth::claude-max doesn't exist yet
+    const existingLlmOAuth = await manager.getLlmOAuth('claude-max');
+    if (!existingLlmOAuth) {
+      await manager.setLlmOAuth('claude-max', {
+        accessToken: legacyClaudeOAuth.accessToken,
+        refreshToken: legacyClaudeOAuth.refreshToken,
+        expiresAt: legacyClaudeOAuth.expiresAt,
+      });
+      debug('[storage] Migrated legacy Claude OAuth to llm_oauth::claude-max');
+
+      // Delete legacy credential after successful migration
+      // Global credentials use just the type - the key format is {type}::global
+      try {
+        await manager.delete({ type: 'claude_oauth' });
+        debug('[storage] Deleted legacy claude_oauth::global credential');
+      } catch (error) {
+        debug('[storage] Failed to delete legacy claude_oauth::global:', error);
+      }
+    }
+  }
+
+  // Migrate Anthropic API key: anthropic_api_key::global → llm_api_key::anthropic-api
+  const legacyApiKey = await manager.getApiKey();
+  if (legacyApiKey) {
+    // Only migrate if llm_api_key::anthropic-api doesn't exist yet
+    const existingLlmApiKey = await manager.getLlmApiKey('anthropic-api');
+    if (!existingLlmApiKey) {
+      await manager.setLlmApiKey('anthropic-api', legacyApiKey);
+      debug('[storage] Migrated legacy Anthropic API key to llm_api_key::anthropic-api');
+
+      // Delete legacy credential after successful migration
+      // Global credentials use just the type - the key format is {type}::global
+      try {
+        await manager.delete({ type: 'anthropic_api_key' });
+        debug('[storage] Deleted legacy anthropic_api_key::global credential');
+      } catch (error) {
+        debug('[storage] Failed to delete legacy anthropic_api_key::global:', error);
+      }
+    }
+  }
+}
+
+/**
+ * Get all LLM connections.
+ * Returns only user-added connections (no auto-populated built-ins).
+ *
+ * Note: This function is read-only and never modifies config.
+ * Call migrateLegacyLlmConnectionsConfig() on app startup to handle migration.
+ */
+export function getLlmConnections(): LlmConnection[] {
+  const config = loadStoredConfig();
+  if (!config) return [];
+
+  // Return empty array if not migrated yet - caller should call migration on startup
+  return config.llmConnections || [];
+}
+
+/**
+ * Get a specific LLM connection by slug.
+ * @param slug - Connection slug
+ * @returns Connection or null if not found
+ */
+export function getLlmConnection(slug: string): LlmConnection | null {
+  const connections = getLlmConnections();
+  return connections.find(c => c.slug === slug) || null;
+}
+
+/**
+ * Add a new LLM connection.
+ * @param connection - Connection to add (slug must be unique)
+ * @returns true if added, false if slug already exists
+ */
+export function addLlmConnection(connection: LlmConnection): boolean {
+  const config = loadStoredConfig();
+  if (!config) return false;
+
+  // Initialize array if not yet migrated (safe default for write operations)
+  if (!config.llmConnections) {
+    config.llmConnections = [];
+  }
+
+  // Check for duplicate slug
+  if (config.llmConnections.some(c => c.slug === connection.slug)) {
+    return false;
+  }
+
+  // Add connection with timestamp
+  config.llmConnections.push({
+    ...connection,
+    createdAt: connection.createdAt || Date.now(),
+  });
+
+  // Ensure default is set after adding first connection
+  ensureDefaultLlmConnection(config);
+
+  saveConfig(config);
+  return true;
+}
+
+/**
+ * Update an existing LLM connection.
+ * @param slug - Connection slug to update
+ * @param updates - Partial updates to apply (slug is ignored)
+ * @returns true if updated, false if not found
+ */
+export function updateLlmConnection(slug: string, updates: Partial<Omit<LlmConnection, 'slug'>>): boolean {
+  const config = loadStoredConfig();
+  if (!config) return false;
+
+  // No connections means nothing to update
+  if (!config.llmConnections || config.llmConnections.length === 0) {
+    return false;
+  }
+
+  const connections = config.llmConnections;
+  const index = connections.findIndex(c => c.slug === slug);
+  if (index === -1) return false;
+
+  const existing = connections[index]!;
+  const toModelIds = (models?: Array<{ id: string } | string>): string[] =>
+    (models ?? []).map(m => typeof m === 'string' ? m : m.id);
+
+  connections[index] = {
+    // Preserve required fields from existing
+    slug: existing.slug,
+    name: updates.name ?? existing.name,
+    providerType: updates.providerType ?? existing.providerType,
+    type: updates.type ?? existing.type, // Legacy field
+    authType: updates.authType ?? existing.authType,
+    createdAt: updates.createdAt ?? existing.createdAt,
+    // Optional fields from updates or existing
+    baseUrl: updates.baseUrl !== undefined ? updates.baseUrl : existing.baseUrl,
+    models: updates.models !== undefined ? updates.models : existing.models,
+    defaultModel: updates.defaultModel !== undefined ? updates.defaultModel : existing.defaultModel,
+    modelSelectionMode: updates.modelSelectionMode !== undefined ? updates.modelSelectionMode : existing.modelSelectionMode,
+    // Cloud provider fields
+    awsRegion: updates.awsRegion !== undefined ? updates.awsRegion : existing.awsRegion,
+    gcpProjectId: updates.gcpProjectId !== undefined ? updates.gcpProjectId : existing.gcpProjectId,
+    gcpRegion: updates.gcpRegion !== undefined ? updates.gcpRegion : existing.gcpRegion,
+    // Pi auth provider
+    piAuthProvider: updates.piAuthProvider !== undefined ? updates.piAuthProvider : existing.piAuthProvider,
+    // Custom endpoint protocol (Anthropic/OpenAI compatible)
+    customEndpoint: updates.customEndpoint !== undefined ? updates.customEndpoint : existing.customEndpoint,
+    // Timestamps
+    lastUsedAt: updates.lastUsedAt !== undefined ? updates.lastUsedAt : existing.lastUsedAt,
+  };
+
+  const updated = connections[index]!;
+  if (updated.providerType === 'pi') {
+    const beforeModelIds = toModelIds(existing.models);
+    const afterModelIds = toModelIds(updated.models);
+    const changed =
+      existing.defaultModel !== updated.defaultModel ||
+      existing.modelSelectionMode !== updated.modelSelectionMode ||
+      !modelSetEquals(beforeModelIds, afterModelIds);
+
+    if (changed) {
+      const stack = (new Error().stack ?? '').split('\n').slice(2, 7).map(s => s.trim());
+      debug('[storage] updateLlmConnection(pi) changed', {
+        slug,
+        before: {
+          mode: existing.modelSelectionMode,
+          defaultModel: existing.defaultModel,
+          modelCount: beforeModelIds.length,
+          modelsFirst5: beforeModelIds.slice(0, 5),
+        },
+        after: {
+          mode: updated.modelSelectionMode,
+          defaultModel: updated.defaultModel,
+          modelCount: afterModelIds.length,
+          modelsFirst5: afterModelIds.slice(0, 5),
+        },
+        updates: {
+          keys: Object.keys(updates),
+          defaultModel: updates.defaultModel,
+          modelSelectionMode: updates.modelSelectionMode,
+          modelsCount: Array.isArray(updates.models) ? updates.models.length : undefined,
+        },
+        stack,
+      });
+    }
+  }
+
+  saveConfig(config);
+  return true;
+}
+
+/**
+ * Delete an LLM connection.
+ * @param slug - Connection slug to delete
+ * @returns true if deleted, false if not found
+ */
+export function deleteLlmConnection(slug: string): boolean {
+  const config = loadStoredConfig();
+  if (!config) return false;
+
+  // No connections means nothing to delete
+  if (!config.llmConnections || config.llmConnections.length === 0) {
+    return false;
+  }
+
+  const connections = config.llmConnections;
+  const index = connections.findIndex(c => c.slug === slug);
+  if (index === -1) return false;
+
+  connections.splice(index, 1);
+
+  // If deleted connection was the default, reset to first remaining or clear
+  if (config.defaultLlmConnection === slug) {
+    config.defaultLlmConnection = connections.length > 0 ? connections[0]!.slug : undefined;
+  }
+
+  saveConfig(config);
+
+  // Clean up workspace references to the deleted connection (non-blocking)
+  try {
+    const workspaces = getWorkspaces();
+    for (const ws of workspaces) {
+      const wsConfig = loadWorkspaceConfig(ws.rootPath);
+      if (wsConfig?.defaults?.defaultLlmConnection === slug) {
+        wsConfig.defaults.defaultLlmConnection = undefined;
+        saveWorkspaceConfig(ws.rootPath, wsConfig);
+      }
+    }
+  } catch (error) {
+    console.error('Failed to clean up workspace references:', error);
+  }
+
+  // Clean up stored credentials for this connection (API keys, OAuth tokens)
+  // This is fire-and-forget but we log errors for debugging
+  const credentialManager = getCredentialManager();
+  credentialManager.delete({ type: 'llm_api_key', connectionSlug: slug }).catch((error) => {
+    console.error(`[storage] Failed to delete API key credential for connection '${slug}':`, error);
+  });
+  credentialManager.delete({ type: 'llm_oauth', connectionSlug: slug }).catch((error) => {
+    console.error(`[storage] Failed to delete OAuth credential for connection '${slug}':`, error);
+  });
+
+  return true;
+}
+
+/**
+ * Get the default LLM connection slug.
+ * @returns Default connection slug, or null if no connections exist
+ */
+export function getDefaultLlmConnection(): string | null {
+  const config = loadStoredConfig();
+  if (!config) return null;
+
+  // If no connections, return null
+  if (!config.llmConnections || config.llmConnections.length === 0) {
+    return null;
+  }
+
+  return config.defaultLlmConnection || config.llmConnections[0]?.slug || null;
+}
+
+/**
+ * Set the default LLM connection.
+ * @param slug - Connection slug to set as default
+ * @returns true if set, false if connection not found
+ */
+export function setDefaultLlmConnection(slug: string): boolean {
+  const config = loadStoredConfig();
+  if (!config) return false;
+
+  // No connections means nothing to set as default
+  if (!config.llmConnections || config.llmConnections.length === 0) {
+    return false;
+  }
+
+  // Verify connection exists
+  if (!config.llmConnections.some(c => c.slug === slug)) {
+    return false;
+  }
+
+  config.defaultLlmConnection = slug;
+  saveConfig(config);
+  return true;
+}
+
+/**
+ * Get the app-level default thinking level for new sessions.
+ * Falls back to bundled config-defaults when unset.
+ */
+export function getDefaultThinkingLevel(): ThinkingLevel {
+  const config = loadStoredConfig();
+  if (config?.defaultThinkingLevel && isValidThinkingLevel(config.defaultThinkingLevel)) {
+    return config.defaultThinkingLevel;
+  }
+  const defaults = loadConfigDefaults();
+  return defaults.workspaceDefaults.thinkingLevel;
+}
+
+/**
+ * Set the app-level default thinking level for new sessions.
+ * @returns true if persisted, false if config could not be loaded
+ */
+export function setDefaultThinkingLevel(level: ThinkingLevel): boolean {
+  const config = loadStoredConfig();
+  if (!config) return false;
+
+  config.defaultThinkingLevel = level;
+  saveConfig(config);
+  return true;
+}
+
+/**
+ * Update the lastUsedAt timestamp for a connection.
+ * @param slug - Connection slug
+ */
+export function touchLlmConnection(slug: string): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+
+  // No connections means nothing to touch
+  if (!config.llmConnections) return;
+
+  const connection = config.llmConnections.find(c => c.slug === slug);
+  if (connection) {
+    connection.lastUsedAt = Date.now();
+    saveConfig(config);
+  }
+}
+
+// ============================================
+// Network Proxy Settings
+// ============================================
+
+import type { NetworkProxySettings } from './types.ts';
+
+function normalizeProxyString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function normalizeNetworkProxySettings(
+  settings: NetworkProxySettings,
+): NetworkProxySettings {
+  return {
+    enabled: Boolean(settings.enabled),
+    httpProxy: normalizeProxyString(settings.httpProxy),
+    httpsProxy: normalizeProxyString(settings.httpsProxy),
+    noProxy: normalizeProxyString(settings.noProxy),
+  };
+}
+
+/**
+ * Get the current network proxy settings.
+ * Returns undefined if not configured.
+ */
+export function getNetworkProxySettings(): NetworkProxySettings | undefined {
+  const config = loadStoredConfig();
+  return config?.networkProxy;
+}
+
+/**
+ * Persist network proxy settings.
+ * Deletes the key when disabled and all proxy fields are empty.
+ */
+export function setNetworkProxySettings(settings: NetworkProxySettings): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+
+  const normalized = normalizeNetworkProxySettings(settings);
+
+  // Remove the key entirely when proxy is disabled and all fields are blank
+  if (!normalized.enabled && !normalized.httpProxy && !normalized.httpsProxy && !normalized.noProxy) {
+    delete config.networkProxy;
+  } else {
+    config.networkProxy = normalized;
+  }
+
+  saveConfig(config);
 }
 
 // ============================================
