@@ -1,8 +1,9 @@
-import { CraftAgent, type CraftAgentConfig, AbortReason } from '../agent/craft-agent.ts';
+import { CraftAgent, type CraftAgentConfig, AbortReason } from '../agent/claude-agent.ts';
 import type { AgentEvent } from '@craft-agent/core/types';
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { FileAttachment } from '../utils/files.ts';
-import { loadStoredConfig, resolveModelId, type Workspace } from '../config/storage.ts';
+import { loadStoredConfig } from '../config/storage.ts';
+import type { Workspace } from '@craft-agent/core/types';
 import { DEFAULT_MODEL } from '../config/models.ts';
 import { getSessionPath } from '../sessions/storage.ts';
 import { TokenRefreshManager, getSourceCredentialManager } from '../sources/index.ts';
@@ -118,7 +119,7 @@ export class AgentSession {
 
     const agentConfig: CraftAgentConfig = {
       workspace: this.config.workspace,
-      model: resolveModelId(this.config.model || config?.model || DEFAULT_MODEL),
+      model: this.config.model || config?.model || DEFAULT_MODEL,
       thinkingLevel: this.config.thinkingLevel,
       isHeadless: this.config.isHeadless ?? true,
       systemPromptPreset: this.config.systemPromptPreset,

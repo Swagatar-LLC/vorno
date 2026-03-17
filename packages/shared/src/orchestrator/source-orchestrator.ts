@@ -12,7 +12,7 @@ import {
   SERVER_BUILD_ERRORS,
 } from '../sources/index.ts';
 import type { SourceWithCredential } from '../sources/server-builder.ts';
-import type { CraftAgent } from '../agent/craft-agent.ts';
+import type { CraftAgent } from '../agent/claude-agent.ts';
 import type { SourceOrchestratorConfig, BuildServersResult, TokenRefreshResult } from './types.ts';
 
 /**

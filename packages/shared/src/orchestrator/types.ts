@@ -1,4 +1,4 @@
-import type { Workspace } from '../config/storage.ts';
+import type { Workspace } from '@craft-agent/core/types';
 import type { LoadedSource } from '../sources/types.ts';
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
