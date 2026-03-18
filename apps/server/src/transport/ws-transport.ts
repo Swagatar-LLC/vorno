@@ -17,7 +17,7 @@ import {
   type MessageEnvelope,
   type ErrorCode,
 } from '@craft-agent/shared/protocol';
-import { serializeEnvelope, deserializeEnvelope } from '@craft-agent/server-core/transport/codec';
+import { serializeEnvelope, deserializeEnvelope } from '@craft-agent/server-core/transport';
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config';
 import type { AgentEvent } from '@craft-agent/core/types';
 
@@ -48,19 +48,43 @@ const RPC = {
 // WsTransport
 // ---------------------------------------------------------------------------
 
+export interface WsTransportOptions {
+  pool: SessionPool;
+  eventBus: EventBus;
+  registry: ClientRegistry;
+  /** Optional config loader override (defaults to loadServerConfig from disk). */
+  getConfig?: () => ServerConfig;
+}
+
 export class WsTransport {
   private pool: SessionPool;
   private eventBus: EventBus;
   private registry: ClientRegistry;
+  private getConfig: () => ServerConfig;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private wsClients = new Map<string, ServerWebSocket<WsClientData>>();
   /** Track EventBus subscriptions per client so we can clean up on disconnect */
   private clientSubscriptions = new Map<string, Array<{ sessionId: string; unsubscribe: () => void }>>();
 
-  constructor(pool: SessionPool, eventBus: EventBus, registry: ClientRegistry) {
-    this.pool = pool;
-    this.eventBus = eventBus;
-    this.registry = registry;
+  constructor(opts: WsTransportOptions);
+  /** @deprecated Use options object constructor */
+  constructor(pool: SessionPool, eventBus: EventBus, registry: ClientRegistry);
+  constructor(
+    poolOrOpts: SessionPool | WsTransportOptions,
+    eventBus?: EventBus,
+    registry?: ClientRegistry,
+  ) {
+    if ('pool' in poolOrOpts) {
+      this.pool = poolOrOpts.pool;
+      this.eventBus = poolOrOpts.eventBus;
+      this.registry = poolOrOpts.registry;
+      this.getConfig = poolOrOpts.getConfig ?? loadServerConfig;
+    } else {
+      this.pool = poolOrOpts;
+      this.eventBus = eventBus!;
+      this.registry = registry!;
+      this.getConfig = loadServerConfig;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -254,7 +278,7 @@ export class WsTransport {
       return;
     }
 
-    const config = loadServerConfig();
+    const config = this.getConfig();
     const apiKey = validateApiKey(envelope.token, config);
     if (!apiKey) {
       this.sendError(ws, envelope.id, 'AUTH_FAILED', 'Invalid API key');
@@ -385,7 +409,7 @@ export class WsTransport {
       throw Object.assign(new Error(`Workspace '${opts.workspaceId}' not found`), { code: 'HANDLER_ERROR' });
     }
 
-    const config = loadServerConfig();
+    const config = this.getConfig();
     const currentCount = this.pool.countByApiKey(auth.apiKey.id);
     const maxSessions = Math.min(
       auth.apiKey.permissions.maxConcurrentSessions,

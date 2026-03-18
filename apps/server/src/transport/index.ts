@@ -5,7 +5,7 @@
  * Both transports share the same SessionPool, EventBus, and ClientRegistry.
  */
 export { ClientRegistry, type PushCallback } from './client-registry.ts';
-export { WsTransport } from './ws-transport.ts';
+export { WsTransport, type WsTransportOptions } from './ws-transport.ts';
 export type {
   TransportKind,
   TransportClient,
