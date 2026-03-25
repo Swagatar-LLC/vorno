@@ -64,6 +64,7 @@ export const RPC_CHANNELS = {
   },
   fs: {
     SEARCH: 'fs:search',
+    LIST_DIRECTORY: 'fs:listDirectory',
   },
   debug: {
     LOG: 'debug:log',
@@ -144,6 +145,7 @@ export const RPC_CHANNELS = {
     EXCHANGE_CLAUDE_CODE: 'onboarding:exchangeClaudeCode',
     HAS_CLAUDE_OAUTH_STATE: 'onboarding:hasClaudeOAuthState',
     CLEAR_CLAUDE_OAUTH_STATE: 'onboarding:clearClaudeOAuthState',
+    DEFER_SETUP: 'onboarding:deferSetup',
   },
   llmConnections: {
     LIST: 'LLM_Connection:list',
@@ -275,6 +277,12 @@ export const RPC_CHANNELS = {
   appearance: {
     GET_RICH_TOOL_DESCRIPTIONS: 'appearance:getRichToolDescriptions',
     SET_RICH_TOOL_DESCRIPTIONS: 'appearance:setRichToolDescriptions',
+  },
+  caching: {
+    GET_EXTENDED_PROMPT_CACHE: 'caching:getExtendedPromptCache',
+    SET_EXTENDED_PROMPT_CACHE: 'caching:setExtendedPromptCache',
+    GET_ENABLE_1M_CONTEXT: 'caching:getEnable1MContext',
+    SET_ENABLE_1M_CONTEXT: 'caching:setEnable1MContext',
   },
   badge: {
     REFRESH: 'badge:refresh',

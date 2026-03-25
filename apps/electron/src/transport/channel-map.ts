@@ -38,6 +38,9 @@ export const CHANNEL_MAP = {
   onSessionEvent: listener(RPC_CHANNELS.sessions.EVENT),
   onUnreadSummaryChanged: listener(RPC_CHANNELS.sessions.UNREAD_SUMMARY_CHANGED),
 
+  // Transport reliability
+  onReconnected: listener('__transport:reconnected'),
+
   // Workspace management
   getWorkspaces: invoke(RPC_CHANNELS.workspaces.GET),
   createWorkspace: invoke(RPC_CHANNELS.workspaces.CREATE),
@@ -115,6 +118,7 @@ export const CHANNEL_MAP = {
   exchangeClaudeCode: invoke(RPC_CHANNELS.onboarding.EXCHANGE_CLAUDE_CODE),
   hasClaudeOAuthState: invoke(RPC_CHANNELS.onboarding.HAS_CLAUDE_OAUTH_STATE),
   clearClaudeOAuthState: invoke(RPC_CHANNELS.onboarding.CLEAR_CLAUDE_OAUTH_STATE),
+  deferSetup: invoke(RPC_CHANNELS.onboarding.DEFER_SETUP),
 
   // ChatGPT OAuth
   startChatGptOAuth: invoke(RPC_CHANNELS.chatgpt.START_OAUTH),
@@ -155,6 +159,9 @@ export const CHANNEL_MAP = {
 
   // Filesystem search
   searchFiles: invoke(RPC_CHANNELS.fs.SEARCH),
+
+  // Server filesystem browsing (remote mode)
+  listServerDirectory: invoke(RPC_CHANNELS.fs.LIST_DIRECTORY),
 
   // Debug logging
   debugLog: invoke(RPC_CHANNELS.debug.LOG),
@@ -267,6 +274,12 @@ export const CHANNEL_MAP = {
   // Appearance settings
   getRichToolDescriptions: invoke(RPC_CHANNELS.appearance.GET_RICH_TOOL_DESCRIPTIONS),
   setRichToolDescriptions: invoke(RPC_CHANNELS.appearance.SET_RICH_TOOL_DESCRIPTIONS),
+
+  // Prompt caching & context
+  getExtendedPromptCache: invoke(RPC_CHANNELS.caching.GET_EXTENDED_PROMPT_CACHE),
+  setExtendedPromptCache: invoke(RPC_CHANNELS.caching.SET_EXTENDED_PROMPT_CACHE),
+  getEnable1MContext: invoke(RPC_CHANNELS.caching.GET_ENABLE_1M_CONTEXT),
+  setEnable1MContext: invoke(RPC_CHANNELS.caching.SET_ENABLE_1M_CONTEXT),
 
   // Badge
   refreshBadge: invoke(RPC_CHANNELS.badge.REFRESH),
