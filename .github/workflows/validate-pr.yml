@@ -65,10 +65,11 @@ jobs:
         run: |
           cd packages/shared
           bun test 2>&1 | tee /tmp/shared-results.txt || true
-          # Strip ANSI codes, then extract the summary line (e.g. " 2275 pass")
-          CLEAN=$(cat /tmp/shared-results.txt | tr -d '\033' | sed 's/\[[0-9;]*m//g')
-          PASS_COUNT=$(echo "$CLEAN" | grep -Eo '[0-9]+ pass' | head -1 | grep -Eo '[0-9]+' || echo "0")
-          FAIL_COUNT=$(echo "$CLEAN" | grep -Eo '[0-9]+ fail' | head -1 | grep -Eo '[0-9]+' || echo "0")
+          # Bun summary is in the last 5 lines: " N pass", " N fail", "Ran N tests..."
+          # Strip ANSI codes and extract from summary only
+          SUMMARY=$(tail -5 /tmp/shared-results.txt | tr -d '\033' | sed 's/\[[0-9;]*m//g')
+          PASS_COUNT=$(echo "$SUMMARY" | grep -Eo '[0-9]+ pass' | grep -Eo '[0-9]+' || echo "0")
+          FAIL_COUNT=$(echo "$SUMMARY" | grep -Eo '[0-9]+ fail' | grep -Eo '[0-9]+' || echo "0")
           echo "Shared tests: $PASS_COUNT pass, $FAIL_COUNT fail"
           if [ "$PASS_COUNT" -lt 2200 ]; then
             echo "::error::Shared test pass count dropped below 2200 (got $PASS_COUNT). Regression detected."
