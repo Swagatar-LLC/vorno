@@ -3,6 +3,7 @@ import { handlePreflight, corsHeaders } from './middleware/cors.ts';
 import { errorResponse } from './middleware/error.ts';
 import { loadServerConfig, type ServerConfig } from './config.ts';
 import type { SessionPool } from './services/session-pool.ts';
+import type { ClientRegistry } from './transport/client-registry.ts';
 
 // Route handlers
 import { handleHealth } from './routes/health.ts';
@@ -43,7 +44,7 @@ function matchRoute(path: string, pattern: string): Record<string, string> | nul
 /**
  * Create the request router.
  */
-export function createRouter(pool: SessionPool) {
+export function createRouter(pool: SessionPool, registry?: ClientRegistry) {
   return async function router(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -56,7 +57,7 @@ export function createRouter(pool: SessionPool) {
 
     // Health check (no auth required)
     if (method === 'GET' && path === '/health') {
-      return handleHealth(pool);
+      return handleHealth(pool, registry);
     }
 
     // All other routes require authentication

@@ -202,6 +202,7 @@ import type {
   TestAutomationPayload,
   TestAutomationResult,
   WindowCloseRequest,
+  DirectoryListingResult,
 } from '@craft-agent/shared/protocol'
 
 export interface ElectronAPI {
@@ -264,6 +265,9 @@ export interface ElectronAPI {
 
   // Filesystem search (for @ mention file selection)
   searchFiles(basePath: string, query: string): Promise<FileSearchResult[]>
+
+  // Server filesystem browsing (remote mode)
+  listServerDirectory(dirPath: string): Promise<DirectoryListingResult>
   // Debug: send renderer logs to main process log file
   debugLog(...args: unknown[]): void
 
@@ -281,6 +285,9 @@ export interface ElectronAPI {
   onTransportConnectionStateChanged(callback: (state: TransportConnectionState) => void): () => void
   reconnectTransport(): Promise<void>
 
+  /** Fired after a WebSocket reconnect. isStale=true means buffer was evicted — full refresh needed. */
+  onReconnected(callback: (isStale: boolean) => void): () => void
+
   /** Check whether the server registered a handler for a given RPC channel. */
   isChannelAvailable(channel: string): boolean
 
@@ -296,6 +303,9 @@ export interface ElectronAPI {
   // Release notes
   getReleaseNotes(): Promise<string>
   getLatestReleaseVersion(): Promise<string | undefined>
+
+  // System warnings (startup checks)
+  getSystemWarnings(): Promise<{ vcredistMissing: boolean; downloadUrl?: string }>
 
   // Shell operations
   openUrl(url: string): Promise<void>
@@ -329,6 +339,8 @@ export interface ElectronAPI {
   exchangeClaudeCode(code: string, connectionSlug: string): Promise<ClaudeOAuthResult>
   hasClaudeOAuthState(): Promise<boolean>
   clearClaudeOAuthState(): Promise<{ success: boolean }>
+  /** Defer onboarding setup — user chose "Setup later" */
+  deferSetup(): Promise<{ success: boolean }>
 
   // ChatGPT OAuth (for Codex chatgptAuthTokens mode)
   startChatGptOAuth(connectionSlug: string): Promise<{ success: boolean; error?: string }>
@@ -476,6 +488,12 @@ export interface ElectronAPI {
   // Appearance settings
   getRichToolDescriptions(): Promise<boolean>
   setRichToolDescriptions(enabled: boolean): Promise<void>
+
+  // Prompt caching & context
+  getExtendedPromptCache(): Promise<boolean>
+  setExtendedPromptCache(enabled: boolean): Promise<void>
+  getEnable1MContext(): Promise<boolean>
+  setEnable1MContext(enabled: boolean): Promise<void>
 
   // Network proxy settings
   getNetworkProxySettings(): Promise<NetworkProxySettings | undefined>
