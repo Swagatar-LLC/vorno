@@ -1,10 +1,9 @@
-name: Validate
+name: Validate (legacy)
 
+# Disabled — replaced by validate-pr.yml which covers the same checks
+# without the broken Electron typecheck.
+# Kept as manual-only in case upstream fixes the Electron types.
 on:
-  pull_request:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:
