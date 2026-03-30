@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@craft-agent/core": "workspace:*",
-    "@craft-agent/shared": "workspace:*"
+    "@craft-agent/shared": "workspace:*",
+    "@craft-agent/server-core": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "latest"

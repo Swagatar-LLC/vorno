@@ -177,6 +177,7 @@
       "version": "0.3.4",
       "dependencies": {
         "@craft-agent/core": "workspace:*",
+        "@craft-agent/server-core": "workspace:*",
         "@craft-agent/shared": "workspace:*",
       },
       "devDependencies": {
