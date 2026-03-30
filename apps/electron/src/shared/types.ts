@@ -13,6 +13,7 @@ import type {
   MessageRole as CoreMessageRole,
   TypedError,
   TokenUsage as CoreTokenUsage,
+  WorkspaceInfo as CoreWorkspaceInfo,
   Workspace as CoreWorkspace,
   SessionMetadata as CoreSessionMetadata,
   StoredAttachment as CoreStoredAttachment,
@@ -36,6 +37,7 @@ export type {
   CoreMessageRole as MessageRole,
   TypedError,
   CoreTokenUsage as TokenUsage,
+  CoreWorkspaceInfo as WorkspaceInfo,
   CoreWorkspace as Workspace,
   CoreSessionMetadata as SessionMetadata,
   CoreStoredAttachment as StoredAttachment,
@@ -167,7 +169,7 @@ export interface TransportConnectionState {
 // =============================================================================
 
 // Re-import types for ElectronAPI
-import type { Workspace, SessionMetadata, StoredAttachment as StoredAttachmentType } from '@craft-agent/core/types';
+import type { WorkspaceInfo, Workspace, SessionMetadata, StoredAttachment as StoredAttachmentType } from '@craft-agent/core/types';
 
 // Import protocol types used by ElectronAPI (they come through the `export *` above,
 // but we need them in scope for the interface definition)
@@ -202,6 +204,9 @@ import type {
   TestAutomationPayload,
   TestAutomationResult,
   WindowCloseRequest,
+  DirectoryListingResult,
+  RemoteSessionTransferPayload,
+  ImportRemoteSessionTransferResult,
 } from '@craft-agent/shared/protocol'
 
 export interface ElectronAPI {
@@ -222,6 +227,25 @@ export interface ElectronAPI {
   // Consolidated session command handler
   sessionCommand(sessionId: string, command: SessionCommand): Promise<void | ShareResult | RefreshTitleResult | { count: number }>
 
+  // Server info (REMOTE_ELIGIBLE — returns data from whichever server owns the workspace)
+  getServerHomeDir(): Promise<string>
+
+  // Server mode configuration
+  getServerConfig(): Promise<import('@craft-agent/shared/config/server-config').ServerConfig>
+  setServerConfig(config: import('@craft-agent/shared/config/server-config').ServerConfig): Promise<void>
+  getServerStatus(): Promise<import('@craft-agent/shared/config/server-config').ServerStatus>
+
+  // App lifecycle
+  relaunchApp(): Promise<void>
+  removeWorkspace(workspaceId: string): Promise<boolean>
+  invokeOnServer(url: string, token: string, channel: string, ...args: any[]): Promise<any>
+
+  // Session export/import (cross-workspace transfer)
+  exportSession(sessionId: string): Promise<unknown>
+  importSession(targetWorkspaceId: string, bundle: unknown, mode: 'move' | 'fork'): Promise<{ sessionId: string; warnings?: string[] }>
+  exportRemoteSessionTransfer(sessionId: string): Promise<RemoteSessionTransferPayload>
+  importRemoteSessionTransfer(targetWorkspaceId: string, payload: RemoteSessionTransferPayload): Promise<ImportRemoteSessionTransferResult>
+
   // Pending plan execution (for reload recovery)
   getPendingPlanExecution(sessionId: string): Promise<{ planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean } | null>
   // Permission mode reconciliation
@@ -229,8 +253,23 @@ export interface ElectronAPI {
 
   // Workspace management
   getWorkspaces(): Promise<Workspace[]>
-  createWorkspace(folderPath: string, name: string): Promise<Workspace>
+  createWorkspace(folderPath: string, name: string, remoteServer?: { url: string; token: string; remoteWorkspaceId: string }): Promise<Workspace>
   checkWorkspaceSlug(slug: string): Promise<{ exists: boolean; path: string }>
+  updateWorkspaceRemoteServer(workspaceId: string, remoteServer: { url: string; token: string; remoteWorkspaceId: string }): Promise<{ success: boolean }>
+
+  // Server-level workspace operations (for thin client / remote workspace discovery)
+  getServerWorkspaces(): Promise<WorkspaceInfo[]>
+  createServerWorkspace(name: string): Promise<WorkspaceInfo>
+
+  testRemoteConnection(url: string, token: string): Promise<{
+    ok: boolean
+    error?: string
+    needsWorkspace?: boolean
+    remoteWorkspaces?: Array<{ id: string; name: string }>
+    remoteWorkspaceId?: string   // auto-set when exactly one workspace
+    remoteWorkspaceName?: string // auto-set when exactly one workspace
+    serverVersion?: string       // server app version from handshake
+  }>
 
   // Window management
   getWindowWorkspace(): Promise<string | null>
@@ -257,6 +296,8 @@ export interface ElectronAPI {
   readFileBinary(path: string): Promise<Uint8Array>
   /** Read a file as a data URL (data:{mime};base64,...) for binary preview (images, PDFs) */
   readFileDataUrl(path: string): Promise<string>
+  /** Read an image file as a size-bounded preview data URL for lightweight thumbnail rendering. */
+  readFilePreviewDataUrl(path: string, maxSize?: number): Promise<string>
   openFileDialog(): Promise<string[]>
   readFileAttachment(path: string): Promise<FileAttachment | null>
   storeAttachment(sessionId: string, attachment: FileAttachment): Promise<import('../../../../packages/core/src/types/index.ts').StoredAttachment>
@@ -264,6 +305,9 @@ export interface ElectronAPI {
 
   // Filesystem search (for @ mention file selection)
   searchFiles(basePath: string, query: string): Promise<FileSearchResult[]>
+
+  // Server filesystem browsing (remote mode)
+  listServerDirectory(dirPath: string): Promise<DirectoryListingResult>
   // Debug: send renderer logs to main process log file
   debugLog(...args: unknown[]): void
 
@@ -273,6 +317,8 @@ export interface ElectronAPI {
 
   // System
   getVersions(): { node: string; chrome: string; electron: string }
+  /** Returns the renderer host environment without going through RPC. */
+  getRuntimeEnvironment(): 'electron' | 'web'
   getHomeDir(): Promise<string>
   isDebugMode(): Promise<boolean>
 
@@ -280,6 +326,9 @@ export interface ElectronAPI {
   getTransportConnectionState(): Promise<TransportConnectionState>
   onTransportConnectionStateChanged(callback: (state: TransportConnectionState) => void): () => void
   reconnectTransport(): Promise<void>
+
+  /** Fired after a WebSocket reconnect. isStale=true means buffer was evicted — full refresh needed. */
+  onReconnected(callback: (isStale: boolean) => void): () => void
 
   /** Check whether the server registered a handler for a given RPC channel. */
   isChannelAvailable(channel: string): boolean
@@ -296,6 +345,9 @@ export interface ElectronAPI {
   // Release notes
   getReleaseNotes(): Promise<string>
   getLatestReleaseVersion(): Promise<string | undefined>
+
+  // System warnings (startup checks)
+  getSystemWarnings(): Promise<{ vcredistMissing: boolean; downloadUrl?: string }>
 
   // Shell operations
   openUrl(url: string): Promise<void>
@@ -329,6 +381,8 @@ export interface ElectronAPI {
   exchangeClaudeCode(code: string, connectionSlug: string): Promise<ClaudeOAuthResult>
   hasClaudeOAuthState(): Promise<boolean>
   clearClaudeOAuthState(): Promise<{ success: boolean }>
+  /** Defer onboarding setup — user chose "Setup later" */
+  deferSetup(): Promise<{ success: boolean }>
 
   // ChatGPT OAuth (for Codex chatgptAuthTokens mode)
   startChatGptOAuth(connectionSlug: string): Promise<{ success: boolean; error?: string }>
@@ -476,6 +530,12 @@ export interface ElectronAPI {
   // Appearance settings
   getRichToolDescriptions(): Promise<boolean>
   setRichToolDescriptions(enabled: boolean): Promise<void>
+
+  // Prompt caching & context
+  getExtendedPromptCache(): Promise<boolean>
+  setExtendedPromptCache(enabled: boolean): Promise<void>
+  getEnable1MContext(): Promise<boolean>
+  setEnable1MContext(enabled: boolean): Promise<void>
 
   // Network proxy settings
   getNetworkProxySettings(): Promise<NetworkProxySettings | undefined>

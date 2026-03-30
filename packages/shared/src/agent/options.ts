@@ -3,6 +3,7 @@ import { join, dirname } from "path";
 import { homedir } from "os";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "fs";
 import { debug } from "../utils/debug";
+import { getProxyEnvVars } from "../config/proxy-env.ts";
 
 declare const CRAFT_AGENT_CLI_VERSION: string | undefined;
 
@@ -183,6 +184,32 @@ export function setExecutable(path: string) {
  *   Used to pass per-session config like ANTHROPIC_BASE_URL that would
  *   otherwise be clobbered by concurrent sessions mutating process.env.
  */
+export function buildClaudeSubprocessEnv(
+    envOverrides?: Record<string, string>,
+): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        ...getProxyEnvVars(),
+        ...envOverrides,
+        // Propagate debug mode from argv flag OR existing env var
+        CRAFT_DEBUG: (process.argv.includes('--debug') || process.env.CRAFT_DEBUG === '1') ? '1' : '0',
+    };
+
+    // Strip CLAUDECODE from subprocess env to prevent nested session detection.
+    // The SDK CLI refuses to start if CLAUDECODE is set, interpreting it as an
+    // attempt to nest sessions. We must remove it for standalone server usage.
+    delete env.CLAUDECODE;
+
+    // Bedrock must never be routed through the Claude SDK path.
+    // Strip only Claude-specific Bedrock routing vars here; keep generic AWS_*
+    // untouched so user shell/tooling behavior inside the subprocess remains intact.
+    delete env.CLAUDE_CODE_USE_BEDROCK;
+    delete env.AWS_BEARER_TOKEN_BEDROCK;
+    delete env.ANTHROPIC_BEDROCK_BASE_URL;
+
+    return env;
+}
+
 export function getDefaultOptions(envOverrides?: Record<string, string>): Partial<Options> {
     // Repair corrupted ~/.claude.json before the SDK subprocess reads it
     ensureClaudeConfig();
@@ -201,7 +228,7 @@ export function getDefaultOptions(envOverrides?: Record<string, string>): Partia
     // printing "Claude Code cannot be launched inside another Claude Code session".
     // This occurs when the server is launched from within a Claude Code session
     // (e.g., Craft Agent starting the HTTP trigger server as a child process).
-    const { CLAUDECODE: _stripNested, ...cleanProcessEnv } = process.env;
+
 
     // If custom path is set (e.g., for Electron), use it with minimal options
     if (customPathToClaudeCodeExecutable) {
@@ -215,12 +242,7 @@ export function getDefaultOptions(envOverrides?: Record<string, string>): Partia
             // Use custom executable if set, otherwise default to 'bun'
             executable: (customExecutable || 'bun') as 'bun',
             executableArgs,
-            env: {
-                ...cleanProcessEnv,
-                ...envOverrides,
-                // Propagate debug mode from argv flag OR existing env var
-                CRAFT_DEBUG: (process.argv.includes('--debug') || process.env.CRAFT_DEBUG === '1') ? '1' : '0',
-            }
+            env: buildClaudeSubprocessEnv(envOverrides)
         };
     }
 
@@ -235,21 +257,13 @@ export function getDefaultOptions(envOverrides?: Record<string, string>): Partia
             // Inject network interceptor into SDK subprocess for API error capture and MCP schema injection
             executableArgs: [envFileFlag, '--preload', join(baseDir, 'unified-network-interceptor.ts')],
             env: {
-                ...cleanProcessEnv,
+                ...buildClaudeSubprocessEnv(envOverrides),
                 BUN_BE_BUN: '1',
-                ...envOverrides,
-                // Propagate debug mode from argv flag OR existing env var
-                CRAFT_DEBUG: (process.argv.includes('--debug') || process.env.CRAFT_DEBUG === '1') ? '1' : '0',
             }
         }
     }
     return {
         executableArgs: [envFileFlag],
-        env: {
-            ...cleanProcessEnv,
-            ...envOverrides,
-            // Propagate debug mode from argv flag OR existing env var
-            CRAFT_DEBUG: (process.argv.includes('--debug') || process.env.CRAFT_DEBUG === '1') ? '1' : '0',
-        }
+        env: buildClaudeSubprocessEnv(envOverrides)
     };
 }
