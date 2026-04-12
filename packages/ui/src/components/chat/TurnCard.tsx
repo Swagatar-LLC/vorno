@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useMemo, useEffect, useRef, useCallback, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { ToolDisplayMeta, AnnotationV1 } from '@craft-agent/core'
 import { normalizePath, pathStartsWith, stripPathPrefix } from '@craft-agent/core/utils'
 import { motion, AnimatePresence } from 'motion/react'
@@ -523,6 +524,10 @@ function getToolDisplayName(name: string): string {
   // Friendly display names for specific tools
   const displayNames: Record<string, string> = {
     'TodoWrite': 'Todo List Updated',
+    'set_session_labels': 'Set Session Labels',
+    'set_session_status': 'Set Session Status',
+    'get_session_info': 'Get Session Info',
+    'list_sessions': 'List Sessions',
   }
 
   return displayNames[stripped] || stripped
@@ -1426,6 +1431,7 @@ interface BranchDropdownProps {
 }
 
 function BranchDropdown({ onBranch }: BranchDropdownProps) {
+  const { t } = useTranslation()
   const handleBranchClick = () => {
     onBranch({ newPanel: true })
   }
@@ -1436,7 +1442,7 @@ function BranchDropdown({ onBranch }: BranchDropdownProps) {
         <button
           type="button"
           aria-label="Branch options"
-          title="Branch"
+          title={t('chat.branch')}
           className={cn(
             "p-1 rounded-[4px] transition-colors select-none",
             "text-muted-foreground hover:text-foreground hover:bg-foreground/5",
@@ -1659,6 +1665,7 @@ export function ResponseCard({
   openAnnotationRequest,
   annotationInteractionMode = 'interactive',
 }: ResponseCardProps) {
+  const { t } = useTranslation()
   // Throttled content for display - updates every CONTENT_THROTTLE_MS during streaming
   const [displayedText, setDisplayedText] = useState(text)
   const lastUpdateRef = useRef(Date.now())
@@ -2410,7 +2417,8 @@ export function ResponseCard({
     return (
       <>
         <div className="bg-background shadow-minimal rounded-[8px] overflow-hidden relative group">
-          {/* Fullscreen button - top right corner, visible on hover */}
+          {/* Fullscreen button - desktop only; compact mode keeps message chrome minimal */}
+          {!compactMode && (
           <button
             onClick={() => setIsFullscreen(true)}
             className={cn(
@@ -2420,10 +2428,11 @@ export function ResponseCard({
               "text-muted-foreground/50 hover:text-foreground",
               "focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:opacity-100"
             )}
-            title="View Fullscreen"
+            title={t('common.viewFullscreen')}
           >
             <Maximize2 className="w-3.5 h-3.5" />
           </button>
+          )}
 
           {/* Plan header - only shown for plan variant */}
           {isPlan && (
@@ -2441,6 +2450,7 @@ export function ResponseCard({
           {/* Scrollable content area with subtle fade at edges (dark mode only) */}
           <div
             ref={contentRef}
+            data-search-root="response"
             onMouseDown={handleSelectionPointerDown}
             onMouseUp={handleTextSelection}
             className="pl-[22px] pr-[16px] py-3 text-sm overflow-y-auto scrollbar-hover"
@@ -2484,12 +2494,12 @@ export function ResponseCard({
                   {copied ? (
                     <>
                       <Check className={SIZE_CONFIG.iconSize} />
-                      <span>Copied!</span>
+                      <span>{t("common.copied")}</span>
                     </>
                   ) : (
                     <>
                       <Copy className={SIZE_CONFIG.iconSize} />
-                      <span>Copy</span>
+                      <span>{t("common.copy")}</span>
                     </>
                   )}
                 </button>
@@ -2523,8 +2533,8 @@ export function ResponseCard({
                     <AcceptPlanDropdown
                       onAccept={onAccept}
                       onAcceptWithCompact={onAcceptWithCompact}
-                      acceptLabel={hasActiveFollowUpAnnotations ? 'Accept & Send Follow-ups' : 'Accept Plan'}
-                      acceptOptionLabel={hasActiveFollowUpAnnotations ? 'Accept & Send Follow-ups' : 'Accept'}
+                      acceptLabel={hasActiveFollowUpAnnotations ? t('plan.acceptAndSendFollowups') : t('plan.acceptPlan')}
+                      acceptOptionLabel={hasActiveFollowUpAnnotations ? t('plan.acceptAndSendFollowups') : t('plan.accept')}
                     />
                   </div>
                 )}
@@ -2565,6 +2575,7 @@ export function ResponseCard({
         {/* Subtle fade at top and bottom edges (dark mode only) */}
         <div
           ref={contentRef}
+          data-search-root="response"
           onMouseDown={handleSelectionPointerDown}
           onMouseUp={handleTextSelection}
           className="pl-[22px] pr-4 py-3 text-sm overflow-y-auto scrollbar-hover"

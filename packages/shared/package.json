@@ -1,6 +1,6 @@
 {
   "name": "@craft-agent/shared",
-  "version": "0.8.1",
+  "version": "0.8.6",
   "license": "Apache-2.0",
   "description": "Shared business logic for Craft Agents - agent, auth, config, credentials, MCP integration",
   "type": "module",
@@ -59,7 +59,9 @@
     "./skills/types": "./src/skills/types.ts",
     "./automations": "./src/automations/index.ts",
     "./automations/resolve-config-path": "./src/automations/resolve-config-path.ts",
-    "./protocol": "./src/protocol/index.ts"
+    "./protocol": "./src/protocol/index.ts",
+    "./i18n": "./src/i18n/index.ts",
+    "./resources": "./src/resources/index.ts"
   },
   "dependencies": {
     "@craft-agent/core": "workspace:*",
@@ -69,10 +71,14 @@
     "bash-parser": "^0.5.0",
     "croner": "^10.0.1",
     "filtrex": "^3.1.0",
+    "glob": "^13.0.0",
+    "date-fns": "^4.1.0",
+    "i18next": "^26.0.3",
     "incr-regex-package": "^1.0.4",
     "shell-quote": "^1.8.3",
-    "@mariozechner/pi-ai": "0.56.2",
-    "glob": "^13.0.0"
+    "@mariozechner/pi-agent-core": "0.66.1",
+    "@mariozechner/pi-ai": "0.66.1",
+    "@mariozechner/pi-coding-agent": "0.66.1"
   },
   "peerDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.19",

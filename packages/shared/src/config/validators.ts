@@ -64,13 +64,20 @@ const WorkspaceSchema = z.object({
 // --- LLM Connection schema for config validation ---
 
 const LlmProviderTypeSchema = z.enum([
-  'anthropic', 'anthropic_compat', 'openai', 'openai_compat', 'pi', 'pi_compat', 'bedrock', 'vertex', 'copilot',
+  'anthropic', 'openai', 'openai_compat', 'pi', 'pi_compat', 'copilot',
+  // Legacy values kept for config parsing tolerance (migrated at runtime):
+  'anthropic_compat', 'bedrock', 'vertex',
 ]);
 
 const LlmAuthTypeSchema = z.enum([
   'api_key', 'api_key_with_endpoint', 'oauth', 'iam_credentials',
   'bearer_token', 'service_account_file', 'environment', 'none',
 ]);
+
+const CustomEndpointSchema = z.object({
+  api: z.enum(['openai-completions', 'anthropic-messages']),
+  supportsImages: z.boolean().optional(),
+});
 
 const LlmConnectionSchema = z.object({
   slug: z.string().min(1),
@@ -81,6 +88,7 @@ const LlmConnectionSchema = z.object({
   models: z.array(z.union([z.string(), z.object({ id: z.string() }).passthrough()])).optional(),
   defaultModel: z.string().optional(),
   modelSelectionMode: z.enum(['automaticallySyncedFromProvider', 'userDefined3Tier']).optional(),
+  customEndpoint: CustomEndpointSchema.optional(),
   createdAt: z.number(),
   // Allow additional fields (codexPath, awsRegion, gcpProjectId, etc.)
 }).passthrough();
@@ -395,12 +403,24 @@ const McpSourceConfigSchema = z.object({
   }
 );
 
+const ApiOAuthConfigSchema = z.object({
+  authorizationUrl: z.string().url(),
+  tokenUrl: z.string().url(),
+  clientId: z.string().min(1),
+  clientSecret: z.string().optional(),
+  scopes: z.array(z.string()).optional(),
+  audience: z.string().optional(),
+  extraParams: z.record(z.string(), z.string()).optional(),
+});
+
 const ApiSourceConfigSchema = z.object({
   baseUrl: z.string().url(),
-  authType: z.enum(['bearer', 'header', 'query', 'basic', 'none']),
+  authType: z.enum(['bearer', 'header', 'query', 'basic', 'oauth', 'none']),
   headerName: z.string().optional(),
+  headerNames: z.array(z.string()).optional(),
   queryParam: z.string().optional(),
   authScheme: z.string().optional(),
+  defaultHeaders: z.record(z.string(), z.string()).optional(),
   testEndpoint: z
     .object({
       method: z.enum(['GET', 'POST']),
@@ -411,6 +431,13 @@ const ApiSourceConfigSchema = z.object({
     .optional(),
   googleService: z.enum(['gmail', 'calendar', 'drive', 'docs', 'sheets', 'youtube', 'searchconsole']).optional(),
   googleScopes: z.array(z.string()).optional(),
+  googleOAuthClientId: z.string().optional(),
+  googleOAuthClientSecret: z.string().optional(),
+  slackService: z.enum(['messaging', 'channels', 'users', 'files', 'full']).optional(),
+  slackUserScopes: z.array(z.string()).optional(),
+  microsoftService: z.enum(['outlook', 'microsoft-calendar', 'onedrive', 'teams', 'sharepoint']).optional(),
+  microsoftScopes: z.array(z.string()).optional(),
+  oauth: ApiOAuthConfigSchema.optional(),
 });
 
 const LocalSourceConfigSchema = z.object({
