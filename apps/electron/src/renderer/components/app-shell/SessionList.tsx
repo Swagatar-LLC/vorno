@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react"
+import { useTranslation } from "react-i18next"
 import { useSetAtom } from "jotai"
 import { isToday, isYesterday, format, startOfDay } from "date-fns"
+import { getDateLocale } from "@craft-agent/shared/i18n"
 import { useAction } from "@/actions"
 import { Inbox, Archive } from "lucide-react"
 
@@ -87,15 +89,18 @@ interface SessionListProps {
   onNavigateToSession?: (sessionId: string) => void
   /** Session-level pending prompt marker (permission/admin approval) */
   hasPendingPrompt?: (sessionId: string) => boolean
+  /** DOM-verified match info for the active session (from ChatDisplay) */
+  activeChatMatchInfo?: { sessionId: string | null; count: number; isHighlighting?: boolean }
 }
 
 // Re-export SessionStatusId for use by parent components
 export type { SessionStatusId }
 
-function formatDateGroupLabel(date: Date): string {
-  if (isToday(date)) return 'Today'
-  if (isYesterday(date)) return 'Yesterday'
-  return format(date, 'MMM d')
+// Note: uses date-fns format for non-today/yesterday dates; Today/Yesterday translated at render time
+function formatDateGroupLabel(date: Date, t: (key: string) => string, lang: string): string {
+  if (isToday(date)) return t('common.today')
+  if (isYesterday(date)) return t('common.yesterday')
+  return format(date, 'MMM d', { locale: getDateLocale(lang) })
 }
 
 /**
@@ -135,7 +140,9 @@ export function SessionList({
   focusedSessionId,
   onNavigateToSession,
   hasPendingPrompt,
+  activeChatMatchInfo,
 }: SessionListProps) {
+  const { t, i18n } = useTranslation()
   const setSendToWorkspace = useSetAtom(sendToWorkspaceAtom)
 
   // --- Selection (atom-backed, shared with ChatDisplay + BatchActionPanel) ---
@@ -228,6 +235,7 @@ export function SessionList({
     isSearchMode,
     highlightQuery,
     isSearchingContent,
+    isSearchUnavailable,
     contentSearchResults,
     matchingFilterItems,
     otherResultItems,
@@ -257,10 +265,10 @@ export function SessionList({
 
       const groups: EntityListGroup<SessionListRow>[] = []
       if (matchingRows.length > 0) {
-        groups.push({ key: 'matching', label: 'In Current View', items: matchingRows })
+        groups.push({ key: 'matching', label: t("session.inCurrentView"), items: matchingRows })
       }
       if (otherRows.length > 0) {
-        groups.push({ key: 'other', label: 'Other Conversations', items: otherRows })
+        groups.push({ key: 'other', label: t("session.otherConversations"), items: otherRows })
       }
 
       return {
@@ -303,7 +311,7 @@ export function SessionList({
         const collapsedMeta = collapsedGroupsMeta.find(m => m.key === key)
         orderedGroups.push({
           key,
-          label: state.label,
+          label: t(`status.${state.id}`, state.label),
           items: groupRows,
           collapsible: true,
           ...(collapsedMeta ? { collapsedCount: collapsedMeta.count } : {}),
@@ -337,7 +345,7 @@ export function SessionList({
       if (!groupsByKey.has(groupKey)) {
         groupsByKey.set(groupKey, {
           key: groupKey,
-          label: formatDateGroupLabel(day),
+          label: formatDateGroupLabel(day, t, i18n.resolvedLanguage ?? 'en'),
           items: [],
           collapsible: true,
         })
@@ -352,7 +360,7 @@ export function SessionList({
         const date = new Date(meta.key)
         groupsByKey.set(meta.key, {
           key: meta.key,
-          label: formatDateGroupLabel(date),
+          label: formatDateGroupLabel(date, t, i18n.resolvedLanguage ?? 'en'),
           items: [],
           collapsible: true,
           collapsedCount: meta.count,
@@ -377,7 +385,7 @@ export function SessionList({
       rows,
       groups: orderedGroups,
     }
-  }, [isSearchMode, matchingFilterItems, otherResultItems, flatItems, groupingMode, sessionStatuses, collapsedGroupsMeta])
+  }, [isSearchMode, matchingFilterItems, otherResultItems, flatItems, groupingMode, sessionStatuses, collapsedGroupsMeta, t])
 
   const flatRows = rowData.rows
 
@@ -578,6 +586,7 @@ export function SessionList({
     isMultiSelectActive,
     sessionOptions,
     contentSearchResults,
+    activeChatMatchInfo,
     hasPendingPrompt,
   }), [
     handleRenameClick, onSessionStatusChange,
@@ -587,7 +596,7 @@ export function SessionList({
     handleSelectSessionById, handleOpenInNewWindow, setSendToWorkspace, handleFocusZone, handleKeyDown,
     sessionStatuses, flatLabels, labels, resolvedSearchQuery,
     focusedSessionId, selectionStore.state.selected, isMultiSelectActive,
-    sessionOptions, contentSearchResults, hasPendingPrompt,
+    sessionOptions, contentSearchResults, activeChatMatchInfo, hasPendingPrompt,
   ])
 
   // --- Empty state (non-search) — render before EntityList ---
@@ -597,8 +606,8 @@ export function SessionList({
       return (
         <EntityListEmptyScreen
           icon={<Archive />}
-          title="No archived sessions"
-          description="Sessions you archive will appear here. Archive sessions to keep your list tidy while preserving conversations."
+          title={t("session.noArchivedSessions")}
+          description={t("session.noArchivedSessionsDesc")}
           className="h-full"
         />
       )
@@ -607,8 +616,8 @@ export function SessionList({
     return (
       <EntityListEmptyScreen
         icon={<Inbox />}
-        title="No sessions yet"
-        description="Sessions with your agent appear here. Start one to get going."
+        title={t("session.noSessionsYet")}
+        description={t("session.noSessionsYetDesc")}
         className="h-full"
       >
         <button
@@ -620,7 +629,7 @@ export function SessionList({
           }}
           className="inline-flex items-center h-7 px-3 text-xs font-medium rounded-[8px] bg-background shadow-minimal hover:bg-foreground/[0.03] transition-colors"
         >
-          New Session
+          {t("session.newSession")}
         </button>
       </EntityListEmptyScreen>
     )
@@ -661,6 +670,7 @@ export function SessionList({
                 onFocus={() => setIsSearchInputFocused(true)}
                 onBlur={() => setIsSearchInputFocused(false)}
                 isSearching={isSearchingContent}
+                isUnavailable={isSearchUnavailable}
                 resultCount={matchingFilterItems.length + otherResultItems.length}
                 exceededLimit={exceededSearchLimit}
                 inputRef={searchInputRef}
@@ -668,7 +678,7 @@ export function SessionList({
             )}
             {isSearchMode && matchingFilterItems.length === 0 && otherResultItems.length > 0 && (
               <div className="px-4 py-3 text-sm text-muted-foreground">
-                No results in current filter
+                {t("session.noResultsInFilter")}
               </div>
             )}
           </>
@@ -676,15 +686,15 @@ export function SessionList({
         emptyState={
           isSearchMode && !isSearchingContent ? (
             <div className="flex flex-col items-center justify-center py-12 px-4">
-              <p className="text-sm text-muted-foreground">No sessions found</p>
+              <p className="text-sm text-muted-foreground">{t("session.noSessionsFound")}</p>
               <p className="text-xs text-muted-foreground/60 mt-0.5">
-                Searched titles and message content
+                {t("session.noSessionsFoundDesc")}
               </p>
               <button
                 onClick={() => onSearchChange?.('')}
                 className="text-xs text-foreground hover:underline mt-2"
               >
-                Clear search
+                {t("session.clearSearch")}
               </button>
             </div>
           ) : undefined
@@ -715,11 +725,11 @@ export function SessionList({
       <RenameDialog
         open={renameDialogOpen}
         onOpenChange={setRenameDialogOpen}
-        title="Rename Session"
+        title={t("session.renameSession")}
         value={renameName}
         onValueChange={setRenameName}
         onSubmit={handleRenameSubmit}
-        placeholder="Enter session name..."
+        placeholder={t("session.enterSessionName")}
       />
     </div>
   )

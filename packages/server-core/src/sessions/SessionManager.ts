@@ -22,12 +22,12 @@ import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaul
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
 import { isValidWorkingDirectory } from '../utils/path-validation'
 import { InitGate } from '@craft-agent/server-core/domain'
+import { i18n, LOCALE_REGISTRY, type LanguageCode } from '@craft-agent/shared/i18n'
 import {
   getWorkspaces,
   getWorkspaceByNameOrId,
   loadConfigDefaults,
   loadPreferences,
-
   migrateLegacyCredentials,
   migrateLegacyLlmConnectionsConfig,
   migrateOrphanedDefaultConnections,
@@ -48,6 +48,7 @@ import {
   canUpdateSdkCwd,
   setPendingPlanExecution as setStoredPendingPlanExecution,
   markCompactionComplete as markStoredCompactionComplete,
+  markPendingPlanExecutionDispatched as markStoredPendingPlanExecutionDispatched,
   clearPendingPlanExecution as clearStoredPendingPlanExecution,
   getPendingPlanExecution as getStoredPendingPlanExecution,
   getSessionAttachmentsPath,
@@ -75,20 +76,24 @@ import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
 import { resolveAuthEnvVars } from '@craft-agent/shared/config'
 import { toolMetadataStore, getLastApiError } from '@craft-agent/shared/interceptor'
 import { isParentTaskTool } from '@craft-agent/shared/utils/toolNames'
+import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
-import { loadAllSkills, loadSkillBySlug, type LoadedSkill } from '@craft-agent/shared/skills'
+import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
+import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
 import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
 import { getDefaultSummarizationModel } from '@craft-agent/shared/config/models'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
-import { listLabels } from '@craft-agent/shared/labels/storage'
+import { listLabels, loadLabelConfig } from '@craft-agent/shared/labels/storage'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist } from '@craft-agent/shared/labels/crud'
+import { flattenLabels } from '@craft-agent/shared/labels/tree'
+import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
 import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
 
 // Import from server-core domain utilities
@@ -382,7 +387,8 @@ async function buildServersFromSources(
   // Uses TokenRefreshManager for unified refresh logic (DRY principle)
   const getTokenForSource = (source: LoadedSource) => {
     const provider = source.config.provider
-    if (isApiOAuthProvider(provider)) {
+    // Provider-specific OAuth (Google, Slack, Microsoft) or generic OAuth (authType: 'oauth')
+    if (isApiOAuthProvider(provider) || source.config.api?.authType === 'oauth') {
       // Use TokenRefreshManager if provided, otherwise create temporary one
       const manager = tokenRefreshManager ?? new TokenRefreshManager(credManager, {
         log: (msg) => sessionLog.debug(msg),
@@ -826,6 +832,9 @@ interface ManagedSession {
   turnStartFinalMessageId?: string
   // External session metadata updates seen while processing (applied after turn stop)
   pendingExternalMetadata?: SessionHeader
+  // Guard: suppress external metadata revert after programmatic writes (setSessionStatus/setSessionLabels).
+  // fs.watch fires during atomic write (unlink+rename) and can read stale data, reverting in-memory state.
+  _metadataWriteGuardUntil?: number
   // Whether an async operation is ongoing (sharing, updating share, revoking, title regeneration)
   // Used for shimmer effect on session title
   isAsyncOperationOngoing?: boolean
@@ -1056,6 +1065,21 @@ export class SessionManager implements ISessionManager {
   /** Monotonic clock to ensure strictly increasing message timestamps */
   private lastTimestamp = 0
 
+  /**
+   * Centralized setter for session processing state.
+   * Automatically notifies the power manager on transitions (true→false, false→true)
+   * so callers don't need to remember to call onSessionStarted/onSessionStopped.
+   */
+  private setProcessing(managed: ManagedSession, processing: boolean): void {
+    const was = managed.isProcessing
+    managed.isProcessing = processing
+    if (!was && processing) {
+      sessionRuntimeHooks.onSessionStarted()
+    } else if (was && !processing) {
+      sessionRuntimeHooks.onSessionStopped()
+    }
+  }
+
   /** Wait until initialize() has completed (sessions loaded from disk).
    *  Resolves immediately if already initialized. */
   waitForInit(): Promise<void> {
@@ -1200,7 +1224,9 @@ export class SessionManager implements ISessionManager {
   /**
    * Set up ConfigWatcher for a workspace to broadcast live updates
    * (sources added/removed, guide.md changes, etc.)
-   * Called during window init (GET_WINDOW_WORKSPACE) and workspace switch.
+   * Called eagerly at boot for all workspaces (automations/scheduler) and
+   * on client connect (GET_WORKSPACE / SWITCH_WORKSPACE).
+   * Idempotent — returns immediately if already watching.
    * workspaceId must be the global config ID (what the renderer knows).
    */
   setupConfigWatcher(workspaceRootPath: string, workspaceId: string): void {
@@ -1306,9 +1332,18 @@ export class SessionManager implements ISessionManager {
         // Skip for self-writes to avoid feedback loops (especially on Windows
         // where fs.watch fires aggressively: unlink + rename = 2+ events).
         if (!isSelfWrite) {
-          if (managed.isProcessing) {
+          // Defer external metadata application when:
+          // 1. Session is actively processing (agent running), OR
+          // 2. Session was just written programmatically (set_session_status/labels tool)
+          //    — fs.watch fires during atomic write (unlink+rename) and can read stale data
+          const hasWriteGuard = managed._metadataWriteGuardUntil && Date.now() < managed._metadataWriteGuardUntil
+          if (managed.isProcessing || hasWriteGuard) {
             managed.pendingExternalMetadata = header
-            sessionLog.info(`Deferred external metadata update for session ${sessionId} (processing active)`)
+            if (hasWriteGuard) {
+              sessionLog.info(`Deferred external metadata update for session ${sessionId} (recent programmatic write)`)
+            } else {
+              sessionLog.info(`Deferred external metadata update for session ${sessionId} (processing active)`)
+            }
           } else {
             this.applyExternalSessionMetadata(managed, header)
           }
@@ -1388,6 +1423,15 @@ export class SessionManager implements ISessionManager {
       this.automationSystems.set(workspaceRootPath, automationSystem)
       sessionLog.info(`Initialized AutomationSystem for workspace ${workspaceId}`)
     }
+  }
+
+  /**
+   * Manually notify the ConfigWatcher of a file change.
+   * Workaround for Bun's fs.watch on Linux not detecting atomic renames.
+   */
+  notifyConfigFileChange(workspaceRootPath: string, relativePath: string): void {
+    const watcher = this.configWatchers.get(workspaceRootPath)
+    watcher?.notifyFileChange(relativePath)
   }
 
   /**
@@ -1559,6 +1603,15 @@ export class SessionManager implements ISessionManager {
 
       // Set up authentication environment variables (critical for SDK to work)
       await this.reinitializeAuth()
+
+      // Eagerly activate ConfigWatcher + AutomationSystem for every workspace so
+      // the scheduler and event handlers start at boot — not lazily on first
+      // client connect. This is critical for headless servers where no UI may
+      // ever connect, yet scheduled/event-driven automations must still fire.
+      const workspaces = getWorkspaces()
+      for (const workspace of workspaces) {
+        this.setupConfigWatcher(workspace.rootPath, workspace.id)
+      }
 
       // Load existing sessions from disk
       this.loadSessionsFromDisk()
@@ -2153,11 +2206,29 @@ export class SessionManager implements ISessionManager {
     // Get default enabled sources from workspace config
     const defaultEnabledSourceSlugs = options?.enabledSourceSlugs ?? wsConfig?.defaults?.enabledSourceSlugs
 
+    // Resolve model tier hints ('fast' / 'default') to actual model IDs.
+    // EditPopover uses tier hints instead of hardcoded Anthropic model names
+    // so the right model is selected regardless of the active LLM provider.
+    let resolvedModelOption = options?.model || defaultModel
+    if (resolvedModelOption === 'fast' || resolvedModelOption === 'default') {
+      const tierConnection = resolveSessionConnection(
+        options?.llmConnection,
+        wsConfig?.defaults?.defaultLlmConnection,
+      )
+      if (tierConnection) {
+        resolvedModelOption = resolvedModelOption === 'fast'
+          ? (getMiniModel(tierConnection) ?? tierConnection.defaultModel ?? defaultModel)
+          : (tierConnection.defaultModel ?? defaultModel)
+      } else {
+        resolvedModelOption = defaultModel
+      }
+    }
+
     // Resolve backend target early for branching policy checks.
     const targetBackendContext = resolveBackendContext({
       sessionConnectionSlug: options?.llmConnection,
       workspaceDefaultConnectionSlug: wsConfig?.defaults?.defaultLlmConnection,
-      managedModel: options?.model || defaultModel,
+      managedModel: resolvedModelOption,
     })
     const targetProviderType = targetBackendContext.connection?.providerType
       ?? (targetBackendContext.provider === 'pi' ? 'pi' : 'anthropic')
@@ -3276,7 +3347,7 @@ export class SessionManager implements ISessionManager {
           if (managed.isProcessing && managed.agent) {
             sessionLog.info(`Interrupting for plan submission in session ${managed.id}`)
             managed.agent.interruptForHandoff(AbortReason.PlanSubmitted)
-            managed.isProcessing = false
+            this.setProcessing(managed, false)
 
             // Release browser overlay + session binding because the agent is no longer running.
             // Plan submission pauses execution until user review, so browser ownership should not remain locked.
@@ -3332,7 +3403,7 @@ export class SessionManager implements ISessionManager {
         if (managed.isProcessing && managed.agent) {
           sessionLog.info(`Interrupting for auth request in session ${managed.id}`)
           managed.agent.interruptForHandoff(AbortReason.AuthRequest)
-          managed.isProcessing = false
+          this.setProcessing(managed, false)
 
           // Release browser overlay + session binding because the agent is paused awaiting user auth.
           void releaseBrowserOwnershipOnForcedStop(this.browserPaneManager, managed.id)
@@ -3410,6 +3481,114 @@ export class SessionManager implements ISessionManager {
           model: session.model,
         }
       }
+
+      // Wire up session self-management tools (set_session_labels, set_session_status, etc.)
+      mergeSessionScopedToolCallbacks(managed.id, {
+        setSessionLabelsFn: (sessionId: string | undefined, labels: string[]) => {
+          this.setSessionLabels(sessionId ?? managed.id, labels)
+        },
+        setSessionStatusFn: async (sessionId: string | undefined, status: string) => {
+          await this.setSessionStatus(sessionId ?? managed.id, status as SessionStatus)
+        },
+        getSessionInfoFn: (sessionId?: string) => {
+          const targetId = sessionId ?? managed.id
+          const session = this.sessions.get(targetId)
+          if (!session) return null
+          return {
+            id: session.id,
+            name: session.name ?? session.id,
+            labels: session.labels ?? [],
+            status: session.sessionStatus ?? 'todo',
+            permissionMode: session.permissionMode ?? 'ask',
+            createdAt: session.createdAt ?? 0,
+            workingDirectory: session.workingDirectory,
+            llmConnection: session.llmConnection,
+            model: session.model,
+            isActive: session.agent != null,
+          }
+        },
+        listSessionsFn: (options) => {
+          const DEFAULT_LIMIT = 20
+          const MAX_LIMIT = 100
+          const limit = Math.min(options?.limit ?? DEFAULT_LIMIT, MAX_LIMIT)
+          const offset = options?.offset ?? 0
+
+          let sessions = this.getSessions(managed.workspace.id)
+
+          // Filter
+          if (options?.status) {
+            sessions = sessions.filter(s => s.sessionStatus === options.status)
+          }
+          if (options?.label) {
+            sessions = sessions.filter(s => s.labels?.includes(options.label!))
+          }
+          if (options?.search) {
+            const needle = options.search.toLowerCase()
+            sessions = sessions.filter(s => s.name?.toLowerCase().includes(needle))
+          }
+
+          // Sort
+          const sortBy = options?.sortBy ?? 'recent'
+          if (sortBy === 'recent') {
+            sessions.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+          } else if (sortBy === 'name') {
+            sessions.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''))
+          } else if (sortBy === 'status') {
+            sessions.sort((a, b) => (a.sessionStatus ?? '').localeCompare(b.sessionStatus ?? ''))
+          }
+
+          const total = sessions.length
+
+          // Paginate
+          const page = sessions.slice(offset, offset + limit)
+
+          return {
+            total,
+            returned: page.length,
+            sessions: page.map(s => ({
+              id: s.id,
+              name: s.name ?? s.id,
+              labels: s.labels ?? [],
+              status: s.sessionStatus ?? 'todo',
+              createdAt: s.createdAt ?? 0,
+            })),
+          }
+        },
+        resolveLabelsFn: (labels: string[]) => {
+          const labelConfig = loadLabelConfig(managed.workspace.rootPath)
+          const allLabels = flattenLabels(labelConfig.labels)
+          const available = allLabels.map(l => l.id)
+
+          const resolved: string[] = []
+          const unknown: string[] = []
+
+          for (const input of labels) {
+            // Exact ID match
+            const byId = allLabels.find(l => l.id === input)
+            if (byId) { resolved.push(byId.id); continue }
+            // Case-insensitive name → ID
+            const byName = allLabels.find(l => l.name.toLowerCase() === input.toLowerCase())
+            if (byName) { resolved.push(byName.id); continue }
+            unknown.push(input)
+          }
+
+          return { resolved, unknown, available }
+        },
+        resolveStatusFn: (status: string) => {
+          const statusConfig = loadStatusConfig(managed.workspace.rootPath)
+          const allStatuses = statusConfig.statuses
+          const available = allStatuses.map(s => s.id)
+
+          // Exact ID match
+          const byId = allStatuses.find(s => s.id === status)
+          if (byId) return { resolved: byId.id, available }
+          // Case-insensitive label → ID
+          const byLabel = allStatuses.find(s => s.label.toLowerCase() === status.toLowerCase())
+          if (byLabel) return { resolved: byLabel.id, available }
+
+          return { resolved: null, available }
+        },
+      })
 
       // Wire up onSourceActivationRequest to auto-enable sources when agent tries to use them
       managed.agent.onSourceActivationRequest = async (sourceSlug: string): Promise<boolean> => {
@@ -3588,6 +3767,8 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       managed.sessionStatus = sessionStatus
+      // Guard: suppress external metadata revert from fs.watch during atomic write
+      managed._metadataWriteGuardUntil = Date.now() + 5000
       // Persist in-memory state directly to avoid race with pending queue writes
       this.persistSession(managed)
       await this.flushSession(managed.id)
@@ -3673,6 +3854,19 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * Mark pending plan execution as already dispatched from the UI.
+   * This prevents reload recovery from double-submitting the same plan if
+   * sending succeeded but cleanup failed due a reconnect/disconnect.
+   */
+  async markPendingPlanExecutionDispatched(sessionId: string): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      await markStoredPendingPlanExecutionDispatched(managed.workspace.rootPath, sessionId)
+      sessionLog.info(`Session ${sessionId}: marked pending plan execution as dispatched`)
+    }
+  }
+
+  /**
    * Clear pending plan execution state.
    * Called after plan execution is triggered, on new user message,
    * or when the pending execution is no longer relevant.
@@ -3689,7 +3883,7 @@ export class SessionManager implements ISessionManager {
    * Get pending plan execution state for a session.
    * Used on reload/init to check if we need to resume plan execution.
    */
-  getPendingPlanExecution(sessionId: string): { planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean } | null {
+  getPendingPlanExecution(sessionId: string): { planPath: string; draftInputSnapshot?: string; awaitingCompaction: boolean; executionDispatched: boolean } | null {
     const managed = this.sessions.get(sessionId)
     if (!managed) return null
     return getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
@@ -4124,9 +4318,10 @@ export class SessionManager implements ISessionManager {
 
     const assistantResponse = lastAssistantMsg?.content ?? ''
 
-    // Load user preferences for language-aware title generation
-    const preferences = loadPreferences()
-    const titleOptions = { language: preferences.language }
+    // Derive language from app's i18n setting for language-aware title generation
+    const titleLangCode = (i18n.resolvedLanguage ?? 'en') as LanguageCode
+    const titleLangEntry = LOCALE_REGISTRY[titleLangCode]
+    const titleOptions = { language: titleLangEntry?.nativeName }
 
     // Use existing agent or create temporary one
     let agent: AgentInstance | null = managed.agent
@@ -4226,6 +4421,10 @@ export class SessionManager implements ISessionManager {
       }
 
       managed.workingDirectory = path
+
+      // Invalidate filesystem caches that depend on working directory
+      invalidateContextFileCache(path)
+      invalidateSkillsCache()
 
       // Check if we can also update sdkCwd (safe if no SDK interaction yet)
       // Conditions: no messages sent AND no agent created yet (no SDK session)
@@ -4720,14 +4919,10 @@ export class SessionManager implements ISessionManager {
     }
 
     managed.lastMessageAt = Date.now()
-    managed.isProcessing = true
+    this.setProcessing(managed, true)
     managed.streamingText = ''
     managed.processingGeneration++
     managed.turnStartFinalMessageId = this.getLastFinalAssistantMessageId(managed.messages)
-
-    // Notify power manager that a session started processing
-    // (may prevent display sleep if setting enabled)
-    sessionRuntimeHooks.onSessionStarted()
 
     // Reset auth retry flag for this new message (allows one retry per message)
     // IMPORTANT: Skip reset if this is an auth retry call - the flag is already true
@@ -5214,7 +5409,7 @@ export class SessionManager implements ISessionManager {
 
         if (retryMessage) {
           sessionLog.info(`[auth-retry] Retrying message for session ${sessionId}`)
-          managed.isProcessing = false
+          this.setProcessing(managed, false)
 
           // Remove the user message that was added for this failed attempt
           // so we don't get duplicate messages when retrying
@@ -5280,7 +5475,7 @@ export class SessionManager implements ISessionManager {
     sessionLog.info(`Processing stopped for session ${sessionId}: ${reason}`)
 
     // 1. Cleanup state
-    managed.isProcessing = false
+    this.setProcessing(managed, false)
     managed.stopRequested = false  // Reset for next turn
 
     const turnStartFinalMessageId = managed.turnStartFinalMessageId
@@ -5292,10 +5487,6 @@ export class SessionManager implements ISessionManager {
     if (this.browserPaneManager) {
       await this.browserPaneManager.clearVisualsForSession(sessionId)
     }
-
-    // Notify power manager that a session stopped processing
-    // (may allow display sleep if no other sessions are active)
-    sessionRuntimeHooks.onSessionStopped()
 
     // 2. Handle unread state based on whether user is viewing this session
     //    This is the explicit state machine for NEW badge:
@@ -5721,6 +5912,8 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       managed.labels = labels
+      // Guard: suppress external metadata revert from fs.watch during atomic write
+      managed._metadataWriteGuardUntil = Date.now() + 5000
 
       this.sendEvent({
         type: 'labels_changed',
@@ -5812,8 +6005,9 @@ export class SessionManager implements ISessionManager {
     }
 
     try {
-      const preferences = loadPreferences()
-      const title = await agent.generateTitle(userMessage, { language: preferences.language })
+      const genLangCode = (i18n.resolvedLanguage ?? 'en') as LanguageCode
+      const genLangEntry = LOCALE_REGISTRY[genLangCode]
+      const title = await agent.generateTitle(userMessage, { language: genLangEntry?.nativeName })
       if (title) {
         managed.name = title
         this.persistSession(managed)
@@ -6922,12 +7116,8 @@ export class SessionManager implements ISessionManager {
     writeSessionJsonl(sessionFile, storedSession)
 
     // Write all bundle files (attachments, plans, data, downloads, etc.)
-    for (const file of bundle.files) {
-      const targetPath = join(sessionDir, file.relativePath)
-      const targetDir = dirname(targetPath)
-      await mkdir(targetDir, { recursive: true })
-      await writeFile(targetPath, Buffer.from(file.contentBase64, 'base64'))
-    }
+    // Uses restoreFiles() for path traversal, size, and base64 validation.
+    restoreFiles(sessionDir, bundle.files)
 
     // Register in-memory — pass session metadata without messages to avoid
     // StoredMessage[] vs Message[] type mismatch, then convert messages separately

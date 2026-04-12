@@ -58,6 +58,7 @@ import {
   setLastPlanFilePath,
   getSessionScopedToolCallbacks,
 } from './session-scoped-tools.ts';
+import { attachSessionSelfManagementBindings } from './session-self-management-bindings.ts';
 
 // Session tool proxy definitions (for registering with subprocess)
 import { getSessionToolProxyDefs, SESSION_TOOL_NAMES } from './backend/pi/session-tool-defs.ts';
@@ -1306,6 +1307,9 @@ export class PiAgent extends BaseAgent {
         this.onAuthRequest?.(request as any);
       },
     });
+
+    // Attach session self-management bindings (lazy getters from callback registry)
+    attachSessionSelfManagementBindings(this._sessionToolContext, sessionId);
 
     return this._sessionToolContext;
   }

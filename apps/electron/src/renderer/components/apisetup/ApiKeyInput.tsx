@@ -11,6 +11,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react"
+import { useTranslation } from "react-i18next"
 import { Command as CommandPrimitive } from "cmdk"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -44,15 +45,15 @@ export interface ApiKeySubmitData {
   modelSelectionMode?: 'automaticallySyncedFromProvider' | 'userDefined3Tier'
   /** Custom endpoint protocol — set when user configures an arbitrary API endpoint */
   customEndpoint?: CustomEndpointConfig
-  /** Bedrock IAM credentials — set when user configures AWS IAM auth */
+  /** IAM credentials for Pi+Bedrock (piAuthProvider='amazon-bedrock') setup */
   iamCredentials?: {
     accessKeyId: string
     secretAccessKey: string
     sessionToken?: string
   }
-  /** AWS region for Bedrock */
+  /** AWS region for Pi+Bedrock */
   awsRegion?: string
-  /** Bedrock authentication method */
+  /** Bedrock authentication method — determines auth type for Pi+Bedrock connections */
   bedrockAuthMethod?: 'iam_credentials' | 'environment'
 }
 
@@ -181,6 +182,7 @@ export function ApiKeyInput({
   const initialPreset = initialValues?.activePreset
     ?? (initialValues?.baseUrl ? getPresetForUrl(initialValues.baseUrl, presets) : defaultPreset.key)
 
+  const { t } = useTranslation()
   const [apiKey, setApiKey] = useState(initialValues?.apiKey ?? '')
   const [showValue, setShowValue] = useState(false)
   const [baseUrl, setBaseUrl] = useState(initialValues?.baseUrl ?? defaultPreset.url)
@@ -340,7 +342,8 @@ export function ApiKeyInput({
       return
     }
 
-    // Bedrock — submit with auth method and optional IAM credentials
+    // Bedrock — routes through Pi SDK with piAuthProvider='amazon-bedrock'.
+    // Submit with auth method and optional IAM credentials.
     if (isBedrock) {
       if (bedrockAuthMethod === 'iam_credentials' && !awsAccessKeyId.trim()) {
         setModelError('Access Key ID is required for IAM authentication.')
@@ -589,7 +592,7 @@ export function ApiKeyInput({
                     type={showValue ? 'text' : 'password'}
                     value={awsSecretAccessKey}
                     onChange={(e) => setAwsSecretAccessKey(e.target.value)}
-                    placeholder="Your secret access key"
+                    placeholder={t("apiSetup.secretAccessKey")}
                     className="pr-10 border-0 bg-transparent shadow-none"
                     disabled={isDisabled}
                   />
@@ -613,7 +616,7 @@ export function ApiKeyInput({
                     type="text"
                     value={awsSessionToken}
                     onChange={(e) => setAwsSessionToken(e.target.value)}
-                    placeholder="For temporary credentials (STS)"
+                    placeholder={t("apiSetup.temporaryCredentials")}
                     className="border-0 bg-transparent shadow-none"
                     disabled={isDisabled}
                   />
@@ -719,7 +722,7 @@ export function ApiKeyInput({
                           ref={tierFilterInputRef}
                           value={tierFilter}
                           onValueChange={setTierFilter}
-                          placeholder="Search models..."
+                          placeholder={t("apiSetup.searchModels")}
                           autoFocus
                           className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground placeholder:select-none"
                         />

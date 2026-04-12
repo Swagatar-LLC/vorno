@@ -141,16 +141,17 @@ export function createWebApi(options: WebApiOptions): {
       window.open(`${window.location.origin}/?session=${sessionId}`, '_blank')
     },
 
-    // Auto-update — not applicable to web
-    checkForUpdates: () => Promise.resolve({ available: false, version: '', releaseNotes: '' } as any),
-    getUpdateInfo: () => Promise.resolve({ available: false, version: '', releaseNotes: '' } as any),
+    // Auto-update — not applicable to web (but expose server version for About page)
+    checkForUpdates: () => Promise.resolve({ available: false, currentVersion: client.getServerVersion() ?? '' } as any),
+    getUpdateInfo: () => Promise.resolve({ available: false, currentVersion: client.getServerVersion() ?? '' } as any),
     installUpdate: () => Promise.resolve(),
     dismissUpdate: () => Promise.resolve(),
     getDismissedUpdateVersion: () => Promise.resolve(null),
     onUpdateAvailable: () => () => {},
     onUpdateDownloadProgress: () => () => {},
-    getReleaseNotes: () => Promise.resolve(''),
-    getLatestReleaseVersion: () => Promise.resolve(undefined),
+    // Release notes — serve from server via RPC (same content as Electron)
+    getReleaseNotes: () => client.invoke('releaseNotes:get') as Promise<string>,
+    getLatestReleaseVersion: () => client.invoke('releaseNotes:getLatestVersion') as Promise<string | undefined>,
 
     // Menu events — register as keyboard shortcuts
     onMenuNewChat: () => () => {},
@@ -224,6 +225,38 @@ export function createWebApi(options: WebApiOptions): {
   // OAuth overrides — web-compatible browser opening
   // The Electron preload uses shell.openExternal() which isn't available in browsers.
   const oauthOverrides: Partial<ElectronAPI> = {
+    // Generic source OAuth — server prepares the flow, we open the auth URL in a new tab.
+    // The OAuth provider redirects through the relay to our server's /api/oauth/callback,
+    // which completes the token exchange and pushes status via WebSocket.
+    performOAuth: async (args: {
+      sourceSlug: string
+      sessionId?: string
+      authRequestId?: string
+    }) => {
+      try {
+        const callbackUrl = `${window.location.origin}/api/oauth/callback`
+        const result = await client.invoke('oauth:start', {
+          sourceSlug: args.sourceSlug,
+          callbackUrl,
+          sessionId: args.sessionId,
+          authRequestId: args.authRequestId,
+        })
+
+        // Open auth URL in a new tab — after authentication the relay
+        // redirects back to our server's /api/oauth/callback endpoint.
+        window.open(result.authUrl, '_blank', 'noopener')
+
+        // The server completes the flow when the callback arrives and pushes
+        // auth status via WebSocket — the AuthRequestCard updates automatically.
+        return { success: true }
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : 'OAuth flow failed',
+        }
+      }
+    },
+
     // Claude OAuth — server returns authUrl, we open it in a new tab
     startClaudeOAuth: async () => {
       try {
