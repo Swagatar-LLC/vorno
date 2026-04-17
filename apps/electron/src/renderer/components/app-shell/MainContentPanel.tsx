@@ -18,6 +18,7 @@
 import * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAtomValue } from 'jotai'
+import { useTranslation } from 'react-i18next'
 import { Panel } from './Panel'
 import { MultiSelectPanel } from './MultiSelectPanel'
 import { useAppShellContext } from '@/context/AppShellContext'
@@ -61,6 +62,7 @@ export function MainContentPanel({
   className,
   navStateOverride,
 }: MainContentPanelProps) {
+  const { t } = useTranslation()
   const globalNavState = useNavigationState()
   const navState = navStateOverride ?? globalNavState
   const {
@@ -245,7 +247,7 @@ export function MainContentPanel({
         <Panel variant="grow" className={className}>
           <MultiSelectPanel
             count={sourceSelectionCount}
-            entityName="Source"
+            entityType="source"
             onSendToWorkspace={hasOtherWorkspaces ? () => openSendDialog('source', selectedSourceIds) : undefined}
             onClearSelection={clearSourceSelection}
           />
@@ -266,7 +268,7 @@ export function MainContentPanel({
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
         <div className="flex items-center justify-center h-full text-muted-foreground">
-          <p className="text-sm">No sources configured</p>
+          <p className="text-sm">{t("sourcesList.noSourcesConfigured")}</p>
         </div>
       </Panel>
     )
@@ -279,7 +281,7 @@ export function MainContentPanel({
         <Panel variant="grow" className={className}>
           <MultiSelectPanel
             count={skillSelectionCount}
-            entityName="Skill"
+            entityType="skill"
             onSendToWorkspace={hasOtherWorkspaces ? () => openSendDialog('skill', selectedSkillIds) : undefined}
             onClearSelection={clearSkillSelection}
           />
@@ -301,7 +303,7 @@ export function MainContentPanel({
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
         <div className="flex items-center justify-center h-full text-muted-foreground">
-          <p className="text-sm">No skills configured</p>
+          <p className="text-sm">{t("skillsList.noSkillsConfigured")}</p>
         </div>
       </Panel>
     )
@@ -314,7 +316,7 @@ export function MainContentPanel({
         <Panel variant="grow" className={className}>
           <MultiSelectPanel
             count={automationSelectionCount}
-            entityName="Automation"
+            entityType="automation"
             onSendToWorkspace={hasOtherWorkspaces ? () => openSendDialog('automation', selectedAutomationIds) : undefined}
             onClearSelection={clearAutomationSelection}
           />
@@ -343,7 +345,7 @@ export function MainContentPanel({
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
         <div className="flex items-center justify-center h-full text-muted-foreground">
-          <p className="text-sm">No automations configured</p>
+          <p className="text-sm">{t("automations.noAutomationsConfigured")}</p>
         </div>
       </Panel>
     )
@@ -381,7 +383,7 @@ export function MainContentPanel({
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
         <div className="flex items-center justify-center h-full text-muted-foreground">
-          <p className="text-sm">No session selected</p>
+          <p className="text-sm">{t("session.noSessionSelected")}</p>
         </div>
       </Panel>
     )
@@ -391,7 +393,7 @@ export function MainContentPanel({
   return wrapWithStoplight(
     <Panel variant="grow" className={className}>
       <div className="flex items-center justify-center h-full text-muted-foreground">
-        <p className="text-sm">Select a conversation to get started</p>
+        <p className="text-sm">{t("session.selectConversation")}</p>
       </div>
     </Panel>
   )
