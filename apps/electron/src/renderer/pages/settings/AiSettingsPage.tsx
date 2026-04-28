@@ -155,6 +155,7 @@ const PI_AUTH_PROVIDER_LABELS: Record<string, string> = {
   'amazon-bedrock': 'Amazon Bedrock',
   groq: 'Groq',
   mistral: 'Mistral',
+  deepseek: 'DeepSeek',
   xai: 'xAI',
   cerebras: 'Cerebras',
   zai: 'z.ai',
@@ -580,7 +581,7 @@ export default function AiSettingsPage() {
   // Default settings state (app-level)
   const [defaultThinking, setDefaultThinking] = useState<ThinkingLevel>(DEFAULT_THINKING_LEVEL)
   const [extendedPromptCache, setExtendedPromptCache] = useState(false)
-  const [enable1MContext, setEnable1MContext] = useState(true)
+  const [enable1MContext, setEnable1MContext] = useState(false)
 
   // Validation state per connection
   const [validationStates, setValidationStates] = useState<Record<string, {

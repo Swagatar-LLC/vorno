@@ -335,6 +335,41 @@ export interface SessionToolContext {
   /** Send a message to another session. Injected by backend (SessionManager). */
   sendAgentMessage?(sessionId: string, message: string, attachments?: Array<{ path: string; name?: string }>): Promise<void>;
 
+  /**
+   * Activate a source in the running session: add to enabledSourceSlugs,
+   * build its MCP/API servers, apply to the agent.
+   *
+   * Only available in backends that run alongside SessionManager (Claude in-process, Pi subprocess).
+   * Codex and other backends leave this undefined — callers should degrade gracefully (restart required).
+   *
+   * `availability` is always `'next-turn'` when activation succeeds: both Claude SDK
+   * (frozen `mcpServers` at `query()` start) and Pi (subprocess reloads proxy tools
+   * on the next `handlePrompt`) require the current turn to end before new tools
+   * are callable. The backend handles this via the existing source_activated + auto_retry
+   * machinery — the current turn is aborted and the renderer resends the user's
+   * original message with a `[{slug} activated]` suffix.
+   */
+  activateSourceInSession?(sourceSlug: string): Promise<{
+    ok: boolean;
+    reason?: string;
+    availability?: 'next-turn';
+  }>;
+
+  // ============================================================
+  // Messaging Gateway (for list/unbind messaging channels)
+  // ============================================================
+
+  /** Get messaging bindings for a session. Injected by backend when messaging is configured. */
+  getMessagingBindings?(sessionId: string): Array<{
+    platform: string;
+    channelId: string;
+    channelName?: string;
+    enabled: boolean;
+  }>;
+
+  /** Unbind messaging channels from a session. Returns count of removed bindings. */
+  unbindMessagingChannel?(sessionId: string, platform?: string): number;
+
   // ============================================================
   // Session Paths (for transform_data / render_template)
   // ============================================================
@@ -364,6 +399,12 @@ export interface ResolvedLabelsResult {
   unknown: string[];
   /** All valid label IDs (for error messages) */
   available: string[];
+  /**
+   * Optional per-input rejection reason, keyed by the original input string.
+   * Populated by `resolveSessionLabels()` from `@craft-agent/shared/labels`.
+   * Handlers use this to build clearer errors (e.g. "label X doesn't accept a value").
+   */
+  reasons?: Record<string, string>;
 }
 
 /** Result of resolving a status name/ID against configured statuses. */
