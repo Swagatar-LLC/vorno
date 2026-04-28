@@ -1,4 +1,4 @@
-import { query, createSdkMcpServer, tool, AbortError, type Query, type SDKUserMessage, type SDKAssistantMessageError, type Options, type SDKResultSuccess } from '@anthropic-ai/claude-agent-sdk';
+import { query, createSdkMcpServer, tool, AbortError, type Query, type SDKUserMessage, type SDKAssistantMessageError, type Options } from '@anthropic-ai/claude-agent-sdk';
 import { getDefaultOptions, resetClaudeConfigCheck } from './options.ts';
 // Local type for SDK user message content blocks (text, image, document)
 // Replaces import from @anthropic-ai/sdk/resources — keeps SDK as agent-only dependency
@@ -27,6 +27,7 @@ import { getCredentialManager } from '../credentials/index.ts';
 import { loadPreferences, formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
 import type { FileAttachment } from '../utils/files.ts';
 import type { LLMQueryRequest, LLMQueryResult } from './llm-tool.ts';
+import { consumeLlmQueryMessages } from './claude-llm-query.ts';
 import { debug } from '../utils/debug.ts';
 import { guardLargeResult } from '../utils/large-response.ts';
 import {
@@ -1418,6 +1419,27 @@ This is a branched conversation. All prior messages in this conversation are par
 
           const events = await this.eventAdapter.adapt(message);
           for (const event of events) {
+            // After source_test (or any session-scoped tool) successfully activates a
+            // new source, activateSourceInSessionFn stashes a restart descriptor on the
+            // agent. Consume it here — right after the source_test tool_result has
+            // landed — so the model sees "activated" in its prior turn, then the
+            // renderer auto-resends the user's original message with a
+            // "[{slug} activated]" suffix. Same machinery as the tool-call-error path.
+            if (event.type === 'tool_result') {
+              const pendingRestart = this.consumePendingSourceActivationRestart();
+              if (pendingRestart) {
+                yield event;
+                this.onDebug?.(`source_test activated "${pendingRestart.sourceSlug}", interrupting turn for auto-retry`);
+                yield {
+                  type: 'source_activated' as const,
+                  sourceSlug: pendingRestart.sourceSlug,
+                  originalMessage: pendingRestart.userMessage,
+                };
+                this.forceAbort(AbortReason.SourceActivated);
+                return;
+              }
+            }
+
             // Check for tool-not-found errors on inactive sources and attempt auto-activation
             const inactiveSourceError = this.detectInactiveSourceToolError(event, this.eventAdapter.getToolIndex());
 
@@ -2634,7 +2656,9 @@ This is a branched conversation. All prior messages in this conversation are par
     const options = {
       ...getDefaultOptions(this.config.envOverrides),
       model,
-      maxTurns: 1,
+      // Reasoning-model outputs (Opus 4.7 extended thinking) can span multiple SDK-counted
+      // turns even with no tools exposed. Tool surface here is empty, so no tool-use loop risk.
+      maxTurns: 10,
       systemPrompt: request.systemPrompt ?? 'Reply with ONLY the requested text. No explanation.',
       ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
       ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
@@ -2643,28 +2667,10 @@ This is a branched conversation. All prior messages in this conversation are par
       } : {}),
     };
 
-    let result = '';
-    let structuredOutput: unknown = undefined;
-
-    for await (const msg of query({ prompt: request.prompt, options })) {
-      if (msg.type === 'assistant') {
-        for (const block of msg.message.content) {
-          if (block.type === 'text') {
-            result += block.text;
-          }
-        }
-      }
-      // Extract structured output from SDK result message
-      if (msg.type === 'result' && (msg as SDKResultSuccess).subtype === 'success') {
-        structuredOutput = (msg as SDKResultSuccess).structured_output;
-      }
-    }
-
-    // Prefer structured output when available
-    if (structuredOutput !== undefined) {
-      return { text: JSON.stringify(structuredOutput, null, 2) };
-    }
-    return { text: result.trim() };
+    return consumeLlmQueryMessages(
+      query({ prompt: request.prompt, options }),
+      (msg) => this.debug(msg),
+    );
   }
 
   // ============================================================

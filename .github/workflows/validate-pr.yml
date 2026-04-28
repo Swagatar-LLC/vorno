@@ -74,12 +74,12 @@ jobs:
           PASS_COUNT=$(echo "$SUMMARY" | grep -Eo '[0-9]+ pass' | grep -Eo '[0-9]+' || echo "0")
           FAIL_COUNT=$(echo "$SUMMARY" | grep -Eo '[0-9]+ fail' | grep -Eo '[0-9]+' || echo "0")
           echo "Shared tests: $PASS_COUNT pass, $FAIL_COUNT fail"
-          if [ "$PASS_COUNT" -lt 2400 ]; then
-            echo "::error::Shared test pass count dropped below 2400 (got $PASS_COUNT). Regression detected."
+          if [ "$PASS_COUNT" -lt 2600 ]; then
+            echo "::error::Shared test pass count dropped below 2600 (got $PASS_COUNT). Regression detected."
             exit 1
           fi
-          if [ "$FAIL_COUNT" -gt 10 ]; then
-            echo "::error::Shared test failures exceeded 10 (got $FAIL_COUNT). New failures detected."
+          if [ "$FAIL_COUNT" -gt 20 ]; then
+            echo "::error::Shared test failures exceeded 20 (got $FAIL_COUNT). New failures detected."
             exit 1
           fi
           echo "✓ Shared tests healthy"

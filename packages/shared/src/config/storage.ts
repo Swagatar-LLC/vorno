@@ -45,6 +45,7 @@ import type { LlmConnection } from './llm-connections.ts';
 import { isValidProviderAuthCombination, getDefaultModelsForConnection, getDefaultModelForConnection, isPiProvider, toBedrockNativeId, type LlmProviderType } from './llm-connections.ts';
 import {
   getModelProvider,
+  getModelById,
 } from './models.ts';
 
 // Config stored in JSON file (credentials stored in encrypted file, not here)
@@ -75,7 +76,7 @@ export interface StoredConfig {
   browserToolEnabled?: boolean;  // Enable built-in browser tool (default: true). Disable for Playwright/Puppeteer.
   // Prompt caching & context
   extendedPromptCache?: boolean;  // Use 1h prompt cache TTL instead of 5m (default: false)
-  enable1MContext?: boolean;  // Enable 1M context window for supported models (default: true)
+  enable1MContext?: boolean;  // Enable 1M context window for supported models (default: false — opt-in; requires Anthropic Tier 4+)
   // Network proxy
   networkProxy?: import('./types.ts').NetworkProxySettings;
   // Windows: path to Git Bash (bash.exe) for the SDK subprocess
@@ -84,6 +85,10 @@ export interface StoredConfig {
   setupDeferred?: boolean;
   // Server mode — embedded remote server settings
   serverConfig?: import('./server-config.ts').ServerConfig;
+  // One-shot migration markers. Used by migrations that should run at most
+  // once per user (e.g. restoring a previously-removed model to connection
+  // lists without re-adding it if the user later removes it deliberately).
+  migrationsApplied?: string[];
 }
 
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -474,11 +479,13 @@ export function setBrowserToolEnabled(enabled: boolean): void {
 /**
  * Get whether 1M context window is enabled.
  * When disabled, models use 200K context and the interceptor strips the context-1m beta header.
- * Defaults to true if not set.
+ * Defaults to false — the 1M beta requires Anthropic Tier 4+, and enabling it by default
+ * causes 400 "Invalid Request" for lower-tier API keys on large contexts (issue #567).
+ * Users opt in via AI Settings → Performance → Extended Context (1M).
  */
 export function getEnable1MContext(): boolean {
   const config = loadStoredConfig();
-  return config?.enable1MContext !== false;
+  return config?.enable1MContext === true;
 }
 
 /**
@@ -968,33 +975,113 @@ export function clearWorkspacePlan(workspaceId: string): void {
 
 // ============================================
 // Session Input Drafts
-// Persists input text per session across app restarts
+// Persists composer state (text + attachments) per session across app restarts.
+// Two shapes for attachments:
+//  - Track P: { path, name } — absolute path captured via webUtils.getPathForFile
+//    (file-picker / OS drag). Re-read on hydrate via file:readUserAttachment RPC.
+//  - Track C: { path, name, content } — inline content for paste / web-drag Files
+//    that never existed on disk. Hydrate reconstructs directly from the stored bytes.
 // ============================================
 
 const DRAFTS_FILE = join(CONFIG_DIR, 'drafts.json');
 
+export interface DraftAttachmentContent {
+  type: 'image' | 'pdf' | 'text' | 'office' | 'unknown';
+  mimeType: string;
+  size: number;
+  base64?: string;
+  text?: string;
+  thumbnailBase64?: string;
+}
+
+export interface DraftAttachmentRef {
+  path: string;
+  name: string;
+  /** Inline content for attachments without a real filesystem path (paste, web-drag).
+   *  When present, hydrate reconstructs from these bytes and skips any disk read. */
+  content?: DraftAttachmentContent;
+}
+
+export interface SessionDraft {
+  text: string;
+  attachments?: DraftAttachmentRef[];
+}
+
 interface DraftsData {
-  drafts: Record<string, string>;
+  drafts: Record<string, SessionDraft>;
   updatedAt: number;
 }
 
+const ATTACHMENT_CONTENT_TYPES = new Set(['image', 'pdf', 'text', 'office', 'unknown']);
+
+function isAbsoluteDraftPath(p: string): boolean {
+  if (!p) return false;
+  if (p.startsWith('/')) return true;
+  if (/^[A-Za-z]:[\\/]/.test(p)) return true;
+  return false;
+}
+
+function isDraftAttachmentContent(value: unknown): value is DraftAttachmentContent {
+  if (!value || typeof value !== 'object') return false;
+  const c = value as DraftAttachmentContent;
+  if (!ATTACHMENT_CONTENT_TYPES.has(c.type as string)) return false;
+  if (typeof c.mimeType !== 'string') return false;
+  if (typeof c.size !== 'number') return false;
+  if (c.base64 !== undefined && typeof c.base64 !== 'string') return false;
+  if (c.text !== undefined && typeof c.text !== 'string') return false;
+  if (c.thumbnailBase64 !== undefined && typeof c.thumbnailBase64 !== 'string') return false;
+  return true;
+}
+
+function isDraftAttachmentRef(value: unknown): value is DraftAttachmentRef {
+  if (!value || typeof value !== 'object') return false;
+  const ref = value as DraftAttachmentRef;
+  if (typeof ref.path !== 'string' || typeof ref.name !== 'string') return false;
+  if (ref.content !== undefined && !isDraftAttachmentContent(ref.content)) return false;
+  // Post-migration guard: refs without content MUST have an absolute path. This rejects
+  // the broken 0.8.11 shape (synthetic path === filename, no content) on first load —
+  // user sees empty drafts once instead of attachments silently disappearing forever.
+  if (ref.content === undefined && !isAbsoluteDraftPath(ref.path)) return false;
+  return true;
+}
+
+function isSessionDraft(value: unknown): value is SessionDraft {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as SessionDraft;
+  if (typeof candidate.text !== 'string') return false;
+  if (candidate.attachments !== undefined) {
+    if (!Array.isArray(candidate.attachments)) return false;
+    if (!candidate.attachments.every(isDraftAttachmentRef)) return false;
+  }
+  return true;
+}
+
+function isEmptyDraft(draft: SessionDraft): boolean {
+  return !draft.text && (!draft.attachments || draft.attachments.length === 0);
+}
+
 /**
- * Load all drafts from disk
+ * Load all drafts from disk. Entries that don't parse as SessionDraft
+ * (e.g. pre-upgrade string drafts) are discarded silently.
  */
 function loadDraftsData(): DraftsData {
   try {
     if (!existsSync(DRAFTS_FILE)) {
       return { drafts: {}, updatedAt: 0 };
     }
-    return readJsonFileSync<DraftsData>(DRAFTS_FILE);
+    const raw = readJsonFileSync<{ drafts?: Record<string, unknown>; updatedAt?: number }>(DRAFTS_FILE);
+    const drafts: Record<string, SessionDraft> = {};
+    for (const [sessionId, value] of Object.entries(raw.drafts ?? {})) {
+      if (isSessionDraft(value)) {
+        drafts[sessionId] = value;
+      }
+    }
+    return { drafts, updatedAt: raw.updatedAt ?? 0 };
   } catch {
     return { drafts: {}, updatedAt: 0 };
   }
 }
 
-/**
- * Save drafts to disk
- */
 function saveDraftsData(data: DraftsData): void {
   ensureConfigDir();
   data.updatedAt = Date.now();
@@ -1002,30 +1089,48 @@ function saveDraftsData(data: DraftsData): void {
 }
 
 /**
- * Get draft text for a session
+ * Get the persisted draft for a session (text + attachment refs).
  */
-export function getSessionDraft(sessionId: string): string | null {
+export function getSessionDraft(sessionId: string): SessionDraft | null {
   const data = loadDraftsData();
   return data.drafts[sessionId] ?? null;
 }
 
 /**
- * Set draft text for a session
- * Pass empty string to clear the draft
+ * Set the draft for a session. Empty drafts (no text and no attachments)
+ * are removed from disk.
  */
-export function setSessionDraft(sessionId: string, text: string): void {
+export function setSessionDraft(sessionId: string, draft: SessionDraft): void {
   const data = loadDraftsData();
-  if (text) {
-    data.drafts[sessionId] = text;
-  } else {
+  if (isEmptyDraft(draft)) {
     delete data.drafts[sessionId];
+  } else {
+    data.drafts[sessionId] = {
+      text: draft.text,
+      ...(draft.attachments && draft.attachments.length > 0
+        ? { attachments: draft.attachments.map(normalizeDraftAttachment) }
+        : {}),
+    };
   }
   saveDraftsData(data);
 }
 
-/**
- * Delete draft for a session
- */
+function normalizeDraftAttachment(ref: DraftAttachmentRef): DraftAttachmentRef {
+  const base: DraftAttachmentRef = { path: ref.path, name: ref.name };
+  if (ref.content && isDraftAttachmentContent(ref.content)) {
+    const c = ref.content;
+    base.content = {
+      type: c.type,
+      mimeType: c.mimeType,
+      size: c.size,
+      ...(c.base64 !== undefined ? { base64: c.base64 } : {}),
+      ...(c.text !== undefined ? { text: c.text } : {}),
+      ...(c.thumbnailBase64 !== undefined ? { thumbnailBase64: c.thumbnailBase64 } : {}),
+    };
+  }
+  return base;
+}
+
 export function deleteSessionDraft(sessionId: string): void {
   const data = loadDraftsData();
   delete data.drafts[sessionId];
@@ -1033,9 +1138,9 @@ export function deleteSessionDraft(sessionId: string): void {
 }
 
 /**
- * Get all drafts as a record
+ * Get all drafts as a record keyed by sessionId.
  */
-export function getAllSessionDrafts(): Record<string, string> {
+export function getAllSessionDrafts(): Record<string, SessionDraft> {
   const data = loadDraftsData();
   return data.drafts;
 }
@@ -1687,82 +1792,72 @@ function migrateOpus45ToOpus46(config: StoredConfig): boolean {
   return changed;
 }
 
+// TODO(opus-4.6-sunset): delete this migration, its call site, its one-shot
+// marker ('opus-4-6-restored'), and the associated test when Opus 4.6 is
+// deprecated. This reverses the earlier forward migration Opus 4.6 → 4.7
+// that was removed in the same commit — users who were auto-migrated no
+// longer had 4.6 in their connection.models, so the picker wouldn't show it.
 /**
- * Migrate Opus 4.6 to Opus 4.7 for direct Anthropic connections (API key or OAuth).
- * Only applies to anthropic provider type (not compat), as third-party providers
- * like OpenRouter may not support the new model ID yet.
+ * Restore claude-opus-4-6 to direct Anthropic connections that were previously
+ * force-migrated to 4.7 and no longer list 4.6. Runs once per user (tracked via
+ * config.migrationsApplied). Never touches `defaultModel` — users keep whatever
+ * default they had, and can switch models themselves.
  */
-function migrateOpus46ToOpus47(config: StoredConfig): boolean {
-  if (!config.llmConnections) return false;
-
+function restoreOpus46ToAnthropicConnections(config: StoredConfig): boolean {
   const OPUS_46_ID = 'claude-opus-4-6';
   const OPUS_47_ID = 'claude-opus-4-7';
+  const MARKER = 'opus-4-6-restored';
+  const alreadyRan = config.migrationsApplied?.includes(MARKER) ?? false;
+
+  // Anthropic connection.models entries are stored as full ModelDefinition
+  // objects (via backfillAllConnectionModels). The model picker reads
+  // model.name and falls back to the raw ID for bare strings, so we must
+  // push the object form to render as "Opus 4.6".
+  const opus46Model = getModelById(OPUS_46_ID);
+  if (!opus46Model) {
+    // Defensive — 4.6 is registered in this same PR, should never happen.
+    if (!alreadyRan) {
+      config.migrationsApplied = [...(config.migrationsApplied ?? []), MARKER];
+      return true;
+    }
+    return false;
+  }
 
   let changed = false;
 
-  for (const connection of config.llmConnections) {
-    // Only migrate direct Anthropic connections (not compat/third-party)
+  for (const connection of config.llmConnections ?? []) {
     if (connection.providerType !== 'anthropic') continue;
+    if (!Array.isArray(connection.models) || connection.models.length === 0) continue;
 
-    // Migrate defaultModel
-    if (connection.defaultModel === OPUS_46_ID) {
-      connection.defaultModel = OPUS_47_ID;
-      changed = true;
-    }
-
-    // Migrate models array
-    if (connection.models && Array.isArray(connection.models)) {
-      const hasNew = connection.models.some(m =>
-        (typeof m === 'string' ? m : m.id) === OPUS_47_ID
-      );
-
-      if (hasNew) {
-        // New model already exists — just remove the old entry to avoid duplicates
-        const before = connection.models.length;
-        connection.models = connection.models.filter(m =>
-          (typeof m === 'string' ? m : m.id) !== OPUS_46_ID
-        );
-        if (connection.models.length !== before) changed = true;
-      } else {
-        // New model doesn't exist — rename the old entry in place
-        for (let i = 0; i < connection.models.length; i++) {
-          const model = connection.models[i];
-          if (typeof model === 'string' && model === OPUS_46_ID) {
-            connection.models[i] = OPUS_47_ID;
-            changed = true;
-          } else if (typeof model === 'object' && model.id === OPUS_46_ID) {
-            model.id = OPUS_47_ID;
-            if (model.name?.includes('4.6')) {
-              model.name = model.name.replace('4.6', '4.7');
-            }
-            changed = true;
-          }
-        }
+    // Idempotent shape repair: normalize any bare-string 'claude-opus-4-6'
+    // entry to the ModelDefinition object form. Runs regardless of the
+    // one-shot marker because it's a display-shape fix, not a new entry.
+    for (let i = 0; i < connection.models.length; i++) {
+      const m = connection.models[i];
+      if (typeof m === 'string' && m === OPUS_46_ID) {
+        connection.models[i] = { ...opus46Model };
+        changed = true;
       }
     }
-  }
 
-  return changed;
-}
+    // One-shot restore: only append 4.6 on the first run for a given user.
+    // A deliberate removal after the marker is set should stick.
+    if (alreadyRan) continue;
 
-/**
- * Migrate Opus 4.6 to Opus 4.7 in workspace default models.
- */
-function migrateWorkspaceOpus46ToOpus47(config: StoredConfig): void {
-  if (!config.workspaces) return;
-
-  const OPUS_46_ID = 'claude-opus-4-6';
-  const OPUS_47_ID = 'claude-opus-4-7';
-
-  for (const workspace of config.workspaces) {
-    const wsConfig = loadWorkspaceConfig(workspace.rootPath);
-    if (!wsConfig?.defaults?.model) continue;
-
-    if (wsConfig.defaults.model === OPUS_46_ID) {
-      wsConfig.defaults.model = OPUS_47_ID;
-      saveWorkspaceConfig(workspace.rootPath, wsConfig);
+    const ids = connection.models.map(m => typeof m === 'string' ? m : m.id);
+    if (ids.includes(OPUS_47_ID) && !ids.includes(OPUS_46_ID)) {
+      connection.models.push({ ...opus46Model });
+      changed = true;
     }
   }
+
+  // Mark the migration as seen on the first run — even when no connection
+  // was eligible — so subsequent runs don't keep re-checking.
+  if (!alreadyRan) {
+    config.migrationsApplied = [...(config.migrationsApplied ?? []), MARKER];
+    return true;
+  }
+  return changed;
 }
 
 /**
@@ -2131,12 +2226,12 @@ export function migrateLegacyLlmConnectionsConfig(): void {
     }
     // Phase 1g: Migrate Sonnet 4.5 → Sonnet 4.6 in workspace default models
     migrateWorkspaceSonnet45ToSonnet46(config);
-    // Phase 1h: Migrate Opus 4.6 → Opus 4.7 for direct Anthropic connections
-    if (migrateOpus46ToOpus47(config)) {
+    // Phase 1h: Restore Opus 4.6 to direct Anthropic connections that were
+    // previously force-migrated away from it (one-shot, guarded by marker).
+    // TODO(opus-4.6-sunset): drop this call and the function when 4.6 is deprecated.
+    if (restoreOpus46ToAnthropicConnections(config)) {
       needsSave = true;
     }
-    // Phase 1i: Migrate Opus 4.6 → Opus 4.7 in workspace default models
-    migrateWorkspaceOpus46ToOpus47(config);
     // Phase 1j: Migrate legacy provider types (bedrock/vertex/anthropic_compat → pi/pi_compat)
     if (migrateLegacyProviderTypes(config)) {
       needsSave = true;

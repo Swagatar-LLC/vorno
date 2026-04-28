@@ -308,8 +308,13 @@ export interface ElectronAPI {
   readFilePreviewDataUrl(path: string, maxSize?: number): Promise<string>
   openFileDialog(): Promise<string[]>
   readFileAttachment(path: string): Promise<FileAttachment | null>
+  /** Re-read a user-attached file by absolute path (bypasses workspace-dir validation).
+   *  Used only by draft hydration for paths the user explicitly picked via OS dialog / drag. */
+  readUserAttachment(path: string): Promise<FileAttachment | null>
   storeAttachment(sessionId: string, attachment: FileAttachment): Promise<import('../../../../packages/core/src/types/index.ts').StoredAttachment>
   generateThumbnail(base64: string, mimeType: string): Promise<string | null>
+  /** Returns the absolute filesystem path for a File (only works for file-picker / OS-drag Files). */
+  getFilePath(file: File): string | null
 
   // Filesystem search (for @ mention file selection)
   searchFiles(basePath: string, query: string): Promise<FileSearchResult[]>
@@ -429,11 +434,11 @@ export interface ElectronAPI {
   readPreferences(): Promise<{ content: string; exists: boolean; path: string }>
   writePreferences(content: string): Promise<{ success: boolean; error?: string }>
 
-  // Session Drafts (persisted input text)
-  getDraft(sessionId: string): Promise<string | null>
-  setDraft(sessionId: string, text: string): Promise<void>
+  // Session Drafts (persisted composer state — text + attachment refs)
+  getDraft(sessionId: string): Promise<import('@craft-agent/shared/config').SessionDraft | null>
+  setDraft(sessionId: string, draft: import('@craft-agent/shared/config').SessionDraft): Promise<void>
   deleteDraft(sessionId: string): Promise<void>
-  getAllDrafts(): Promise<Record<string, string>>
+  getAllDrafts(): Promise<Record<string, import('@craft-agent/shared/config').SessionDraft>>
 
   // Session Info Panel
   getSessionFiles(sessionId: string): Promise<SessionFile[]>
@@ -646,7 +651,48 @@ export interface ElectronAPI {
   // Resources (cross-workspace export/import)
   exportResources(workspaceId: string, options: ExportResourcesOptions): Promise<ExportResult>
   importResources(workspaceId: string, bundle: ResourceBundle, mode: ResourceImportMode): Promise<ResourceImportResult>
+
+  // Messaging gateway — workspaceId is taken from the client handshake (ctx.workspaceId)
+  getMessagingConfig(): Promise<{
+    enabled: boolean
+    platforms: Record<string, { enabled: boolean } | undefined>
+    runtime: Record<string, MessagingPlatformRuntimeInfo | undefined>
+  } | null>
+  updateMessagingConfig(config: Record<string, unknown>): Promise<void>
+  testTelegramToken(token: string): Promise<{ success: boolean; botName?: string; botUsername?: string; error?: string }>
+  saveTelegramToken(token: string): Promise<void>
+  disconnectMessagingPlatform(platform: string): Promise<void>
+  forgetMessagingPlatform(platform: string): Promise<void>
+  getMessagingBindings(): Promise<Array<{ id: string; workspaceId: string; sessionId: string; platform: string; channelId: string; channelName?: string; enabled: boolean; createdAt: number }>>
+  generateMessagingPairingCode(sessionId: string, platform: string): Promise<{ code: string; expiresAt: number; botUsername?: string }>
+  unbindMessagingSession(sessionId: string, platform?: string): Promise<void>
+  unbindMessagingBinding(bindingId: string): Promise<{ success: boolean }>
+  onMessagingBindingChanged(callback: (workspaceId: string) => void): () => void
+  onMessagingPlatformStatus(callback: (workspaceId: string, platform: string, status: MessagingPlatformRuntimeInfo) => void): () => void
+  // WhatsApp (subprocess-based Baileys adapter)
+  startWhatsAppConnect(): Promise<{ success: boolean }>
+  submitWhatsAppPhone(phoneNumber: string): Promise<{ success: boolean }>
+  onWhatsAppEvent(callback: (payload: { workspaceId: string; event: WhatsAppUiEvent }) => void): () => void
 }
+
+export interface MessagingPlatformRuntimeInfo {
+  platform: string
+  configured: boolean
+  connected: boolean
+  state: 'disconnected' | 'connecting' | 'connected' | 'reconnect_required' | 'error'
+  identity?: string
+  lastError?: string
+  updatedAt: number
+}
+
+/** Event payloads broadcast from the WhatsApp subprocess to the UI. */
+export type WhatsAppUiEvent =
+  | { type: 'qr'; qr: string }
+  | { type: 'pairing_code'; code: string }
+  | { type: 'connected'; jid?: string; name?: string }
+  | { type: 'disconnected'; loggedOut: boolean; reason?: string }
+  | { type: 'unavailable'; reason: string; message: string }
+  | { type: 'error'; message: string }
 
 // =============================================================================
 // Navigation types (renderer-only)
