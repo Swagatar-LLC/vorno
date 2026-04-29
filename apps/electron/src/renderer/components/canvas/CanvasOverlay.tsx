@@ -22,19 +22,45 @@ export function CanvasOverlay() {
   const activeSessionId = useAtomValue(activeSessionIdAtom)
 
   // Global toggle: Cmd/Ctrl+Shift+K. Esc to close.
+  // Diagnostic: log every keydown so we can see whether the listener fires
+  // and what modifier state arrives. Capture-phase so we beat ActionRegistry.
   useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[CanvasOverlay] mounted; keydown listener attached (capture phase)')
     function onKey(e: KeyboardEvent) {
       const meta = e.metaKey || e.ctrlKey
-      if (meta && e.shiftKey && e.key.toLowerCase() === 'k') {
+      const isToggle = meta && e.shiftKey && (e.code === 'KeyK' || e.key.toLowerCase() === 'k')
+      // Log only modifier+letter combos to avoid spamming on every typed character.
+      if (meta || e.altKey) {
+        // eslint-disable-next-line no-console
+        console.log('[CanvasOverlay] keydown', {
+          key: e.key,
+          code: e.code,
+          meta: e.metaKey,
+          ctrl: e.ctrlKey,
+          shift: e.shiftKey,
+          alt: e.altKey,
+          target: (e.target as Element | null)?.tagName,
+          isToggle,
+        })
+      }
+      if (isToggle) {
         e.preventDefault()
+        e.stopPropagation()
+        // eslint-disable-next-line no-console
+        console.log('[CanvasOverlay] toggle fired')
         setOpen((v) => !v)
       } else if (open && e.key === 'Escape') {
         e.preventDefault()
         setOpen(false)
       }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      // eslint-disable-next-line no-console
+      console.log('[CanvasOverlay] keydown listener detached')
+      window.removeEventListener('keydown', onKey, true)
+    }
   }, [open, setOpen])
 
   if (!open) return null
