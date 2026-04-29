@@ -1898,7 +1898,6 @@ export default function App() {
         <ModalProvider>
         <TooltipProvider delayDuration={0}>
         <ForkBadge />
-        <CanvasOverlay />
         <NavigationProvider
           workspaceId={windowWorkspaceId}
           workspaceSlug={windowWorkspaceSlug}
@@ -1911,6 +1910,9 @@ export default function App() {
           isSessionsReady={sessionsLoaded}
           remoteWorkspaceId={windowRemoteWorkspaceId}
         >
+          {/* Canvas overlay (Cmd+Shift+K) — must live inside NavigationProvider to read active session */}
+          <CanvasOverlay />
+
           {/* Handle window close requests (X button, Cmd+W) - close modal first if open */}
           <WindowCloseHandler />
 
