@@ -9,7 +9,15 @@
 
 export type CanvasNodeKind = 'text' | 'tool-call' | 'result'
 
-export interface TextNodeData {
+/** All nodes share these layout-/grouping-related fields. */
+interface CommonNodeData {
+  /** Color of the turn this message belongs to (cycled palette). Used as a left border accent. */
+  turnColor?: string
+  /** Lane label for accessibility / debug. */
+  lane?: 'user' | 'assistant' | 'work'
+}
+
+export interface TextNodeData extends CommonNodeData {
   kind: 'text'
   /** 'user' | 'assistant' from upstream MessageRole */
   role: 'user' | 'assistant'
@@ -18,7 +26,7 @@ export interface TextNodeData {
   isError?: boolean
 }
 
-export interface ToolCallNodeData {
+export interface ToolCallNodeData extends CommonNodeData {
   kind: 'tool-call'
   toolName: string
   toolDisplayName?: string
@@ -29,7 +37,7 @@ export interface ToolCallNodeData {
   status: string
 }
 
-export interface ResultNodeData {
+export interface ResultNodeData extends CommonNodeData {
   kind: 'result'
   toolName: string
   toolUseId: string

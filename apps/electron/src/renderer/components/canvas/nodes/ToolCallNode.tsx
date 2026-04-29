@@ -7,6 +7,8 @@ import React, { useState } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import type { ToolCallNodeData } from '../types'
 
+const NODE_W = 460
+
 const STATUS_COLORS: Record<string, string> = {
   pending: '#a8a29e',
   executing: '#c2410c',
@@ -17,7 +19,7 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 export function ToolCallNode(props: NodeProps) {
-  const { toolName, toolDisplayName, input, status } = props.data as unknown as ToolCallNodeData
+  const { toolName, toolDisplayName, input, status, turnColor } = props.data as unknown as ToolCallNodeData
   const [open, setOpen] = useState(false)
 
   const statusColor = STATUS_COLORS[status] ?? '#6b7280'
@@ -26,12 +28,12 @@ export function ToolCallNode(props: NodeProps) {
   return (
     <div
       style={{
+        width: NODE_W,
         background: '#ffffff',
         border: `2px solid ${statusColor}`,
+        borderLeft: `6px solid ${turnColor ?? statusColor}`,
         borderRadius: 8,
         padding: '10px 14px',
-        minWidth: 280,
-        maxWidth: 480,
         fontSize: 12,
         boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
         fontFamily: 'system-ui, -apple-system, sans-serif',
