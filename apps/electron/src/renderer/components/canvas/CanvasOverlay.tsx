@@ -1,8 +1,7 @@
 /**
  * CanvasOverlay — fullscreen overlay that hosts the CanvasSession.
  *
- * Toggled with Cmd/Ctrl+Alt+K. Esc closes. v0.1 spectator: read-only.
- * (Originally Cmd+Shift+K; changed because Notion claims that globally — see LEARNING-003.)
+ * Toggled with Cmd/Ctrl+Shift+K. Esc closes. v0.1 spectator: read-only.
  *
  * Mounted globally from App.tsx. When closed, renders nothing — zero impact
  * on the rest of the app.
@@ -22,15 +21,11 @@ export function CanvasOverlay() {
   const [open, setOpen] = useAtom(canvasOverlayOpenAtom)
   const activeSessionId = useAtomValue(activeSessionIdAtom)
 
-  // Global toggle: Cmd/Ctrl+Alt+K. Esc to close.
-  // (We avoid Cmd+Shift+K — Notion claims it globally on macOS.)
-  // Note: `e.key` may be a special character on some keyboard layouts when Alt
-  // is held (e.g. macOS Option+K = ˚). We check `e.code === 'KeyK'` for layout
-  // independence.
+  // Global toggle: Cmd/Ctrl+Shift+K. Esc to close.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const meta = e.metaKey || e.ctrlKey
-      if (meta && e.altKey && e.code === 'KeyK') {
+      if (meta && e.shiftKey && e.key.toLowerCase() === 'k') {
         e.preventDefault()
         setOpen((v) => !v)
       } else if (open && e.key === 'Escape') {
@@ -101,7 +96,7 @@ export function CanvasOverlay() {
               border: '1px solid rgba(255,255,255,0.15)',
             }}
           >
-            Esc to close · ⌘⌥K to toggle
+            Esc to close · ⌘⇧K to toggle
           </kbd>
           <button
             onClick={() => setOpen(false)}
@@ -144,7 +139,7 @@ export function CanvasOverlay() {
               fontSize: 14,
             }}
           >
-            No active session. Open a session and press ⌘⌥K again.
+            No active session. Open a session and press ⌘⇧K again.
           </div>
         )}
       </div>
