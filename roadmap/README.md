@@ -18,6 +18,8 @@ roadmap/
 ├── decisions/                     # ADRs (Architecture Decision Records)
 │   └── _template.md
 ├── discussions/                   # Captured conversations, dossiers, research
+├── learnings/                     # Debugging insights — non-obvious fixes captured for next time
+│   └── _template.md
 └── upstream/                      # Tracking lukilabs/craft-agents-oss
     ├── HEAD.md                    # Last sync state
     ├── delta.md                   # What we own that upstream doesn't
@@ -56,11 +58,12 @@ planned ──▶ in-progress ──▶ done ──▶ documented
 
 A plan **must** have frontmatter (id, title, status, direction, owner, created). The frontmatter `status` field always matches the folder it lives in — `roadmap-plan-advance` keeps them in sync via `git mv` + frontmatter rewrite.
 
-## Decisions vs plans vs discussions
+## Decisions vs plans vs discussions vs learnings
 
 - **Decision** — a load-bearing architectural commitment we'd need to revisit deliberately. Numbered, immutable once accepted (supersede with a new ADR).
 - **Plan** — a unit of work moving through status folders. May be small or large.
 - **Discussion** — captured thinking. Never authoritative; references for plans/decisions to draw from.
+- **Learning** — a captured debugging insight: signal, root cause, fix, recurrence, prevention. Written *during the fix*, not after the project. See [`learnings/`](learnings/) and the hard rule in [`AGENTS.md`](../AGENTS.md).
 
 ## Upstream relationship
 

@@ -32,12 +32,14 @@ When the user references one, read its `SKILL.md` *first* — tool calls are blo
 - Plans for non-trivial work — see `[skill:roadmap-plan-create]`.
 - Update the roadmap as state changes (a status folder move *is* the state change).
 - The user runs upstream stable side-by-side. The desktop fork build has a visible "FORK" badge — leave it on.
+- **ALWAYS capture debugging insights** when you fix a non-obvious bug. Use `[skill:capture-learning]` to write a `LEARNING-NNN` markdown in [`roadmap/learnings/`](roadmap/learnings/) before moving on. See the hard rule below.
 
 ## Hard rules
 
 - Wire compatibility with upstream is a contract — see [`roadmap/upstream/compatibility.md`](roadmap/upstream/compatibility.md). Breaking it requires a new ADR.
 - Pre-commit hooks are not skipped (`--no-verify` is for emergencies the user authorizes).
 - Don't generate URLs you aren't confident in. Ask or grep.
+- **Always record debugging insights during fixes.** When you root-cause a non-obvious bug, recover from a recurring issue, or work around upstream behavior, capture it in [`roadmap/learnings/`](roadmap/learnings/) as a `LEARNING-NNN` entry **before moving on**. Trivial typo fixes are exempt; anything that required reading multiple files, comparing versions, or reasoning about resolution order is not. The artifact prevents re-debugging the same issue next time.
 
 ## Where things live (high level)
 

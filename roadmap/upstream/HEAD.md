@@ -23,6 +23,10 @@ Snapshot of our most recent upstream sync.
 - `bun.lock` — resolved with `git checkout --theirs bun.lock && bun install`. Mechanical.
 - `packages/shared/src/agent/options.ts` — historically conflicted with our `CLAUDECODE` env strip; now upstream-aligned via `buildClaudeSubprocessEnv()`. Re-check on each merge.
 
+## Recurring post-sync issues
+
+- **Stale nested `@mariozechner/*` deps** — see [LEARNING-001](../learnings/LEARNING-001-stale-nested-mariozechner-deps.md). Likely on every upstream sync that touches pi-agent versions. Fix: `rm -rf packages/{shared,server-core,pi-agent-server}/node_modules/@mariozechner`. The `[skill:upstream-sync]` skill should run a verification step after each merge.
+
 ## CI threshold notes
 
 - `validate-pr.yml` shared-test thresholds last bumped to `2600 pass / 20 fail` to absorb upstream's i18n-parity additions and test growth. Revisit on the next major test addition.
