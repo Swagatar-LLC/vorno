@@ -11,6 +11,7 @@ These are different from upstream's `apps/electron/resources/skills/` (which shi
 | [roadmap-plan-create](roadmap-plan-create/SKILL.md) | Create a new plan in `roadmap/plans/planned/` |
 | [roadmap-plan-advance](roadmap-plan-advance/SKILL.md) | Move a plan between status folders |
 | [roadmap-status](roadmap-status/SKILL.md) | Print a roadmap overview |
+| [capture-learning](capture-learning/SKILL.md) | Scaffold a `LEARNING-NNN` debugging-insight entry |
 | [upstream-sync](upstream-sync/SKILL.md) | Merge the latest upstream release |
 | [upstream-delta-report](upstream-delta-report/SKILL.md) | Refresh `roadmap/upstream/delta.md` |
 
