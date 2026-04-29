@@ -1,0 +1,18 @@
+# Directions
+
+Multi-quarter strategic bets. Each direction is a coherent paradigm move that requires multiple plans to deliver. Directions are *long-lived* — they evolve more slowly than plans but more quickly than [`VISION.md`](../VISION.md).
+
+## Active directions
+
+| # | Title | Status | Brief |
+|---|-------|--------|-------|
+| 01 | [The Canvas Session](01-canvas-session.md) | active | Every `AgentEvent` is a shape on a tldraw canvas |
+| 02 | [Skills as Contribution Points](02-skill-contributions.md) | active | Skills register custom shapes, tools, views |
+| 03 | [The Live Observatory](03-observatory.md) | future | Multi-session, multi-device live spatial graph |
+
+## How a direction differs from a plan
+
+- **Direction** — *why* and *where*. May span 6+ months. Updated as the bet evolves.
+- **Plan** — *what* and *how*. Lives in `plans/{status}/`. Closes when the work lands.
+
+A direction without plans is a wish. A plan without a direction is local optimization. Cross-link both.
