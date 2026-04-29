@@ -32,7 +32,7 @@ export function ResultNode(props: NodeProps) {
         fontFamily: 'system-ui, -apple-system, sans-serif',
       }}
     >
-      <Handle type="target" position={Position.Top} style={{ background: accent }} />
+      <Handle type="target" position={Position.Left} style={{ background: accent }} />
       <div
         style={{
           fontFamily: 'JetBrains Mono, ui-monospace, Menlo, monospace',
@@ -59,7 +59,7 @@ export function ResultNode(props: NodeProps) {
       >
         {truncated || <em style={{ color: '#a8a29e' }}>(empty)</em>}
       </pre>
-      <Handle type="source" position={Position.Bottom} style={{ background: accent }} />
+      <Handle type="source" position={Position.Right} style={{ background: accent }} />
     </div>
   )
 }

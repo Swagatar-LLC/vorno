@@ -39,7 +39,7 @@ export function ToolCallNode(props: NodeProps) {
         fontFamily: 'system-ui, -apple-system, sans-serif',
       }}
     >
-      <Handle type="target" position={Position.Top} style={{ background: statusColor }} />
+      <Handle type="target" position={Position.Left} style={{ background: statusColor }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
         <span
           style={{
@@ -102,7 +102,7 @@ export function ToolCallNode(props: NodeProps) {
           )}
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} style={{ background: statusColor }} />
+      <Handle type="source" position={Position.Right} style={{ background: statusColor }} />
     </div>
   )
 }

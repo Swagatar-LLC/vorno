@@ -3,18 +3,24 @@
  *
  * Pure function — no React, no React Flow imports. Tested with bun.
  *
- * Layout strategy (v0.2):
- *   - Three lanes by role: user (left), assistant (center), work (right).
- *   - Y advances chronologically across all lanes; each message claims its
- *     own row. No overlap.
- *   - Tool calls and their results both live in the work lane, with the
- *     result placed directly below the call (a tool "claims two rows").
+ * Layout (v0.3 — horizontal timeline):
+ *   - Time flows left → right. Each message advances X by NODE_W + GAP_X.
+ *   - Three lanes by role, stacked vertically:
+ *       USER       → top    (y = 0)
+ *       ASSISTANT  → middle (y = 240)
+ *       WORK       → bottom (y = 480)
+ *   - Tool calls and their results live in the work lane and occupy
+ *     consecutive X slots (call at T, result at T+1).
  *   - Each turn (group of messages with the same `turnId`) gets a distinct
- *     accent color. Cross-turn structure is visible at a glance.
+ *     accent color rendered as a left-border stripe on every node.
+ *
+ * The horizontal layout is the foundation for a timeline metaphor: scrubbing
+ * a playhead, points-of-interest markers at turn boundaries, and panning
+ * along time. Those affordances layer on top in subsequent iterations.
  *
  * Edges:
- *   - 'sequence' edges connect each message to the next chronologically.
- *   - 'caused-by' edges connect tool-calls to their results by toolUseId.
+ *   - 'sequence' edges: chronological, source on right, target on left.
+ *   - 'caused-by' edges: tool-call → result by toolUseId.
  *
  * Unsupported roles (status, info, warning, plan, auth-request, error) are
  * skipped — they still render in the chat surface; the canvas omits them.
@@ -36,38 +42,38 @@ export interface CanvasEdge {
   target: string
   type?: 'smoothstep' | 'straight'
   animated?: boolean
-  /** Used to style edges differently — 'sequence' = chronological, 'caused-by' = tool result link. */
   className?: string
 }
 
 export interface CanvasGraph {
   nodes: CanvasNode[]
   edges: CanvasEdge[]
+  /** Vertical guides at X positions where the turnId changed. Useful for POI markers. */
+  turnBoundaries: Array<{ x: number; turnId: string | undefined; color: string }>
 }
 
 // ---------------------------------------------------------------------------
 // Layout constants
 // ---------------------------------------------------------------------------
 
-/** X coordinate per lane. Lanes are 540 px apart; node width is ~460 px. */
-export const LANE_X = {
+/** Y coordinate per lane. Lanes are 240 px apart; node height is ~200 px. */
+export const LANE_Y = {
   user: 0,
-  assistant: 540,
-  work: 1080,
+  assistant: 240,
+  work: 480,
 } as const
 
-/** Approximate node heights (used to advance the chronological Y cursor). */
-const ROW_H_TEXT = 200
-const ROW_H_TOOL_CALL = 140
-const ROW_H_RESULT = 260
-const ROW_GAP = 30
+/** Width of every node card and the X gap between consecutive nodes. */
+export const NODE_W = 460
+const GAP_X = 40
+/** Step from one chronological slot to the next. */
+const X_STEP = NODE_W + GAP_X
 
 const SUPPORTED_ROLES = new Set(['user', 'assistant', 'tool'])
 
 /**
  * Color palette for turn grouping. Cycled in encounter order — each new
- * turnId picks the next color. Default for messages without a turnId is the
- * neutral gray at index 0.
+ * turnId picks the next color. Index 0 is the neutral default.
  */
 const TURN_PALETTE = [
   '#94a3b8', // slate-400 (neutral / no turn)
@@ -87,9 +93,10 @@ const TURN_PALETTE = [
 export function messagesToGraph(messages: Message[]): CanvasGraph {
   const nodes: CanvasNode[] = []
   const edges: CanvasEdge[] = []
+  const turnBoundaries: CanvasGraph['turnBoundaries'] = []
 
   const turnColors = new Map<string, string>()
-  let nextTurnIdx = 1 // 0 reserved for neutral / undefined turnId
+  let nextTurnIdx = 1
 
   function colorFor(turnId: string | undefined): string {
     if (!turnId) return TURN_PALETTE[0]!
@@ -101,19 +108,28 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
     return c
   }
 
-  let currentY = 0
+  let timeX = 0
   let lastNodeId: string | null = null
+  let lastTurnId: string | undefined
+
+  function emitTurnBoundaryIfChanged(turnId: string | undefined, x: number) {
+    if (turnId !== lastTurnId) {
+      turnBoundaries.push({ x: x - GAP_X / 2, turnId, color: colorFor(turnId) })
+      lastTurnId = turnId
+    }
+  }
 
   for (const msg of messages) {
     if (!SUPPORTED_ROLES.has(msg.role)) continue
     const turnColor = colorFor(msg.turnId)
+    emitTurnBoundaryIfChanged(msg.turnId, timeX)
 
     if (msg.role === 'user' || msg.role === 'assistant') {
       const lane = msg.role === 'user' ? 'user' : 'assistant'
       const node: CanvasNode = {
         id: msg.id,
         type: 'text',
-        position: { x: LANE_X[lane], y: currentY },
+        position: { x: timeX, y: LANE_Y[lane] },
         data: {
           kind: 'text',
           role: msg.role,
@@ -135,7 +151,7 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
         })
       }
       lastNodeId = node.id
-      currentY += ROW_H_TEXT + ROW_GAP
+      timeX += X_STEP
       continue
     }
 
@@ -147,7 +163,7 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
     const toolCallNode: CanvasNode = {
       id: `${msg.id}::call`,
       type: 'tool-call',
-      position: { x: LANE_X.work, y: currentY },
+      position: { x: timeX, y: LANE_Y.work },
       data: {
         kind: 'tool-call',
         toolName: msg.toolName ?? 'unknown',
@@ -171,13 +187,13 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
       })
     }
 
-    currentY += ROW_H_TOOL_CALL + ROW_GAP
+    timeX += X_STEP
 
     if (hasResult || isCompleted) {
       const resultNode: CanvasNode = {
         id: `${msg.id}::result`,
         type: 'result',
-        position: { x: LANE_X.work, y: currentY },
+        position: { x: timeX, y: LANE_Y.work },
         data: {
           kind: 'result',
           toolName: msg.toolName ?? 'unknown',
@@ -199,11 +215,11 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
       })
 
       lastNodeId = resultNode.id
-      currentY += ROW_H_RESULT + ROW_GAP
+      timeX += X_STEP
     } else {
       lastNodeId = toolCallNode.id
     }
   }
 
-  return { nodes, edges }
+  return { nodes, edges, turnBoundaries }
 }

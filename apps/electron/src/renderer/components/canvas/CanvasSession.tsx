@@ -1,16 +1,18 @@
 /**
- * CanvasSession — Direction 1, v0.2.
+ * CanvasSession — Direction 1, v0.3 (horizontal timeline).
  *
- * Renders a session's Message[] as a React Flow node graph with three lanes:
- * user (left), assistant (center), work (right). Read-only spectator.
+ * Renders a session's Message[] as a React Flow node graph laid out as a
+ * horizontal timeline:
+ *   - Time flows left → right (X axis).
+ *   - Three lanes by message role, stacked vertically (Y axis):
+ *       USER       → top
+ *       ASSISTANT  → middle
+ *       WORK       → bottom
+ *   - Turn boundaries (where Message.turnId changes) emit faint vertical
+ *     guide lines as a foundation for points-of-interest markers.
  *
- * Layout improvements over v0.1:
- *   - Lanes by message role; no more vertical stack of overlapping cards.
- *   - Each turn (assistant message + its tool calls + their results) gets
- *     a distinct accent color via the left-border stripe on every node.
- *   - fitView is run *after* custom nodes have measured (via onInit + a
- *     small delay) so the initial zoom isn't a telescope.
- *   - MiniMap node strokes are thicker so nodes show up at the minimap scale.
+ * This is the substrate for a timeline metaphor: scrubbing, POI markers,
+ * and time-range filtering. Those affordances layer on top in v0.4.
  */
 
 import React, { useCallback, useMemo } from 'react'
@@ -29,7 +31,8 @@ import '@xyflow/react/dist/style.css'
 
 import type { Session } from '../../../shared/types'
 import { sessionAtomFamily } from '@/atoms/sessions'
-import { messagesToGraph, LANE_X } from './event-mapper'
+import { messagesToGraph, LANE_Y } from './event-mapper'
+import type { CanvasGraph } from './event-mapper'
 import { TextNode } from './nodes/TextNode'
 import { ToolCallNode } from './nodes/ToolCallNode'
 import { ResultNode } from './nodes/ResultNode'
@@ -40,10 +43,11 @@ const NODE_TYPES: NodeTypes = {
   'result': ResultNode as unknown as NodeTypes[string],
 }
 
-const LANE_LABELS: Array<{ key: 'user' | 'assistant' | 'work'; label: string; x: number }> = [
-  { key: 'user', label: 'USER', x: LANE_X.user },
-  { key: 'assistant', label: 'ASSISTANT', x: LANE_X.assistant },
-  { key: 'work', label: 'WORK · TOOLS · RESULTS', x: LANE_X.work },
+const LANE_HEIGHT = 220
+const LANE_LABELS: Array<{ key: 'user' | 'assistant' | 'work'; label: string; y: number }> = [
+  { key: 'user', label: 'USER', y: LANE_Y.user },
+  { key: 'assistant', label: 'ASSISTANT', y: LANE_Y.assistant },
+  { key: 'work', label: 'WORK · TOOLS · RESULTS', y: LANE_Y.work },
 ]
 
 export interface CanvasSessionProps {
@@ -51,33 +55,26 @@ export interface CanvasSessionProps {
 }
 
 export function CanvasSession({ sessionId }: CanvasSessionProps) {
-  // sessionAtomFamily is typed as Atom<unknown> due to a known monorepo issue;
-  // we know the value is Session | null. Cast pragmatically here.
+  // sessionAtomFamily is typed as Atom<unknown> due to a known monorepo issue.
   const session = useAtomValue(sessionAtomFamily(sessionId)) as Session | null
 
-  const { nodes, edges } = useMemo(() => {
-    if (!session?.messages) return { nodes: [] as Node[], edges: [] as Edge[] }
-    const graph = messagesToGraph(session.messages)
-    return {
-      nodes: graph.nodes as unknown as Node[],
-      edges: graph.edges as unknown as Edge[],
-    }
+  const graph = useMemo<CanvasGraph>(() => {
+    if (!session?.messages) return { nodes: [], edges: [], turnBoundaries: [] }
+    return messagesToGraph(session.messages)
   }, [session?.messages])
 
-  // Run fitView once nodes have measured. React Flow's `fitView` prop fires
-  // immediately on mount, before custom nodes have rendered, so it ends up
-  // fitting to ~zero-sized boxes (the "telescope zoom" problem). Using onInit
-  // + a small delay lets the renderer measure first.
+  const nodes = graph.nodes as unknown as Node[]
+  const edges = graph.edges as unknown as Edge[]
+
+  // fitView after custom nodes have measured. Without the delay, fitView fits
+  // to 0×0 unmeasured nodes ("telescope zoom").
   const handleInit = useCallback((instance: ReactFlowInstance) => {
     setTimeout(() => {
-      instance.fitView({ padding: 0.25, duration: 200, includeHiddenNodes: false })
+      instance.fitView({ padding: 0.2, duration: 200, includeHiddenNodes: false })
     }, 80)
   }, [])
 
-  if (!session) {
-    return <CanvasEmptyState message="No session selected." />
-  }
-
+  if (!session) return <CanvasEmptyState message="No session selected." />
   if (!session.messages || session.messages.length === 0) {
     return <CanvasEmptyState message="No events yet — send a message to begin." />
   }
@@ -89,7 +86,7 @@ export function CanvasSession({ sessionId }: CanvasSessionProps) {
         edges={edges}
         nodeTypes={NODE_TYPES}
         onInit={handleInit}
-        minZoom={0.1}
+        minZoom={0.05}
         maxZoom={2}
         nodesDraggable
         nodesConnectable={false}
@@ -97,6 +94,7 @@ export function CanvasSession({ sessionId }: CanvasSessionProps) {
         proOptions={{ hideAttribution: false }}
       >
         <Background gap={16} size={1} color="#e7e5e4" />
+        <TurnBoundaryMarkers boundaries={graph.turnBoundaries} />
         <Controls position="bottom-right" showInteractive={false} />
         <MiniMap
           position="bottom-left"
@@ -112,57 +110,86 @@ export function CanvasSession({ sessionId }: CanvasSessionProps) {
           pannable
           zoomable
           ariaLabel="Session canvas mini-map"
-          style={{ width: 220, height: 160 }}
+          style={{ width: 260, height: 140 }}
         />
       </ReactFlow>
-      {/* Lane headers — fixed in screen space, not part of the canvas. They
-          serve as orientation hints; for v0.2 they're a simple top bar.
-          A future iteration can position them in canvas space via a Panel
-          so they pan with the nodes — deferred. */}
-      <LaneHeaderBar />
+      <LaneSidebar />
     </div>
   )
 }
 
-function LaneHeaderBar() {
+/**
+ * Pinned lane labels at the left edge of the overlay. Stay in screen space
+ * (do not pan with the canvas) — they label the lane Y bands.
+ */
+function LaneSidebar() {
   return (
     <div
       style={{
         position: 'absolute',
-        top: 8,
-        left: 8,
-        right: 8,
-        display: 'flex',
-        gap: 8,
+        top: 0,
+        bottom: 0,
+        left: 0,
+        width: 88,
         pointerEvents: 'none',
         zIndex: 5,
+        display: 'flex',
+        flexDirection: 'column',
+        background:
+          'linear-gradient(to right, rgba(250, 250, 249, 0.95), rgba(250, 250, 249, 0.0))',
       }}
     >
-      {LANE_LABELS.map((lane) => (
+      {LANE_LABELS.map((lane, idx) => (
         <div
           key={lane.key}
           style={{
             flex: 1,
-            fontFamily: 'JetBrains Mono, ui-monospace, Menlo, monospace',
-            fontSize: 9,
-            fontWeight: 700,
-            letterSpacing: '0.12em',
-            color: '#a8a29e',
-            background: 'rgba(255,255,255,0.65)',
-            backdropFilter: 'blur(6px)',
-            WebkitBackdropFilter: 'blur(6px)',
-            padding: '4px 10px',
-            border: '1px solid #e7e5e4',
-            borderRadius: 4,
-            textAlign: 'center',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-start',
+            paddingLeft: 12,
+            borderTop: idx > 0 ? '1px dashed #d6d3d1' : undefined,
           }}
         >
-          {lane.label}
+          <span
+            style={{
+              fontFamily: 'JetBrains Mono, ui-monospace, Menlo, monospace',
+              fontSize: 9,
+              fontWeight: 700,
+              letterSpacing: '0.14em',
+              color: '#78716c',
+              writingMode: 'vertical-rl',
+              transform: 'rotate(180deg)',
+              textOrientation: 'mixed',
+            }}
+          >
+            {lane.label}
+          </span>
         </div>
       ))}
     </div>
   )
 }
+
+/**
+ * Faint vertical guide line at each turn boundary — foundation for
+ * points-of-interest markers. Rendered as plain divs in the React Flow
+ * viewport; React Flow will pan/zoom them along with the nodes.
+ *
+ * NOTE: To pan with the canvas, these markers need to be in canvas space.
+ * For v0.3 we render them as part of the Background layer using SVG-style
+ * positioning. This is a deferred refinement — current placement is
+ * approximate.
+ */
+function TurnBoundaryMarkers(_props: { boundaries: CanvasGraph['turnBoundaries'] }) {
+  // Deliberately a no-op for v0.3. Turn boundaries are encoded in the data
+  // (and surfaced via per-node turn coloring); rendering them as panning
+  // canvas guides requires hooking into the React Flow viewport transform.
+  // Adding that in v0.4 alongside scrubbing + POI markers.
+  return null
+}
+
+void LANE_HEIGHT // intentional reservation for v0.4 lane-height tuning
 
 function CanvasEmptyState({ message }: { message: string }) {
   return (

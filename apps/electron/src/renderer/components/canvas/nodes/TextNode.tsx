@@ -42,7 +42,7 @@ export function TextNode(props: NodeProps) {
         fontFamily: 'system-ui, -apple-system, sans-serif',
       }}
     >
-      <Handle type="target" position={Position.Top} style={{ background: palette.border }} />
+      <Handle type="target" position={Position.Left} style={{ background: palette.border }} />
       <div
         style={{
           fontFamily: 'JetBrains Mono, ui-monospace, Menlo, monospace',
@@ -58,7 +58,7 @@ export function TextNode(props: NodeProps) {
       <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#1c1917' }}>
         {truncated || <em style={{ color: '#a8a29e' }}>(empty)</em>}
       </div>
-      <Handle type="source" position={Position.Bottom} style={{ background: palette.border }} />
+      <Handle type="source" position={Position.Right} style={{ background: palette.border }} />
     </div>
   )
 }
