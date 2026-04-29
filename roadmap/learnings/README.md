@@ -56,6 +56,7 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 |---|-------|-----------|--------|
 | [001](LEARNING-001-stale-nested-mariozechner-deps.md) | Stale nested `@mariozechner/*` deps in workspace packages | build / upstream-sync | active |
 | [002](LEARNING-002-fork-vs-upstream-config-dir-collision.md) | Fork vs upstream stable collide on `~/.craft-agent/.server.lock` | electron / fork-isolation | active |
+| [003](LEARNING-003-ollama-baseurl-needs-v1-prefix.md) | Ollama-compatible LLM connections need `/v1` in baseUrl | agent / config | active |
 
 ## Related skills
 
