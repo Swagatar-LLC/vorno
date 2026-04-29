@@ -1,11 +1,11 @@
 ---
 id: PLAN-001
 title: Canvas Session — spectator v0.1
-status: planned
+status: in-progress
 direction: DIR-01
 owner: jh
 created: 2026-04-28
-updated: 2026-04-28
+updated: 2026-04-29
 related: []
 blocked-by: []
 ---
@@ -85,3 +85,4 @@ graph LR
 ## Status log
 
 - `2026-04-28` — created in `planned/`
+- `2026-04-29` — moved to `in-progress/`; branch `jh/canvas-session-spectator-v0` opened
