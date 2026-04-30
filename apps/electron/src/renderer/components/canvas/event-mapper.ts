@@ -3,23 +3,23 @@
  *
  * Pure function — no React, no React Flow imports. Tested with bun.
  *
- * Layout (v0.3 — horizontal timeline):
+ * Layout (v0.4 — horizontal timeline):
  *   - Time flows left → right. Each message advances X by NODE_W + GAP_X.
  *   - Three lanes by role, stacked vertically:
  *       USER       → top    (y = 0)
  *       ASSISTANT  → middle (y = 240)
  *       WORK       → bottom (y = 480)
- *   - Tool calls and their results live in the work lane and occupy
- *     consecutive X slots (call at T, result at T+1).
+ *   - Tool calls and their results occupy consecutive X slots in the work lane.
  *   - Each turn (group of messages with the same `turnId`) gets a distinct
  *     accent color rendered as a left-border stripe on every node.
  *
- * The horizontal layout is the foundation for a timeline metaphor: scrubbing
- * a playhead, points-of-interest markers at turn boundaries, and panning
- * along time. Those affordances layer on top in subsequent iterations.
+ * Points of interest (POIs) are emitted alongside nodes/edges and used by:
+ *   - TurnMarkerNode (canvas-space dashed vertical guides at turn starts)
+ *   - TimelineRuler (top strip with clickable ticks)
+ *   - PoiSidebar (right-edge collapsible list)
  *
  * Edges:
- *   - 'sequence' edges: chronological, source on right, target on left.
+ *   - 'sequence' edges: chronological, left → right.
  *   - 'caused-by' edges: tool-call → result by toolUseId.
  *
  * Unsupported roles (status, info, warning, plan, auth-request, error) are
@@ -45,36 +45,52 @@ export interface CanvasEdge {
   className?: string
 }
 
+export type POIType = 'turn-start' | 'error'
+
+export interface POI {
+  /** Stable id for React keying. */
+  id: string
+  /** Kind of point of interest. */
+  type: POIType
+  /** Canvas X to center on when the POI is clicked. */
+  x: number
+  /** Short label shown in the timeline ruler and sidebar. */
+  label: string
+  /** Optional secondary description shown in the sidebar. */
+  detail?: string
+  /** Color associated with the turn this POI belongs to (for ruler ticks). */
+  color: string
+  /** TurnId, when applicable. */
+  turnId?: string
+}
+
 export interface CanvasGraph {
   nodes: CanvasNode[]
   edges: CanvasEdge[]
-  /** Vertical guides at X positions where the turnId changed. Useful for POI markers. */
-  turnBoundaries: Array<{ x: number; turnId: string | undefined; color: string }>
+  pois: POI[]
+  /** Canvas X span — useful for the ruler to compute proportional positions. */
+  span: { minX: number; maxX: number }
 }
 
 // ---------------------------------------------------------------------------
 // Layout constants
 // ---------------------------------------------------------------------------
 
-/** Y coordinate per lane. Lanes are 240 px apart; node height is ~200 px. */
 export const LANE_Y = {
   user: 0,
   assistant: 240,
   work: 480,
 } as const
 
-/** Width of every node card and the X gap between consecutive nodes. */
+/** Total Y extent of the lanes (work lane bottom). */
+export const LANES_HEIGHT = 700
+
 export const NODE_W = 460
 const GAP_X = 40
-/** Step from one chronological slot to the next. */
 const X_STEP = NODE_W + GAP_X
 
 const SUPPORTED_ROLES = new Set(['user', 'assistant', 'tool'])
 
-/**
- * Color palette for turn grouping. Cycled in encounter order — each new
- * turnId picks the next color. Index 0 is the neutral default.
- */
 const TURN_PALETTE = [
   '#94a3b8', // slate-400 (neutral / no turn)
   '#6366f1', // indigo-500
@@ -93,10 +109,11 @@ const TURN_PALETTE = [
 export function messagesToGraph(messages: Message[]): CanvasGraph {
   const nodes: CanvasNode[] = []
   const edges: CanvasEdge[] = []
-  const turnBoundaries: CanvasGraph['turnBoundaries'] = []
+  const pois: POI[] = []
 
   const turnColors = new Map<string, string>()
   let nextTurnIdx = 1
+  let turnCount = 0
 
   function colorFor(turnId: string | undefined): string {
     if (!turnId) return TURN_PALETTE[0]!
@@ -110,19 +127,30 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
 
   let timeX = 0
   let lastNodeId: string | null = null
-  let lastTurnId: string | undefined
+  let lastTurnId: string | undefined = undefined
+  let isFirst = true
 
-  function emitTurnBoundaryIfChanged(turnId: string | undefined, x: number) {
-    if (turnId !== lastTurnId) {
-      turnBoundaries.push({ x: x - GAP_X / 2, turnId, color: colorFor(turnId) })
+  function emitTurnPoiIfChanged(turnId: string | undefined, x: number) {
+    if (isFirst || turnId !== lastTurnId) {
+      turnCount += 1
+      pois.push({
+        id: `turn:${turnId ?? 'untagged'}:${x}`,
+        type: 'turn-start',
+        x,
+        label: turnId ? `Turn ${turnCount}` : 'Untagged',
+        detail: turnId ? `turn id: ${turnId}` : 'No turn id',
+        color: colorFor(turnId),
+        turnId,
+      })
       lastTurnId = turnId
+      isFirst = false
     }
   }
 
   for (const msg of messages) {
     if (!SUPPORTED_ROLES.has(msg.role)) continue
     const turnColor = colorFor(msg.turnId)
-    emitTurnBoundaryIfChanged(msg.turnId, timeX)
+    emitTurnPoiIfChanged(msg.turnId, timeX)
 
     if (msg.role === 'user' || msg.role === 'assistant') {
       const lane = msg.role === 'user' ? 'user' : 'assistant'
@@ -150,6 +178,17 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
           className: 'sequence',
         })
       }
+      if (msg.isError) {
+        pois.push({
+          id: `error:${msg.id}`,
+          type: 'error',
+          x: timeX,
+          label: 'Error',
+          detail: (msg.content ?? '').slice(0, 80),
+          color: '#dc2626',
+          turnId: msg.turnId,
+        })
+      }
       lastNodeId = node.id
       timeX += X_STEP
       continue
@@ -159,11 +198,12 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
     const hasResult = msg.toolResult !== undefined && msg.toolResult !== null
     const isCompleted = msg.toolStatus === 'completed' || msg.toolStatus === 'error'
     const toolUseId = msg.toolUseId ?? msg.id
+    const callX = timeX
 
     const toolCallNode: CanvasNode = {
       id: `${msg.id}::call`,
       type: 'tool-call',
-      position: { x: timeX, y: LANE_Y.work },
+      position: { x: callX, y: LANE_Y.work },
       data: {
         kind: 'tool-call',
         toolName: msg.toolName ?? 'unknown',
@@ -190,16 +230,18 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
     timeX += X_STEP
 
     if (hasResult || isCompleted) {
+      const resultX = timeX
+      const isError = msg.toolStatus === 'error' || msg.isError === true
       const resultNode: CanvasNode = {
         id: `${msg.id}::result`,
         type: 'result',
-        position: { x: timeX, y: LANE_Y.work },
+        position: { x: resultX, y: LANE_Y.work },
         data: {
           kind: 'result',
           toolName: msg.toolName ?? 'unknown',
           toolUseId,
           result: msg.toolResult ?? '',
-          isError: msg.toolStatus === 'error' || msg.isError,
+          isError,
           turnColor,
           lane: 'work',
         },
@@ -214,6 +256,18 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
         className: 'caused-by',
       })
 
+      if (isError) {
+        pois.push({
+          id: `error:${msg.id}::result`,
+          type: 'error',
+          x: resultX,
+          label: `${msg.toolName ?? 'tool'} error`,
+          detail: (msg.toolResult ?? '').slice(0, 80),
+          color: '#dc2626',
+          turnId: msg.turnId,
+        })
+      }
+
       lastNodeId = resultNode.id
       timeX += X_STEP
     } else {
@@ -221,5 +275,8 @@ export function messagesToGraph(messages: Message[]): CanvasGraph {
     }
   }
 
-  return { nodes, edges, turnBoundaries }
+  const minX = 0
+  const maxX = Math.max(0, timeX - GAP_X)
+
+  return { nodes, edges, pois, span: { minX, maxX } }
 }

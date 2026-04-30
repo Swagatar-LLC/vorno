@@ -31,7 +31,7 @@ describe('messagesToGraph (horizontal)', () => {
     const g = messagesToGraph([])
     expect(g.nodes).toEqual([])
     expect(g.edges).toEqual([])
-    expect(g.turnBoundaries).toEqual([])
+    expect(g.pois).toEqual([])
   })
 
   test('user message → text node in user lane (top)', () => {
@@ -155,16 +155,41 @@ describe('messagesToGraph (horizontal)', () => {
     expect(colors[0]).not.toBe(colors[1])
   })
 
-  test('turn boundaries emit between turns', () => {
-    const { turnBoundaries } = messagesToGraph([
+  test('emits a turn-start POI at each turn change', () => {
+    const { pois } = messagesToGraph([
       asstMsg('a1', 'one', { turnId: 't1' }),
       asstMsg('a2', 'two', { turnId: 't1' }),
       asstMsg('a3', 'three', { turnId: 't2' }),
     ])
-    // One boundary at start (turnId becomes 't1') + one at the t1→t2 switch
-    expect(turnBoundaries.length).toBeGreaterThanOrEqual(2)
-    const turnIds = turnBoundaries.map((b) => b.turnId)
+    const turnStarts = pois.filter((p) => p.type === 'turn-start')
+    expect(turnStarts.length).toBeGreaterThanOrEqual(2)
+    const turnIds = turnStarts.map((p) => p.turnId)
     expect(turnIds).toContain('t1')
     expect(turnIds).toContain('t2')
+  })
+
+  test('emits an error POI for a tool error result', () => {
+    const { pois } = messagesToGraph([
+      asstMsg('a1', 'go', { turnId: 't1' }),
+      toolMsg('t1', 'Bash', {
+        turnId: 't1',
+        toolResult: 'permission denied',
+        toolStatus: 'error',
+      }),
+    ])
+    const errors = pois.filter((p) => p.type === 'error')
+    expect(errors.length).toBe(1)
+    expect(errors[0]?.color).toBe('#dc2626')
+    expect(errors[0]?.label).toContain('Bash')
+  })
+
+  test('span tracks the timeline extent', () => {
+    const { span, nodes } = messagesToGraph([
+      userMsg('u1', 'a'),
+      asstMsg('a1', 'b'),
+      asstMsg('a2', 'c'),
+    ])
+    expect(span.minX).toBe(0)
+    expect(span.maxX).toBeGreaterThanOrEqual(nodes[nodes.length - 1]!.position.x)
   })
 })
