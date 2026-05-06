@@ -74,9 +74,16 @@ Estimated 3–4 focused days of work.
 - Persistence: do we store canvas layout per session in a sidecar file? `session.canvas.json`?
 - How do we handle long sessions (1000+ events)? Virtualized rendering or summary-collapsing.
 
+## SDK choice
+
+The dossier originally recommended [tldraw](https://tldraw.dev). On 2026-04-29 we discovered tldraw 4.x is no longer Apache-2.0 — its custom license prohibits Production Environment use, which our distribution qualifies as.
+
+**For v0.1 we use [React Flow / xyflow](https://reactflow.dev) (MIT).** The session-as-causal-graph framing fits React Flow's wheelhouse exactly. See [ADR-0004](../decisions/0004-canvas-sdk.md) for the full rationale and the analysis discussion at [`discussions/2026-04-29-canvas-sdk-license.md`](../discussions/2026-04-29-canvas-sdk-license.md).
+
+This choice is local to v0.1 and revisitable as Directions 2 and 3 develop.
+
 ## References
 
-- [tldraw SDK](https://tldraw.dev)
-- [tldraw computer (AI canvas)](https://computer.tldraw.com)
-- [tldraw Workflow starter kit](https://tldraw.dev/docs/ai)
+- [React Flow / xyflow](https://reactflow.dev) — selected SDK (v0.1)
+- [tldraw SDK](https://tldraw.dev) — original recommendation (license-incompatible at v4.x)
 - [Obsidian JSON Canvas spec](https://jsoncanvas.org)
