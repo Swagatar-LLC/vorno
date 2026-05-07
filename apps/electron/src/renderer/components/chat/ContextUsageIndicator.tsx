@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
-import { computeContextUsage, formatTokensK } from './context-usage'
+import { computeContextUsage, formatTokensCompact } from './context-usage'
 
 interface ContextUsageIndicatorProps {
   /** Tokens used (input tokens for the next prompt). May be undefined before any usage event arrives. */
@@ -27,8 +27,8 @@ export function ContextUsageIndicator({ used, limit, className }: ContextUsageIn
 
   // Before any usage event arrives the indicator shows the limit but a "—" used
   // value so it's obviously waiting for data rather than reporting a real zero.
-  const usedLabel = hasUsage ? formatTokensK(usage.used) : '—'
-  const limitLabel = formatTokensK(usage.limit)
+  const usedLabel = hasUsage ? formatTokensCompact(usage.used) : '—'
+  const limitLabel = formatTokensCompact(usage.limit)
 
   const tooltipText = hasUsage
     ? `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} tokens (${Math.round(usage.fraction * 100)}%)`

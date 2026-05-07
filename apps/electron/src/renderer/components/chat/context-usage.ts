@@ -63,20 +63,47 @@ export function computeContextUsage(usedRaw: number | null | undefined, limitRaw
 }
 
 /**
- * Format a token count as a "K"-suffixed string, rounded to one decimal place
- * for values >= 1K and the raw integer below that.
+ * Compact-format a token count with a K / M / B / T suffix.
  *
- *   500    → "500"
- *   1_234  → "1.2K"
- *   48_300 → "48.3K"
- *   200_000 → "200K"   (drops the trailing ".0")
+ * One decimal place is shown when it carries information; a trailing
+ * ".0" is trimmed so round values render cleanly. Sub-1K values are
+ * shown as a plain integer with no suffix.
+ *
+ *   500             → "500"
+ *   1_234           → "1.2K"
+ *   48_300          → "48.3K"
+ *   200_000         → "200K"
+ *   1_000_000       → "1M"
+ *   1_500_000       → "1.5M"
+ *   200_000_000     → "200M"
+ *   1_000_000_000   → "1B"
+ *   2_500_000_000_000 → "2.5T"
+ *
+ * Anything beyond the trillions bucket still uses "T" — at the scale
+ * of LLM context windows we won't realistically pass that, but it's
+ * preferable to falling back to scientific notation.
  */
-export function formatTokensK(value: number): string {
+export function formatTokensCompact(value: number): string {
   if (!Number.isFinite(value) || value < 0) return '0'
   if (value < 1_000) return `${Math.round(value)}`
-  const inK = value / 1_000
-  // One decimal, but trim a trailing ".0" so 200_000 doesn't render as "200.0K".
-  const rounded = Math.round(inK * 10) / 10
-  const text = Number.isInteger(rounded) ? `${rounded}` : rounded.toFixed(1)
-  return `${text}K`
+
+  // Ordered largest → smallest so the first match wins.
+  const units: Array<{ threshold: number; suffix: string }> = [
+    { threshold: 1_000_000_000_000, suffix: 'T' },
+    { threshold: 1_000_000_000, suffix: 'B' },
+    { threshold: 1_000_000, suffix: 'M' },
+    { threshold: 1_000, suffix: 'K' },
+  ]
+
+  for (const { threshold, suffix } of units) {
+    if (value >= threshold) {
+      const scaled = value / threshold
+      const rounded = Math.round(scaled * 10) / 10
+      const text = Number.isInteger(rounded) ? `${rounded}` : rounded.toFixed(1)
+      return `${text}${suffix}`
+    }
+  }
+
+  // Unreachable given the early-return for < 1_000, but keeps TS happy.
+  return `${Math.round(value)}`
 }

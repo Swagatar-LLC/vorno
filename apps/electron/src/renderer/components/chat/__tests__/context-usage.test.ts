@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import {
   computeContextUsage,
-  formatTokensK,
+  formatTokensCompact,
   DEFAULT_CONTEXT_WINDOW,
   USAGE_COLORS,
 } from '../context-usage'
@@ -57,25 +57,51 @@ describe('computeContextUsage', () => {
   })
 })
 
-describe('formatTokensK', () => {
-  it('formats sub-1K values as a plain integer', () => {
-    expect(formatTokensK(0)).toBe('0')
-    expect(formatTokensK(500)).toBe('500')
-    expect(formatTokensK(999)).toBe('999')
+describe('formatTokensCompact', () => {
+  it('formats sub-1K values as a plain integer with no suffix', () => {
+    expect(formatTokensCompact(0)).toBe('0')
+    expect(formatTokensCompact(500)).toBe('500')
+    expect(formatTokensCompact(999)).toBe('999')
   })
 
-  it('formats >=1K values with one decimal and a "K" suffix', () => {
-    expect(formatTokensK(1_234)).toBe('1.2K')
-    expect(formatTokensK(48_312)).toBe('48.3K')
+  it('formats thousands with a "K" suffix', () => {
+    expect(formatTokensCompact(1_234)).toBe('1.2K')
+    expect(formatTokensCompact(48_312)).toBe('48.3K')
+    expect(formatTokensCompact(200_000)).toBe('200K')
+    expect(formatTokensCompact(2_000)).toBe('2K')
   })
 
-  it('drops a trailing ".0" so round Ks render cleanly', () => {
-    expect(formatTokensK(200_000)).toBe('200K')
-    expect(formatTokensK(2_000)).toBe('2K')
+  it('formats millions with an "M" suffix (covers 1M+ context windows)', () => {
+    expect(formatTokensCompact(1_000_000)).toBe('1M')
+    expect(formatTokensCompact(1_500_000)).toBe('1.5M')
+    expect(formatTokensCompact(2_000_000)).toBe('2M')
+    expect(formatTokensCompact(200_000_000)).toBe('200M')
+  })
+
+  it('formats billions with a "B" suffix', () => {
+    expect(formatTokensCompact(1_000_000_000)).toBe('1B')
+    expect(formatTokensCompact(2_300_000_000)).toBe('2.3B')
+  })
+
+  it('formats trillions with a "T" suffix', () => {
+    expect(formatTokensCompact(1_000_000_000_000)).toBe('1T')
+    expect(formatTokensCompact(2_500_000_000_000)).toBe('2.5T')
+  })
+
+  it('drops trailing ".0" so round values render cleanly across all buckets', () => {
+    expect(formatTokensCompact(200_000)).toBe('200K')
+    expect(formatTokensCompact(5_000_000)).toBe('5M')
+    expect(formatTokensCompact(7_000_000_000)).toBe('7B')
+  })
+
+  it('rounds half-way cases away from zero', () => {
+    expect(formatTokensCompact(1_250_000)).toBe('1.3M')
+    expect(formatTokensCompact(1_249_999)).toBe('1.2M')
   })
 
   it('handles bad input defensively', () => {
-    expect(formatTokensK(NaN)).toBe('0')
-    expect(formatTokensK(-1)).toBe('0')
+    expect(formatTokensCompact(NaN)).toBe('0')
+    expect(formatTokensCompact(-1)).toBe('0')
+    expect(formatTokensCompact(Infinity)).toBe('0')
   })
 })
