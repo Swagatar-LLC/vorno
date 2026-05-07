@@ -18,7 +18,6 @@ import { ResetConfirmationDialog } from '@/components/ResetConfirmationDialog'
 import { SplashScreen } from '@/components/SplashScreen'
 import { TooltipProvider } from '@craft-agent/ui'
 import { ForkBadge } from '@/components/fork-badge'
-import { CanvasOverlay } from '@/components/canvas/CanvasOverlay'
 import { FocusProvider } from '@/context/FocusContext'
 import { ModalProvider } from '@/context/ModalContext'
 import { DismissibleLayerProvider } from '@/context/DismissibleLayerContext'
@@ -1910,9 +1909,6 @@ export default function App() {
           isSessionsReady={sessionsLoaded}
           remoteWorkspaceId={windowRemoteWorkspaceId}
         >
-          {/* Canvas overlay (Cmd+Shift+K) — must live inside NavigationProvider to read active session */}
-          <CanvasOverlay />
-
           {/* Handle window close requests (X button, Cmd+W) - close modal first if open */}
           <WindowCloseHandler />
 

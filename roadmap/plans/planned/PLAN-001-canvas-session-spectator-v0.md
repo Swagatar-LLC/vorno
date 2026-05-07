@@ -1,11 +1,11 @@
 ---
 id: PLAN-001
 title: Canvas Session — spectator v0.1
-status: in-progress
+status: planned
 direction: DIR-01
 owner: jh
 created: 2026-04-28
-updated: 2026-04-29
+updated: 2026-04-28
 related: []
 blocked-by: []
 ---
@@ -54,27 +54,26 @@ graph LR
 
 **Stack**:
 
-- `@xyflow/react` (React Flow) — node-graph SDK, MIT-licensed. See [ADR-0004](../../decisions/0004-canvas-sdk.md). The original plan was tldraw; tldraw 4.x is license-incompatible with our Apache-2.0 distribution.
-- Existing block renderers (`html-preview`, `datatable`, etc.) embedded inside the `ResultNode`'s React component
+- `@tldraw/tldraw` — canvas SDK (BSD-3-style "tldraw license"; verify acceptable)
+- Existing block renderers (`html-preview`, `datatable`, etc.) embedded inside `ResultShape`'s component
 - New file layout:
   - `apps/electron/src/renderer/pages/CanvasSessionPage.tsx` — page entry
-  - `apps/electron/src/renderer/components/canvas/CanvasSession.tsx` — main editor (React Flow `<ReactFlow>` instance)
-  - `apps/electron/src/renderer/components/canvas/nodes/` — custom node-type definitions
-  - `apps/electron/src/renderer/components/canvas/event-mapper.ts` — event → React Flow node/edge pipeline
+  - `apps/electron/src/renderer/components/canvas/CanvasSession.tsx` — main editor
+  - `apps/electron/src/renderer/components/canvas/shapes/` — shape definitions
+  - `apps/electron/src/renderer/components/canvas/event-mapper.ts` — event → shape pipeline
   - `apps/electron/src/renderer/components/canvas/__tests__/` — bun tests
 
 **Risks**:
 
-- React Flow bundle size (~50 KB gzipped core + 30–40 KB renderer). Smaller than tldraw would have been.
-- React Flow is graph-focused, not free-form. Acceptable for v0.1 (sessions are causally-graph-shaped). Direction 2/3 may revisit.
-- Embedding rich block renderers inside React Flow custom nodes (React-based; straightforward — custom node types are just React components).
+- tldraw bundle size (~600 KB gzipped). Acceptable for desktop, defer mobile concern.
+- License compatibility with our distribution model — check before committing.
+- Embedding rich block renderers inside tldraw shapes (tldraw shapes render via React; should be straightforward but worth a spike).
 
 ## Acceptance
 
-- [x] Canvas SDK selected — React Flow (MIT) per ADR-0004
-- [ ] `@xyflow/react` installed in `apps/electron`
+- [ ] tldraw installed; license reviewed
 - [ ] `CanvasSessionView` mounts inside the app shell behind `settings.canvasView` flag
-- [ ] Three custom node types render correctly for a sample session
+- [ ] Three shape types render correctly for a sample session
 - [ ] Causal edges drawn for tool_start → tool_result pairs
 - [ ] Layout persists to `session.canvas.json` on user drag
 - [ ] Setting toggle exposed in Settings → Appearance (or similar)
@@ -86,5 +85,3 @@ graph LR
 ## Status log
 
 - `2026-04-28` — created in `planned/`
-- `2026-04-29` — moved to `in-progress/`; branch `jh/canvas-session-spectator-v0` opened
-- `2026-04-29` — SDK pivot: tldraw 4.x license-incompatible (custom restrictive license vs our Apache-2.0 distribution); chose React Flow (MIT) per ADR-0004. See discussion `2026-04-29-canvas-sdk-license.md`.
