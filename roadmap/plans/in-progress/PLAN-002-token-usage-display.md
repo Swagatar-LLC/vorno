@@ -1,7 +1,7 @@
 ---
 id: PLAN-002
 title: Persistent token-usage display next to model selector
-status: planned
+status: in-progress
 direction: none
 owner: jh
 created: 2026-05-07
@@ -118,3 +118,4 @@ export function ContextUsageIndicator({ sessionId }: Props) {
 ## Status log
 
 - `2026-05-07` — created in `planned/`
+- `2026-05-07` — moved from planned to in-progress
