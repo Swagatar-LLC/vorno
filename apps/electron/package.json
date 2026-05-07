@@ -1,6 +1,6 @@
 {
   "name": "@craft-agent/electron",
-  "version": "0.8.12",
+  "version": "0.9.2",
   "description": "Electron desktop app for Craft Agents",
   "main": "dist/main.cjs",
   "private": true,
@@ -53,7 +53,6 @@
     "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-switch": "^1.2.6",
     "@tanstack/react-table": "^8.21.3",
-    "@xyflow/react": "^12.10.2",
     "chrono-node": "^2.9.0",
     "cmdk": "^1.1.1",
     "electron-log": "^5.4.3",
@@ -73,6 +72,7 @@
     "sharp": "0.34.5",
     "sonner": "^2.0.7",
     "strip-markdown": "^6.0.0",
+    "undici": "^7.22.0",
     "unist-util-visit": "^5.0.0",
     "vaul": "^1.1.2",
     "ws": "^8.19.0"
