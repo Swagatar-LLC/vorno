@@ -1,7 +1,7 @@
 ---
 id: PLAN-002
 title: Persistent token-usage display next to model selector
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-05-07
@@ -119,3 +119,4 @@ export function ContextUsageIndicator({ sessionId }: Props) {
 
 - `2026-05-07` — created in `planned/`
 - `2026-05-07` — moved from planned to in-progress
+- `2026-05-07` — moved from in-progress to done: PR #11 merged (commits 704cd5a, da66f55). Indicator shipped with K/M/B/T formatter for 1M+ context windows
