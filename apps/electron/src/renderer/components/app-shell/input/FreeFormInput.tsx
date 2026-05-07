@@ -20,6 +20,7 @@ import * as storage from '@/lib/local-storage'
 import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import { ContextUsageIndicator } from '@/components/chat/ContextUsageIndicator'
+import { useTokenUsageThresholds } from '@/hooks/useTokenUsageThresholds'
 import { Button } from '@/components/ui/button'
 import {
   InlineSlashCommand,
@@ -414,6 +415,15 @@ export function FreeFormInput({
     if (!effectiveConnection) return null
     return llmConnections.find(c => c.slug === effectiveConnection) ?? null
   }, [llmConnections, effectiveConnection])
+
+  // PLAN-003: workspace-configured color thresholds for the context-usage indicator,
+  // resolved from (providerType, currentModel) → per-model override → per-provider
+  // default → built-in fallback. Falls back to defaults until settings load.
+  const contextUsageThresholds = useTokenUsageThresholds({
+    workspaceId,
+    providerId: effectiveConnectionDetails?.providerType ?? null,
+    modelId: currentModel,
+  })
 
 
   // Access sessionStatuses and onSessionStatusChange from context for the # menu state picker
@@ -2376,6 +2386,7 @@ export function FreeFormInput({
             <ContextUsageIndicator
               used={contextStatus?.inputTokens}
               limit={contextStatus?.contextWindow ?? getModelContextWindow(currentModel)}
+              thresholds={contextUsageThresholds}
               className="ml-1"
             />
           )}

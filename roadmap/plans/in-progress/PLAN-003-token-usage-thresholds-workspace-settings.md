@@ -1,13 +1,13 @@
 ---
 id: PLAN-003
 title: Make token-usage thresholds configurable per-model/per-provider in workspace settings
-status: planned
+status: in-progress
 direction: none
 owner: jh
 created: 2026-05-07
 updated: 2026-05-07
 related: [PLAN-002]
-blocked-by: [PLAN-002]
+blocked-by: []
 ---
 
 # PLAN-003 — Per-model / per-provider token-usage thresholds (workspace settings)
@@ -76,3 +76,4 @@ Surface the green/yellow/burnt-orange threshold percentages from PLAN-002 as use
 ## Status log
 
 - `2026-05-07` — created in `planned/`, blocked-by PLAN-002
+- `2026-05-07` — moved from planned to in-progress (PLAN-002 shipped in PR #11/#14)

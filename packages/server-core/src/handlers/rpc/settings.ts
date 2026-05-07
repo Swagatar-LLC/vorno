@@ -114,6 +114,8 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       localMcpEnabled: config?.localMcpServers?.enabled ?? true,
       defaultLlmConnection: config?.defaults?.defaultLlmConnection,
       enabledSourceSlugs: config?.defaults?.enabledSourceSlugs ?? [],
+      tokenUsageThresholds: config?.defaults?.tokenUsageThresholds,
+      tokenUsageModelOverrides: config?.defaults?.tokenUsageModelOverrides,
     }
   })
 
@@ -125,9 +127,29 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
+    }
+
+    // Validate threshold maps: each entry must be { warn, danger } with 0 < warn < danger < 1.
+    if (key === 'tokenUsageThresholds' || key === 'tokenUsageModelOverrides') {
+      if (normalizedValue !== undefined && normalizedValue !== null) {
+        if (typeof normalizedValue !== 'object' || Array.isArray(normalizedValue)) {
+          throw new Error(`${key} must be an object map`)
+        }
+        for (const [entryKey, raw] of Object.entries(normalizedValue as Record<string, unknown>)) {
+          if (!raw || typeof raw !== 'object') {
+            throw new Error(`${key}.${entryKey} must be an object with warn/danger`)
+          }
+          const pair = raw as { warn?: unknown; danger?: unknown }
+          const warn = typeof pair.warn === 'number' ? pair.warn : NaN
+          const danger = typeof pair.danger === 'number' ? pair.danger : NaN
+          if (!Number.isFinite(warn) || !Number.isFinite(danger) || warn <= 0 || warn >= 1 || danger <= 0 || danger >= 1 || warn >= danger) {
+            throw new Error(`${key}.${entryKey}: warn and danger must be numbers in (0, 1) with warn < danger`)
+          }
+        }
+      }
     }
 
     // Validate defaultLlmConnection exists before saving

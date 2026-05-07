@@ -39,6 +39,7 @@ import {
 } from '@/components/ui/styled-dropdown'
 import { cn } from '@/lib/utils'
 import { ConnectionIcon } from '@/components/icons/ConnectionIcon'
+import { WorkspaceTokenThresholdsCard } from './TokenUsageThresholdsSettings'
 
 import {
   SettingsSection,
@@ -1008,6 +1009,24 @@ export default function AiSettingsPage() {
                         workspace={workspace}
                         llmConnections={llmConnections}
                         onSettingsChange={handleWorkspaceSettingsChange}
+                      />
+                    ))}
+                  </div>
+                </SettingsSection>
+              )}
+
+              {/* PLAN-003: Token-usage thresholds — per-workspace, per-provider with per-model overrides */}
+              {workspaces.length > 0 && llmConnections.length > 0 && (
+                <SettingsSection
+                  title={t("settings.ai.tokenThresholds.title")}
+                  description={t("settings.ai.tokenThresholds.description")}
+                >
+                  <div className="space-y-2">
+                    {workspaces.map((workspace) => (
+                      <WorkspaceTokenThresholdsCard
+                        key={workspace.id}
+                        workspace={workspace}
+                        llmConnections={llmConnections}
                       />
                     ))}
                   </div>
