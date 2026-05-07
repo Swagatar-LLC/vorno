@@ -12,10 +12,11 @@ There are three flavors. Pick by what the user actually wants to do:
 | Flavor | Command (from repo root) | Output | When |
 |--------|--------------------------|--------|------|
 | **Build only** | `bun run electron:build` | Optimized `apps/electron/dist/` assets | User wants to launch it themselves (Finder, separate terminal, repeat runs) |
-| **Build + launch** | `bun run electron:start` | Builds, then runs `electron apps/electron` in the foreground | One-shot smoke test; the agent shouldn't kick this off in the background — Electron stays attached to the terminal |
+| **Build + launch (fork)** | `bun run electron:prod` | Builds, then launches the fork's prod bundle with `CRAFT_CONFIG_DIR=$HOME/.craft-agent-swagatar` already set, using the repo-local Electron binary (no global install) | The default for hands-on QA on this fork. One-shot smoke test that mirrors the shipped build *and* keeps the fork's config dir isolated from upstream stable |
+| **Build + launch (raw)** | `bun run electron:start` | Same build, but launches with whatever `CRAFT_CONFIG_DIR` is already in your shell (so it falls through to upstream's default) | Only when you explicitly want to point the prod-mode launch at a different config dir (e.g. testing against an upstream-shaped workspace) |
 | **Build + package** (`.app` / `.dmg`, unsigned) | `bun run electron:dist:dev:mac` (mac) / `electron:dist:dev:win` (win) | Real installer in `apps/electron/dist/`, but skips Apple signing/notarization (`CSC_IDENTITY_AUTO_DISCOVERY=false`, `CRAFT_DEV_RUNTIME=1`) | User wants an artifact they can share, drag to Applications, or test exactly the way an end user would launch it |
 
-The fork uses `CRAFT_CONFIG_DIR=$HOME/.craft-agent-swagatar` so it doesn't collide with upstream stable. The dev script sets it automatically; the prod-mode launches **do not** — see "Launching" below.
+The fork uses `CRAFT_CONFIG_DIR=$HOME/.craft-agent-swagatar` so it doesn't collide with upstream stable. `electron:dev` and `electron:prod` set it automatically; `electron:start` does **not** — it's the bare upstream-style launch and falls through to whatever's in your shell.
 
 ## When to invoke
 
@@ -36,16 +37,30 @@ Roughly: bundles main (esbuild) → preload → renderer (Vite, minified) → re
 
 Run it in the **background** if the user wants to keep working — it doesn't open any windows on its own.
 
-### Build + launch
+### Build + launch (fork — preferred)
+
+```bash
+bun run electron:prod
+```
+
+This is the script you almost always want for hands-on QA on this fork. It:
+
+1. Runs `bun run electron:build` (full prod bundle).
+2. Launches `./node_modules/.bin/electron apps/electron` — i.e. the repo-local Electron binary, so **no global `electron` install is required**.
+3. Sets `CRAFT_CONFIG_DIR=$HOME/.craft-agent-swagatar` (overridable by exporting your own first) so the launch stays isolated from upstream stable's config dir.
+
+The Electron process stays attached to the terminal until the user quits the window:
+
+- **Don't** launch this from the agent in a non-background shell — it blocks. If invoked, prefer `run_in_background: true` and tell the user to switch focus to the new window.
+- **Do** prefer the two-step variant (`electron:build` → user launches) for repeated test cycles where the agent doesn't want to babysit a foreground process.
+
+### Build + launch (raw — upstream-style)
 
 ```bash
 bun run electron:start
 ```
 
-This rebuilds **every time** and then runs `electron apps/electron`. The Electron process stays attached to the terminal until the user quits the window, so:
-
-- **Don't** launch this from the agent in a non-background shell — it blocks. If invoked, prefer `run_in_background: true` and tell the user to switch focus to the new window.
-- **Do** prefer the two-step variant (`electron:build` → user launches) for repeated test cycles.
+Same build, but does **not** set `CRAFT_CONFIG_DIR` and uses a bare `electron apps/electron` (which only works if `electron` is on PATH or hoisted into the shell — `bun run` happens to make this work via `node_modules/.bin/`). Use this only when you intentionally want to launch the fork against upstream's default config dir; in any other case, prefer `electron:prod`.
 
 ### Build + package (unsigned)
 
@@ -62,14 +77,18 @@ Don't reach for the **un-suffixed** `electron:dist:mac` / `electron:dist:win` un
 
 ## Launching the build manually
 
-If you went the build-only route, the user can launch it any time with either:
+If you went the build-only route, the cleanest way to launch is:
 
 ```bash
-# From repo root, optimized renderer + dev process model
-CRAFT_CONFIG_DIR=$HOME/.craft-agent-swagatar electron apps/electron
+# From repo root — uses the repo-local electron binary, sets the fork
+# config dir, no global install needed.
+bun run electron:prod
+```
 
-# Or, since electron:start always rebuilds, you generally just rerun:
-bun run electron:start
+`electron:prod` always rebuilds before launching; if you want to skip the rebuild on a repeat run, use the local binary directly:
+
+```bash
+CRAFT_CONFIG_DIR=$HOME/.craft-agent-swagatar ./node_modules/.bin/electron apps/electron
 ```
 
 The `CRAFT_CONFIG_DIR` override matters — the fork is built to coexist with the upstream stable build the user runs side-by-side. Without it, the prod-mode launch falls back to the upstream config dir and the two builds will fight over the same workspace.
