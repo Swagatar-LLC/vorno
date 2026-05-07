@@ -19,6 +19,7 @@ import { Icon_Home, Icon_Folder, Spinner } from '@craft-agent/ui'
 import * as storage from '@/lib/local-storage'
 import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
+import { ContextUsageIndicator } from '@/components/chat/ContextUsageIndicator'
 import { Button } from '@/components/ui/button'
 import {
   InlineSlashCommand,
@@ -2364,6 +2365,19 @@ export function FreeFormInput({
               )}
             </StyledDropdownMenuContent>
           </DropdownMenu>
+          )}
+
+          {/* 5.25 Persistent context-usage indicator (PLAN-002).
+              Renders `<used>K / <limit>K` plus a small bar that turns
+              green → yellow → burnt-orange as the session fills the
+              model's context window. Hidden in compact mode for the
+              same reason the model picker is. */}
+          {!compactMode && (
+            <ContextUsageIndicator
+              used={contextStatus?.inputTokens}
+              limit={contextStatus?.contextWindow ?? getModelContextWindow(currentModel)}
+              className="ml-1"
+            />
           )}
 
           {/* 5.5 Context Usage Warning Badge - shows when approaching auto-compaction threshold */}
