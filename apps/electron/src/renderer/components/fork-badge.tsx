@@ -30,7 +30,6 @@ export function ForkBadge() {
           background: FORK_ACCENT,
           opacity: 0.8,
           pointerEvents: 'none',
-          // eslint-disable-next-line
           zIndex: 9998,
         }}
       />
@@ -43,7 +42,6 @@ export function ForkBadge() {
           position: 'fixed',
           top: 10,
           right: 14,
-          // eslint-disable-next-line
           zIndex: 9999,
           padding: '3px 9px',
           fontFamily: 'JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace',
@@ -53,7 +51,6 @@ export function ForkBadge() {
           color: 'white',
           background: FORK_ACCENT,
           borderRadius: 4,
-          // eslint-disable-next-line
           boxShadow: '0 1px 4px rgba(0, 0, 0, 0.18)',
           pointerEvents: 'none',
           userSelect: 'none',
