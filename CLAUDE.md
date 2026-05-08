@@ -20,6 +20,7 @@ Project skills live at [`.agents/skills/`](.agents/skills/). Reference with `[sk
 
 - `roadmap-plan-create`
 - `roadmap-plan-advance`
+- `roadmap-plan-document`
 - `roadmap-status`
 - `capture-learning`
 - `electron-prod-build`

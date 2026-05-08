@@ -28,6 +28,12 @@ A plan **must** start in `planned/`. To advance, run:
 
 The skill performs `git mv` between folders and rewrites the frontmatter `status` field so they're always consistent.
 
+The terminal `done → documented` step has its own skill that also refreshes user-facing docs and runs a code review of the merged diff:
+
+```
+[skill:roadmap-plan-document] PLAN-001
+```
+
 ## File naming
 
 `PLAN-NNN-short-kebab-title.md` — three-digit zero-padded ID, then kebab-case slug.
