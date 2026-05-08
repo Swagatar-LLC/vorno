@@ -498,6 +498,15 @@ export interface UpdateInfo {
 // Workspace types
 // ---------------------------------------------------------------------------
 
+/**
+ * Token-usage threshold pair for the context-window indicator (PLAN-003).
+ * Both values are fractions in (0, 1) with `warn` strictly less than `danger`.
+ */
+export interface TokenUsageThresholdsDto {
+  warn: number
+  danger: number
+}
+
 export interface WorkspaceSettings {
   name?: string
   model?: string
@@ -508,6 +517,10 @@ export interface WorkspaceSettings {
   localMcpEnabled?: boolean
   defaultLlmConnection?: string
   enabledSourceSlugs?: string[]
+  /** Per-provider token-usage thresholds, keyed by `LlmConnection.providerType`. */
+  tokenUsageThresholds?: Record<string, TokenUsageThresholdsDto>
+  /** Per-model token-usage threshold overrides, keyed by model ID. Beats the per-provider default. */
+  tokenUsageModelOverrides?: Record<string, TokenUsageThresholdsDto>
 }
 
 // ---------------------------------------------------------------------------

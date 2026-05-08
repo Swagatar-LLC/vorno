@@ -1,12 +1,17 @@
 import * as React from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
-import { computeContextUsage, formatTokensCompact } from './context-usage'
+import { computeContextUsage, formatTokensCompact, type UsageThresholds } from './context-usage'
 
 interface ContextUsageIndicatorProps {
   /** Tokens used (input tokens for the next prompt). May be undefined before any usage event arrives. */
   used: number | null | undefined
   /** Model context window in tokens. May be undefined for compat providers. */
   limit: number | null | undefined
+  /**
+   * Workspace-resolved color thresholds (PLAN-003). When omitted or invalid,
+   * the indicator falls back to the built-in 60% / 80% defaults.
+   */
+  thresholds?: UsageThresholds | null
   /** Optional className applied to the wrapping element. */
   className?: string
 }
@@ -21,8 +26,8 @@ interface ContextUsageIndicatorProps {
  *
  * Pure-logic helpers live in `./context-usage.ts` and are unit-tested directly.
  */
-export function ContextUsageIndicator({ used, limit, className }: ContextUsageIndicatorProps) {
-  const usage = computeContextUsage(used, limit)
+export function ContextUsageIndicator({ used, limit, thresholds, className }: ContextUsageIndicatorProps) {
+  const usage = computeContextUsage(used, limit, thresholds)
   const hasUsage = (used ?? 0) > 0
 
   // Before any usage event arrives the indicator shows the limit but a "—" used

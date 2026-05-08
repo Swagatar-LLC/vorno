@@ -28,6 +28,21 @@ export interface LocalMcpConfig {
 }
 
 /**
+ * Token-usage threshold pair for the context-window indicator (PLAN-003).
+ *
+ * Both values are fractions in the open interval (0, 1).
+ *   - `warn`   — green→yellow boundary (e.g. 0.6)
+ *   - `danger` — yellow→burnt-orange boundary (e.g. 0.8)
+ *
+ * Invariant: 0 < warn < danger < 1. The settings UI enforces this on
+ * input; the indicator's resolver also drops invalid pairs defensively.
+ */
+export interface TokenUsageThresholds {
+  warn: number;
+  danger: number;
+}
+
+/**
  * Workspace configuration (stored in config.json)
  */
 export interface WorkspaceConfig {
@@ -48,6 +63,19 @@ export interface WorkspaceConfig {
     workingDirectory?: string;
     thinkingLevel?: ThinkingLevel; // Default thinking level for new sessions (default: 'medium')
     colorTheme?: string; // Color theme override for this workspace (preset ID). Undefined = inherit from app default.
+
+    /**
+     * Per-provider token-usage threshold defaults (PLAN-003).
+     * Keyed by `LlmConnection.providerType` (e.g. 'anthropic', 'pi', 'pi_compat').
+     * Missing/invalid entries fall back to the built-in defaults (60% / 80%).
+     */
+    tokenUsageThresholds?: Record<string, TokenUsageThresholds>;
+
+    /**
+     * Per-model token-usage threshold overrides (PLAN-003).
+     * Keyed by model ID. Takes precedence over the per-provider default.
+     */
+    tokenUsageModelOverrides?: Record<string, TokenUsageThresholds>;
   };
 
   /**
