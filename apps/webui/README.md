@@ -2,7 +2,23 @@
 
 The Electron renderer, served over the network by `packages/server` and reached from any browser. Same React/Tailwind UI as the desktop app, talking to the same WS RPC backend.
 
-## `webui:serve` — Tailscale launcher
+## TL;DR — `bun run daily-driver`
+
+In one command: builds, starts the headless server bound to your Tailscale IP, launches Electron in thin-client mode against it, and prints your server token + WebUI password so you can paste them on your iPad. `Ctrl-C` cleanly stops both, releasing `~/.craft-agent/.server.lock`.
+
+```bash
+export CRAFT_SERVER_TOKEN="$(bun run packages/server/src/index.ts --generate-token)"
+export CRAFT_WEBUI_PASSWORD="<short-password>"
+bun run daily-driver
+```
+
+Then open `http://<tailscale-ip>:9100` on your iPad.
+
+Use `bun run webui:serve` (below) instead if you want only the headless server (no local Electron).
+
+---
+
+## `webui:serve` — Tailscale launcher (server only)
 
 `bun run webui:serve` (script: [`scripts/webui-serve.ts`](../../scripts/webui-serve.ts)) spins up the headless server bound to your **Tailscale IPv4** on port **9100**, sharing `~/.craft-agent` with the upstream desktop release. Reach it from your iPad (or any tailnet device) at `http://<machine-tailscale-ip>:9100`.
 

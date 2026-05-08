@@ -5,7 +5,7 @@ status: in-progress
 direction: DIR-03
 owner: jh
 created: 2026-05-07
-updated: 2026-05-07
+updated: 2026-05-08
 related: []
 blocked-by: []
 ---
@@ -77,7 +77,25 @@ graph LR
 - [ ] `Ctrl-C` cleanly stops the child server (no orphaned bun process on the port).
 - [ ] README note in `apps/webui/README.md` (or new section) covering: setup, env vars to export, how to use it, and the desktop-vs-WebUI mutual-exclusion warning.
 
+## Extension — `daily-driver` orchestrator (added 2026-05-08)
+
+`webui:serve` alone leaves the user juggling two terminals: the headless server, and a separately-launched Electron-in-thin-client-mode. Combine them.
+
+**Architecture decision:** Electron embeds the same `bootstrapServer` as `packages/server` and acquires the same `~/.craft-agent/.server.lock`. They cannot coexist on the same config dir. Electron has a built-in **thin-client mode** triggered by `CRAFT_SERVER_URL` (`apps/electron/src/main/index.ts:444`) that skips server bootstrap entirely. Daily-driver uses this:
+
+1. Build subprocesses, WebUI bundle, Electron bundle.
+2. Spawn `packages/server` headless (with WebUI on Tailscale IP:9100). Wait for `CRAFT_SERVER_URL=` stdout marker (server is bound and ready).
+3. Spawn local Electron with `CRAFT_SERVER_URL=ws://<tailscale-ip>:9100` + token → desktop UI joins as another client.
+4. iPad/browser → `http://<tailscale-ip>:9100` → joins as yet another client.
+
+**Credentials banner.** Print server token + WebUI password at startup so the user can grab them without spelunking through env exports.
+
+**Clean shutdown.** `Ctrl-C` → SIGINT to both children → both await exit. The headless server's existing shutdown handler (`packages/server-core/.../headless-start.ts:378`) calls `releaseServerLock()`, with a `process.on('exit')` belt-and-suspenders at line 205. If either child dies on its own, take the other one with it (avoids zombies on rebuild).
+
+**Replaces** the old one-line `daily-driver` package.json script (which only built + launched Electron with `CRAFT_CONFIG_DIR=$HOME/.craft-agent`).
+
 ## Status log
 
 - `2026-05-07` — created in `planned/`
 - `2026-05-07` — moved from planned to in-progress
+- `2026-05-08` — extended: `daily-driver` script orchestrates headless server + Electron-thin-client + credentials banner + clean Ctrl-C shutdown
