@@ -21,7 +21,7 @@
     "!apps/online-docs"
   ],
   "scripts": {
-    "daily-driver": "bun run electron:build && CRAFT_CONFIG_DIR=${CRAFT_CONFIG_DIR:-$HOME/.craft-agent} ./node_modules/.bin/electron apps/electron",
+    "daily-driver": "bun run scripts/daily-driver.ts",
     "test": "bun test && for f in $(find . -name '*.isolated.ts' -not -path './node_modules/*'); do bun test \"$f\" || exit 1; done",
     "typecheck": "bun run typecheck:shared",
     "typecheck:shared": "cd packages/shared && bun run tsc --noEmit",
