@@ -98,12 +98,17 @@ export function resolveWebSocketUrl(
 ): string {
   if (publicWsUrl) return publicWsUrl
 
+  // Mirror the request's protocol when the WebUI is reached over a TLS-terminating
+  // reverse proxy (e.g. tailscale serve, nginx) so browsers don't reject ws:// from
+  // an https:// page as mixed content. The internal RPC may still be plain ws://.
+  const effectiveProto = getRequestProto(req) === 'https' ? 'wss' : wsProtocol
+
   const host = getRequestHost(req)
   if (host) {
-    return `${wsProtocol}://${formatHostWithPort(host, wsPort)}`
+    return `${effectiveProto}://${formatHostWithPort(host, wsPort)}`
   }
 
-  return `${wsProtocol}://127.0.0.1:${wsPort}`
+  return `${effectiveProto}://127.0.0.1:${wsPort}`
 }
 
 // ---------------------------------------------------------------------------
