@@ -2,8 +2,10 @@
 /**
  * daily-driver — single command to run the full Craft Agent stack:
  *
- *   1. Headless `packages/server` bound to Tailscale IPv4, serving WebUI on :9100
- *   2. Local Electron desktop in **thin-client mode** connected to that server
+ *   1. Headless `packages/server` bound to 127.0.0.1, serving WebUI on :9100
+ *   2. Local Electron desktop in **thin-client mode** connected to ws://127.0.0.1:9100
+ *   3. `tailscale serve --https=9100` proxies the loopback server out to the tailnet
+ *      as https://<your-hostname>:9100 (TLS terminated by Tailscale's MagicDNS cert)
  *
  * Both UIs (desktop + iPad/browser) observe the same backend, sharing
  * ~/.craft-agent with the upstream desktop release.
@@ -12,8 +14,8 @@
  *   CRAFT_SERVER_TOKEN     — long random token (WS bearer auth)
  *   CRAFT_WEBUI_PASSWORD   — short shareable password for browser login
  *
- * Ctrl-C cleanly stops Electron, then the headless server (which releases
- * ~/.craft-agent/.server.lock via its shutdown handler).
+ * Ctrl-C cleanly stops Electron and the headless server, then removes the
+ * tailscale serve mount we added (other serve mounts are left alone).
  */
 
 import { spawn, spawnSync } from 'bun'
@@ -40,30 +42,98 @@ function requireEnv(name: string, hint: string): string {
   return value
 }
 
-function detectTailscaleIp(): string {
+function detectTailscaleHostname(): string {
   let result
   try {
-    result = spawnSync(['tailscale', 'ip', '-4'])
+    result = spawnSync(['tailscale', 'status', '--json'])
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     fail(
-      `Could not run \`tailscale ip -4\`: ${msg}\n` +
+      `Could not run \`tailscale status --json\`: ${msg}\n` +
       `  Install Tailscale (https://tailscale.com/download) and run: tailscale up`
     )
   }
   if (result.exitCode !== 0) {
     const stderr = result.stderr ? new TextDecoder().decode(result.stderr).trim() : ''
     fail(
-      `Could not detect Tailscale IP (\`tailscale ip -4\` failed${stderr ? `: ${stderr}` : ''}).\n` +
+      `Could not query Tailscale node info (\`tailscale status --json\` failed${stderr ? `: ${stderr}` : ''}).\n` +
       `  Is Tailscale running? Try: tailscale up`
     )
   }
-  const stdout = new TextDecoder().decode(result.stdout).trim()
-  const ip = stdout.split(/\r?\n/)[0]?.trim()
-  if (!ip) {
-    fail('`tailscale ip -4` returned no address. Is Tailscale up?')
+  const stdout = new TextDecoder().decode(result.stdout)
+  let parsed: { Self?: { DNSName?: string } }
+  try {
+    parsed = JSON.parse(stdout)
+  } catch (err) {
+    fail(`Could not parse \`tailscale status --json\` output: ${err instanceof Error ? err.message : String(err)}`)
   }
-  return ip
+  const dnsName = parsed?.Self?.DNSName
+  if (!dnsName) {
+    fail('`tailscale status --json` returned no Self.DNSName. Is Tailscale up and signed in?')
+  }
+  return dnsName.replace(/\.$/, '')
+}
+
+interface ServeStatusJson {
+  Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }>
+}
+
+interface ServeMountState {
+  mounted: boolean
+  targetMatches: boolean
+  existingTarget?: string
+}
+
+const SERVE_TARGET = `http://localhost:${PORT}`
+
+function inspectServeMount(): ServeMountState {
+  const result = spawnSync(['tailscale', 'serve', 'status', '--json'])
+  if (result.exitCode !== 0) {
+    const stderr = result.stderr ? new TextDecoder().decode(result.stderr).trim() : ''
+    fail(`tailscale serve status failed${stderr ? `: ${stderr}` : ''}`)
+  }
+  const stdout = new TextDecoder().decode(result.stdout).trim() || '{}'
+  let parsed: ServeStatusJson
+  try {
+    parsed = JSON.parse(stdout) as ServeStatusJson
+  } catch {
+    return { mounted: false, targetMatches: false }
+  }
+  const portSuffix = `:${PORT}`
+  const webEntry = Object.entries(parsed.Web ?? {}).find(([key]) => key.endsWith(portSuffix))?.[1]
+  const proxy = webEntry?.Handlers?.['/']?.Proxy
+  if (!proxy) return { mounted: false, targetMatches: false }
+  return { mounted: true, targetMatches: proxy === SERVE_TARGET, existingTarget: proxy }
+}
+
+function ensureServeMount(): { addedByUs: boolean } {
+  const status = inspectServeMount()
+  if (status.mounted) {
+    if (status.targetMatches) {
+      console.log(`[daily-driver] tailscale serve already mounts https=${PORT} → ${SERVE_TARGET}; reusing.`)
+      return { addedByUs: false }
+    }
+    fail(
+      `tailscale serve already has a mount on https=${PORT} pointing to ${status.existingTarget}.\n` +
+      `  Refusing to clobber. Remove it first with:\n` +
+      `    tailscale serve --https=${PORT} off`
+    )
+  }
+  console.log(`[daily-driver] tailscale serve --bg --https=${PORT} ${SERVE_TARGET}`)
+  const result = spawnSync(['tailscale', 'serve', '--bg', `--https=${PORT}`, SERVE_TARGET])
+  if (result.exitCode !== 0) {
+    const stderr = result.stderr ? new TextDecoder().decode(result.stderr).trim() : ''
+    fail(`tailscale serve add failed${stderr ? `: ${stderr}` : ''}`)
+  }
+  return { addedByUs: true }
+}
+
+function removeServeMount(): void {
+  const result = spawnSync(['tailscale', 'serve', `--https=${PORT}`, 'off'])
+  if (result.exitCode !== 0) {
+    const stderr = result.stderr ? new TextDecoder().decode(result.stderr).trim() : ''
+    console.warn(`[daily-driver] tailscale serve --https=${PORT} off failed${stderr ? `: ${stderr}` : ''}`)
+  }
 }
 
 async function runStep(label: string, cmd: string[]): Promise<void> {
@@ -92,9 +162,10 @@ if (!existsSync(CONFIG_DIR)) {
   )
 }
 
-const tailscaleIp = detectTailscaleIp()
-const wsUrl = `ws://${tailscaleIp}:${PORT}`
-const httpUrl = `http://${tailscaleIp}:${PORT}`
+const tailscaleHost = detectTailscaleHostname()
+const localWsUrl = `ws://127.0.0.1:${PORT}`
+const localHttpUrl = `http://127.0.0.1:${PORT}`
+const tailnetHttpsUrl = `https://${tailscaleHost}:${PORT}`
 
 await runStep('Building MCP/agent subprocesses', ['bun', 'run', 'server:build:subprocess'])
 await runStep('Building WebUI bundle', ['bun', 'run', 'webui:build'])
@@ -105,8 +176,8 @@ const banner = [
   '┌──────────────────────────────────────────────────────────────────',
   '│ Craft Agent — Daily Driver',
   '├──────────────────────────────────────────────────────────────────',
-  `│  WebUI URL       : ${httpUrl}`,
-  `│  WS URL          : ${wsUrl}`,
+  `│  Tailnet URL     : ${tailnetHttpsUrl}`,
+  `│  Local URL       : ${localHttpUrl}`,
   `│  Config dir      : ${CONFIG_DIR}`,
   '│',
   `│  Server token    : ${serverToken}`,
@@ -116,22 +187,25 @@ const banner = [
 ].join('\n')
 console.log(banner)
 
-// ── 1. Spawn headless server ────────────────────────────────────────────────
+// ── 1. Spawn headless server (loopback only) ───────────────────────────────
 const serverEnv: Record<string, string> = {
   ...process.env,
   CRAFT_CONFIG_DIR: CONFIG_DIR,
-  CRAFT_RPC_HOST: tailscaleIp,
+  CRAFT_RPC_HOST: '127.0.0.1',
   CRAFT_RPC_PORT: PORT,
   CRAFT_WEBUI_DIR: 'apps/webui/dist',
   CRAFT_BUNDLED_ASSETS_ROOT: join(ROOT_DIR, 'apps', 'electron'),
   CRAFT_SERVER_TOKEN: serverToken,
   CRAFT_WEBUI_PASSWORD: webuiPassword,
-  CRAFT_WEBUI_WS_URL: wsUrl,
+  // CRAFT_WEBUI_WS_URL intentionally unset: /api/config now derives ws/wss
+  // from the request origin, so Electron-on-loopback gets ws:// and tailnet
+  // browsers behind `tailscale serve` get wss://.
 }
+delete serverEnv.CRAFT_WEBUI_WS_URL
 
-console.log('[daily-driver] Starting headless server...')
+console.log('[daily-driver] Starting headless server on 127.0.0.1...')
 const server = spawn({
-  cmd: ['bun', 'run', 'packages/server/src/index.ts', '--allow-insecure-bind'],
+  cmd: ['bun', 'run', 'packages/server/src/index.ts'],
   cwd: ROOT_DIR,
   env: serverEnv,
   stdout: 'pipe',
@@ -169,10 +243,13 @@ async function waitForReady(): Promise<void> {
 await waitForReady()
 console.log('[daily-driver] Headless server ready.')
 
-// ── 2. Spawn Electron in thin-client mode ───────────────────────────────────
+// ── 2. Publish loopback server to tailnet via tailscale serve ──────────────
+const { addedByUs: serveAddedByUs } = ensureServeMount()
+
+// ── 3. Spawn Electron in thin-client mode (connects to loopback) ───────────
 const electronEnv: Record<string, string> = {
   ...process.env,
-  CRAFT_SERVER_URL: wsUrl,
+  CRAFT_SERVER_URL: localWsUrl,
   CRAFT_SERVER_TOKEN: serverToken,
 }
 delete electronEnv.CRAFT_CONFIG_DIR
@@ -187,7 +264,7 @@ const electron = spawn({
   stderr: 'inherit',
 })
 
-// ── 3. Lifecycle: graceful shutdown on Ctrl-C, or if either child dies ──────
+// ── 4. Lifecycle: graceful shutdown on Ctrl-C, or if either child dies ──────
 let shuttingDown = false
 async function shutdown(signal: NodeJS.Signals | 'child-exit'): Promise<void> {
   if (shuttingDown) return
@@ -198,6 +275,9 @@ async function shutdown(signal: NodeJS.Signals | 'child-exit'): Promise<void> {
   try { server.kill(sig) } catch {}
   const results = await Promise.allSettled([electron.exited, server.exited])
   const codes = results.map((r) => (r.status === 'fulfilled' ? r.value : 'err'))
+  if (serveAddedByUs) {
+    removeServeMount()
+  }
   console.log(`[daily-driver] Stopped (electron=${codes[0]}, server=${codes[1]}).`)
   process.exit(0)
 }
