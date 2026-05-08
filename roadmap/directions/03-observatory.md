@@ -5,7 +5,8 @@ status: future
 opened: 2026-04-28
 related-discussions:
   - 2026-04-28-canvas-paradigm-directions.md
-related-plans: []
+related-plans:
+  - PLAN-005-webui-tailscale-launcher.md
 ---
 
 # Direction 3 — The Live Observatory
