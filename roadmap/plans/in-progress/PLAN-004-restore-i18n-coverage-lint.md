@@ -1,7 +1,7 @@
 ---
 id: PLAN-004
 title: Restore lint:i18n:coverage script (referenced but missing)
-status: planned
+status: in-progress
 direction: none
 owner: jh
 created: 2026-05-07
@@ -70,3 +70,4 @@ Only `scripts/check-i18n-parity.ts` and `scripts/sort-locales.ts` are present in
 ## Status log
 
 - `2026-05-07` — created in `planned/`. Found while running pre-PR validation for PLAN-003 (PR #15). Issues disabled on the repo, so tracked as a plan.
+- `2026-05-07` — moved from planned to in-progress; bundling plan + implementation in a single PR off main (option 2; supersedes stub PR #16).
