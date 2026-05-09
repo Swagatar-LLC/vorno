@@ -40,6 +40,7 @@ Bucket each file into one of:
 - **Agent-side fixes** — files under `packages/*/src/` we've modified
 - **Governance** — anything under `roadmap/` or `.agents/`
 - **Root configuration** — `tsconfig.base.json`, root `AGENTS.md`/`CLAUDE.md`, etc.
+- **Scripts** — anything under `scripts/`; CI helpers, deployment glue, or dev-time automation affordances
 - **Lock files** — `bun.lock` (always diverges; mechanical)
 - **Other** — anything that doesn't fit above (flag to user)
 

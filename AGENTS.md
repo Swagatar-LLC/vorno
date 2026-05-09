@@ -23,7 +23,9 @@ The [`.agents/skills/`](.agents/skills/) directory contains skills that drive th
 
 - `roadmap-plan-create` — start a new plan
 - `roadmap-plan-advance` — move a plan to a new status (folder)
+- `roadmap-plan-document` — update docs for a shipped plan, code-review the merged diff, advance `done/` → `documented/`
 - `roadmap-status` — print a roadmap overview
+- `capture-learning` — scaffold a `LEARNING-NNN` debugging-insight entry
 - `electron-prod-build` — produce a local production-mode Electron build for hands-on QA
 - `upstream-sync` — merge the latest upstream release
 - `upstream-delta-report` — refresh the upstream delta report
