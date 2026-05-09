@@ -2,8 +2,9 @@
 
 Files we own that differ from `upstream/main`. Refresh via `[skill:upstream-delta-report]`.
 
-**Last refresh:** 2026-04-28 (post v0.8.12 merge)
+**Last refresh:** 2026-05-08
 **Method:** `git diff --name-only upstream/main...main`
+**Total files in delta:** 123 (was ~50 at 2026-04-28)
 
 ## Major owned components
 
@@ -27,7 +28,7 @@ Files (all owned, not in upstream):
 - `ARCHITECTURE.md`
 - `CONTAINER-ARCHITECTURE.md`
 - `docs/http-trigger-server.md`
-- `tsconfig.base.json` (added by us; absent in upstream)
+- `apps/webui/README.md`
 
 ### CI workflow
 
@@ -36,20 +37,63 @@ Files (all owned, not in upstream):
 
 ### Electron tweaks
 
+Server-lifecycle and remote-access:
 - `apps/electron/src/main/server-lifecycle.ts` — manages embedded HTTP trigger server
+- `apps/electron/src/main/browser-pane-manager.ts`
+- `apps/electron/src/main/window-manager.ts` (title)
+- `apps/electron/package.json`
 - `apps/electron/src/renderer/pages/settings/RemoteAccessSettingsPage.tsx` — UI to manage API keys
-- `apps/electron/src/renderer/pages/{index,settings/index}.ts` — register the page
+- `apps/electron/src/renderer/components/workspace/AddWorkspaceStep_ConnectRemote.tsx`
 
-### Agent-side fix (still owned but trivial)
+Token-usage thresholds (PLAN-002 done, PLAN-003 in progress):
+- `apps/electron/src/renderer/atoms/token-usage-thresholds.ts`
+- `apps/electron/src/renderer/hooks/useTokenUsageThresholds.ts`
+- `apps/electron/src/renderer/components/chat/ContextUsageIndicator.tsx`
+- `apps/electron/src/renderer/components/chat/context-usage.ts`
+- `apps/electron/src/renderer/components/chat/__tests__/context-usage.test.ts`
+- `apps/electron/src/renderer/pages/settings/TokenUsageThresholdsSettings.tsx`
+- `apps/electron/src/renderer/pages/settings/AiSettingsPage.tsx`
+
+Other renderer changes:
+- `apps/electron/src/renderer/App.tsx`
+- `apps/electron/src/renderer/components/app-shell/input/FreeFormInput.tsx`
+- `apps/electron/src/renderer/components/fork-badge.tsx` (fork branding)
+- `apps/electron/src/renderer/index.html` (title)
+- `apps/electron/src/renderer/pages/{index,settings/index}.ts` (register pages)
+- `apps/electron/src/renderer/playground/demos/messaging/PairingCodeDialogPreview.tsx`
+- `apps/electron/src/renderer/playground/registry/types.ts`
+
+### Agent-side fixes
 
 - `packages/shared/src/agent/options.ts` — adds `delete env.CLAUDECODE` inside `buildClaudeSubprocessEnv()` so the SDK CLI doesn't refuse to spawn in nested-session contexts. Candidate for upstream contribution.
+- `packages/shared/src/protocol/dto.ts` — token-usage threshold protocol additions
+- `packages/shared/src/workspaces/types.ts` — workspace settings for thresholds
+- `packages/shared/src/workspaces/__tests__/storage-token-usage-thresholds.test.ts`
+- `packages/server-core/src/handlers/rpc/settings.ts` — settings RPC handler
+- `packages/server-core/src/webui/http-server.ts` — webui HTTP server tweaks
 
-### Governance / fork branding (this PR)
+### i18n (PLAN-004)
 
-- `roadmap/**` — new
-- `.agents/skills/**` — new
-- `AGENTS.md`, `CLAUDE.md` (root) — new
-- `apps/electron/src/main/window-manager.ts` (title), `apps/electron/src/renderer/components/fork-badge.tsx` (new), `apps/electron/src/renderer/index.html` (title), `apps/electron/src/renderer/index.css` (accent stripe) — fork branding
+- `packages/shared/src/i18n/locales/{de,en,es,hu,ja,pl,zh-Hans}.json`
+
+### Governance / fork branding
+
+- `roadmap/**` (README, VISION, decisions, directions, discussions, learnings, plans, upstream tracking)
+- `.agents/skills/**` (capture-learning, electron-prod-build, roadmap-plan-{advance,create}, roadmap-status, upstream-{sync,delta-report})
+- `AGENTS.md`, `CLAUDE.md` (root)
+
+### Root configuration
+
+- `tsconfig.base.json` (added by us; absent in upstream)
+- `package.json` (root — workspaces / scripts diverged)
+
+### Scripts
+
+CI helpers, deployment glue, and dev-time automation affordances under `scripts/`.
+
+- `scripts/check-i18n-coverage.ts` (PLAN-004)
+- `scripts/daily-driver.ts`
+- `scripts/webui-serve.ts` (PLAN-005)
 
 ## Lock file
 
