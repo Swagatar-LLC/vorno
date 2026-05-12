@@ -6,22 +6,26 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.9.2` |
-| Last merged upstream commit | `8981384` |
-| Merge PR | [Swagatar-LLC/craft-agents-oss#8](https://github.com/Swagatar-LLC/craft-agents-oss/pull/8) (merged 2026-05-07) |
-| Merge commit on our `main` | `e0386fe` |
-| Date synced | 2026-05-07 |
+| Last merged upstream tag | `v0.9.3` |
+| Last merged upstream commit | `c310624` |
+| Merge PR | _pending — branch `jh/2026-05-12_Upstream_Merge`_ |
+| Merge commit on our branch | `df477c4` |
+| Date synced | 2026-05-12 |
 
 ## Versions covered in last merge
+
+- `v0.9.3` — Mobile/compact UI rework, Manifest provider preset, oversized-tool-result poisoning fix (density-aware token estimator + `TOKEN_LIMIT=12000` for tool-result spill), Telegram polling auto-reconnect, WhatsApp audio attachments, `source_test` OAuth forwarding, GHCR/workflow namespace migration `lukilabs` → `craft-ai-agents`, repo-wide `lint:i18n:strings` scan, settings-icons cleanup.
+
+(Single upstream commit but a large release — 242 files changed, ~+7.7k / -15.5k lines, much of the "deletion" diff is our fork-only roadmap/skills content that upstream doesn't carry. Single conflict resolved: `apps/electron/src/renderer/index.html` — combined upstream's `font-src data:` CSP addition with our fork title. Token-estimator changes apply to per-tool-result spill detection only and are independent of our session-level `ContextUsageIndicator` from PLAN-002/003.)
+
+## Versions covered in prior merge (PR #8, 2026-05-07)
 
 - `v0.8.13`
 - `v0.9.0`
 - `v0.9.1`
 - `v0.9.2`
 
-(Substantial upstream churn — ~375 files changed, ~+39k / -3k lines across the four versions. Notable areas to audit per [`compatibility.md`](compatibility.md) include any files under `packages/shared/src/protocol/` and `packages/shared/src/agent/`. Spot audit on this merge: no wire/protocol contract changes affected our HTTP trigger server.)
-
-## Versions covered in prior merge (PR #4, 2026-04-28)
+## Versions covered in PR #4 (2026-04-28)
 
 - `v0.8.10` — Messaging Gateway (Telegram, WhatsApp), `WsRpcClient` in server-core, messaging RPC channels
 - `v0.8.11` — Chat follow-ups extracted, LLM partial output handling, WhatsApp filter improvements

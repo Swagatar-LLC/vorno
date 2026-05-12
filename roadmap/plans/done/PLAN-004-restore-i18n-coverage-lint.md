@@ -1,11 +1,11 @@
 ---
 id: PLAN-004
 title: Restore lint:i18n:coverage script (referenced but missing)
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-05-07
-updated: 2026-05-07
+updated: 2026-05-12
 related: [PLAN-003]
 blocked-by: []
 ---
@@ -71,3 +71,4 @@ Only `scripts/check-i18n-parity.ts` and `scripts/sort-locales.ts` are present in
 
 - `2026-05-07` — created in `planned/`. Found while running pre-PR validation for PLAN-003 (PR #15). Issues disabled on the repo, so tracked as a plan.
 - `2026-05-07` — moved from planned to in-progress; bundling plan + implementation in a single PR off main (option 2; supersedes stub PR #16).
+- `2026-05-12` — moved to `done/`: `scripts/check-i18n-coverage.ts` shipped in commit `4b0763e` (folded into PR #17 alongside PLAN-005). Plan file was previously mis-filed in `in-progress/`. Note: upstream v0.9.3 adds a complementary `lint:i18n:strings` (`scripts/lint-i18n-strings.sh`) that scans for hardcoded English literals — different concern from our coverage gate (which verifies `t('...')` keys resolve in `en.json`). Both gates now coexist in `package.json`; no overlap to drop.

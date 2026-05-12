@@ -1,11 +1,11 @@
 ---
 id: PLAN-001
 title: Canvas Session — spectator v0.1
-status: planned
+status: archived
 direction: DIR-01
 owner: jh
 created: 2026-04-28
-updated: 2026-04-28
+updated: 2026-05-12
 related: []
 blocked-by: []
 ---
@@ -85,3 +85,4 @@ graph LR
 ## Status log
 
 - `2026-04-28` — created in `planned/`
+- `2026-05-12` — archived: not currently shipping Canvas Session Spectator; tldraw direction deferred indefinitely. Moved to `archived/` to preserve design notes without polluting active work.
