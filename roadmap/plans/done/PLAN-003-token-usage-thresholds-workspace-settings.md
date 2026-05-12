@@ -1,11 +1,11 @@
 ---
 id: PLAN-003
 title: Make token-usage thresholds configurable per-model/per-provider in workspace settings
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-05-07
-updated: 2026-05-07
+updated: 2026-05-12
 related: [PLAN-002]
 blocked-by: []
 ---
@@ -77,3 +77,4 @@ Surface the green/yellow/burnt-orange threshold percentages from PLAN-002 as use
 
 - `2026-05-07` — created in `planned/`, blocked-by PLAN-002
 - `2026-05-07` — moved from planned to in-progress (PLAN-002 shipped in PR #11/#14)
+- `2026-05-12` — moved to `done/`: code shipped in PR #15 (commit `2a8f552`); schema + settings UI + indicator integration all landed. Plan file was previously mis-filed in `in-progress/`. Verified post-v0.9.3 upstream merge that upstream's new `estimateTokensDensityAware` / `TOKEN_LIMIT=12000` apply only to per-tool-result spill detection, not to session context display — our `tokenUsageThresholds` / `tokenUsageModelOverrides` workspace fields and `resolveThresholds()` precedence remain correct and independent.

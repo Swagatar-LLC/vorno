@@ -11,13 +11,16 @@ Active work. The folder a plan lives in *is* its status.
 | `blocked/` | Waiting on external dependency or decision. Must include a `Blocked by` line. |
 | `done/` | Code landed, but user-facing docs or release notes still pending. |
 | `documented/` | Fully shipped — code merged, docs updated, release-noted. |
+| `archived/` | Abandoned without shipping. Frontmatter `status: archived` with a status-log entry explaining why. Kept for history. |
 
 ## Lifecycle
 
 ```
 planned ──▶ in-progress ──▶ done ──▶ documented
                 │
-                └──▶ blocked ──▶ in-progress (when unblocked)
+                ├──▶ blocked ──▶ in-progress (when unblocked)
+                │
+                └──▶ archived (abandoned from any pre-done state)
 ```
 
 A plan **must** start in `planned/`. To advance, run:
