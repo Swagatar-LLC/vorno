@@ -1,11 +1,11 @@
 ---
 id: PLAN-005
 title: WebUI Tailscale launcher script
-status: in-progress
+status: done
 direction: DIR-03
 owner: jh
 created: 2026-05-07
-updated: 2026-05-08
+updated: 2026-05-13
 related: []
 blocked-by: []
 ---
