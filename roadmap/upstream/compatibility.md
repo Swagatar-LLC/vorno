@@ -53,3 +53,4 @@ In all cases, the path is: open a draft ADR, propose a `craft-fork:*` namespace 
 | Date | Audit | Outcome |
 |------|-------|---------|
 | 2026-04-28 | Post-v0.8.12 merge full audit | All contracts intact. Messaging gateway adds new channels we don't yet implement; no conflict. |
+| 2026-05-17 | Post-v0.9.4 merge audit (PR #23) | All contracts intact. New `packages/shared/src/agent/core/rtk-{detector,rewrite}.ts` are local Bash-execution rewriters (not wire-side). `pre-tool-use.ts` modifications keep the original tool-call envelope unchanged (rewrite is opt-in, post-permission). No protocol additions to `channels.ts` / `routing.ts` / `dto.ts` that affect us — the channel adds in `routing.ts`/`channels.ts` are upstream's messaging-access set we already account for in DIR-03's namespace plan. Pi SDK 0.73.0 → 0.73.1 is a minor; Codex WS→SSE fallback is transport-internal and respects existing close codes. |
