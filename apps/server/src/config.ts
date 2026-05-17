@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { dirname, join } from 'path';
 import { randomBytes, createHash } from 'crypto';
 
 /**
@@ -86,6 +86,7 @@ export function loadServerConfig(): ServerConfig {
  * Save server configuration to disk.
  */
 export function saveServerConfig(config: ServerConfig): void {
+  mkdirSync(dirname(CONFIG_PATH), { recursive: true });
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
 }
 
