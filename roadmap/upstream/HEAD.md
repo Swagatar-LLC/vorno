@@ -6,17 +6,17 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.9.4` |
-| Last merged upstream commit | `4144f79` |
-| Merge PR | [#23](https://github.com/Swagatar-LLC/craft-agents-oss/pull/23) — merged 2026-05-17 |
-| Merge commit on main | `c1d1302` |
-| Date synced | 2026-05-17 |
+| Last merged upstream tag | `v0.9.5` |
+| Last merged upstream commit | `96454c27` |
+| Merge PR | [#24](https://github.com/Swagatar-LLC/craft-agents-oss/pull/24) — merged 2026-05-20 |
+| Merge commit on main | `a56cb4cf` |
+| Date synced | 2026-05-20 |
 
 ## Versions covered in last merge
 
-- `v0.9.4` — Optional RTK Bash token compression (Settings → AI → Performance) with detection of missing/outdated installs and saved-token telemetry; Pi SDK `0.73.1` lifts Codex WS→SSE fallback + cached-WS shutdown cleanup (fixes upstream #747 — `1011` keepalive / `1006` disconnect / cert failures on long-running ChatGPT Plus / Codex OAuth sessions); compact session-menu now uses vaul drawer with iOS-style drill-in panes for Status/Labels/Share/Messaging (was clipping inside Radix dropdowns); race-safe label toggling via new `useSessionMenuActions` hook (optimistic compounding, Strict-Mode double-fire fix); Skills "Show in Finder" uses authoritative `skill.path` + platform-aware error toast (upstream #756); backend packaging cleanup removing stale Copilot/Codex remnants after the Pi consolidation.
+- `v0.9.5` — Compact-mode UX polish across session-row menu, working-directory selector, AcceptPlan picker, expandable chat input, and webUI compact model selector (all now drawer-based on narrow widths); shared `useWorkingDirectoryState` hook prevents desktop/compact drift; branching on the latest turn no longer drops the last assistant message (#782); stdio MCP `source_test` surfaces real startup diagnostics instead of fake timeouts (#787); parallel `source_test` calls no longer wedge a session via orphaned `tool_use` IDs (#790); chat view and messaging gateway `progress`/`final_only` modes both fall back to most-recent assistant text when a turn ends on a tool call without a non-intermediate `text_complete` (#779) — no more permanent "Thinking…"/silent runs; SDK Agent subagent activity groups collapsible again.
 
-(Two upstream commits behind on entry — `v0.9.3` + `v0.9.4`. `v0.9.3` content had already landed via PR #21's squash merge, so git only surfaced the additive `v0.9.4` content plus the version-bump conflicts. **Conflicts resolved:** `bun.lock` `--theirs` + `bun install` (skill-standard); 15× `package.json` version bumps `0.9.3 → 0.9.4` `--theirs`; `apps/electron/src/renderer/index.html` `--ours` (preserve "Craft Agents (Swagatar Fork)" title). No conflict in `packages/shared/src/agent/options.ts` — `buildClaudeSubprocessEnv()` continues to carry our `CLAUDECODE` strip cleanly.)
+(Single upstream commit, clean merge — no conflicts.)
 
 ## Post-merge fix
 
