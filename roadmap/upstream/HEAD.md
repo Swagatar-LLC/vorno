@@ -6,21 +6,29 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.9.5` |
-| Last merged upstream commit | `96454c27` |
-| Merge PR | [#24](https://github.com/Swagatar-LLC/craft-agents-oss/pull/24) — merged 2026-05-20 |
-| Merge commit on main | `a56cb4cf` |
-| Date synced | 2026-05-20 |
+| Last merged upstream tag | `v0.9.6` |
+| Last merged upstream commit | `d0e674f5` |
+| Merge PR | [#25](https://github.com/Swagatar-LLC/craft-agents-oss/pull/25) — merged 2026-05-25 |
+| Merge commit on main | `eeba9a2c` |
+| Date synced | 2026-05-25 |
 
 ## Versions covered in last merge
 
-- `v0.9.5` — Compact-mode UX polish across session-row menu, working-directory selector, AcceptPlan picker, expandable chat input, and webUI compact model selector (all now drawer-based on narrow widths); shared `useWorkingDirectoryState` hook prevents desktop/compact drift; branching on the latest turn no longer drops the last assistant message (#782); stdio MCP `source_test` surfaces real startup diagnostics instead of fake timeouts (#787); parallel `source_test` calls no longer wedge a session via orphaned `tool_use` IDs (#790); chat view and messaging gateway `progress`/`final_only` modes both fall back to most-recent assistant text when a turn ends on a tool call without a non-intermediate `text_complete` (#779) — no more permanent "Thinking…"/silent runs; SDK Agent subagent activity groups collapsible again.
+- `v0.9.6` — Multi-window state preservation across auto-update (electron-updater was clobbering `~/.craft-agent/window-state.json` with `{windows:[]}` because Squirrel.Mac destroys BrowserWindows before `before-quit`); workspace name in window title when multi-window; mid-session credential refresh for non-OAuth API sources (bearer/header/query/basic) via vault-lookup-per-call instead of capture-at-tool-creation; stale `source_apikey` cleanup when flipping authType→`none`; blocked URL schemes now explain *why* and DOM `href` is sanitized via `defaultUrlTransform` (closes middle-click escape route through `setWindowOpenHandler` / `will-navigate`) — fixes #807 URL handling; new inline `markdown-preview` code-block (mirrors `html-preview`/`pdf-preview`/`image-preview`); `cache_control` 1h TTL ordering fix (`tools` now walked before `system`/`messages` in `upgradePromptCacheTtl`) + dropped over-broad "tool not supported" 400 classifier; mobile WebUI send-button stays visible with long model names (#798); **headless server `source_activated` auto-retry moved into `SessionManager.processEvent` with 2 s content-match dedup window** (#804) — the Electron renderer's `auto_retry` effect is removed and headless deployments (WebUI, docker server) now chain source activations the same way; PR-378 review hardening follow-ups.
 
 (Single upstream commit, clean merge — no conflicts.)
 
-## Post-merge fix
+## Post-merge polish
 
-- **`apps/server/src/config.ts` — `saveServerConfig()` now `mkdir -p`s the parent dir before write.** Pre-existing bug in fork-only code that surfaced deterministically in CI on this branch (`ENOENT: '/home/runner/.craft-agent/server-config.json'` in `tests/unit/auth.test.ts`). Unrelated to upstream v0.9.4. Committed as `349512e`.
+- **`apps/electron/src/renderer/components/fork-badge.tsx`** — dropped the top-right pill (was occluding the window close button); kept the 2px rust-orange accent stripe under the title bar. Window title already carries "(Swagatar Fork)" so identity is preserved. Committed in the same merge PR (`1c9fd5d3`).
+
+## Versions covered in prior merge (PR #24, 2026-05-20)
+
+- `v0.9.5` — Compact-mode drawer treatment for session-row menu, working-directory selector, AcceptPlan picker, expandable chat input, and webUI mobile model selector; shared `useWorkingDirectoryState` hook to prevent desktop/compact drift; branching on the latest turn no longer drops the last assistant message (#782); stdio MCP `source_test` real diagnostics instead of fake timeouts (#787); parallel `source_test` no longer wedges sessions via orphaned `tool_use` IDs (#790); chat view and messaging gateway `progress`/`final_only` both fall back to most-recent assistant text when a turn ends on a tool call without a non-intermediate `text_complete` (#779); SDK Agent subagent activity groups collapsible again.
+
+## Versions covered in prior merge (PR #23, 2026-05-17)
+
+- `v0.9.4` — Optional RTK Bash token compression (Settings → AI → Performance) with detection of missing/outdated installs and saved-token telemetry; Pi SDK `0.73.1` lifts Codex WS→SSE fallback + cached-WS shutdown cleanup (fixes upstream #747 — `1011` keepalive / `1006` disconnect / cert failures on long-running ChatGPT Plus / Codex OAuth sessions); compact session-menu vaul drawer with iOS-style drill-in panes; race-safe label toggling via `useSessionMenuActions`; Skills "Show in Finder" uses authoritative `skill.path` + platform-aware error toast (upstream #756); backend packaging cleanup after Pi consolidation. **Post-merge fix:** `apps/server/src/config.ts` — `saveServerConfig()` now `mkdir -p`s the parent dir before write (committed as `349512e`); CI runner `~/.craft-agent/` dir absent had been a pre-existing bug in fork-only code.
 
 ## Versions covered in prior merge (PR #21, 2026-05-12)
 
