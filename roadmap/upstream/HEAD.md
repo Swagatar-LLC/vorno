@@ -6,21 +6,23 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.9.6` |
-| Last merged upstream commit | `d0e674f5` |
-| Merge PR | [#25](https://github.com/Swagatar-LLC/craft-agents-oss/pull/25) — merged 2026-05-25 |
-| Merge commit on main | `eeba9a2c` |
-| Date synced | 2026-05-25 |
+| Last merged upstream tag | `v0.10.0` |
+| Last merged upstream commit | `215910da` |
+| Merge PR | [#27](https://github.com/Swagatar-LLC/craft-agents-oss/pull/27) — merged 2026-05-27 |
+| Merge commit on main | `8ca513a7` |
+| Date synced | 2026-05-27 |
 
 ## Versions covered in last merge
 
-- `v0.9.6` — Multi-window state preservation across auto-update (electron-updater was clobbering `~/.craft-agent/window-state.json` with `{windows:[]}` because Squirrel.Mac destroys BrowserWindows before `before-quit`); workspace name in window title when multi-window; mid-session credential refresh for non-OAuth API sources (bearer/header/query/basic) via vault-lookup-per-call instead of capture-at-tool-creation; stale `source_apikey` cleanup when flipping authType→`none`; blocked URL schemes now explain *why* and DOM `href` is sanitized via `defaultUrlTransform` (closes middle-click escape route through `setWindowOpenHandler` / `will-navigate`) — fixes #807 URL handling; new inline `markdown-preview` code-block (mirrors `html-preview`/`pdf-preview`/`image-preview`); `cache_control` 1h TTL ordering fix (`tools` now walked before `system`/`messages` in `upgradePromptCacheTtl`) + dropped over-broad "tool not supported" 400 classifier; mobile WebUI send-button stays visible with long model names (#798); **headless server `source_activated` auto-retry moved into `SessionManager.processEvent` with 2 s content-match dedup window** (#804) — the Electron renderer's `auto_retry` effect is removed and headless deployments (WebUI, docker server) now chain source activations the same way; PR-378 review hardening follow-ups.
+- `v0.10.0` — **Remote `browser_tool` bridged into the user's local Electron browser** (`1d926c33`): agents running on a remote workspace (headless server, docker, WebUI) drive the user's local desktop `BrowserPaneManager` end-to-end via a new `client:browser:invoke` WS capability (advertised on handshake, server→client invocation, plain `Error` with `.code` preserved both directions). Transport gains `hasClientCapability` / `findClientsWithCapability` for routing; Electron gets a new `__browser:invoke` IPC dispatcher with per-method owner-key authorization, no-manual-window-reuse for remote callers, session-scoped `listInstances`, and screenshot `Buffer`↔`Uint8Array` conversion. `server-core` gets a `RemoteBrowserPaneManager` and `SessionManager.getBrowserPaneManagerForSession` with capability-aware host-client fallback and per-session pin cleanup on disconnect. `uploadFile` is blocked over the bridge; `evaluate` is gated by a local `allowRemoteEvaluate` setting. Pi runtime learns friendly error mappings for `BROWSER_NO_CAPABLE_CLIENT`, `CAPABILITY_UNAVAILABLE`, `CLIENT_DISCONNECTED`, `CLIENT_REQUEST_TIMEOUT`, `BROWSER_INSTANCE_NOT_OWNED`, `BROWSER_REMOTE_UPLOAD_NOT_SUPPORTED`, `BROWSER_REMOTE_EVALUATE_BLOCKED`, and now mirrors Claude's `getBrowserToolEnabled` gate. **Browser tabs isolated per workspace** (`af817192`): every `BrowserInstance` and the `BrowserInstanceInfo` DTO carry a nullable `workspaceId`; renderer reads `browserInstancesForWorkspaceAtomFamily` keyed by `activeWorkspaceId` (intra-release the filter was server-side, then reverted to renderer-side in `f831bb42` to fix remote-mirror workspaces — final shape: `STATE_CHANGED` broadcasts `{to:'all'}` and `LIST` returns the full set; visibility filter lives in `filterInstancesForWorkspace(local, remote)`). **`source_test` base64-encodes basic-auth credentials** (`96dd7c0d`, fixes #824) — validator path now matches `buildHeaders` JSON-parse + base64 behavior. Also: `markdown-preview` reference docs entry; three new `sessionLog.info` lines around `setRpcServer` / browser-pane-forwarding for diagnosability; remote-bridge lifecycle hardening (`ce3340a1`, `ceb24603`, `7dfcaeac`) so windows can't be hijacked across workspaces; `toSnapshot(instance)` projection before IPC return (`8e2534b5`) to avoid Electron structured-clone failures.
 
 (Single upstream commit, clean merge — no conflicts.)
 
-## Post-merge polish
+## Versions covered in prior merge (PR #25, 2026-05-25)
 
-- **`apps/electron/src/renderer/components/fork-badge.tsx`** — dropped the top-right pill (was occluding the window close button); kept the 2px rust-orange accent stripe under the title bar. Window title already carries "(Swagatar Fork)" so identity is preserved. Committed in the same merge PR (`1c9fd5d3`).
+- `v0.9.6` — Multi-window state preservation across auto-update (electron-updater was clobbering `~/.craft-agent/window-state.json` with `{windows:[]}` because Squirrel.Mac destroys BrowserWindows before `before-quit`); workspace name in window title when multi-window; mid-session credential refresh for non-OAuth API sources (bearer/header/query/basic) via vault-lookup-per-call instead of capture-at-tool-creation; stale `source_apikey` cleanup when flipping authType→`none`; blocked URL schemes now explain *why* and DOM `href` is sanitized via `defaultUrlTransform` (closes middle-click escape route through `setWindowOpenHandler` / `will-navigate`) — fixes #807 URL handling; new inline `markdown-preview` code-block (mirrors `html-preview`/`pdf-preview`/`image-preview`); `cache_control` 1h TTL ordering fix (`tools` now walked before `system`/`messages` in `upgradePromptCacheTtl`) + dropped over-broad "tool not supported" 400 classifier; mobile WebUI send-button stays visible with long model names (#798); **headless server `source_activated` auto-retry moved into `SessionManager.processEvent` with 2 s content-match dedup window** (#804) — the Electron renderer's `auto_retry` effect is removed and headless deployments (WebUI, docker server) now chain source activations the same way; PR-378 review hardening follow-ups.
+
+Post-merge polish: `apps/electron/src/renderer/components/fork-badge.tsx` — dropped the top-right pill (was occluding the window close button); kept the 2px rust-orange accent stripe under the title bar (`1c9fd5d3`).
 
 ## Versions covered in prior merge (PR #24, 2026-05-20)
 
