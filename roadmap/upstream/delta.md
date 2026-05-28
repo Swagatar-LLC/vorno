@@ -2,9 +2,9 @@
 
 Files we own that differ from `upstream/main`. Refresh via `[skill:upstream-delta-report]`.
 
-**Last refresh:** 2026-05-25 (post-v0.9.6 merge, PR #25)
+**Last refresh:** 2026-05-28 (post-v0.10.0 merge, PR #27)
 **Method:** `git diff --name-only upstream/main...main`
-**Total files in delta:** 122 (unchanged from 2026-05-17)
+**Total files in delta:** 122 (unchanged from 2026-05-25)
 
 ## Major owned components
 

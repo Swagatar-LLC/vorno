@@ -6,21 +6,21 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.9.6` |
-| Last merged upstream commit | `d0e674f5` |
-| Merge PR | [#25](https://github.com/Swagatar-LLC/craft-agents-oss/pull/25) — merged 2026-05-25 |
-| Merge commit on main | `eeba9a2c` |
-| Date synced | 2026-05-25 |
+| Last merged upstream tag | `v0.10.0` |
+| Last merged upstream commit | `215910da` |
+| Merge PR | [#27](https://github.com/Swagatar-LLC/craft-agents-oss/pull/27) — merged 2026-05-28 |
+| Merge commit on main | `8ca513a7` |
+| Date synced | 2026-05-28 |
 
 ## Versions covered in last merge
 
-- `v0.9.6` — Multi-window state preservation across auto-update (electron-updater was clobbering `~/.craft-agent/window-state.json` with `{windows:[]}` because Squirrel.Mac destroys BrowserWindows before `before-quit`); workspace name in window title when multi-window; mid-session credential refresh for non-OAuth API sources (bearer/header/query/basic) via vault-lookup-per-call instead of capture-at-tool-creation; stale `source_apikey` cleanup when flipping authType→`none`; blocked URL schemes now explain *why* and DOM `href` is sanitized via `defaultUrlTransform` (closes middle-click escape route through `setWindowOpenHandler` / `will-navigate`) — fixes #807 URL handling; new inline `markdown-preview` code-block (mirrors `html-preview`/`pdf-preview`/`image-preview`); `cache_control` 1h TTL ordering fix (`tools` now walked before `system`/`messages` in `upgradePromptCacheTtl`) + dropped over-broad "tool not supported" 400 classifier; mobile WebUI send-button stays visible with long model names (#798); **headless server `source_activated` auto-retry moved into `SessionManager.processEvent` with 2 s content-match dedup window** (#804) — the Electron renderer's `auto_retry` effect is removed and headless deployments (WebUI, docker server) now chain source activations the same way; PR-378 review hardening follow-ups.
+- `v0.10.0` — **Remote `browser_tool` bridged into the user's local Electron browser** via new `client:browser:invoke` WS capability (server-invokes-client RPC, mirroring `shell.openExternal` for `OPEN_URL`); transport gains `hasClientCapability` / `findClientsWithCapability`; Electron adds `__browser:invoke` IPC dispatcher with per-method owner-key authorization, no-manual-window-reuse for remote callers, session-scoped `listInstances`, and screenshot `Buffer`↔`Uint8Array` conversion across the wire. New `RemoteBrowserPaneManager` (session-bound `IBPM` impl) in `server-core` with capability-aware host-client fallback. `uploadFile` blocked over bridge; `evaluate` gated by new local `allowRemoteEvaluate` setting. Pi runtime learns friendly mappings for 7 new error codes and now mirrors Claude's `getBrowserToolEnabled` gate. **Per-workspace browser-tab isolation:** every `BrowserInstance` (and `BrowserInstanceInfo` DTO) carries a nullable `workspaceId`; `STATE_CHANGED` broadcasts to all, renderer filters via `filterInstancesForWorkspace(local, remote)` (handles both local Craft window id and remote-server workspace id for remote-mirror workspaces). TopBar-opened `CREATE` inherits `ctx.workspaceId`; unbound-window reuse scoped to owning workspace (closes cross-workspace hijack); `BrowserInstance` projected to plain snapshot before IPC return (fixes structured-clone failure on Electron native refs). **`source_test` base64-encodes basic-auth credentials** (fixes #824 — was sending raw JSON in `Authorization: Basic` header and 401'ing every basic-auth provider).
 
-(Single upstream commit, clean merge — no conflicts.)
+(Single upstream commit, clean merge — no conflicts, no post-merge polish needed.)
 
-## Post-merge polish
+## Versions covered in prior merge (PR #25, 2026-05-25)
 
-- **`apps/electron/src/renderer/components/fork-badge.tsx`** — dropped the top-right pill (was occluding the window close button); kept the 2px rust-orange accent stripe under the title bar. Window title already carries "(Swagatar Fork)" so identity is preserved. Committed in the same merge PR (`1c9fd5d3`).
+- `v0.9.6` — Multi-window state preservation across auto-update (electron-updater was clobbering `~/.craft-agent/window-state.json` with `{windows:[]}` because Squirrel.Mac destroys BrowserWindows before `before-quit`); workspace name in window title when multi-window; mid-session credential refresh for non-OAuth API sources (bearer/header/query/basic) via vault-lookup-per-call instead of capture-at-tool-creation; stale `source_apikey` cleanup when flipping authType→`none`; blocked URL schemes now explain *why* and DOM `href` is sanitized via `defaultUrlTransform` (closes middle-click escape route through `setWindowOpenHandler` / `will-navigate`) — fixes #807 URL handling; new inline `markdown-preview` code-block (mirrors `html-preview`/`pdf-preview`/`image-preview`); `cache_control` 1h TTL ordering fix (`tools` now walked before `system`/`messages` in `upgradePromptCacheTtl`) + dropped over-broad "tool not supported" 400 classifier; mobile WebUI send-button stays visible with long model names (#798); **headless server `source_activated` auto-retry moved into `SessionManager.processEvent` with 2 s content-match dedup window** (#804) — the Electron renderer's `auto_retry` effect is removed and headless deployments (WebUI, docker server) now chain source activations the same way; PR-378 review hardening follow-ups. **Post-merge polish:** dropped fork-badge top-right pill (was occluding window close button); kept 2px rust-orange accent stripe under title bar (`1c9fd5d3`).
 
 ## Versions covered in prior merge (PR #24, 2026-05-20)
 
