@@ -14,6 +14,9 @@
 // Must stay in sync with BEDROCK_MODEL_MAP in llm-connections.ts.
 const BEDROCK_TO_BARE: Record<string, string> = {
   // US inference profile IDs (primary)
+  // TODO(opus-4.8-bedrock): add Opus 4.8 Bedrock variants once the exact
+  // inference-profile ID format is confirmed in the AWS docs (the older
+  // Opus profiles use a `-v1` suffix but 4.8 may not — needs verification).
   'us.anthropic.claude-opus-4-7-v1': 'claude-opus-4-7',
   'us.anthropic.claude-sonnet-4-6': 'claude-sonnet-4-6',
   'us.anthropic.claude-haiku-4-5-20251001-v1:0': 'claude-haiku-4-5-20251001',
@@ -77,6 +80,12 @@ export interface ModelDefinition {
   supportsThinking?: boolean;
   /** Explicit per-model image input capability hint, primarily for custom endpoints. */
   supportsImages?: boolean;
+  /**
+   * Whether this model supports Anthropic's fast mode (`speed: "fast"`).
+   * Undefined/false means the UI hides the toggle and the interceptor leaves the request alone.
+   * Fast mode is opt-in per request and roughly doubles output-token pricing.
+   */
+  supportsFastMode?: boolean;
 }
 
 // ============================================
@@ -92,10 +101,25 @@ export const MODEL_REGISTRY: ModelDefinition[] = [
   // Anthropic Claude Models
   // ----------------------------------------
   {
+    id: 'claude-opus-4-8',
+    // shortName intentionally collides with 4.7/4.6. Listed first so
+    // findModelIdByShortName('Opus') returns 4.8 — same convention used
+    // by 4.7 when it was introduced ahead of 4.6.
+    name: 'Opus 4.8',
+    shortName: 'Opus',
+    description: 'Most capable for complex work',
+    descriptionKey: 'model.opusDesc',
+    provider: 'anthropic',
+    contextWindow: 1_000_000,
+    // Opus 4.8 introduces Anthropic's fast mode (research preview).
+    // Toggle is opt-in per session; see roadmap entry for Stages 2–4 plumbing.
+    supportsFastMode: true,
+  },
+  {
     id: 'claude-opus-4-7',
     name: 'Opus 4.7',
     shortName: 'Opus',
-    description: 'Most capable for complex work',
+    description: 'Previous Opus release',
     descriptionKey: 'model.opusDesc',
     provider: 'anthropic',
     contextWindow: 1_000_000,
@@ -274,6 +298,19 @@ export function getModelContextWindow(modelId: string): number | undefined {
  */
 export function isOpusModel(modelId: string): boolean {
   return modelId.includes('opus');
+}
+
+/**
+ * Check if a model supports Anthropic's fast mode (`speed: "fast"`).
+ * Handles Bedrock-native IDs by reverse-mapping to the bare Anthropic ID.
+ * Returns false for models without an explicit `supportsFastMode: true` hint.
+ *
+ * Callers (UI selector + network interceptor) should use this rather than
+ * literal model-ID comparisons so the capability surface stays in lock-step
+ * with the registry.
+ */
+export function getModelSupportsFastMode(modelId: string): boolean {
+  return getModelById(modelId)?.supportsFastMode === true;
 }
 
 /**
