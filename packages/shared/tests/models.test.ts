@@ -9,6 +9,7 @@ import {
   getModelDisplayName,
   ANTHROPIC_MODELS,
   getModelIdByShortName,
+  getModelSupportsFastMode,
 } from '../src/config/models.ts';
 
 describe('isClaudeModel', () => {
@@ -118,8 +119,35 @@ describe('Opus 4.6 registry presence', () => {
     expect(ids).toContain('claude-opus-4-6');
   });
 
-  it('resolves "Opus" shortName to 4.7 (first match wins)', () => {
-    // 4.7 is listed first in MODEL_REGISTRY so default Opus callers unchanged.
-    expect(getModelIdByShortName('Opus')).toBe('claude-opus-4-7');
+  it('resolves "Opus" shortName to 4.8 (newest first)', () => {
+    // 4.8 is listed first in MODEL_REGISTRY so the abstract "Opus" short name
+    // resolves to the newest Opus release — same convention 4.7 used over 4.6.
+    expect(getModelIdByShortName('Opus')).toBe('claude-opus-4-8');
+  });
+});
+
+describe('Opus 4.8 registry presence', () => {
+  it('includes claude-opus-4-8 in ANTHROPIC_MODELS', () => {
+    const ids = ANTHROPIC_MODELS.map(m => m.id);
+    expect(ids).toContain('claude-opus-4-8');
+  });
+
+  it('returns "Opus 4.8" display name for claude-opus-4-8', () => {
+    expect(getModelDisplayName('claude-opus-4-8')).toBe('Opus 4.8');
+  });
+
+  it('reports supportsFastMode=true for claude-opus-4-8', () => {
+    expect(getModelSupportsFastMode('claude-opus-4-8')).toBe(true);
+  });
+
+  it('reports supportsFastMode=false for models without the hint', () => {
+    expect(getModelSupportsFastMode('claude-opus-4-7')).toBe(false);
+    expect(getModelSupportsFastMode('claude-sonnet-4-6')).toBe(false);
+    expect(getModelSupportsFastMode('claude-haiku-4-5-20251001')).toBe(false);
+  });
+
+  it('reports supportsFastMode=false for unknown models', () => {
+    expect(getModelSupportsFastMode('openai/gpt-5')).toBe(false);
+    expect(getModelSupportsFastMode('llama3.2')).toBe(false);
   });
 });

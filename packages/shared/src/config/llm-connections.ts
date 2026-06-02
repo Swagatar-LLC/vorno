@@ -595,7 +595,7 @@ export function getModelsForProviderType(providerType: LlmProviderType, piAuthPr
 export const PI_PREFERRED_DEFAULTS: Record<string, string[]> = {
   // TODO(opus-4.6-sunset): drop 'claude-opus-4-6' from anthropic and amazon-bedrock
   // when Opus 4.6 is deprecated.
-  anthropic: ['claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  anthropic: ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   openai: ['gpt-5.5', 'gpt-5.2', 'gpt-5.1', 'gpt-5', 'o4-mini', 'o3', 'gpt-4o'],
   'openai-codex': ['gpt-5.5', 'gpt-5.2', 'gpt-5.1', 'gpt-5', 'o4-mini', 'o3', 'gpt-4o'],
   // Stable models first so the connection-setup test (which uses
