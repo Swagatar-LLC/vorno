@@ -1,11 +1,11 @@
 ---
 id: PLAN-006
 title: Per-session fast-mode toggle (Stages 2–4 of Opus 4.8 rollout)
-status: planned
+status: done
 direction: none
 owner: jh
 created: 2026-06-02
-updated: 2026-06-02
+updated: 2026-06-03
 related: []
 blocked-by: []
 ---
@@ -83,3 +83,6 @@ graph LR
 
 - `2026-06-02` — created in `planned/`
 - `2026-06-02` — moved to `in-progress/`, Stage 2 work starting on branch `jh/2026-06-02_fast-mode-toggle`
+- `2026-06-02` — Stage 2 committed (`37e8813f`): DTO/agent/automation plumbing + SDK `Settings.fastMode` delivery; dead `FEATURE_FLAGS.fastMode` + interceptor block removed
+- `2026-06-03` — Stage 3 committed (`721e28e4`): UI Speed toggle in `CompactModelSelector`, threading through `FreeFormInput`/`ChatDisplay`/`ChatPage`/`App`, `setFastMode` RPC + `SessionManager.setSessionFastMode`, i18n keys in all 7 locales
+- `2026-06-03` — PR [#31](https://github.com/Swagatar-LLC/craft-agents-oss/pull/31) merged to `main`; moved to `done/`
