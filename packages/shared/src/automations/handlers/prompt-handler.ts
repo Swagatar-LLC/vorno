@@ -118,8 +118,13 @@ export class PromptHandler implements AutomationHandler {
           llmConnection: prompt.llmConnection,
           model: prompt.model,
           thinkingLevel: prompt.thinkingLevel,
+          fastMode: prompt.fastMode,
           telegramTopic: finalTopic,
         });
+
+        if (prompt.fastMode === true) {
+          log.info(`[PromptHandler] fast mode requested by automation matcher=${matcherId} model=${prompt.model ?? '<default>'}`);
+        }
       }
 
     }

@@ -11,7 +11,6 @@
  *   - Anthropic: STRIPS metadata from stream (SDK validates immediately)
  *   - OpenAI: CAPTURES metadata passthrough (hook strips before execution)
  * - Captures API errors (4xx/5xx) for error handler
- * - Fast mode support for Anthropic (Opus 4.7)
  *
  * Auto-detects API format based on request URL:
  * - Anthropic: baseUrl + /messages
@@ -251,8 +250,6 @@ function getConfiguredBaseUrl(): string {
   return process.env.ANTHROPIC_BASE_URL?.trim() || 'https://api.anthropic.com';
 }
 
-const FAST_MODE_BETA = 'fast-mode-2026-02-01';
-
 /**
  * Strip cache_control from empty text blocks in API request bodies.
  *
@@ -422,36 +419,6 @@ export function upgradePromptCacheTtl(body: Record<string, unknown>): number {
     debugLog(`[Anthropic] Upgraded ${upgraded} cache_control block(s) to 1h TTL`);
   }
   return upgraded;
-}
-
-/**
- * Check if fast mode should be enabled for this request.
- * Only activates for Opus 4.7 on Anthropic's API when the feature flag is on.
- */
-function shouldEnableFastMode(model: unknown): boolean {
-  if (!FEATURE_FLAGS.fastMode) return false;
-  return typeof model === 'string' && model === 'claude-opus-4-7';
-}
-
-/**
- * Append a beta value to the anthropic-beta header, preserving existing values.
- */
-function appendBetaHeader(headers: HeadersInitType | undefined, beta: string): Record<string, string> {
-  let headerObj: Record<string, string> = {};
-  if (headers instanceof Headers) {
-    headers.forEach((value, key) => { headerObj[key] = value; });
-  } else if (Array.isArray(headers)) {
-    for (const [key, value] of headers) {
-      headerObj[key as string] = value as string;
-    }
-  } else if (headers) {
-    headerObj = { ...headers };
-  }
-
-  const existing = headerObj['anthropic-beta'];
-  headerObj['anthropic-beta'] = existing ? `${existing},${beta}` : beta;
-
-  return headerObj;
 }
 
 /**
@@ -801,18 +768,9 @@ const anthropicAdapter: ApiAdapter = {
       };
     }
 
-    const fastMode = shouldEnableFastMode(body.model);
-    if (fastMode) {
-      body.speed = 'fast';
-      debugLog(`[Fast Mode] Enabled for model=${body.model}`);
-      return {
-        init: {
-          ...init,
-          headers: appendBetaHeader(init?.headers as HeadersInitType | undefined, FAST_MODE_BETA),
-        },
-        body,
-      };
-    }
+    // Fast mode is delivered via the Claude SDK's native Settings.fastMode field
+    // (set in claude-agent.ts). The interceptor no longer mutates Anthropic
+    // requests for fast mode — the SDK handles body.speed and the beta header.
     return { init, body };
   },
 };

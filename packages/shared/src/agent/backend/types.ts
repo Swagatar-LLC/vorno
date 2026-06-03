@@ -182,6 +182,9 @@ export interface CoreBackendConfig {
   /** Initial thinking level */
   thinkingLevel?: ThinkingLevel;
 
+  /** Initial fast-mode state (Anthropic-only; capability-gated by supportsFastMode). */
+  fastMode?: boolean;
+
   /** Headless mode flag (disables interactive tools) */
   isHeadless?: boolean;
 
