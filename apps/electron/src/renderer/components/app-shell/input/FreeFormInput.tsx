@@ -156,6 +156,11 @@ export interface FreeFormInputProps {
   thinkingLevel?: ThinkingLevel
   /** Callback when thinking level changes */
   onThinkingLevelChange?: (level: ThinkingLevel) => void
+  // Fast mode (Anthropic-only, capability-gated)
+  /** Current fast-mode state */
+  fastMode?: boolean
+  /** Callback when fast mode toggles */
+  onFastModeChange?: (enabled: boolean) => void
   // Advanced options
   permissionMode?: PermissionMode
   onPermissionModeChange?: (mode: PermissionMode) => void
@@ -276,6 +281,8 @@ export function FreeFormInput({
   onModelChange,
   thinkingLevel = 'medium',
   onThinkingLevelChange,
+  fastMode = false,
+  onFastModeChange,
   permissionMode = 'ask',
   onPermissionModeChange,
   enabledModes = ['safe', 'ask', 'allow-all'],
@@ -1810,6 +1817,8 @@ export function FreeFormInput({
               onConnectionChange={onConnectionChange}
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
+              fastMode={fastMode}
+              onFastModeChange={onFastModeChange}
               isEmptySession={isEmptySession}
               connectionUnavailable={connectionUnavailable}
               contextStatus={contextStatus}

@@ -162,6 +162,11 @@ interface ChatDisplayProps {
   thinkingLevel?: ThinkingLevel
   /** Callback when thinking level changes */
   onThinkingLevelChange?: (level: ThinkingLevel) => void
+  // Fast mode (session-level setting; Anthropic-only, capability-gated)
+  /** Current fast-mode state */
+  fastMode?: boolean
+  /** Callback when fast mode toggles */
+  onFastModeChange?: (enabled: boolean) => void
   // Advanced options
   /** Current permission mode */
   permissionMode?: PermissionMode
@@ -451,6 +456,9 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Thinking level
   thinkingLevel = 'medium',
   onThinkingLevelChange,
+  // Fast mode
+  fastMode = false,
+  onFastModeChange,
   // Advanced options
   permissionMode = 'ask',
   onPermissionModeChange,
@@ -1926,6 +1934,8 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
               onModelChange,
               thinkingLevel,
               onThinkingLevelChange,
+              fastMode,
+              onFastModeChange,
               enabledModes,
               enableCompactModelPicker,
               structuredInput,
