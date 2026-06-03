@@ -6,17 +6,21 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.10.0` |
-| Last merged upstream commit | `215910da` |
-| Merge PR | [#27](https://github.com/Swagatar-LLC/craft-agents-oss/pull/27) — merged 2026-05-28 |
-| Merge commit on main | `8ca513a7` |
-| Date synced | 2026-05-28 |
+| Last merged upstream tag | `v0.10.1` |
+| Last merged upstream commit | `26948f8b` |
+| Merge PR | _pending_ — branch `jh/2026-06-03_Upstream_Merge` |
+| Merge commit on main | _pending_ |
+| Date synced | 2026-06-03 |
 
 ## Versions covered in last merge
 
+- `v0.10.1` — **Claude Opus 4.8 promoted to default Opus** (Claude Agent SDK 0.3.154). Opus 4.7 stays selectable; Opus 4.6 removed from pickers; existing 4.7 defaults migrate to 4.8 and 4.5/4.6 selections migrate forward. Bedrock mappings, Pi fallback, model-migration tests, docs, UI examples all updated. **Session titles honour Settings → Appearance language** — fixes main-process i18n that was sitting at `en` fallback after restart because Node has no `localStorage` to detect from; renderer now persists chosen language to an internal validated `uiLanguage` field and main hydrates from it on startup (partially closes upstream #815, #738). **Text-selection highlight stays aligned when scrolling a `markdown-preview` block** — capture-phase scroll listener recomputes overlay geometry (rAF-coalesced, no-op short-circuit when no annotations), mirrored in viewer annotation path. **Breaking — macOS Intel (x64) builds discontinued, Apple Silicon only** (v0.10.0 was the last Intel build). **Breaking — legacy free-text `language` field in `preferences.json` replaced by internal validated `uiLanguage`**; schema is passthrough so existing configs are tolerated and stale `language` keys are scrubbed on read; `update_user_preferences` tool no longer accepts `language`.
+
+## Versions covered in prior merge (PR #27, 2026-05-28)
+
 - `v0.10.0` — **Remote `browser_tool` bridged into the user's local Electron browser** via new `client:browser:invoke` WS capability (server-invokes-client RPC, mirroring `shell.openExternal` for `OPEN_URL`); transport gains `hasClientCapability` / `findClientsWithCapability`; Electron adds `__browser:invoke` IPC dispatcher with per-method owner-key authorization, no-manual-window-reuse for remote callers, session-scoped `listInstances`, and screenshot `Buffer`↔`Uint8Array` conversion across the wire. New `RemoteBrowserPaneManager` (session-bound `IBPM` impl) in `server-core` with capability-aware host-client fallback. `uploadFile` blocked over bridge; `evaluate` gated by new local `allowRemoteEvaluate` setting. Pi runtime learns friendly mappings for 7 new error codes and now mirrors Claude's `getBrowserToolEnabled` gate. **Per-workspace browser-tab isolation:** every `BrowserInstance` (and `BrowserInstanceInfo` DTO) carries a nullable `workspaceId`; `STATE_CHANGED` broadcasts to all, renderer filters via `filterInstancesForWorkspace(local, remote)` (handles both local Craft window id and remote-server workspace id for remote-mirror workspaces). TopBar-opened `CREATE` inherits `ctx.workspaceId`; unbound-window reuse scoped to owning workspace (closes cross-workspace hijack); `BrowserInstance` projected to plain snapshot before IPC return (fixes structured-clone failure on Electron native refs). **`source_test` base64-encodes basic-auth credentials** (fixes #824 — was sending raw JSON in `Authorization: Basic` header and 401'ing every basic-auth provider).
 
-(Single upstream commit, clean merge — no conflicts, no post-merge polish needed.)
+(Single upstream commit. Non-trivial conflicts in `packages/shared/src/config/models.ts`, `packages/shared/src/config/llm-connections.ts`, `packages/shared/tests/models.test.ts`, and `bun.lock` — all intersected with the in-flight Opus 4.8 / fast-mode work landed earlier this week. See PR for resolution notes.)
 
 ## Versions covered in prior merge (PR #25, 2026-05-25)
 
