@@ -426,12 +426,14 @@ export default function App() {
         ...current,
         permissionMode: session.permissionMode ?? defaultSessionOptions.permissionMode,
         thinkingLevel: session.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+        fastMode: session.fastMode ?? defaultSessionOptions.fastMode,
       }
 
       const hasNonDefaultMode = merged.permissionMode !== defaultSessionOptions.permissionMode
       const hasNonDefaultThinking = merged.thinkingLevel !== DEFAULT_THINKING_LEVEL
+      const hasNonDefaultFastMode = merged.fastMode !== defaultSessionOptions.fastMode
 
-      if (!hasNonDefaultMode && !hasNonDefaultThinking && merged.permissionModeVersion == null) {
+      if (!hasNonDefaultMode && !hasNonDefaultThinking && !hasNonDefaultFastMode && merged.permissionModeVersion == null) {
         next.delete(session.id)
       } else {
         next.set(session.id, merged)
@@ -478,10 +480,12 @@ export default function App() {
       for (const s of loadedSessions) {
         const hasNonDefaultMode = s.permissionMode && s.permissionMode !== 'ask'
         const hasNonDefaultThinking = s.thinkingLevel && s.thinkingLevel !== DEFAULT_THINKING_LEVEL
-        if (hasNonDefaultMode || hasNonDefaultThinking) {
+        const hasNonDefaultFastMode = s.fastMode === true
+        if (hasNonDefaultMode || hasNonDefaultThinking || hasNonDefaultFastMode) {
           optionsMap.set(s.id, {
             permissionMode: s.permissionMode ?? 'ask',
             thinkingLevel: s.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+            fastMode: s.fastMode ?? false,
           })
         }
       }
@@ -1381,6 +1385,10 @@ export default function App() {
     if (updates.thinkingLevel !== undefined) {
       // Sync thinking level change with backend (session-level, persisted)
       window.electronAPI.sessionCommand(sessionId, { type: 'setThinkingLevel', level: updates.thinkingLevel })
+    }
+    if (updates.fastMode !== undefined) {
+      // Sync fast mode change with backend (session-level, persisted)
+      window.electronAPI.sessionCommand(sessionId, { type: 'setFastMode', enabled: updates.fastMode })
     }
   }, [sessionOptions])
 

@@ -70,6 +70,8 @@ Only use 'attachments' for existing file paths on disk — the tool reads them a
         .describe('Permission mode for the new session'),
       thinkingLevel: z.enum(['off', 'low', 'medium', 'high', 'xhigh', 'max']).optional()
         .describe('Reasoning level for the new session. Silently ignored on non-reasoning models (e.g. gpt-4o, gemini-2.5-flash). Omit to inherit the workspace default.'),
+      fastMode: z.boolean().optional()
+        .describe('Enable Anthropic fast mode (~2x output cost, faster responses). Silently ignored on models without supportsFastMode. Defaults to false.'),
       labels: z.array(z.string()).optional()
         .describe('Labels for the new session'),
       workingDirectory: z.string().optional()

@@ -182,6 +182,9 @@ export interface CoreBackendConfig {
   /** Initial thinking level */
   thinkingLevel?: ThinkingLevel;
 
+  /** Initial fast-mode state (Anthropic-only; capability-gated by supportsFastMode). */
+  fastMode?: boolean;
+
   /** Headless mode flag (disables interactive tools) */
   isHeadless?: boolean;
 
@@ -472,6 +475,12 @@ export interface AgentBackend {
 
   /** Set thinking level */
   setThinkingLevel(level: ThinkingLevel): void;
+
+  /** Get current fast-mode state (Anthropic only; non-Anthropic backends report false). */
+  getFastMode(): boolean;
+
+  /** Set fast-mode (no-op on non-Anthropic backends; capability is gated by the model). */
+  setFastMode(enabled: boolean): void;
 
   // ============================================================
   // Permission Mode

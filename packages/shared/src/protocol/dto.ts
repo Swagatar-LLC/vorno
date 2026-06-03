@@ -74,6 +74,12 @@ export interface Session {
   model?: string
   llmConnection?: string
   thinkingLevel?: ThinkingLevel
+  /**
+   * When true, Anthropic fast mode is enabled for this session — Claude SDK injects
+   * `body.speed = 'fast'` via `Settings.fastMode`. Sticky per session; sessions
+   * start with fastMode=false. Capability-gated by `ModelDefinition.supportsFastMode`.
+   */
+  fastMode?: boolean
   lastMessageRole?: 'user' | 'assistant' | 'plan' | 'tool' | 'error'
   lastFinalMessageId?: string
   isAsyncOperationOngoing?: boolean
@@ -113,6 +119,11 @@ export interface CreateSessionOptions {
    * the API request for models with `reasoning: false` in the Pi SDK catalog.
    */
   thinkingLevel?: ThinkingLevel
+  /**
+   * When true, enable Anthropic fast mode at session creation. Capability-gated
+   * by `ModelDefinition.supportsFastMode`; silently ignored on unsupported models.
+   */
+  fastMode?: boolean
   /**
    * Working directory for the session:
    * - 'user_default' or undefined: Use workspace's configured default working directory
@@ -232,6 +243,7 @@ export type SessionCommand =
   | { type: 'setActiveViewing'; workspaceId: string }
   | { type: 'setPermissionMode'; mode: PermissionMode }
   | { type: 'setThinkingLevel'; level: ThinkingLevel }
+  | { type: 'setFastMode'; enabled: boolean }
   | { type: 'updateWorkingDirectory'; dir: string }
   | { type: 'setSources'; sourceSlugs: string[] }
   | { type: 'setLabels'; labels: string[] }
@@ -513,6 +525,8 @@ export interface WorkspaceSettings {
   permissionMode?: PermissionMode
   cyclablePermissionModes?: PermissionMode[]
   thinkingLevel?: ThinkingLevel
+  /** Workspace-level default for Anthropic fast mode. Per-session value overrides. */
+  fastMode?: boolean
   workingDirectory?: string
   localMcpEnabled?: boolean
   defaultLlmConnection?: string
@@ -538,7 +552,7 @@ export interface ClaudeOAuthResult {
 // ---------------------------------------------------------------------------
 
 export type TestAutomationAction =
-  | { type: 'prompt'; prompt: string; llmConnection?: string; model?: string; thinkingLevel?: ThinkingLevel }
+  | { type: 'prompt'; prompt: string; llmConnection?: string; model?: string; thinkingLevel?: ThinkingLevel; fastMode?: boolean }
   | { type: 'webhook'; url: string; method?: string; headers?: Record<string, string>; bodyFormat?: 'json' | 'form' | 'raw'; body?: unknown; captureResponse?: boolean; auth?: { type: 'basic'; username: string; password: string } | { type: 'bearer'; token: string } }
 
 export interface TestAutomationPayload {

@@ -27,6 +27,7 @@ export const PromptActionSchema = z.object({
   llmConnection: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   thinkingLevel: ThinkingLevelInputSchema,
+  fastMode: z.boolean().optional(),
 });
 
 export const WebhookActionSchema = z.object({

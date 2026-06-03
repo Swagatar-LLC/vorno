@@ -35,6 +35,7 @@ import {
   THINKING_LEVELS,
   type ThinkingLevel,
 } from '@craft-agent/shared/agent/thinking-levels'
+import { getModelSupportsFastMode } from '@craft-agent/shared/config/models'
 import { ConnectionIcon } from '@/components/icons/ConnectionIcon'
 import { derivePickerMode } from './picker-mode'
 import {
@@ -51,6 +52,8 @@ interface CompactModelSelectorProps {
   onConnectionChange?: (connectionSlug: string) => void
   thinkingLevel?: ThinkingLevel
   onThinkingLevelChange?: (level: ThinkingLevel) => void
+  fastMode?: boolean
+  onFastModeChange?: (enabled: boolean) => void
   isEmptySession?: boolean
   connectionUnavailable?: boolean
   contextStatus?: {
@@ -67,6 +70,8 @@ export function CompactModelSelector({
   onConnectionChange,
   thinkingLevel = 'medium',
   onThinkingLevelChange,
+  fastMode = false,
+  onFastModeChange,
   isEmptySession = false,
   connectionUnavailable = false,
   contextStatus,
@@ -413,6 +418,44 @@ export function CompactModelSelector({
                         thinkingDisabled && 'opacity-50 cursor-not-allowed',
                         !thinkingDisabled && isSelected && 'bg-foreground/5',
                         !thinkingDisabled && !isSelected && 'hover:bg-foreground/5',
+                      )}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium">{t(nameKey)}</div>
+                        <div className="text-xs text-foreground/50">
+                          {t(descriptionKey)}
+                        </div>
+                      </div>
+                      {isSelected && (
+                        <Check className="h-3 w-3 text-foreground/60 shrink-0 ml-3" />
+                      )}
+                    </button>
+                  </DrawerClose>
+                )
+              })}
+            </>
+          )}
+
+          {/* === Speed (Fast Mode) section === */}
+          {getModelSupportsFastMode(connectionDefaultModel ?? currentModel) && pickerMode !== 'unavailable' && onFastModeChange && (
+            <>
+              <div className="px-3 pt-4 pb-1 text-xs font-medium text-foreground/60 uppercase tracking-wide select-none">
+                {t('chat.modelPicker.speedSection')}
+              </div>
+              {([
+                { id: false, nameKey: 'speed.standard', descriptionKey: 'speed.standardDesc' },
+                { id: true, nameKey: 'speed.fast', descriptionKey: 'speed.fastDesc' },
+              ] as const).map(({ id, nameKey, descriptionKey }) => {
+                const isSelected = fastMode === id
+                return (
+                  <DrawerClose asChild key={String(id)}>
+                    <button
+                      type="button"
+                      onClick={() => onFastModeChange(id)}
+                      className={cn(
+                        'flex items-center justify-between w-full px-3 py-2 rounded-lg text-left transition-colors',
+                        isSelected && 'bg-foreground/5',
+                        !isSelected && 'hover:bg-foreground/5',
                       )}
                     >
                       <div className="min-w-0">

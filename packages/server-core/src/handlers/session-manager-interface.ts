@@ -68,6 +68,7 @@ export interface ISessionManager {
 
   setSessionPermissionMode(sessionId: string, mode: PermissionMode): void
   setSessionThinkingLevel(sessionId: string, level: ThinkingLevel): void
+  setSessionFastMode(sessionId: string, enabled: boolean): void
   updateWorkingDirectory(sessionId: string, path: string): void
   setSessionSources(sessionId: string, sourceSlugs: string[]): Promise<void>
   setSessionLabels(sessionId: string, labels: string[]): void
@@ -261,6 +262,8 @@ export interface ExecutePromptAutomationInput {
   model?: string
   /** Override the workspace default thinking level for the spawned session. */
   thinkingLevel?: ThinkingLevel
+  /** Request Anthropic fast mode for the spawned session (capability-gated). */
+  fastMode?: boolean
   automationName?: string
   /**
    * Optional Telegram forum-topic name. When set and the workspace has a

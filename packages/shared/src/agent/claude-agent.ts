@@ -22,7 +22,7 @@ import {
 } from '../config/llm-connections.ts';
 import type { McpClientPool } from '../mcp/mcp-pool.ts';
 import { loadPlanFromPath, type SessionConfig as Session } from '../sessions/storage.ts';
-import { DEFAULT_MODEL, isClaudeModel, getDefaultSummarizationModel, getModelContextWindow } from '../config/models.ts';
+import { DEFAULT_MODEL, isClaudeModel, getDefaultSummarizationModel, getModelContextWindow, getModelSupportsFastMode } from '../config/models.ts';
 import { getCredentialManager } from '../credentials/index.ts';
 import { loadPreferences, formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
 import type { FileAttachment } from '../utils/files.ts';
@@ -957,6 +957,15 @@ export class ClaudeAgent extends BaseAgent {
         ? `${model}[1m]`
         : model;
 
+      // Fast mode (Anthropic): delivered via the SDK's native Settings.fastMode field.
+      // Capability-gated by ModelDefinition.supportsFastMode and disabled for mini
+      // agents (summarization/title) regardless of parent — fast-mode pricing on
+      // throwaway subagent work adds up fast. fastModePerSessionOptIn: true matches
+      // the product spec (sticky per session, sessions start with fast mode off).
+      const effectiveFastMode = !miniConfig.enabled
+        && this._fastMode === true
+        && getModelSupportsFastMode(model);
+
       // Capture the resolved spawn cwd here (rather than via an instance
       // field) so the catch handler reads the value passed to *this*
       // chatImpl invocation, not state left over from an earlier call.
@@ -965,6 +974,10 @@ export class ClaudeAgent extends BaseAgent {
       const options: Options = {
         ...getDefaultOptions(this.config.envOverrides),
         model: effectiveModel,
+        settings: {
+          fastMode: effectiveFastMode,
+          fastModePerSessionOptIn: true,
+        },
         // Capture stderr from SDK subprocess for error diagnostics
         // This helps identify why sessions fail with "process exited with code 1"
         stderr: (data: string) => {

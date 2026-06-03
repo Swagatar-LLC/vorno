@@ -714,6 +714,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
                 onRespondToCredential={onRespondToCredential}
                 thinkingLevel={sessionOpts.thinkingLevel}
                 onThinkingLevelChange={(level) => setOption('thinkingLevel', level)}
+                fastMode={sessionOpts.fastMode}
+                onFastModeChange={(enabled) => setOption('fastMode', enabled)}
                 permissionMode={sessionOpts.permissionMode}
                 onPermissionModeChange={setPermissionMode}
                 enabledModes={enabledModes}
@@ -791,6 +793,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             onRespondToCredential={onRespondToCredential}
             thinkingLevel={sessionOpts.thinkingLevel}
             onThinkingLevelChange={(level) => setOption('thinkingLevel', level)}
+            fastMode={sessionOpts.fastMode}
+            onFastModeChange={(enabled) => setOption('fastMode', enabled)}
             permissionMode={sessionOpts.permissionMode}
             onPermissionModeChange={setPermissionMode}
             enabledModes={enabledModes}

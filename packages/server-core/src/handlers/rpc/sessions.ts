@@ -327,6 +327,8 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
           throw new Error(`Invalid thinking level: ${command.level}. Valid values: ${VALID_THINKING_LEVELS_LIST}`)
         }
         return sessionManager.setSessionThinkingLevel(sessionId, command.level)
+      case 'setFastMode':
+        return sessionManager.setSessionFastMode(sessionId, command.enabled)
       case 'updateWorkingDirectory':
         return sessionManager.updateWorkingDirectory(sessionId, command.dir)
       case 'setSources':

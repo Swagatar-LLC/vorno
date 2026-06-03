@@ -24,12 +24,15 @@ export interface SessionOptions {
   permissionModeVersion?: number
   /** Session-level thinking level — sticky, persisted. See {@link ThinkingLevel}. */
   thinkingLevel: ThinkingLevel
+  /** Session-level Anthropic fast-mode flag — sticky per session, capability-gated. */
+  fastMode: boolean
 }
 
 /** Default values for new sessions */
 export const defaultSessionOptions: SessionOptions = {
   permissionMode: 'ask', // Default to ask mode (prompt for permissions)
   thinkingLevel: DEFAULT_THINKING_LEVEL, // Default to 'medium' level
+  fastMode: false, // Fast mode off by default — user opts in per session
 }
 
 /** Type for partial updates to session options */

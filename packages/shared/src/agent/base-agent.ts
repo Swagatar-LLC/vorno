@@ -98,6 +98,7 @@ export interface SpawnSessionRequest {
   enabledSourceSlugs?: string[];
   permissionMode?: PermissionMode;
   thinkingLevel?: ThinkingLevel;
+  fastMode?: boolean;
   labels?: string[];
   workingDirectory?: string;
   attachments?: Array<{ path: string; name?: string }>;
@@ -181,6 +182,7 @@ export abstract class BaseAgent implements AgentBackend {
   // ============================================================
   protected _model: string;
   protected _thinkingLevel: ThinkingLevel;
+  protected _fastMode: boolean;
 
   // ============================================================
   // Core Modules (protected for subclass access)
@@ -273,6 +275,7 @@ export abstract class BaseAgent implements AgentBackend {
     this._sessionId = config.session?.id || `agent-${Date.now()}`;
     this._model = config.model || defaultModel;
     this._thinkingLevel = normalizeThinkingLevel(config.thinkingLevel) ?? DEFAULT_THINKING_LEVEL;
+    this._fastMode = config.fastMode ?? false;
 
     // Initialize core modules
     // PermissionManager: handles permission evaluation, mode management, and command whitelisting
@@ -493,6 +496,15 @@ export abstract class BaseAgent implements AgentBackend {
   setThinkingLevel(level: ThinkingLevel): void {
     this._thinkingLevel = level;
     this.debug(`Thinking level set to: ${level}`);
+  }
+
+  getFastMode(): boolean {
+    return this._fastMode;
+  }
+
+  setFastMode(enabled: boolean): void {
+    this._fastMode = enabled;
+    this.debug(`Fast mode set to: ${enabled}`);
   }
 
   // ============================================================
@@ -1186,6 +1198,7 @@ ${formattedMessages}
       enabledSourceSlugs: input.enabledSourceSlugs as string[] | undefined,
       permissionMode: input.permissionMode as SpawnSessionRequest['permissionMode'],
       thinkingLevel: input.thinkingLevel as SpawnSessionRequest['thinkingLevel'],
+      fastMode: input.fastMode as boolean | undefined,
       labels: input.labels as string[] | undefined,
       workingDirectory: typeof input.workingDirectory === 'string' && input.workingDirectory
         ? expandPath(input.workingDirectory)

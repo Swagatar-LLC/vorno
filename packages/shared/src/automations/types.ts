@@ -67,6 +67,11 @@ export interface PromptAction {
    * When omitted, falls back to the workspace default (then DEFAULT_THINKING_LEVEL).
    */
   thinkingLevel?: ThinkingLevel;
+  /**
+   * When true, requests Anthropic fast mode for the spawned session. Logged
+   * explicitly in the automation event stream; capability-gated by the model.
+   */
+  fastMode?: boolean;
 }
 
 /** HTTP method for webhook actions */
@@ -256,6 +261,8 @@ export interface PendingPrompt {
   model?: string;
   /** Thinking level for the created session (falls back to workspace default when omitted) */
   thinkingLevel?: ThinkingLevel;
+  /** When true, requests Anthropic fast mode for the created session. */
+  fastMode?: boolean;
   /** Forum-topic name to bind the new session to (Telegram supergroup, when paired). */
   telegramTopic?: string;
 }

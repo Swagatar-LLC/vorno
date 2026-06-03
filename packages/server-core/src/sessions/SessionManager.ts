@@ -836,6 +836,8 @@ interface ManagedSession {
   connectionLocked?: boolean
   // Thinking level for this session ('off', 'think', 'max')
   thinkingLevel?: ThinkingLevel
+  // Anthropic fast mode for this session (sticky per session, capability-gated)
+  fastMode?: boolean
   // System prompt preset for mini agents ('default' | 'mini')
   systemPromptPreset?: 'default' | 'mini' | string
   // Role/type of the last message (for badge display without loading messages)
@@ -1595,6 +1597,7 @@ export class SessionManager implements ISessionManager {
                 llmConnection: pending.llmConnection,
                 model: pending.model,
                 thinkingLevel: pending.thinkingLevel,
+                fastMode: pending.fastMode,
                 automationName: pending.automationName,
                 telegramTopic: pending.telegramTopic,
               })
@@ -2810,6 +2813,7 @@ export class SessionManager implements ISessionManager {
       model: resolvedModel,
       llmConnection: options?.llmConnection,
       thinkingLevel: defaultThinkingLevel,
+      fastMode: options?.fastMode,
       systemPromptPreset: options?.systemPromptPreset,
       enabledSourceSlugs: defaultEnabledSourceSlugs,
       branchFromMessageId: validatedBranch?.sourceMessageId,
@@ -3329,6 +3333,7 @@ export class SessionManager implements ISessionManager {
         workspace: managed.workspace,
         miniModel,
         thinkingLevel: managed.thinkingLevel,
+        fastMode: managed.fastMode,
         session: sessionConfig,
         onSdkSessionIdUpdate,
         onSdkSessionIdCleared,
@@ -4010,6 +4015,7 @@ export class SessionManager implements ISessionManager {
           enabledSourceSlugs: request.enabledSourceSlugs ?? managed.enabledSourceSlugs,
           permissionMode: request.permissionMode ?? managed.permissionMode,
           thinkingLevel: request.thinkingLevel ?? managed.thinkingLevel,
+          fastMode: request.fastMode ?? managed.fastMode,
           labels: request.labels ?? managed.labels,
           workingDirectory: request.workingDirectory,
         })
@@ -6700,6 +6706,24 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * Set Anthropic fast mode for a session. Sticky per session, capability-gated
+   * by the model (the agent applies the gate via getModelSupportsFastMode).
+   */
+  setSessionFastMode(sessionId: string, enabled: boolean): void {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      managed.fastMode = enabled
+
+      if (managed.agent) {
+        managed.agent.setFastMode(enabled)
+      }
+
+      sessionLog.info(`Session ${sessionId}: fast mode set to ${enabled}`)
+      this.persistSession(managed)
+    }
+  }
+
+  /**
    * Generate an AI title for a session from the user's first message.
    * Uses the agent's generateTitle() method which handles provider-specific SDK calls.
    * If no agent exists, creates a temporary one using the session's connection.
@@ -7556,6 +7580,7 @@ export class SessionManager implements ISessionManager {
       llmConnection,
       model,
       thinkingLevel,
+      fastMode,
       automationName,
       telegramTopic,
     } = input
@@ -7589,6 +7614,7 @@ export class SessionManager implements ISessionManager {
       llmConnection,
       model,
       thinkingLevel,
+      fastMode,
     })
 
     // Populate triggeredBy metadata so title generation is explicitly skipped
