@@ -674,6 +674,13 @@ export const forceSessionMessagesReloadAtom = atom(
 )
 
 /**
+ * Background task lifecycle status.
+ * 'running' is the live state; the rest are terminal "done" states retained in
+ * the orchestration panel until the session closes (PLAN-007).
+ */
+export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
+
+/**
  * Background task for ActiveTasksBar display
  */
 export interface BackgroundTask {
@@ -689,6 +696,21 @@ export interface BackgroundTask {
   elapsedSeconds: number
   /** Task intent/description */
   intent?: string
+  /**
+   * Lifecycle status. Defaults to 'running' when omitted (back-compat).
+   * On completion the task transitions to a terminal status instead of being
+   * removed, so the orchestration panel can show recently-finished work
+   * (PLAN-007). It is dropped only when its session closes.
+   */
+  status?: BackgroundTaskStatus
+  /** When the task finished (ms timestamp), for terminal items. */
+  completedAt?: number
+  /** Final duration in ms (completedAt - startTime), for terminal items. */
+  durationMs?: number
+  /** Output file path from task_completed (for "View output"). */
+  outputFile?: string
+  /** One-line completion summary from task_completed. */
+  summary?: string
 }
 
 /**
