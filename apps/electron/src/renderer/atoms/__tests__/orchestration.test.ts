@@ -101,7 +101,7 @@ describe('orchestrationItemsAtom — cross-session roll-up', () => {
     const store = createStore()
 
     const sessA = makeSession('A', [
-      tool({ id: 'a-task', timestamp: 1, toolName: 'Task', toolUseId: 'ta', toolStatus: 'executing', intent: 'A work' }),
+      tool({ id: 'a-task', timestamp: 1, toolName: 'Task', toolUseId: 'ta', toolStatus: 'executing', toolIntent: 'A work' }),
     ], 'Alpha')
     const sessB = makeSession('B', [], 'Beta')
 
