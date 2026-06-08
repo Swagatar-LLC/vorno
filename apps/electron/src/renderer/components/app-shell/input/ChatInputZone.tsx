@@ -6,6 +6,7 @@ import type { PermissionMode } from '@craft-agent/shared/agent/modes'
 import type { SessionStatus } from '@/config/session-status-config'
 import type { BackgroundTask } from '../ActiveTasksBar'
 import { ActiveOptionBadges } from '../ActiveOptionBadges'
+import { OrchestrationMobileDrawer } from '../OrchestrationRail'
 import { InputContainer } from './InputContainer'
 import { InputErrorBoundary } from './InputErrorBoundary'
 
@@ -98,6 +99,15 @@ export function ChatInputZone({
           currentSessionStatus={currentSessionStatus}
           onSessionStatusChange={onSessionStatusChange}
         />
+      )}
+
+      {/* PLAN-007: compact orchestration summary pill that opens the bottom
+          drawer. Lives in this existing input-zone slot (not floating over
+          content) so it never overlaps the input or mobile menu. */}
+      {compactMode && (
+        <div className="flex justify-end mb-1.5">
+          <OrchestrationMobileDrawer isCompact={compactMode} />
+        </div>
       )}
 
       <InputErrorBoundary
