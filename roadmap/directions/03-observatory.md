@@ -7,6 +7,7 @@ related-discussions:
   - 2026-04-28-canvas-paradigm-directions.md
 related-plans:
   - PLAN-005-webui-tailscale-launcher.md
+  - PLAN-007-orchestration-activity-panel.md
 ---
 
 # Direction 3 — The Live Observatory

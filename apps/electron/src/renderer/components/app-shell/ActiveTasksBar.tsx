@@ -10,6 +10,8 @@ import { cn } from '@/lib/utils'
 import { Spinner } from '@craft-agent/ui'
 import { TaskActionMenu, type TerminalOverlayData } from './TaskActionMenu'
 
+export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
+
 export interface BackgroundTask {
   /** Task or shell ID */
   id: string
@@ -23,6 +25,20 @@ export interface BackgroundTask {
   elapsedSeconds: number
   /** Task intent/description */
   intent?: string
+  /**
+   * Lifecycle status. Defaults to 'running' when omitted. Completed tasks are
+   * retained for the orchestration panel (PLAN-007) but the badge row below the
+   * input only shows running ones.
+   */
+  status?: BackgroundTaskStatus
+  /** When the task finished (ms timestamp), for terminal items. */
+  completedAt?: number
+  /** Final duration in ms, for terminal items. */
+  durationMs?: number
+  /** Output file path from task_completed. */
+  outputFile?: string
+  /** One-line completion summary from task_completed. */
+  summary?: string
 }
 
 export interface ActiveTasksBarProps {
@@ -64,12 +80,17 @@ function shortenId(id: string): string {
  * Only renders when there are active tasks
  */
 export function ActiveTasksBar({ tasks, sessionId, onKillTask, onInsertMessage, onShowTerminalOverlay, className }: ActiveTasksBarProps) {
-  // Don't render if no tasks
-  if (tasks.length === 0) return null
+  // The badge row only shows live tasks. Completed tasks are retained in the
+  // backgroundTasks atom for the orchestration panel (PLAN-007), so filter them
+  // out here to preserve the bar's "running only" behaviour.
+  const runningTasks = tasks.filter((task) => (task.status ?? 'running') === 'running')
+
+  // Don't render if no running tasks
+  if (runningTasks.length === 0) return null
 
   return (
     <>
-      {tasks.map((task) => (
+      {runningTasks.map((task) => (
         <TaskActionMenu
           key={task.id}
           task={task}

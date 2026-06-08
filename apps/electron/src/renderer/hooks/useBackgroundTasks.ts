@@ -7,7 +7,7 @@
 
 import { useAtom } from 'jotai'
 import { useCallback } from 'react'
-import { backgroundTasksAtomFamily, type BackgroundTask } from '@/atoms/sessions'
+import { backgroundTasksAtomFamily, type BackgroundTask, type BackgroundTaskStatus } from '@/atoms/sessions'
 
 export interface UseBackgroundTasksOptions {
   /** Session ID to track tasks for */
@@ -23,6 +23,15 @@ export interface UseBackgroundTasksResult {
   updateTaskProgress: (toolUseId: string, elapsedSeconds: number) => void
   /** Remove a task (when completed or killed) */
   removeTask: (toolUseId: string) => void
+  /**
+   * Mark a task as finished in a terminal status instead of removing it, so it
+   * persists in the orchestration panel until the session closes (PLAN-007).
+   */
+  completeTask: (
+    taskId: string,
+    status: BackgroundTaskStatus,
+    extra?: { outputFile?: string; summary?: string },
+  ) => void
   /** Kill a task (sends kill request via IPC) */
   killTask: (taskId: string, type: 'agent' | 'shell') => Promise<void>
 }
@@ -56,6 +65,25 @@ export function useBackgroundTasks({ sessionId }: UseBackgroundTasksOptions): Us
     setTasks(prev => prev.filter(t => t.toolUseId !== toolUseId))
   }, [setTasks])
 
+  const completeTask = useCallback((
+    taskId: string,
+    status: BackgroundTaskStatus,
+    extra?: { outputFile?: string; summary?: string },
+  ) => {
+    setTasks(prev => prev.map(t => {
+      if (t.id !== taskId) return t
+      const completedAt = Date.now()
+      return {
+        ...t,
+        status,
+        completedAt,
+        durationMs: completedAt - t.startTime,
+        outputFile: extra?.outputFile ?? t.outputFile,
+        summary: extra?.summary ?? t.summary,
+      }
+    }))
+  }, [setTasks])
+
   const killTask = useCallback(async (taskId: string, type: 'agent' | 'shell') => {
     // Find the task to get its toolUseId
     const task = tasks.find(t => t.id === taskId)
@@ -84,6 +112,7 @@ export function useBackgroundTasks({ sessionId }: UseBackgroundTasksOptions): Us
     addTask,
     updateTaskProgress,
     removeTask,
+    completeTask,
     killTask,
   }
 }

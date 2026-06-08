@@ -161,13 +161,38 @@ function handleBackgroundTaskEvent(
         : t
     ))
   } else if (event.type === 'task_completed' && 'taskId' in evt) {
-    // Remove task when background task completes
+    // PLAN-007: transition the task to a terminal status instead of removing it,
+    // so the orchestration panel can show recently-finished work. The task is
+    // dropped only when its session closes (backgroundTasksAtomFamily.remove).
+    const status = evt.status === 'failed'
+      ? 'failed' as const
+      : evt.status === 'stopped'
+        ? 'stopped' as const
+        : 'completed' as const
+    const completedAt = Date.now()
     const currentTasks = store.get(backgroundTasksAtom)
-    store.set(backgroundTasksAtom, currentTasks.filter(t => t.id !== evt.taskId))
+    store.set(backgroundTasksAtom, currentTasks.map(t =>
+      t.id === evt.taskId
+        ? {
+            ...t,
+            status,
+            completedAt,
+            durationMs: completedAt - t.startTime,
+            outputFile: (evt.outputFile as string | undefined) ?? t.outputFile,
+            summary: (evt.summary as string | undefined) ?? t.summary,
+          }
+        : t
+    ))
   } else if (event.type === 'shell_killed' && 'shellId' in evt) {
-    // Remove shell task when KillShell succeeds
+    // PLAN-007: a killed shell transitions to 'stopped' (persisted for the
+    // orchestration panel) rather than being removed.
+    const completedAt = Date.now()
     const currentTasks = store.get(backgroundTasksAtom)
-    store.set(backgroundTasksAtom, currentTasks.filter(t => t.id !== evt.shellId))
+    store.set(backgroundTasksAtom, currentTasks.map(t =>
+      t.id === evt.shellId
+        ? { ...t, status: 'stopped' as const, completedAt, durationMs: completedAt - t.startTime }
+        : t
+    ))
   } else if (event.type === 'tool_result' && 'toolUseId' in evt) {
     // Remove task when it completes - but NOT if this is the initial backgrounding result
     // Background tasks return immediately with agentId/shell_id/backgroundTaskId,
@@ -179,8 +204,22 @@ function handleBackgroundTaskEvent(
       /"backgroundTaskId":\s*"[a-zA-Z0-9_-]+"/.test(result)
     )
     if (!isBackgroundingResult) {
+      // PLAN-007: a finishing tool_result transitions the matching task to a
+      // terminal status (persisted for the orchestration panel) rather than
+      // removing it. Result errors map to 'failed'.
+      const resultIsError = typeof result === 'string' && /^\s*(\[ERROR\]|Error:|error:)/.test(result)
+      const completedAt = Date.now()
       const currentTasks = store.get(backgroundTasksAtom)
-      store.set(backgroundTasksAtom, currentTasks.filter(t => t.toolUseId !== evt.toolUseId))
+      store.set(backgroundTasksAtom, currentTasks.map(t =>
+        t.toolUseId === evt.toolUseId && (t.status ?? 'running') === 'running'
+          ? {
+              ...t,
+              status: resultIsError ? 'failed' as const : 'completed' as const,
+              completedAt,
+              durationMs: completedAt - t.startTime,
+            }
+          : t
+      ))
     }
   }
   // Note: We do NOT clear background tasks on complete/error/interrupted
