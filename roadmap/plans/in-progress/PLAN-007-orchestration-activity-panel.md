@@ -91,17 +91,17 @@ graph LR
 
 ## Acceptance
 
-- [ ] `OrchestrationPanel` renders active subagent Tasks + background tasks with live elapsed time and status, on a focused session.
-- [ ] Completed items persist in a "Recent" section (don't vanish on `task_completed`); retention bound chosen and documented.
-- [ ] Desktop: collapsible right panel; collapse state persists across reloads.
-- [ ] WebUI mobile/tablet (<768px): bottom Vaul drawer + summary pill opener; usable with on-screen keyboard.
-- [ ] "View output" opens existing terminal/output overlay for a selected task.
-- [ ] Phase 1 introduces **no** new `SessionEvent` types, channels, or envelope fields (purely client-derived). Verified by diffing `packages/shared/src/protocol/`.
-- [ ] Behind a fork feature flag.
-- [ ] Tests: unit tests for the `orchestrationAtomFamily` derivation (active/recent partitioning, parent→child counts) added/updated.
-- [ ] CI green (typecheck, shared/server tests, build check).
-- [ ] If Phase 2 attempted: additive optional fields only, `compatibility.md` audit-log entry added.
-- [ ] DIR-03 `related-plans` updated; learning captured if any non-obvious adapter/atom behavior surfaces.
+- [x] `OrchestrationPanel` renders active subagent Tasks + background tasks with live elapsed time and status, on a focused session. (cross-session, focused pinned)
+- [x] Completed items persist in a "Recent"/done state (don't vanish on `task_completed`); retention = until session close.
+- [x] Desktop: collapsible right panel; collapse state persists across reloads (`orchestrationPanelCollapsedAtom` via `atomWithStorage`).
+- [x] WebUI mobile/tablet (<768px): bottom Vaul drawer + summary pill opener; pill lives in the input zone (no overlap), drawer padded for safe-area.
+- [x] "View output" opens an output overlay for a selected task (getTaskOutput IPC → CodePreviewOverlay, using `task_completed.outputFile` for the title).
+- [x] Phase 1 introduces **no** new `SessionEvent` types, channels, or envelope fields (purely client-derived). `packages/shared/src/protocol/` untouched.
+- [x] Behind a fork feature flag (`ORCHESTRATION_PANEL_ENABLED`, default on; `VITE_DISABLE_ORCHESTRATION_PANEL=1` to disable).
+- [x] Tests: unit tests for the derivation (`orchestration.test.ts`: active/done partitioning, parent→child counts, cross-session grouping + focus pinning, retention-until-close).
+- [x] CI green locally (packages/ui tsc clean; electron tsc introduces no new errors; build check passes; ui + atom tests pass).
+- [ ] If Phase 2 attempted: additive optional fields only, `compatibility.md` audit-log entry added. (Phase 2 not attempted.)
+- [ ] DIR-03 `related-plans` updated; learning captured if any non-obvious adapter/atom behavior surfaces. (DIR-02 early-seam note added; no non-obvious bug required a LEARNING.)
 
 ## Resolved decisions (2026-06-08)
 
@@ -119,3 +119,11 @@ graph LR
 
 - `2026-06-08` — created in `planned/` (informed by 4-agent research workflow over backend/event-processing/webui/transport).
 - `2026-06-08` — decisions resolved (retention=until session close, cross-session roll-up, Vaul drawer no-overlap, DIR-02 item-renderer seam); advanced to `in-progress/`; implementation delegated to subagent.
+- `2026-06-08` — Phase 1 shipped. Added:
+  - Shared, framework-pure `OrchestrationPanel` + `DefaultOrchestrationItem` + item-renderer registry (DIR-02 seam) in `packages/ui/src/components/orchestration/`, with `@craft-agent/ui/orchestration` + `/orchestration/types` subpath exports.
+  - `orchestrationItemsAtom` (read-only derived) + `buildSessionItems` + collapse/feature-flag atoms in `apps/electron/src/renderer/atoms/orchestration.ts`. Reads `sessionIdsAtom` × per-session `sessionAtomFamily`/`backgroundTasksAtomFamily`; subagent Tasks via `groupActivitiesByParent`, background tasks via the now-persisted `BackgroundTask[]`.
+  - Persist-completed change: `BackgroundTask` gained `status`/`completedAt`/`durationMs`/`outputFile`/`summary`; App.tsx `task_completed`/`tool_result`/`shell_killed` handlers transition (not remove); `ActiveTasksBar` filters to running; `useBackgroundTasks.completeTask` added.
+  - Mounting: desktop collapsible rail in `AppShell` (`OrchestrationDesktopRail`); mobile bottom Vaul drawer + summary pill in `ChatInputZone` (`OrchestrationMobileDrawer`).
+  - Tests in `apps/electron/src/renderer/atoms/__tests__/orchestration.test.ts` (5 pass).
+  - DIR-02 "Early seams" note referencing the renderer registry.
+  - No protocol changes; `packages/shared/src/protocol/` untouched.

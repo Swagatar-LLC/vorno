@@ -82,6 +82,15 @@ The smallest possible surface — *one* contribution point, prove the loop:
 
 Once that loop works, expand to tools and views.
 
+## Early seams
+
+Ahead of the full `ContributionRegistry`, PLAN-007 ships a small precursor for the
+`views` contribution point: an **item-renderer registry** for the orchestration
+panel in `packages/ui/src/components/orchestration/registry.tsx`
+(`registerOrchestrationItemRenderer(kind, component)` + a default renderer). When
+the real registry lands, skill-contributed `views` should drive their renderer
+registrations through this same API rather than a parallel mechanism.
+
 ## Constraints / non-goals
 
 - v0.1 does **not** address sandboxing rigorously — sample skills will be trusted (ours).
