@@ -1,0 +1,113 @@
+/**
+ * DefaultOrchestrationItem — built-in renderer for an orchestration item.
+ *
+ * Framework-pure: takes plain props, no Jotai/electron imports. Shows a status
+ * dot (pulsing while running), label/intent, live elapsed time (running) or
+ * duration/summary (done), child-step count, and a "View output" affordance that
+ * routes through the host-provided callback (the Electron container wires this to
+ * the existing terminal-overlay path + task_completed.outputFile).
+ */
+
+import * as React from 'react'
+import { cn } from '../../lib/utils'
+import { Spinner } from '../ui'
+import type { OrchestrationItem } from './types'
+
+/** Props every orchestration item renderer receives. */
+export interface OrchestrationItemRendererProps {
+  item: OrchestrationItem
+  /** Open the item's output (terminal overlay). Omit to hide the affordance. */
+  onViewOutput?: (item: OrchestrationItem) => void
+}
+
+/** Format elapsed seconds compactly (mirrors ActiveTasksBar/TaskActionMenu). */
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  if (minutes < 60) {
+    return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`
+  }
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`
+}
+
+/** Format a final duration in ms compactly. */
+function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return ''
+  return formatElapsed(Math.round(ms / 1000))
+}
+
+const STATUS_DOT: Record<OrchestrationItem['status'], string> = {
+  running: 'bg-blue-500',
+  done: 'bg-emerald-500',
+  failed: 'bg-red-500',
+  stopped: 'bg-amber-500',
+}
+
+const KIND_LABEL: Record<OrchestrationItem['kind'], string> = {
+  'subagent-task': 'Agent',
+  'background-task': 'Agent',
+  'background-shell': 'Shell',
+}
+
+export function DefaultOrchestrationItem({ item, onViewOutput }: OrchestrationItemRendererProps) {
+  const isRunning = item.status === 'running'
+  const label = item.label || `${KIND_LABEL[item.kind]} ${item.id.slice(0, 8)}`
+
+  // Trailing metric: live elapsed while running, else final duration.
+  let metric: string | undefined
+  if (isRunning && item.elapsedSeconds !== undefined) {
+    metric = formatElapsed(item.elapsedSeconds)
+  } else if (item.durationMs !== undefined) {
+    metric = formatDurationMs(item.durationMs)
+  }
+
+  const canViewOutput = !!onViewOutput && (item.kind !== 'subagent-task' || !!item.outputFile || item.status === 'done')
+
+  return (
+    <div className="flex items-start gap-2 rounded-[8px] px-2.5 py-2 hover:bg-foreground/[0.03] transition-colors">
+      {/* Status indicator */}
+      <div className="flex items-center justify-center shrink-0 mt-0.5 w-3.5 h-3.5">
+        {isRunning ? (
+          <Spinner className="text-xs" />
+        ) : (
+          <span className={cn('w-2 h-2 rounded-full', STATUS_DOT[item.status])} />
+        )}
+      </div>
+
+      {/* Body */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium truncate text-foreground/90">{label}</span>
+          {metric && (
+            <span className="text-[11px] tabular-nums opacity-50 shrink-0">{metric}</span>
+          )}
+        </div>
+
+        {/* Secondary line: kind + child steps + summary */}
+        <div className="flex items-center gap-2 mt-0.5 text-[11px] opacity-55">
+          <span className="shrink-0">{KIND_LABEL[item.kind]}</span>
+          {item.childStepCount !== undefined && item.childStepCount > 0 && (
+            <span className="shrink-0">{item.childStepCount} steps</span>
+          )}
+          {item.summary && !isRunning && (
+            <span className="truncate">{item.summary}</span>
+          )}
+        </div>
+      </div>
+
+      {/* View output */}
+      {canViewOutput && (
+        <button
+          type="button"
+          onClick={() => onViewOutput?.(item)}
+          className="shrink-0 text-[11px] px-1.5 py-0.5 rounded-[6px] opacity-60 hover:opacity-100 hover:bg-foreground/5 transition-all"
+        >
+          Output
+        </button>
+      )}
+    </div>
+  )
+}
