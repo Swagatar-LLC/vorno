@@ -128,7 +128,7 @@ graph TD
 - [x] Tests added/updated; `packages/shared` (2899 pass / 0 fail) + `apps/server` (132 pass / 0 fail) suites green
 - [x] `tsc --noEmit` clean (all CI packages); `bun build` succeeds for `apps/server` and `packages/pi-agent-server`
 - [x] `roadmap/upstream/contribution-candidates.md` notes the OpenAI live fetcher
-- [ ] PR opened against `Swagatar-LLC/craft-agents-oss`; **all five `validate-pr.yml` checks green**
+- [x] PR opened against `Swagatar-LLC/craft-agents-oss`; **all five `validate-pr.yml` checks green**
 
 ## Status log
 
@@ -136,3 +136,4 @@ graph TD
 - `2026-06-09` — moved from planned to in-progress; work starting on branch `jh/2026-06-09_live-model-enumeration`
 - `2026-06-09` — implemented (`ab58f53c`): live OpenAI `/v1/models` fetcher + `models-openai.ts` helpers + `isLiveFetchPiConnection` refresh-service generalization + `inferAnthropicContextWindow`. All local validations green.
 - `2026-06-09` — code review (staff-code-reviewer) + fixes (`d9dc1e5c`): sora denylist, `inferOpenAiContextWindow`, success-path log, and the backfill mode-force for live-fetch providers. Captured the non-obvious `inferModelSelectionMode` interaction as LEARNING-004.
+- `2026-06-09` — PR [#36](https://github.com/Swagatar-LLC/craft-agents-oss/pull/36) opened; all six `validate-pr.yml` checks green. Awaiting review/merge.
