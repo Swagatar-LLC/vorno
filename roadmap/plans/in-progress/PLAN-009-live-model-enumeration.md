@@ -120,17 +120,19 @@ graph TD
 
 ## Acceptance
 
-- [ ] OpenAI Pi connection with an API key enumerates live models via `GET /v1/models`
-- [ ] Live OpenAI list is filtered (no embeddings/tts/whisper/dall-e/moderation/gpt-4/gpt-3.5) and `pi/`-prefixed
-- [ ] Live fetch failure falls back to the static SDK catalog (no regression for offline / bad key)
-- [ ] OpenAI connections get a periodic refresh + bypass the `userDefined3Tier` guard via `isLiveFetchPiConnection`
-- [ ] Unknown Anthropic models derive correct context window (1M for `opus`) + humanized name; `supportsFastMode` stays conservative
-- [ ] Tests added/updated; `packages/shared` + `apps/server` suites green
-- [ ] `tsc --noEmit` clean; `bun build` succeeds for `apps/server` and `packages/pi-agent-server`
-- [ ] `roadmap/upstream/contribution-candidates.md` notes the OpenAI live fetcher
+- [x] OpenAI Pi connection with an API key enumerates live models via `GET /v1/models`
+- [x] Live OpenAI list is filtered (no embeddings/tts/whisper/dall-e/moderation/sora/gpt-4/gpt-3.5) and `pi/`-prefixed
+- [x] Live fetch failure falls back to the static SDK catalog (no regression for offline / bad key)
+- [x] OpenAI connections get a periodic refresh, bypass the `userDefined3Tier` refresh guard, **and** are force-set to `automaticallySyncedFromProvider` in backfill — all via `isLiveFetchPiConnection` (see LEARNING-004)
+- [x] Unknown Anthropic models derive correct context window (1M for `opus`); `supportsFastMode` stays registry-only/conservative
+- [x] Tests added/updated; `packages/shared` (2899 pass / 0 fail) + `apps/server` (132 pass / 0 fail) suites green
+- [x] `tsc --noEmit` clean (all CI packages); `bun build` succeeds for `apps/server` and `packages/pi-agent-server`
+- [x] `roadmap/upstream/contribution-candidates.md` notes the OpenAI live fetcher
 - [ ] PR opened against `Swagatar-LLC/craft-agents-oss`; **all five `validate-pr.yml` checks green**
 
 ## Status log
 
 - `2026-06-09` — created in `planned/`
 - `2026-06-09` — moved from planned to in-progress; work starting on branch `jh/2026-06-09_live-model-enumeration`
+- `2026-06-09` — implemented (`ab58f53c`): live OpenAI `/v1/models` fetcher + `models-openai.ts` helpers + `isLiveFetchPiConnection` refresh-service generalization + `inferAnthropicContextWindow`. All local validations green.
+- `2026-06-09` — code review (staff-code-reviewer) + fixes (`d9dc1e5c`): sora denylist, `inferOpenAiContextWindow`, success-path log, and the backfill mode-force for live-fetch providers. Captured the non-obvious `inferModelSelectionMode` interaction as LEARNING-004.
