@@ -2,9 +2,11 @@
 
 Files we own that differ from `upstream/main`. Refresh via `[skill:upstream-delta-report]`.
 
-**Last refresh:** 2026-05-28 (post-v0.10.0 merge, PR #27)
+**Last refresh:** 2026-06-10 (post-v0.10.2→v0.10.3 merge, PR #37)
 **Method:** `git diff --name-only upstream/main...main`
-**Total files in delta:** 122 (unchanged from 2026-05-25)
+**Total files in delta:** 162 (was 122 on 2026-05-28)
+
+**By bucket:** apps/server 33 · apps/electron 32 · apps/webui 1 · packages 36 · .github 2 · roadmap 39 · .agents 9 · scripts 3 · docs 1 · root `*.md` 4 · `tsconfig.base.json` 1 · `bun.lock` 1. Growth since the last refresh is mostly `roadmap/**` (plan churn — PLAN-007 done, PLAN-008 planned) and new fork-owned **orchestration UI** components under `packages/ui/src/components/orchestration/`.
 
 ## Major owned components
 
@@ -70,7 +72,18 @@ Other renderer changes:
 - `packages/shared/src/workspaces/types.ts` — workspace settings for thresholds
 - `packages/shared/src/workspaces/__tests__/storage-token-usage-thresholds.test.ts`
 - `packages/server-core/src/handlers/rpc/settings.ts` — settings RPC handler
+- `packages/server-core/src/handlers/rpc/sessions.ts`, `session-manager-interface.ts`, `sessions/SessionManager.ts` — session surface tweaks
 - `packages/server-core/src/webui/http-server.ts` — webui HTTP server tweaks
+- `packages/shared/src/agent/{base-agent,claude-agent,spawn-session-tool}.ts`, `agent/backend/types.ts` — agent-side fork deltas (incl. fast-mode gating in `claude-agent.ts`)
+- `packages/shared/src/config/models.ts`, `packages/shared/tests/models.test.ts` — `supportsFastMode` / `getModelSupportsFastMode` fork delta (see compatibility audit 2026-06-10)
+- `packages/shared/src/automations/{handlers/prompt-handler,schemas,types}.ts` — automations surface
+- `packages/shared/src/{feature-flags,unified-network-interceptor}.ts`, `sessions/types.ts`
+
+### Orchestration UI (PLAN-007 done / PLAN-008 planned)
+
+Fork-owned orchestration activity panel under `packages/ui/`:
+
+- `packages/ui/src/components/orchestration/{DefaultOrchestrationItem,OrchestrationPanel}.tsx`, `{index,registry,types}` + `packages/ui/src/index.ts` export
 
 ### i18n (PLAN-004)
 
@@ -79,7 +92,7 @@ Other renderer changes:
 ### Governance / fork branding
 
 - `roadmap/**` (README, VISION, decisions, directions, discussions, learnings, plans, upstream tracking)
-- `.agents/skills/**` (capture-learning, electron-prod-build, roadmap-plan-{advance,create}, roadmap-status, upstream-{sync,delta-report})
+- `.agents/skills/**` (capture-learning, electron-prod-build, roadmap-plan-{advance,create,document}, roadmap-status, upstream-{sync,delta-report})
 - `AGENTS.md`, `CLAUDE.md` (root)
 
 ### Root configuration

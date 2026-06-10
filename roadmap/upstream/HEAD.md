@@ -6,13 +6,18 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.10.1` |
-| Last merged upstream commit | `26948f8b` |
-| Merge PR | _pending_ — branch `jh/2026-06-03_Upstream_Merge` |
-| Merge commit on main | _pending_ |
-| Date synced | 2026-06-03 |
+| Last merged upstream tag | `v0.10.3` |
+| Last merged upstream commit | `a512da7a` |
+| Merge PR | [#37](https://github.com/Swagatar-LLC/craft-agents-oss/pull/37) (merged) |
+| Merge commit on main | `ecd0ea1d` |
+| Date synced | 2026-06-10 |
 
-## Versions covered in last merge
+## Versions covered in last merge (PR #37, 2026-06-10)
+
+- `v0.10.3` — **Claude Fable 5** (Anthropic GA 2026-06-09) added on the Claude Agent SDK path with a full 1M-token context window, across direct Anthropic connections and AWS Bedrock (us/eu/global inference-profile variants), description localized in all 7 languages. **Opus 4.8 remains the default** — Fable is offered alongside it, and added to the Pi → Anthropic auth-bridge preferences below Opus. Fable 5 (and the Mythos 5 class) run with adaptive thinking always on and reject an explicit `disabled` thinking option, so the thinking resolver now maps "off"/minimize-thinking to **low-effort adaptive thinking** for these models via new `isAdaptiveThinkingAlwaysOnModel()`; Opus/Sonnet/Haiku behavior is byte-for-byte unchanged. **Claude Agent SDK 0.3.154 → 0.3.170** (root + core/shared peers; no API breakage, full typecheck clean).
+- `v0.10.2` — **Link label value type** — labels can carry a `link` value (clickable chip, opens externally) alongside string/number/date; threaded through the zod schema, `labels/types.ts` (`valueType` union widened), CLI, and agent-prompt layers; our `set_session_labels` error string updated to mention `link`. **Resolved Anthropic account & org per OAuth connection** — Settings → LLM Connections shows the real identity each Claude OAuth grant resolves to (new `ClaudeOAuthIdentityDto` in `protocol/dto.ts`, threaded through `LlmConnectionSetup`/`ClaudeOAuthResult`), with an amber shared-quota warning when two connections resolve to the same account; also fixes a load-bearing `updateLlmConnection` allowlist-drop bug (#838). **Last sent message restored to the input on Stop** (append-safe). **Pi prompt-cache fix** — `PromptBuilder.buildContextParts` split into `buildVolatileContextParts` + `buildStableContextParts`; the Pi cached prefix keeps only stable blocks so `cacheRead` no longer drops to 0 every turn (#862). Claude path stays byte-identical. **Accept-Plan chevron rotation fix** (#840). Conflicts: `bun.lock` (mechanical) and `claude-agent.ts` (import-union of our `getModelSupportsFastMode` with upstream's `isAdaptiveThinkingAlwaysOnModel`).
+
+## Versions covered in prior merge (PR #30, 2026-06-03)
 
 - `v0.10.1` — **Claude Opus 4.8 promoted to default Opus** (Claude Agent SDK 0.3.154). Opus 4.7 stays selectable; Opus 4.6 removed from pickers; existing 4.7 defaults migrate to 4.8 and 4.5/4.6 selections migrate forward. Bedrock mappings, Pi fallback, model-migration tests, docs, UI examples all updated. **Session titles honour Settings → Appearance language** — fixes main-process i18n that was sitting at `en` fallback after restart because Node has no `localStorage` to detect from; renderer now persists chosen language to an internal validated `uiLanguage` field and main hydrates from it on startup (partially closes upstream #815, #738). **Text-selection highlight stays aligned when scrolling a `markdown-preview` block** — capture-phase scroll listener recomputes overlay geometry (rAF-coalesced, no-op short-circuit when no annotations), mirrored in viewer annotation path. **Breaking — macOS Intel (x64) builds discontinued, Apple Silicon only** (v0.10.0 was the last Intel build). **Breaking — legacy free-text `language` field in `preferences.json` replaced by internal validated `uiLanguage`**; schema is passthrough so existing configs are tolerated and stale `language` keys are scrubbed on read; `update_user_preferences` tool no longer accepts `language`.
 
