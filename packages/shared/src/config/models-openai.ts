@@ -54,6 +54,7 @@ const OPENAI_EXCLUDED_PREFIXES = [
   'ada',
   'omni-moderation',
   'codex-mini', // stale alias that fails at runtime in the OpenAI API-key flow (see models-pi.ts)
+  'sora', // video-generation family; rejects at /v1/chat/completions
 ];
 
 /** True when an OpenAI `/v1/models` id should appear in the model selector. */
@@ -76,6 +77,20 @@ export function openAiModelSupportsReasoning(rawId: string): boolean {
   if (/^o\d/.test(id)) return true;
   const gptMatch = id.match(/^gpt-(\d+)/);
   return gptMatch ? Number(gptMatch[1]) >= 5 : false;
+}
+
+/**
+ * Best-effort context window for an OpenAI id the SDK catalog doesn't know about
+ * (i.e. a brand-new drop). Display/sizing only — the catalog value always wins when
+ * present, and this never gates a request. Deliberately conservative: under-estimating
+ * fills the context bar sooner (safe) rather than overflowing it.
+ */
+export function inferOpenAiContextWindow(rawId: string): number {
+  const id = rawId.toLowerCase();
+  if (/^o\d/.test(id)) return 200_000; // o-series reasoning models
+  const gptMatch = id.match(/^gpt-(\d+)/);
+  if (gptMatch && Number(gptMatch[1]) >= 5) return 400_000; // gpt-5+ large-context families
+  return OPENAI_FALLBACK_CONTEXT_WINDOW;
 }
 
 /** Catalog metadata that may enrich a live id (from the Pi SDK's static OpenAI catalog). */
@@ -111,7 +126,7 @@ export function deriveOpenAiModelDefinition(rawId: string, catalog?: OpenAiCatal
     shortName: deriveShortName(name),
     description: 'OpenAI model via Craft Agents Backend',
     provider: 'pi',
-    contextWindow: catalog?.contextWindow ?? OPENAI_FALLBACK_CONTEXT_WINDOW,
+    contextWindow: catalog?.contextWindow ?? inferOpenAiContextWindow(rawId),
     supportsThinking: reasoning,
   };
 }

@@ -292,7 +292,9 @@ async function fetchOpenAiModelsLive(
     // pi-ai unavailable — fall back to id-derived metadata only
   }
 
-  return buildOpenAiModelList(rawIds, catalog);
+  const models = buildOpenAiModelList(rawIds, catalog);
+  console.warn(`[piDriver] OpenAI live /v1/models: ${rawIds.length} raw -> ${models.length} selectable`);
+  return models;
 }
 
 export const piDriver: ProviderDriver = {

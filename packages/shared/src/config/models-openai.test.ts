@@ -3,6 +3,7 @@ import {
   OPENAI_DEFAULT_BASE_URL,
   buildOpenAiModelList,
   deriveOpenAiModelDefinition,
+  inferOpenAiContextWindow,
   isSelectableOpenAiModel,
   openAiModelSupportsReasoning,
   type OpenAiCatalogEntry,
@@ -24,6 +25,8 @@ describe('isSelectableOpenAiModel', () => {
       'tts-1-hd',
       'dall-e-3',
       'gpt-image-1',
+      'sora-1.5',
+      'sora-turbo',
       'omni-moderation-latest',
       'text-moderation-latest',
       'gpt-4o-realtime-preview',
@@ -65,13 +68,24 @@ describe('openAiModelSupportsReasoning', () => {
   });
 });
 
+describe('inferOpenAiContextWindow', () => {
+  it('returns family-appropriate windows for uncatalogued ids', () => {
+    expect(inferOpenAiContextWindow('o3')).toBe(200_000);
+    expect(inferOpenAiContextWindow('o4-mini')).toBe(200_000);
+    expect(inferOpenAiContextWindow('gpt-5')).toBe(400_000);
+    expect(inferOpenAiContextWindow('gpt-6')).toBe(400_000);
+    expect(inferOpenAiContextWindow('chatgpt-4o-latest')).toBe(128_000); // floor
+    expect(inferOpenAiContextWindow('something-unknown')).toBe(128_000);
+  });
+});
+
 describe('deriveOpenAiModelDefinition', () => {
-  it('prefixes ids with pi/, derives display name, and uses the fallback context window', () => {
+  it('prefixes ids with pi/, derives display name, and infers the context window', () => {
     const def = deriveOpenAiModelDefinition('gpt-5.2');
     expect(def.id).toBe('pi/gpt-5.2');
     expect(def.name).toBe('GPT-5.2');
     expect(def.provider).toBe('pi');
-    expect(def.contextWindow).toBe(128_000);
+    expect(def.contextWindow).toBe(400_000); // gpt-5+ inferred window
     expect(def.supportsThinking).toBe(true);
   });
 
@@ -103,7 +117,7 @@ describe('buildOpenAiModelList', () => {
     const o3 = list.find(m => m.id === 'pi/o3')!;
     expect(o3.contextWindow).toBe(200_000); // catalog-enriched
     const gpt5 = list.find(m => m.id === 'pi/gpt-5')!;
-    expect(gpt5.contextWindow).toBe(128_000); // not in catalog → fallback
+    expect(gpt5.contextWindow).toBe(400_000); // not in catalog → gpt-5+ inferred window
   });
 
   it('returns [] when nothing is selectable (caller falls back to static catalog)', () => {
