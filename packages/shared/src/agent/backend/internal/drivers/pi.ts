@@ -2,6 +2,11 @@ import type { ProviderDriver, DriverTestConnectionArgs } from '../driver-types.t
 import type { ModelDefinition } from '../../../../config/models.ts';
 import { getAllPiModels, getPiModelsForAuthProvider, isDeprecatedClaudeOpus46Model } from '../../../../config/models-pi.ts';
 import { getPiProviderBaseUrl } from '../../../../config/models-pi.ts';
+import {
+  OPENAI_DEFAULT_BASE_URL,
+  buildOpenAiModelList,
+  type OpenAiCatalogEntry,
+} from '../../../../config/models-openai.ts';
 
 // ── Copilot model types ────────────────────────────────────────────────
 type RawCopilotModel = {
@@ -225,6 +230,71 @@ async function testAnthropicCompatible(
   }
 }
 
+/**
+ * Enumerate OpenAI models live via `GET /v1/models`.
+ *
+ * OpenAI normally rides the static Pi SDK catalog, which only updates on a
+ * dependency bump — so new model drops are invisible until then. This calls the
+ * provider directly (same posture as the Copilot path) and enriches each surviving
+ * id with the SDK catalog's display name / context window / reasoning flag when
+ * available, falling back to id-derived metadata otherwise.
+ *
+ * Throws on transport/HTTP failure so the caller can fall through to the static
+ * catalog; returns `[]` only when the live list contains no selectable chat models.
+ */
+async function fetchOpenAiModelsLive(
+  apiKey: string,
+  baseUrl: string | undefined,
+  timeoutMs: number,
+): Promise<ModelDefinition[]> {
+  const root = (baseUrl?.trim() || OPENAI_DEFAULT_BASE_URL).replace(/\/+$/, '');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let rawIds: string[];
+  try {
+    const res = await fetch(`${root}/v1/models`, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`OpenAI /v1/models ${res.status}: ${text.slice(0, 200)}`);
+    }
+    const data = await res.json() as { data?: Array<{ id?: string }> };
+    rawIds = (data.data ?? [])
+      .map(m => m?.id)
+      .filter((id): id is string => typeof id === 'string');
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') throw new Error('OpenAI models API timed out');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  // Enrich with the Pi SDK's static OpenAI catalog (context windows, reasoning
+  // flags, display names) where available. Optional — buildOpenAiModelList derives
+  // sane metadata for ids the catalog doesn't know about (i.e. brand-new drops).
+  let catalog: Map<string, OpenAiCatalogEntry> | undefined;
+  try {
+    const { getModels } = await import('@mariozechner/pi-ai');
+    const entries = new Map<string, OpenAiCatalogEntry>();
+    for (const m of getModels('openai')) {
+      entries.set(m.id, {
+        name: m.name,
+        contextWindow: m.contextWindow,
+        reasoning: (m as { reasoning?: boolean }).reasoning,
+      });
+    }
+    catalog = entries;
+  } catch {
+    // pi-ai unavailable — fall back to id-derived metadata only
+  }
+
+  return buildOpenAiModelList(rawIds, catalog);
+}
+
 export const piDriver: ProviderDriver = {
   provider: 'pi',
   buildRuntime: ({ context, providerOptions, resolvedPaths }) => ({
@@ -259,6 +329,21 @@ export const piDriver: ProviderDriver = {
     if (connection.piAuthProvider === 'github-copilot' && copilotGitHubToken) {
       const models = await fetchCopilotModels(copilotGitHubToken, timeoutMs);
       return { models };
+    }
+
+    // OpenAI API key: enumerate models live via GET /v1/models so new model drops
+    // appear without an SDK upgrade. Mirrors the Copilot 2-tier pattern — on any
+    // failure (or zero selectable chat models) fall through to the static catalog.
+    if (connection.piAuthProvider === 'openai' && credentials.apiKey) {
+      try {
+        const liveModels = await fetchOpenAiModelsLive(credentials.apiKey, connection.baseUrl, timeoutMs);
+        if (liveModels.length > 0) {
+          return { models: liveModels };
+        }
+        console.warn('[piDriver] OpenAI live /v1/models returned 0 selectable models; using static SDK catalog');
+      } catch (err) {
+        console.warn(`[piDriver] OpenAI live /v1/models failed: ${(err as Error).message}; using static SDK catalog`);
+      }
     }
 
     // All other Pi providers: use static Pi SDK model registry

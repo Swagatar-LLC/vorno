@@ -78,3 +78,28 @@ export interface ModelFetcher {
  * Adding a new LlmProviderType without registering a fetcher → compile error.
  */
 export type ModelFetcherMap = Record<FetchableProvider, ModelFetcher>;
+
+/**
+ * Pi auth providers whose model list is fetched **live** from the provider API
+ * (vs. the static `@mariozechner/pi-ai` SDK catalog).
+ *
+ * Live-fetch providers get two behaviours from the refresh service that static
+ * catalog providers do not:
+ *  1. a periodic refresh timer (the static catalog only changes on dependency bump);
+ *  2. their live result is accepted even when `modelSelectionMode === 'userDefined3Tier'`,
+ *     because the server/provider — not the user — owns which models exist.
+ *
+ * `github-copilot` is server-policy managed; `openai` enumerates `GET /v1/models`.
+ */
+export const LIVE_FETCH_PI_AUTH_PROVIDERS = ['github-copilot', 'openai'] as const;
+
+/** True when a connection's Pi model list comes from a live provider fetch. */
+export function isLiveFetchPiConnection(
+  connection: Pick<LlmConnection, 'providerType' | 'piAuthProvider'>,
+): boolean {
+  return (
+    connection.providerType === 'pi'
+    && !!connection.piAuthProvider
+    && (LIVE_FETCH_PI_AUTH_PROVIDERS as readonly string[]).includes(connection.piAuthProvider)
+  );
+}
