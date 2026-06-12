@@ -45,10 +45,19 @@ function formatDurationMs(ms: number): string {
   return formatElapsed(Math.round(ms / 1000))
 }
 
+/**
+ * Base palette for the static status dot (non-running). `done` is intentionally
+ * dimmed/desaturated so finished work recedes instead of reading as a loud wall
+ * of green — failed/stopped stay saturated and distinct. `running` is handled
+ * separately (live spinner), not via this map.
+ */
 const STATUS_DOT: Record<OrchestrationItem['status'], string> = {
   running: 'bg-blue-500',
-  done: 'bg-emerald-500',
+  // Calm, recessive: emerald at low opacity reads as "settled / complete".
+  done: 'bg-emerald-500/40',
+  // Emphasized failure.
   failed: 'bg-red-500',
+  // Distinct from done.
   stopped: 'bg-amber-500',
 }
 
@@ -63,12 +72,19 @@ export function DefaultOrchestrationItem({ item, onViewOutput, onSelect }: Orche
   const label = item.label || `${KIND_LABEL[item.kind]} ${item.id.slice(0, 8)}`
   const selectable = !!onSelect
 
-  // Trailing metric: live elapsed while running, else final duration.
+  // Trailing metric: live elapsed while running, else final run duration.
+  //
+  // Relative-time note: the item carries `durationMs` (how long it ran) and
+  // `elapsedSeconds` (live), but NOT an absolute completion timestamp — so a
+  // truthful "Xm ago" is not derivable from existing data and we do not
+  // fabricate one (no wire change). Instead we make the duration unambiguous:
+  // "ran 2m 3s" for finished work, live elapsed for running.
   let metric: string | undefined
   if (isRunning && item.elapsedSeconds !== undefined) {
     metric = formatElapsed(item.elapsedSeconds)
   } else if (item.durationMs !== undefined) {
-    metric = formatDurationMs(item.durationMs)
+    const d = formatDurationMs(item.durationMs)
+    metric = d ? `ran ${d}` : undefined
   }
 
   const canViewOutput = !!onViewOutput && (item.kind !== 'subagent-task' || !!item.outputFile || item.status === 'done')
