@@ -9,6 +9,7 @@ related-plans:
   - PLAN-005-webui-tailscale-launcher.md
   - PLAN-007-orchestration-activity-panel.md
   - PLAN-008-orchestration-richer-progress.md
+  - PLAN-009-orchestration-panel-phase-1_5.md
 ---
 
 # Direction 3 — The Live Observatory

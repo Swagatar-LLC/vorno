@@ -5,9 +5,10 @@ status: planned
 direction: DIR-03
 owner: jh
 created: 2026-06-08
-updated: 2026-06-08
+updated: 2026-06-11
 related:
   - PLAN-007-orchestration-activity-panel.md
+  - PLAN-009-orchestration-panel-phase-1_5.md
 blocked-by: []
 ---
 
