@@ -14,7 +14,9 @@ import {
   buildSessionItems,
   orchestrationItemsAtom,
   toggleCollapsedSession,
+  resolveToolUseTurnIndex,
 } from '../orchestration'
+import { groupMessagesByTurn } from '@craft-agent/ui/chat/turn-utils'
 import {
   sessionIdsAtom,
   sessionAtomFamily,
@@ -154,6 +156,47 @@ describe('toggleCollapsedSession — persisted collapsed-set helper', () => {
     const next = toggleCollapsedSession(cur, 'B')
     expect(cur).toEqual(['A'])
     expect(next).toEqual(['A', 'B'])
+  })
+})
+
+describe('resolveToolUseTurnIndex — click-to-jump tool-use → turn (PLAN-009)', () => {
+  it('finds the assistant turn that contains the parent Task tool-use', () => {
+    // Two assistant turns; the Task tool-use lives in the second turn.
+    const messages: Message[] = [
+      { id: 'u1', role: 'user', content: 'go', timestamp: 1 } as Message,
+      tool({ id: 'm-r', timestamp: 2, toolName: 'Read', toolUseId: 'r1', toolStatus: 'completed', toolResult: 'ok' }),
+      { id: 'a1', role: 'assistant', content: 'first response', timestamp: 3 } as Message,
+      { id: 'u2', role: 'user', content: 'next', timestamp: 4 } as Message,
+      tool({ id: 'm-task', timestamp: 5, toolName: 'Task', toolUseId: 'task-1', toolStatus: 'completed', toolResult: 'done', toolIntent: 'Research' }),
+      { id: 'a2', role: 'assistant', content: 'second response', timestamp: 6 } as Message,
+    ]
+    const turns = groupMessagesByTurn(messages)
+    const idx = resolveToolUseTurnIndex(turns, 'task-1')
+    expect(idx).toBeGreaterThanOrEqual(0)
+    const turn = turns[idx]
+    expect(turn.type).toBe('assistant')
+    if (turn.type === 'assistant') {
+      expect(turn.activities.some((a) => a.toolUseId === 'task-1')).toBe(true)
+    }
+  })
+
+  it('localizes the turn via a child tool whose parent is the Task', () => {
+    const messages: Message[] = [
+      tool({ id: 'm-task', timestamp: 1, toolName: 'Task', toolUseId: 'task-1', toolStatus: 'executing', toolIntent: 'Build' }),
+      tool({ id: 'm-c1', timestamp: 2, toolName: 'Bash', toolUseId: 'c1', parentToolUseId: 'task-1', toolStatus: 'executing' }),
+    ]
+    const turns = groupMessagesByTurn(messages)
+    // Resolving by the parent Task's tool-use id should still land on the turn.
+    expect(resolveToolUseTurnIndex(turns, 'task-1')).toBeGreaterThanOrEqual(0)
+  })
+
+  it('returns -1 for an unknown tool-use id or empty input', () => {
+    const turns = groupMessagesByTurn([
+      tool({ id: 'm-task', timestamp: 1, toolName: 'Task', toolUseId: 'task-1', toolStatus: 'completed' }),
+    ])
+    expect(resolveToolUseTurnIndex(turns, 'nope')).toBe(-1)
+    expect(resolveToolUseTurnIndex(turns, '')).toBe(-1)
+    expect(resolveToolUseTurnIndex([], 'task-1')).toBe(-1)
   })
 })
 

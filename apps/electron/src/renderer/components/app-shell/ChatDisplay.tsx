@@ -75,6 +75,11 @@ import { CHAT_LAYOUT } from "@/config/layout"
 import { collectFileChangesFromActivities, getFirstFileChangeIdForActivity } from "@/lib/file-changes"
 import { resolveBranchNewPanelOption } from "./branching"
 import { handleErrorMessageAction } from "./error-message-actions"
+import { useAtom } from "jotai"
+import {
+  orchestrationScrollTargetAtom,
+  resolveToolUseTurnIndex,
+} from "@/atoms/orchestration"
 
 // ============================================================================
 // CSS Custom Highlight API helper
@@ -1456,6 +1461,77 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
       })
     }
   }, [assistantTurnIndexByMessageId, allTurns, visibleTurnCount])
+
+  // --- Orchestration click-to-jump (PLAN-009 item 4) ---------------------
+  //
+  // When an Activity-panel row is clicked, OrchestrationRail focuses this
+  // session AND sets `orchestrationScrollTargetAtom`. Here (only for the active
+  // session) we resolve the originating tool-use → its assistant turn and scroll
+  // to it, mirroring `scrollToFollowUpTurn` (virtualization-aware), then CLEAR
+  // the atom so it fires exactly once. Keyed on session id + target + allTurns so
+  // it runs AFTER the session switch lands and after turns are grouped.
+  const [orchestrationScrollTarget, setOrchestrationScrollTarget] = useAtom(
+    orchestrationScrollTargetAtom,
+  )
+  useEffect(() => {
+    const target = orchestrationScrollTarget
+    if (!target || !session) return
+    // Only the active/target session's ChatDisplay handles + clears it. Other
+    // mounted ChatDisplays (if any) must not consume someone else's target.
+    if (target.sessionId !== session.id) return
+
+    // Resolve the tool-use → assistant turn index. Best-effort: if we cannot
+    // localize the tool-use in the current turns (e.g. virtualized data not yet
+    // present, or no toolUseId), we still clear the target and no-op gracefully
+    // (NEVER crash, NEVER jump to the wrong session — we are already on the
+    // right session).
+    const targetTurnIndex = target.toolUseId
+      ? resolveToolUseTurnIndex(allTurns, target.toolUseId)
+      : -1
+
+    // Consume the target regardless so it fires once.
+    setOrchestrationScrollTarget(null)
+
+    if (targetTurnIndex < 0) return
+
+    const ensureVisibleCount = allTurns.length - targetTurnIndex
+
+    const scrollToTurn = () => {
+      const targetTurn = allTurns[targetTurnIndex]
+      if (!targetTurn) return false
+      const turnKey = getTurnKey(targetTurn)
+      const turnContainer = turnRefs.current.get(turnKey)
+      if (!turnContainer) return false
+      turnContainer.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return true
+    }
+
+    if (ensureVisibleCount > visibleTurnCount) {
+      setVisibleTurnCount(ensureVisibleCount)
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!scrollToTurn()) {
+            setTimeout(() => {
+              void scrollToTurn()
+            }, 80)
+          }
+        })
+      })
+      return
+    }
+
+    if (!scrollToTurn()) {
+      requestAnimationFrame(() => {
+        void scrollToTurn()
+      })
+    }
+  }, [
+    orchestrationScrollTarget,
+    session,
+    allTurns,
+    visibleTurnCount,
+    setOrchestrationScrollTarget,
+  ])
 
   const handleFollowUpChipClick = useCallback((item: {
     messageId: string
