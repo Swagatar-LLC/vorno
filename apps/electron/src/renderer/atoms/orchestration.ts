@@ -58,6 +58,26 @@ export const orchestrationPanelCollapsedAtom = atomWithStorage<boolean>(
   false,
 )
 
+/**
+ * Per-session collapse state, persisted to localStorage. Stored as a string[]
+ * for JSON-serializability but treated as a SET of collapsed session ids: a
+ * session id present here means that session's group is collapsed in the panel.
+ */
+export const orchestrationCollapsedSessionsAtom = atomWithStorage<string[]>(
+  'craft-orchestration-collapsed-sessions',
+  [],
+)
+
+/**
+ * Toggle a session id in the persisted collapsed-set array. Pure helper exported
+ * for unit testing; the rail uses it to wire the panel's onToggleSession.
+ */
+export function toggleCollapsedSession(current: string[], sessionId: string): string[] {
+  return current.includes(sessionId)
+    ? current.filter((id) => id !== sessionId)
+    : [...current, sessionId]
+}
+
 /** Map a BackgroundTask's status to the panel's item status. */
 function backgroundTaskStatus(task: BackgroundTask): OrchestrationItem['status'] {
   switch (task.status) {

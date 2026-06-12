@@ -37,11 +37,27 @@ import { useTheme } from '@/context/ThemeContext'
 import {
   orchestrationItemsAtom,
   orchestrationPanelCollapsedAtom,
+  orchestrationCollapsedSessionsAtom,
+  toggleCollapsedSession,
   ORCHESTRATION_PANEL_ENABLED,
 } from '@/atoms/orchestration'
 import { activeSessionIdAtom } from '@/atoms/sessions'
 
 const RAIL_WIDTH = 260
+
+/**
+ * Shared per-session collapse wiring: exposes the persisted collapsed-set (as a
+ * Set for the panel) and a toggle that add/removes an id in the persisted array.
+ */
+function useCollapsedSessions() {
+  const [collapsedArr, setCollapsedArr] = useAtom(orchestrationCollapsedSessionsAtom)
+  const collapsedSessionIds = React.useMemo(() => new Set(collapsedArr), [collapsedArr])
+  const onToggleSession = React.useCallback(
+    (sessionId: string) => setCollapsedArr((cur) => toggleCollapsedSession(cur, sessionId)),
+    [setCollapsedArr],
+  )
+  return { collapsedSessionIds, onToggleSession }
+}
 
 interface OutputState {
   title: string
@@ -100,6 +116,7 @@ export function OrchestrationDesktopRail({ isCompact }: { isCompact: boolean }) 
   const { resolvedMode } = useTheme()
   const { output, setOutput, onViewOutput } = useViewOutput()
   const onSelect = useSelectItem()
+  const { collapsedSessionIds, onToggleSession } = useCollapsedSessions()
 
   if (!ORCHESTRATION_PANEL_ENABLED || isCompact) return null
 
@@ -131,6 +148,8 @@ export function OrchestrationDesktopRail({ isCompact }: { isCompact: boolean }) 
           data={data}
           onViewOutput={onViewOutput}
           onSelect={onSelect}
+          collapsedSessionIds={collapsedSessionIds}
+          onToggleSession={onToggleSession}
           headerAction={
             <button
               type="button"
@@ -167,6 +186,7 @@ export function OrchestrationMobileDrawer({ isCompact }: { isCompact: boolean })
   const { resolvedMode } = useTheme()
   const { output, setOutput, onViewOutput } = useViewOutput()
   const onSelect = useSelectItem()
+  const { collapsedSessionIds, onToggleSession } = useCollapsedSessions()
   const [open, setOpen] = React.useState(false)
 
   if (!ORCHESTRATION_PANEL_ENABLED || !isCompact) return null
@@ -211,6 +231,8 @@ export function OrchestrationMobileDrawer({ isCompact }: { isCompact: boolean })
                 onSelect(item)
                 setOpen(false)
               }}
+              collapsedSessionIds={collapsedSessionIds}
+              onToggleSession={onToggleSession}
               hideHeader
             />
           </div>

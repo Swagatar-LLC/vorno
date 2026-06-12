@@ -13,6 +13,7 @@ import { createStore } from 'jotai'
 import {
   buildSessionItems,
   orchestrationItemsAtom,
+  toggleCollapsedSession,
 } from '../orchestration'
 import {
   sessionIdsAtom,
@@ -138,6 +139,21 @@ describe('buildSessionItems — subagent Tasks', () => {
     const taskItem = items.find(i => i.kind === 'subagent-task')
     expect(taskItem!.status).toBe('running')
     expect(taskItem!.childStepCount).toBe(1)
+  })
+})
+
+describe('toggleCollapsedSession — persisted collapsed-set helper', () => {
+  it('adds an id when absent and removes it when present', () => {
+    expect(toggleCollapsedSession([], 'A')).toEqual(['A'])
+    expect(toggleCollapsedSession(['A'], 'B')).toEqual(['A', 'B'])
+    expect(toggleCollapsedSession(['A', 'B'], 'A')).toEqual(['B'])
+  })
+
+  it('does not mutate the input array', () => {
+    const cur = ['A']
+    const next = toggleCollapsedSession(cur, 'B')
+    expect(cur).toEqual(['A'])
+    expect(next).toEqual(['A', 'B'])
   })
 })
 
