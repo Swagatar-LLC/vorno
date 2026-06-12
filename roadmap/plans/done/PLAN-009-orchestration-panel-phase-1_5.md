@@ -1,7 +1,7 @@
 ---
 id: PLAN-009
 title: Orchestration panel — Phase 1.5 client-only polish (titles, jump, collapse, dots, output)
-status: in-progress
+status: done
 direction: DIR-03
 owner: jh
 created: 2026-06-11
@@ -107,3 +107,4 @@ orchestrator spawns a debugging agent to root-cause and fix in an architecturall
 ## Status log
 
 - `2026-06-11` — created in `in-progress/` as the holistic Phase-1.5 plan; overnight serial build kicked off (5 agents). Baselines at start: `packages/ui` tsc clean, `apps/electron` typecheck = 116 errors, orchestration atom test 5 pass/0 fail, `main` unprotected (direct push enabled).
+- `2026-06-11` — **DONE.** All 5 serial agents merged green directly to `main` (no PR, per the overnight authorization), each gated locally (CI bypassed): titles + `onSelect` seam (`aa3fe474`), collapsible groups (`ba516b18`), dot semantics (`14ae7792`), click-to-jump + output fix (`aaee2d95`), PLAN-008 finalized docs (`50965175`). Final state: `packages/ui`/`shared`/`apps/server` typecheck clean, `apps/electron` still 116 (no new errors), orchestration atom test 13 pass/0 fail, server bundle builds. **Zero `packages/shared/src/protocol/` or `i18n/locales/` changes across the whole run** — upstream mergeability preserved. Strings kept hardcoded to match the existing panel (documented deviation from the i18n-seeding assumption). Relative-"ago" time was intentionally NOT faked (no completion timestamp in client data); shows "ran 2m 3s" instead — a real "ago" awaits PLAN-008's additive timestamp.
