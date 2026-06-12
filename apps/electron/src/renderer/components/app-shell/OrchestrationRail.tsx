@@ -18,7 +18,7 @@
  */
 
 import * as React from 'react'
-import { useAtomValue, useAtom } from 'jotai'
+import { useAtomValue, useAtom, useSetAtom } from 'jotai'
 import { PanelRightClose, PanelRightOpen, Activity, X } from 'lucide-react'
 import {
   OrchestrationPanel,
@@ -39,6 +39,7 @@ import {
   orchestrationPanelCollapsedAtom,
   ORCHESTRATION_PANEL_ENABLED,
 } from '@/atoms/orchestration'
+import { activeSessionIdAtom } from '@/atoms/sessions'
 
 const RAIL_WIDTH = 260
 
@@ -70,6 +71,26 @@ function useViewOutput() {
 }
 
 /**
+ * Shared row-select handler: focus the item's session.
+ *
+ * Agent 4 (PLAN-009) will extend: scroll to item.toolUseId (the originating
+ * tool-use message) after focusing the session, mirroring scrollToFollowUpTurn.
+ */
+function useSelectItem() {
+  const setActiveSessionId = useSetAtom(activeSessionIdAtom)
+
+  const onSelect = React.useCallback(
+    (item: OrchestrationItem) => {
+      setActiveSessionId(item.sessionId)
+      // Agent 4 (PLAN-009) will extend: scroll to item.toolUseId
+    },
+    [setActiveSessionId],
+  )
+
+  return onSelect
+}
+
+/**
  * Desktop right-side rail. Collapses to a thin re-open button. Hidden below the
  * mobile threshold (the drawer handles narrow viewports).
  */
@@ -78,6 +99,7 @@ export function OrchestrationDesktopRail({ isCompact }: { isCompact: boolean }) 
   const [collapsed, setCollapsed] = useAtom(orchestrationPanelCollapsedAtom)
   const { resolvedMode } = useTheme()
   const { output, setOutput, onViewOutput } = useViewOutput()
+  const onSelect = useSelectItem()
 
   if (!ORCHESTRATION_PANEL_ENABLED || isCompact) return null
 
@@ -108,6 +130,7 @@ export function OrchestrationDesktopRail({ isCompact }: { isCompact: boolean }) 
         <OrchestrationPanel
           data={data}
           onViewOutput={onViewOutput}
+          onSelect={onSelect}
           headerAction={
             <button
               type="button"
@@ -143,6 +166,7 @@ export function OrchestrationMobileDrawer({ isCompact }: { isCompact: boolean })
   const data = useAtomValue(orchestrationItemsAtom)
   const { resolvedMode } = useTheme()
   const { output, setOutput, onViewOutput } = useViewOutput()
+  const onSelect = useSelectItem()
   const [open, setOpen] = React.useState(false)
 
   if (!ORCHESTRATION_PANEL_ENABLED || !isCompact) return null
@@ -180,7 +204,15 @@ export function OrchestrationMobileDrawer({ isCompact }: { isCompact: boolean })
             </button>
           </DrawerHeader>
           <div className="flex-1 min-h-0 overflow-hidden pb-[env(safe-area-inset-bottom)]">
-            <OrchestrationPanel data={data} onViewOutput={onViewOutput} hideHeader />
+            <OrchestrationPanel
+              data={data}
+              onViewOutput={onViewOutput}
+              onSelect={(item) => {
+                onSelect(item)
+                setOpen(false)
+              }}
+              hideHeader
+            />
           </div>
         </DrawerContent>
       </Drawer>

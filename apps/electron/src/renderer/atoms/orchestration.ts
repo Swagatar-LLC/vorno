@@ -74,6 +74,29 @@ function sessionTitleOf(sessionId: string, name?: string, preview?: string): str
 }
 
 /**
+ * Derive a meaningful human label for a subagent Task parent.
+ *
+ * Priority order, picking the first non-empty:
+ *   1. parent.intent          — the LLM-provided turn intent (toolIntent)
+ *   2. parent.displayName     — LLM-generated human-friendly tool name
+ *   3. toolInput.description  — the Task tool's own short "3-5 word" task
+ *                               summary (its canonical label argument)
+ *   4. 'Subagent task'        — clear, dignified fallback (NOT "Agent <id8>")
+ *
+ * The Task tool's toolName ('Task') is intentionally not used as a label here —
+ * it produced the old "Agent" feel. A real description is always preferred.
+ */
+function subagentTaskLabel(parent: ActivityGroup['parent']): string {
+  const intent = parent.intent?.trim()
+  if (intent) return intent
+  const displayName = parent.displayName?.trim()
+  if (displayName) return displayName
+  const description = (parent.toolInput?.description as string | undefined)?.trim()
+  if (description) return description
+  return 'Subagent task'
+}
+
+/**
  * Build orchestration items for a single session from its messages (subagent
  * Tasks) and its background tasks. Exported for unit testing.
  */
@@ -114,7 +137,7 @@ export function buildSessionItems(
       kind: 'subagent-task',
       id: parent.toolUseId || parent.id,
       toolUseId: parent.toolUseId,
-      label: parent.intent || parent.displayName || parent.toolName,
+      label: subagentTaskLabel(parent),
       status,
       elapsedSeconds: parent.elapsedSeconds,
       childStepCount: group.children.length,
@@ -124,13 +147,18 @@ export function buildSessionItems(
 
   // --- Background tasks / shells (persisted through completion) ---
   for (const task of backgroundTasks) {
+    const isShell = task.type === 'shell'
+    // Dignity pass: when a background task/shell has no captured intent, use a
+    // clear human fallback instead of letting the renderer fall back to the
+    // literal "Agent <id8>" / "Shell <id8>" KIND_LABEL.
+    const taskLabel = task.intent?.trim() || (isShell ? 'Background shell' : 'Background task')
     items.push({
       sessionId,
       sessionTitle,
-      kind: task.type === 'shell' ? 'background-shell' : 'background-task',
+      kind: isShell ? 'background-shell' : 'background-task',
       id: task.id,
       toolUseId: task.toolUseId,
-      label: task.intent,
+      label: taskLabel,
       status: backgroundTaskStatus(task),
       elapsedSeconds: task.elapsedSeconds,
       durationMs: task.durationMs,
