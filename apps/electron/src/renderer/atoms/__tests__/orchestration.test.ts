@@ -63,6 +63,20 @@ describe('buildSessionItems — background tasks', () => {
     expect(byId.s1.kind).toBe('background-shell')
     expect(byId.a3.status).toBe('failed')
   })
+
+  it('gives intent-less background tasks/shells a dignified label fallback', () => {
+    const tasks: BackgroundTask[] = [
+      { id: 'a1', type: 'agent', toolUseId: 't1', startTime: 0, elapsedSeconds: 5 },
+      { id: 's1', type: 'shell', toolUseId: 't2', startTime: 0, elapsedSeconds: 3 },
+      { id: 'a2', type: 'agent', toolUseId: 't3', startTime: 0, elapsedSeconds: 1, intent: 'Index repo' },
+    ]
+
+    const items = buildSessionItems('sess', 'Sess', [], tasks)
+    const byId = Object.fromEntries(items.map(i => [i.id, i]))
+    expect(byId.a1.label).toBe('Background task')
+    expect(byId.s1.label).toBe('Background shell')
+    expect(byId.a2.label).toBe('Index repo')
+  })
 })
 
 describe('buildSessionItems — subagent Tasks', () => {
@@ -81,6 +95,37 @@ describe('buildSessionItems — subagent Tasks', () => {
     expect(taskItem!.childStepCount).toBe(2)
     expect(taskItem!.label).toBe('Research')
     expect(taskItem!.status).toBe('done')
+  })
+
+  it('derives the label from the Task description when intent/displayName are absent', () => {
+    // No toolIntent/toolDisplayName, but the Task tool input carries a short
+    // "description" argument — that should become the label.
+    const messages: Message[] = [
+      tool({
+        id: 'm-task',
+        timestamp: 1,
+        toolName: 'Task',
+        toolUseId: 'task-1',
+        toolStatus: 'completed',
+        toolResult: 'done',
+        toolInput: { description: 'Audit auth flow', prompt: 'long prompt...' },
+      }),
+    ]
+
+    const items = buildSessionItems('sess', 'Sess', messages, [])
+    const taskItem = items.find(i => i.kind === 'subagent-task')
+    expect(taskItem!.label).toBe('Audit auth flow')
+  })
+
+  it('falls back to "Subagent task" (never "Agent <id8>") when nothing is available', () => {
+    const messages: Message[] = [
+      tool({ id: 'm-task', timestamp: 1, toolName: 'Task', toolUseId: 'task-1', toolStatus: 'completed', toolResult: 'done' }),
+    ]
+
+    const items = buildSessionItems('sess', 'Sess', messages, [])
+    const taskItem = items.find(i => i.kind === 'subagent-task')
+    expect(taskItem!.label).toBe('Subagent task')
+    expect(taskItem!.label).not.toContain('Agent')
   })
 
   it('marks a running parent Task as running', () => {

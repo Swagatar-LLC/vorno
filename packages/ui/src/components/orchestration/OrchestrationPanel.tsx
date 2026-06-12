@@ -24,6 +24,8 @@ export interface OrchestrationPanelProps {
   data: OrchestrationData
   /** Open an item's output (terminal overlay). */
   onViewOutput?: (item: OrchestrationItem) => void
+  /** Select an item's row (e.g. focus its session and jump to its work). */
+  onSelect?: (item: OrchestrationItem) => void
   /** Optional header action (e.g. collapse button on desktop). */
   headerAction?: React.ReactNode
   /** Hide the panel's own header (e.g. when the drawer supplies one). */
@@ -34,6 +36,7 @@ export interface OrchestrationPanelProps {
 export function OrchestrationPanel({
   data,
   onViewOutput,
+  onSelect,
   headerAction,
   hideHeader,
   className,
@@ -83,7 +86,7 @@ export function OrchestrationPanel({
               <div className="px-1">
                 {group.items.map((item) => {
                   const Renderer = getOrchestrationItemRenderer(item)
-                  return <Renderer key={`${item.kind}:${item.id}`} item={item} onViewOutput={onViewOutput} />
+                  return <Renderer key={`${item.kind}:${item.id}`} item={item} onViewOutput={onViewOutput} onSelect={onSelect} />
                 })}
               </div>
             </div>

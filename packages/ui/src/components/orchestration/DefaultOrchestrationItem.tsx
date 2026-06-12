@@ -18,6 +18,12 @@ export interface OrchestrationItemRendererProps {
   item: OrchestrationItem
   /** Open the item's output (terminal overlay). Omit to hide the affordance. */
   onViewOutput?: (item: OrchestrationItem) => void
+  /**
+   * Select the item (e.g. focus its session and jump to its work). Omit to
+   * leave the row non-interactive. The "Output" button stops propagation so it
+   * does not also trigger this.
+   */
+  onSelect?: (item: OrchestrationItem) => void
 }
 
 /** Format elapsed seconds compactly (mirrors ActiveTasksBar/TaskActionMenu). */
@@ -52,9 +58,10 @@ const KIND_LABEL: Record<OrchestrationItem['kind'], string> = {
   'background-shell': 'Shell',
 }
 
-export function DefaultOrchestrationItem({ item, onViewOutput }: OrchestrationItemRendererProps) {
+export function DefaultOrchestrationItem({ item, onViewOutput, onSelect }: OrchestrationItemRendererProps) {
   const isRunning = item.status === 'running'
   const label = item.label || `${KIND_LABEL[item.kind]} ${item.id.slice(0, 8)}`
+  const selectable = !!onSelect
 
   // Trailing metric: live elapsed while running, else final duration.
   let metric: string | undefined
@@ -67,7 +74,26 @@ export function DefaultOrchestrationItem({ item, onViewOutput }: OrchestrationIt
   const canViewOutput = !!onViewOutput && (item.kind !== 'subagent-task' || !!item.outputFile || item.status === 'done')
 
   return (
-    <div className="flex items-start gap-2 rounded-[8px] px-2.5 py-2 hover:bg-foreground/[0.03] transition-colors">
+    <div
+      role={selectable ? 'button' : undefined}
+      tabIndex={selectable ? 0 : undefined}
+      onClick={selectable ? () => onSelect?.(item) : undefined}
+      onKeyDown={
+        selectable
+          ? (e: React.KeyboardEvent) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onSelect?.(item)
+              }
+            }
+          : undefined
+      }
+      className={cn(
+        'flex items-start gap-2 rounded-[8px] px-2.5 py-2 hover:bg-foreground/[0.03] transition-colors',
+        selectable &&
+          'cursor-pointer text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-500/50',
+      )}
+    >
       {/* Status indicator */}
       <div className="flex items-center justify-center shrink-0 mt-0.5 w-3.5 h-3.5">
         {isRunning ? (
@@ -102,7 +128,11 @@ export function DefaultOrchestrationItem({ item, onViewOutput }: OrchestrationIt
       {canViewOutput && (
         <button
           type="button"
-          onClick={() => onViewOutput?.(item)}
+          onClick={(e) => {
+            // Don't let the Output click bubble up to the row's onSelect.
+            e.stopPropagation()
+            onViewOutput?.(item)
+          }}
           className="shrink-0 text-[11px] px-1.5 py-0.5 rounded-[6px] opacity-60 hover:opacity-100 hover:bg-foreground/5 transition-all"
         >
           Output
