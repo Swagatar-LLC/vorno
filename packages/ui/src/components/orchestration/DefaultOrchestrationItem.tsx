@@ -87,7 +87,12 @@ export function DefaultOrchestrationItem({ item, onViewOutput, onSelect }: Orche
     metric = d ? `ran ${d}` : undefined
   }
 
-  const canViewOutput = !!onViewOutput && (item.kind !== 'subagent-task' || !!item.outputFile || item.status === 'done')
+  // Output affordance (PLAN-009 item 2): only background tasks/shells have real
+  // retrievable output (via getTaskOutput / outputFile). A subagent-task's `id`
+  // is a tool-use id unknown to that IPC, so its Output button was always dead
+  // ("No output yet."). Subagents instead use the row click (PLAN-009 item 4) to
+  // jump to their work — so never show an Output button for them.
+  const canViewOutput = !!onViewOutput && item.kind !== 'subagent-task'
 
   return (
     <div

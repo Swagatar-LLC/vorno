@@ -38,6 +38,7 @@ import {
   orchestrationItemsAtom,
   orchestrationPanelCollapsedAtom,
   orchestrationCollapsedSessionsAtom,
+  orchestrationScrollTargetAtom,
   toggleCollapsedSession,
   ORCHESTRATION_PANEL_ENABLED,
 } from '@/atoms/orchestration'
@@ -87,20 +88,29 @@ function useViewOutput() {
 }
 
 /**
- * Shared row-select handler: focus the item's session.
+ * Shared row-select handler: focus the item's session AND request a scroll to
+ * the originating tool-use message (PLAN-009 item 4).
  *
- * Agent 4 (PLAN-009) will extend: scroll to item.toolUseId (the originating
- * tool-use message) after focusing the session, mirroring scrollToFollowUpTurn.
+ * We set `orchestrationScrollTargetAtom` alongside focusing the session. The
+ * active session's ChatDisplay subscribes; once it becomes active it resolves
+ * the tool-use → its assistant turn, scrolls there, and clears the atom so the
+ * jump fires once. Setting the focus + target together handles the
+ * not-currently-active case (the scroll runs after the session switch lands).
  */
 function useSelectItem() {
   const setActiveSessionId = useSetAtom(activeSessionIdAtom)
+  const setScrollTarget = useSetAtom(orchestrationScrollTargetAtom)
 
   const onSelect = React.useCallback(
     (item: OrchestrationItem) => {
       setActiveSessionId(item.sessionId)
-      // Agent 4 (PLAN-009) will extend: scroll to item.toolUseId
+      setScrollTarget({
+        sessionId: item.sessionId,
+        toolUseId: item.toolUseId,
+        id: item.id,
+      })
     },
-    [setActiveSessionId],
+    [setActiveSessionId, setScrollTarget],
   )
 
   return onSelect

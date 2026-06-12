@@ -28,6 +28,7 @@ import {
   isActivityGroup,
   type ActivityItem,
   type ActivityGroup,
+  type Turn,
 } from '@craft-agent/ui/chat/turn-utils'
 import type {
   OrchestrationData,
@@ -76,6 +77,49 @@ export function toggleCollapsedSession(current: string[], sessionId: string): st
   return current.includes(sessionId)
     ? current.filter((id) => id !== sessionId)
     : [...current, sessionId]
+}
+
+/**
+ * Click-to-jump scroll target (PLAN-009 item 4).
+ *
+ * Cross-component, NO-wire seam: selecting an orchestration row sets this atom
+ * (alongside focusing `activeSessionIdAtom`). The active session's ChatDisplay
+ * subscribes; when the target's `sessionId` matches, it resolves the
+ * originating tool-use → its assistant turn, scrolls there, and CLEARS this
+ * atom (set null) so the jump fires exactly once.
+ */
+export interface OrchestrationScrollTarget {
+  /** Session whose chat should scroll. */
+  sessionId: string
+  /** Originating tool-use id (the parent Task's tool-use), when known. */
+  toolUseId?: string
+  /** Stable item id (fallback anchor when toolUseId is absent). */
+  id: string
+}
+
+export const orchestrationScrollTargetAtom = atom<OrchestrationScrollTarget | null>(null)
+
+/**
+ * Pure resolver: find the index of the assistant turn that CONTAINS the tool-use
+ * with `toolUseId` (i.e. the turn whose activities include that tool, or a child
+ * tool whose parent is that tool). Exported for unit testing.
+ *
+ * Mirrors how `assistantTurnIndexByMessageId` is built in ChatDisplay, but keyed
+ * by tool-use id so a subagent row can jump to the turn that launched its Task.
+ * Returns -1 when no turn contains the tool-use (caller no-ops gracefully).
+ */
+export function resolveToolUseTurnIndex(turns: Turn[], toolUseId: string): number {
+  if (!toolUseId) return -1
+  for (let i = 0; i < turns.length; i++) {
+    const turn = turns[i]
+    if (turn.type !== 'assistant') continue
+    for (const activity of turn.activities) {
+      if (activity.toolUseId === toolUseId) return i
+      // A child tool whose parent is this Task also localizes the turn.
+      if (activity.parentId === toolUseId) return i
+    }
+  }
+  return -1
 }
 
 /** Map a BackgroundTask's status to the panel's item status. */
