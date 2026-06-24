@@ -6,13 +6,17 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.10.1` |
-| Last merged upstream commit | `26948f8b` |
-| Merge PR | _pending_ — branch `jh/2026-06-03_Upstream_Merge` |
-| Merge commit on main | _pending_ |
-| Date synced | 2026-06-03 |
+| Last merged upstream tag | `v0.10.4` |
+| Last merged upstream commit | `556c59a7` |
+| Merge PR | [#39](https://github.com/Swagatar-LLC/craft-agents-oss/pull/39) |
+| Merge commit on main | `cc80c469` |
+| Date synced | 2026-06-24 |
 
 ## Versions covered in last merge
+
+- `v0.10.4` — **GLM-5 family on z.ai + Pi SDK uplift.** Pi SDK uplifted `0.73.1` → `0.79.9` with a scope migration from the now-frozen `@mariozechner/*` to the rebranded `@earendil-works/*` across all manifests + `bun.lock` (`pi-ai`, `pi-coding-agent`, `pi-agent-core`). The regenerated models.dev catalog surfaces GLM-5.2 / 5.1 / 5-turbo automatically on the existing z.ai provider with correct thinking / `reasoning_effort` handling, plus newer models for OpenRouter and other Pi providers. GitHub Copilot device-code login now consumes the SDK's structured `onDeviceCode` callback in place of a free-text regex. **Automatic `config.json` startup backups** (keeps newest 3; earliest good same-day snapshot preserved). **Always-on auto-update diagnostic log** at `~/.craft-agent/logs/auto-update.log` (partially addresses #891 — diagnostics only). **Session titles honour your language** by reading Appearance → Language from disk, auto-detecting written language when unset (fixes #885). No upstream breaking changes. **Conflicts:** `bun.lock` only (mechanical `--theirs` + `bun install`); `options.ts` did not conflict and the `CLAUDECODE` strip is preserved. **Fork-side follow-up (same branch):** stale `@mariozechner` scope refs in `LEARNING-001` and the `upstream-sync` skill recipes updated to `@earendil-works` (commit `2f521d08`). Fork-only `supportsFastMode: true` / `getModelSupportsFastMode()` registry delta verified intact after the models.dev regeneration.
+
+## Versions covered in prior merge (2026-06-03)
 
 - `v0.10.1` — **Claude Opus 4.8 promoted to default Opus** (Claude Agent SDK 0.3.154). Opus 4.7 stays selectable; Opus 4.6 removed from pickers; existing 4.7 defaults migrate to 4.8 and 4.5/4.6 selections migrate forward. Bedrock mappings, Pi fallback, model-migration tests, docs, UI examples all updated. **Session titles honour Settings → Appearance language** — fixes main-process i18n that was sitting at `en` fallback after restart because Node has no `localStorage` to detect from; renderer now persists chosen language to an internal validated `uiLanguage` field and main hydrates from it on startup (partially closes upstream #815, #738). **Text-selection highlight stays aligned when scrolling a `markdown-preview` block** — capture-phase scroll listener recomputes overlay geometry (rAF-coalesced, no-op short-circuit when no annotations), mirrored in viewer annotation path. **Breaking — macOS Intel (x64) builds discontinued, Apple Silicon only** (v0.10.0 was the last Intel build). **Breaking — legacy free-text `language` field in `preferences.json` replaced by internal validated `uiLanguage`**; schema is passthrough so existing configs are tolerated and stale `language` keys are scrubbed on read; `update_user_preferences` tool no longer accepts `language`.
 
@@ -57,7 +61,7 @@ Snapshot of our most recent upstream sync.
 
 ## Recurring post-sync issues
 
-- **Stale nested `@mariozechner/*` deps** — see [LEARNING-001](../learnings/LEARNING-001-stale-nested-mariozechner-deps.md). **Did not trigger this cycle.** Pi SDK 0.73.0 → 0.73.1 was a minor bump and `pi-agent-server` bundled cleanly without the nested-modules nuke. The mitigation may now be unnecessary for minor Pi bumps; revisit when a major bump lands.
+- **Stale nested `@mariozechner/*` deps** — see [LEARNING-001](../learnings/LEARNING-001-stale-nested-mariozechner-deps.md). **Did not trigger in v0.10.4** despite the major `0.73.1` → `0.79.9` bump, because upstream simultaneously **renamed the scope to `@earendil-works/*`** — `bun install` removed the old `@mariozechner` packages entirely, so there were no stale nested copies to collide. `pi-agent-server` bundled cleanly. The LEARNING-001 fix recipe and the `upstream-sync` skill were updated this cycle to target the new scope (commit `2f521d08`). The original `@mariozechner` hazard is now historically frozen; future stale-dep risk would be under `@earendil-works`.
 - **CI runner `~/.craft-agent/` dir absent** — surfaced once, fixed in `349512e` (see Post-merge fix above). Should not recur.
 
 ## CI threshold notes
