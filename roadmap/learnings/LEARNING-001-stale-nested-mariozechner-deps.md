@@ -39,17 +39,23 @@ The pattern is the same as the `max_output_tokens` type-check error noted in `ro
 
 ## Fix
 
+> **Note (2026-06-24):** Upstream renamed the Pi SDK scope from `@mariozechner/*` to
+> `@earendil-works/*` in v0.10.4 (0.73.1 → 0.79.9). The signal/root-cause/table above are
+> retained verbatim as the historical record from when this fired under the old scope; the
+> fix recipe below has been updated to target the current `@earendil-works/*` scope. If you
+> are bisecting an older branch (pre-v0.10.4) the paths will still be `@mariozechner`.
+
 Remove the stale nested copies; root resolution will then take over.
 
 ```bash
 cd /path/to/craft-agents-oss
 rm -rf \
-  packages/shared/node_modules/@mariozechner \
-  packages/server-core/node_modules/@mariozechner \
-  packages/pi-agent-server/node_modules/@mariozechner
+  packages/shared/node_modules/@earendil-works \
+  packages/server-core/node_modules/@earendil-works \
+  packages/pi-agent-server/node_modules/@earendil-works
 
 # Verify only the root copy remains
-find . -path "*/node_modules/@mariozechner" -type d 2>/dev/null | grep -v "\.git"
+find . -path "*/node_modules/@earendil-works" -type d 2>/dev/null | grep -v "\.git"
 
 # Re-run the build that failed; it should now succeed.
 ```
@@ -60,7 +66,7 @@ find . -path "*/node_modules/@mariozechner" -type d 2>/dev/null | grep -v "\.git
 
 Likely to recur on:
 
-- Each upstream sync that bumps `@mariozechner/*` versions in `package.json`
+- Each upstream sync that bumps the Pi SDK (`@earendil-works/*`, formerly `@mariozechner/*`) versions in `package.json`
 - Some `bun install` runs after switching branches that have different `bun.lock` content
 - Cold-clone followed by certain failed/partial installs
 

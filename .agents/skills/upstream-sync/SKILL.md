@@ -84,14 +84,14 @@ cd ../..
 # bundle build (must succeed)
 bun build apps/server/src/index.ts --target=bun --outdir=/tmp/build-check --no-splitting 2>&1 | tail -3
 
-# pi-agent-server build — catches stale nested @mariozechner/* (see LEARNING-001)
+# pi-agent-server build — catches stale nested @earendil-works/* (see LEARNING-001)
 bun build packages/pi-agent-server/src/index.ts --target=bun --outdir=/tmp/pi-build --no-splitting 2>&1 | tail -3
 ```
 
-If `pi-agent-server` build fails with "No matching export" errors for `@mariozechner/*` symbols, that's [LEARNING-001](../../../roadmap/learnings/LEARNING-001-stale-nested-mariozechner-deps.md). Apply the fix:
+If `pi-agent-server` build fails with "No matching export" errors for `@earendil-works/*` symbols (the Pi SDK scope, renamed from `@mariozechner/*` upstream in v0.10.4), that's [LEARNING-001](../../../roadmap/learnings/LEARNING-001-stale-nested-mariozechner-deps.md). Apply the fix:
 
 ```bash
-rm -rf packages/{shared,server-core,pi-agent-server}/node_modules/@mariozechner
+rm -rf packages/{shared,server-core,pi-agent-server}/node_modules/@earendil-works
 bun build packages/pi-agent-server/src/index.ts --target=bun --outdir=/tmp/pi-build --no-splitting 2>&1 | tail -3
 ```
 
