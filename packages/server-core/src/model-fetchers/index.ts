@@ -17,13 +17,25 @@ import {
   getLlmConnection,
   updateLlmConnection,
   isCompatProvider,
+  isLiveFetchPiConnection,
   getModelsForProviderType,
 } from '@craft-agent/shared/config'
+import type { LlmConnection } from '@craft-agent/shared/config'
 import { MODEL_FETCHERS } from './registry'
 import { handlerLog } from './runtime'
 
 /** Copilot models are server-managed — refresh every 10 minutes to pick up policy changes. */
 const COPILOT_REFRESH_INTERVAL_MS = 10 * 60 * 1000
+
+/** OpenAI is enumerated live from GET /v1/models; its catalog moves slowly, so 6h is ample. */
+const OPENAI_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000
+
+/** Periodic refresh interval for a live-fetch Pi connection (Copilot is policy-managed → faster). */
+function liveFetchRefreshIntervalMs(connection: Pick<LlmConnection, 'piAuthProvider'>): number {
+  return connection.piAuthProvider === 'github-copilot'
+    ? COPILOT_REFRESH_INTERVAL_MS
+    : OPENAI_REFRESH_INTERVAL_MS
+}
 
 // ============================================================
 // Types
@@ -123,11 +135,10 @@ class ModelRefreshService {
 
     // For Pi connections with explicit user-owned 3-tier selection,
     // never overwrite model lists from background refresh.
-    // Exception: Copilot connections are always server-managed — GitHub's
-    // model policy controls which models are enabled, so we must always
-    // accept the live API result.
-    const isCopilot = connection.providerType === 'pi' && connection.piAuthProvider === 'github-copilot'
-    if (connection.providerType === 'pi' && connection.modelSelectionMode === 'userDefined3Tier' && !isCopilot) {
+    // Exception: live-fetch providers (Copilot, OpenAI) are provider/server-owned —
+    // GitHub's policy / OpenAI's /v1/models controls which models exist, so we must
+    // always accept the live API result over a stale user-pinned list.
+    if (connection.providerType === 'pi' && connection.modelSelectionMode === 'userDefined3Tier' && !isLiveFetchPiConnection(connection)) {
       const modelCount = connection.models?.length ?? 0
       handlerLog.info(`Model refresh [${slug}]: preserving user-defined Pi model list (${modelCount} models)`)
       if (modelCount > 10) {
@@ -169,12 +180,12 @@ class ModelRefreshService {
         handlerLog.warn(`Initial model refresh failed for ${conn.slug}: ${err instanceof Error ? err.message : err}`)
       })
 
-      // Set up periodic refresh: Copilot connections get their own interval
-      // (models are server-managed by GitHub policy), other providers use
-      // the fetcher's generic interval (0 = no periodic refresh for static SDK models).
-      const isCopilot = conn.providerType === 'pi' && conn.piAuthProvider === 'github-copilot'
-      if (isCopilot) {
-        this.startTimer(conn.slug, COPILOT_REFRESH_INTERVAL_MS)
+      // Set up periodic refresh: live-fetch Pi connections (Copilot, OpenAI) get a
+      // provider-specific interval since their model list changes server-side; other
+      // providers use the fetcher's generic interval (0 = no periodic refresh for
+      // static SDK models).
+      if (isLiveFetchPiConnection(conn)) {
+        this.startTimer(conn.slug, liveFetchRefreshIntervalMs(conn))
       } else if (fetcher.refreshIntervalMs > 0) {
         this.startTimer(conn.slug, fetcher.refreshIntervalMs)
       }
@@ -206,9 +217,8 @@ class ModelRefreshService {
 
     const providerType = connection.providerType as FetchableProvider
     const fetcher = this.fetchers[providerType]
-    const isCopilot = connection.providerType === 'pi' && connection.piAuthProvider === 'github-copilot'
-    if (isCopilot && !this.timers.has(slug)) {
-      this.startTimer(slug, COPILOT_REFRESH_INTERVAL_MS)
+    if (isLiveFetchPiConnection(connection) && !this.timers.has(slug)) {
+      this.startTimer(slug, liveFetchRefreshIntervalMs(connection))
     } else if (fetcher && fetcher.refreshIntervalMs > 0 && !this.timers.has(slug)) {
       this.startTimer(slug, fetcher.refreshIntervalMs)
     }

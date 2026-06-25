@@ -1,7 +1,7 @@
 import type { ProviderDriver } from '../driver-types.ts';
 import { applyAnthropicRuntimeBootstrap } from '../runtime-resolver.ts';
 import { validateAnthropicConnection } from '../../../../config/llm-validation.ts';
-import { DEFAULT_MODEL, getModelById, getModelContextWindow, normalizeDeprecatedModelId } from '../../../../config/models.ts';
+import { DEFAULT_MODEL, getModelById, getModelContextWindow, inferAnthropicContextWindow, normalizeDeprecatedModelId } from '../../../../config/models.ts';
 
 export const anthropicDriver: ProviderDriver = {
   provider: 'anthropic',
@@ -101,7 +101,9 @@ export const anthropicDriver: ProviderDriver = {
           description: registryModel?.description ?? '',
           descriptionKey: registryModel?.descriptionKey,
           provider: 'anthropic' as const,
-          contextWindow: getModelContextWindow(m.id) ?? 200_000,
+          // /v1/models carries no context window — infer from family (Opus → 1M) so a
+          // new Opus drop isn't mis-sized at the flat 200k default.
+          contextWindow: getModelContextWindow(m.id) ?? inferAnthropicContextWindow(m.id),
           supportsThinking: registryModel?.supportsThinking,
           supportsImages: registryModel?.supportsImages,
         };

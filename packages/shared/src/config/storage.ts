@@ -43,6 +43,7 @@ import type { Workspace, AuthType } from '@craft-agent/core/types';
 // Import LLM connection types and constants
 import type { LlmConnection } from './llm-connections.ts';
 import { isValidProviderAuthCombination, getDefaultModelsForConnection, getDefaultModelForConnection, isPiProvider, toBedrockNativeId, type LlmProviderType } from './llm-connections.ts';
+import { isLiveFetchPiConnection } from './model-fetcher.ts';
 import {
   getModelProvider,
   getModelById,
@@ -1730,11 +1731,13 @@ function backfillAllConnectionModels(config: StoredConfig): boolean {
     // before this function runs, so no bedrock-specific normalization needed here.
 
     if (isPiProvider(connection.providerType) && connection.piAuthProvider) {
-      // Copilot models are always server-managed (GitHub policy controls which
-      // models are enabled), so force automaticallySyncedFromProvider regardless
-      // of what inferModelSelectionMode would compute from stale static SDK data.
-      const isCopilot = connection.piAuthProvider === 'github-copilot';
-      const mode = isCopilot
+      // Live-fetch providers (Copilot, OpenAI) are server/provider-owned: their list
+      // comes from a live API, not user curation, so force automaticallySyncedFromProvider
+      // regardless of what inferModelSelectionMode would compute from the (differing)
+      // stale static SDK defaults. Otherwise the live list — which never equals the
+      // static default set — would be mislabeled userDefined3Tier and the UI would
+      // show a "user-defined" mode the user never chose.
+      const mode = isLiveFetchPiConnection(connection)
         ? 'automaticallySyncedFromProvider' as const
         : (connection.modelSelectionMode ?? inferModelSelectionMode(connection, providerDefaultModelIds));
       if (connection.modelSelectionMode !== mode) {

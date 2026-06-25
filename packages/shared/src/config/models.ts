@@ -319,6 +319,23 @@ export function getModelContextWindow(modelId: string): number | undefined {
 }
 
 /**
+ * Infer a context window for an Anthropic model ID that isn't in MODEL_REGISTRY.
+ *
+ * Anthropic's `/v1/models` response carries no context window, so a brand-new model
+ * (e.g. a future Opus) would otherwise fall back to the flat 200k default — wrong for
+ * a 1M-context Opus. Opus models are 1M; Sonnet/Haiku/unknown stay at the safe 200k
+ * floor. Handles Bedrock-native and deprecated IDs via the same normalization as the
+ * registry lookup. This only affects *sizing/display*; never a capability that, if
+ * wrong, would make the API reject a request (see `getModelSupportsFastMode`, which
+ * stays registry-only and conservative).
+ */
+export function inferAnthropicContextWindow(modelId: string): number {
+  const bare = bedrockToBareId(normalizeDeprecatedModelId(modelId)).toLowerCase();
+  if (bare.includes('opus')) return 1_000_000;
+  return 200_000;
+}
+
+/**
  * Check if model is an Opus model (for cache TTL decisions).
  */
 export function isOpusModel(modelId: string): boolean {

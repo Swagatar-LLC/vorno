@@ -150,6 +150,34 @@ describe('startup migration (integration)', () => {
     expect(connection.defaultModel).toBe(migratedModels[0])
   })
 
+  it('forces automaticallySyncedFromProvider for live-fetch OpenAI connections', () => {
+    // OpenAI is enumerated live (GET /v1/models), so its list is provider-owned, not
+    // user curation. Even when persisted as userDefined3Tier (the live list never equals
+    // the static defaults, so inferModelSelectionMode would compute it), backfill must
+    // force auto-synced so the UI doesn't mislabel it — mirroring the Copilot precedent.
+    const { configDir, workspaceRoot, configPath } = setupWorkspaceConfigDir()
+
+    writeRootConfig(configPath, workspaceRoot, [
+      {
+        slug: 'pi-api-key',
+        name: 'Craft Agents Backend (OpenAI)',
+        providerType: 'pi',
+        authType: 'api_key',
+        piAuthProvider: 'openai',
+        modelSelectionMode: 'userDefined3Tier',
+        createdAt: Date.now(),
+        models: ['pi/gpt-5', 'pi/o3'],
+        defaultModel: 'pi/gpt-5',
+      },
+    ])
+
+    runMigration(configDir)
+
+    const connection = readPiApiKeyConnection(configPath)
+    expect(connection).toBeDefined()
+    expect(connection.modelSelectionMode).toBe('automaticallySyncedFromProvider')
+  })
+
   it('normalizes auto mode model set back to provider defaults', () => {
     const { configDir, workspaceRoot, configPath } = setupWorkspaceConfigDir()
 

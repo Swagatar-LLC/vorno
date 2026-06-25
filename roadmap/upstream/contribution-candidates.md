@@ -13,6 +13,13 @@ A change is a good upstream candidate when:
 
 ## Candidates
 
+### Live OpenAI `GET /v1/models` enumeration (PLAN-010)
+
+- **Where**: `packages/shared/src/agent/backend/internal/drivers/pi.ts` (`fetchOpenAiModelsLive`), `packages/shared/src/config/models-openai.ts`, `packages/shared/src/config/model-fetcher.ts` (`isLiveFetchPiConnection`).
+- **What**: OpenAI Pi connections enumerate models live from `GET /v1/models` (filtered to chat/reasoning, enriched from the SDK catalog, `pi/`-prefixed) instead of relying on the static `@earendil-works/pi-ai` catalog. Mirrors the existing Copilot live-fetch pattern; falls back to the static catalog on failure. Includes `inferAnthropicContextWindow` so a new Opus isn't mis-sized at 200k.
+- **Why upstream**: Pure maintenance-cost reduction — upstream's OpenAI list also goes stale until a dependency bump. Additive, no DTO/`ModelDefinition` shape change, no paradigm coupling.
+- **Status**: Pending — clean candidate once it has soaked in the fork. Note the `inferModelSelectionMode` interaction (LEARNING-004) when porting.
+
 ### `CLAUDECODE` env strip in `buildClaudeSubprocessEnv`
 
 - **Where**: `packages/shared/src/agent/options.ts`
