@@ -4,7 +4,7 @@ title: Live-fetch Pi providers need BOTH the refresh-guard bypass and the backfi
 date: 2026-06-09
 status: active
 component: config/models
-related-plans: [PLAN-009-live-model-enumeration]
+related-plans: [PLAN-010-live-model-enumeration]
 related-decisions: []
 ---
 
@@ -12,7 +12,7 @@ related-decisions: []
 
 ## Signal
 
-When adding live `GET /v1/models` enumeration for an OpenAI Pi connection (PLAN-009),
+When adding live `GET /v1/models` enumeration for an OpenAI Pi connection (PLAN-010),
 the obvious-looking fix — "treat OpenAI like Copilot in the refresh service" — is a
 trap. A reviewer suggested keeping the refresh-guard bypass Copilot-only. That would
 **freeze the OpenAI model list after the very first live fetch**, and separately the

@@ -5,7 +5,7 @@
  * in the selector without an SDK/dependency upgrade. These helpers — filtering,
  * reasoning classification, and ModelDefinition shaping — are kept SDK-free and
  * side-effect-free so they unit-test in isolation and stay safe to import anywhere
- * (including the renderer), unlike `models-pi.ts` which pulls in `@mariozechner/pi-ai`.
+ * (including the renderer), unlike `models-pi.ts` which pulls in `@earendil-works/pi-ai`.
  *
  * Catalog enrichment (context windows, display names) comes from the Pi SDK catalog
  * and is injected by the driver as plain `OpenAiCatalogEntry` data — this module never

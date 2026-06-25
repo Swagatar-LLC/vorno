@@ -1,5 +1,5 @@
 ---
-id: PLAN-009
+id: PLAN-010
 title: Live model enumeration for OpenAI + Anthropic (stop falling behind on model drops)
 status: in-progress
 direction: none
@@ -10,7 +10,7 @@ related: []
 blocked-by: []
 ---
 
-# PLAN-009 — Live model enumeration for OpenAI + Anthropic
+# PLAN-010 — Live model enumeration for OpenAI + Anthropic
 
 ## Goal
 

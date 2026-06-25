@@ -81,7 +81,7 @@ export type ModelFetcherMap = Record<FetchableProvider, ModelFetcher>;
 
 /**
  * Pi auth providers whose model list is fetched **live** from the provider API
- * (vs. the static `@mariozechner/pi-ai` SDK catalog).
+ * (vs. the static `@earendil-works/pi-ai` SDK catalog).
  *
  * Live-fetch providers get two behaviours from the refresh service that static
  * catalog providers do not:
