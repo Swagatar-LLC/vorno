@@ -1,8 +1,10 @@
 import { describe, test, expect } from 'bun:test'
+import type { AnnotationMutationFailureReason } from '@craft-agent/core/types'
 import {
   formatFollowUpSection,
   normalizeFollowUpsMarkdown,
   truncateForChipTooltip,
+  describeAnnotationMutationFailure,
   type PendingFollowUpAnnotation,
 } from '../ChatDisplay.follow-ups'
 
@@ -118,5 +120,35 @@ describe('truncateForChipTooltip', () => {
   test('collapses whitespace before measuring length', () => {
     const input = '  spaced\n\nout    words  '
     expect(truncateForChipTooltip(input, 100)).toBe('spaced out words')
+  })
+})
+
+describe('describeAnnotationMutationFailure — surfaces silent rejections', () => {
+  const reasons: AnnotationMutationFailureReason[] = [
+    'session-not-found',
+    'message-not-found',
+    'annotation-not-found',
+    'invalid-payload',
+    'message-id-mismatch',
+    'duplicate-id',
+    'too-large',
+    'limit-reached',
+  ]
+
+  test('every reason maps to a non-empty, human-readable message', () => {
+    for (const reason of reasons) {
+      const msg = describeAnnotationMutationFailure(reason)
+      expect(typeof msg).toBe('string')
+      expect(msg.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('stale-reference reasons advise reloading (the task-switch case)', () => {
+    expect(describeAnnotationMutationFailure('message-not-found').toLowerCase()).toContain('reload')
+    expect(describeAnnotationMutationFailure('message-id-mismatch').toLowerCase()).toContain('reload')
+  })
+
+  test('limit-reached explains the per-message cap', () => {
+    expect(describeAnnotationMutationFailure('limit-reached').toLowerCase()).toContain('limit')
   })
 })

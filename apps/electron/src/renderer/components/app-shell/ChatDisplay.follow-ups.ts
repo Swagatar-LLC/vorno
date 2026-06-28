@@ -17,6 +17,41 @@
  */
 
 import { normalizeFollowUpText } from '@craft-agent/ui/annotations/follow-up-state'
+import type { AnnotationMutationFailureReason } from '@craft-agent/core/types'
+
+/**
+ * Human-readable explanation for a rejected annotation mutation, shown as the
+ * description under the "Could not save/update/remove highlight" toast.
+ *
+ * The server used to swallow these rejections and resolve as success, so the
+ * follow-up UI closed with nothing saved and no feedback (OSS branch bug:
+ * silent annotation-add failure). Surfacing the reason turns a mysterious
+ * disappearance into an actionable message — `message-not-found` in particular
+ * indicates the message reference went stale (e.g. after a reconnect), so a
+ * reload recovers it.
+ */
+export function describeAnnotationMutationFailure(reason: AnnotationMutationFailureReason): string {
+  switch (reason) {
+    case 'session-not-found':
+      return 'This session is no longer active. Reload and try again.'
+    case 'message-not-found':
+      return 'This message is no longer in sync with the server (it may have reloaded). Reload the session and try again.'
+    case 'annotation-not-found':
+      return 'That highlight no longer exists — it may have been removed.'
+    case 'invalid-payload':
+      return 'The highlight could not be saved because its selection was invalid.'
+    case 'message-id-mismatch':
+      return 'This message is out of sync with the server. Reload the session and try again.'
+    case 'duplicate-id':
+      return 'That highlight was already saved.'
+    case 'too-large':
+      return 'The highlighted text is too large to save as a note.'
+    case 'limit-reached':
+      return 'This message has reached its limit of saved highlights.'
+    default:
+      return 'The highlight could not be saved. Please try again.'
+  }
+}
 
 export type PendingFollowUpAnnotation = {
   messageId: string

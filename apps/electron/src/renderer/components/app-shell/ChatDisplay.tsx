@@ -255,6 +255,7 @@ import {
   formatFollowUpSection,
   normalizeFollowUpsMarkdown,
   truncateForChipTooltip,
+  describeAnnotationMutationFailure,
   type PendingFollowUpAnnotation,
 } from './ChatDisplay.follow-ups'
 
@@ -1841,8 +1842,9 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                         } : undefined}
                         onAddAnnotation={async (messageId, annotation) => {
                           if (!session) return
+                          let result: Awaited<ReturnType<typeof window.electronAPI.sessionCommand>>
                           try {
-                            await window.electronAPI.sessionCommand(session.id, {
+                            result = await window.electronAPI.sessionCommand(session.id, {
                               type: 'addAnnotation',
                               messageId,
                               annotation,
@@ -1853,11 +1855,22 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             })
                             throw error
                           }
+                          // The server resolves even when it rejects the add (e.g. the
+                          // message reference went stale after a reconnect). Surface the
+                          // reason and throw so the follow-up popup stays open with the
+                          // typed note instead of silently closing with nothing saved.
+                          if (result && 'success' in result && result.success === false && 'reason' in result) {
+                            toast.error(t('toast.couldNotSaveHighlight'), {
+                              description: describeAnnotationMutationFailure(result.reason),
+                            })
+                            throw new Error(`addAnnotation rejected: ${result.reason}`)
+                          }
                         }}
                         onRemoveAnnotation={async (messageId, annotationId) => {
                           if (!session) return
+                          let result: Awaited<ReturnType<typeof window.electronAPI.sessionCommand>>
                           try {
-                            await window.electronAPI.sessionCommand(session.id, {
+                            result = await window.electronAPI.sessionCommand(session.id, {
                               type: 'removeAnnotation',
                               messageId,
                               annotationId,
@@ -1866,12 +1879,19 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             toast.error(t('toast.couldNotRemoveHighlight'), {
                               description: error instanceof Error ? error.message : 'Unknown error',
                             })
+                            return
+                          }
+                          if (result && 'success' in result && result.success === false && 'reason' in result) {
+                            toast.error(t('toast.couldNotRemoveHighlight'), {
+                              description: describeAnnotationMutationFailure(result.reason),
+                            })
                           }
                         }}
                         onUpdateAnnotation={async (messageId, annotationId, patch) => {
                           if (!session) return
+                          let result: Awaited<ReturnType<typeof window.electronAPI.sessionCommand>>
                           try {
-                            await window.electronAPI.sessionCommand(session.id, {
+                            result = await window.electronAPI.sessionCommand(session.id, {
                               type: 'updateAnnotation',
                               messageId,
                               annotationId,
@@ -1882,6 +1902,14 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                               description: error instanceof Error ? error.message : 'Unknown error',
                             })
                             throw error
+                          }
+                          // Same silent-rejection guard as add: surface and throw so the
+                          // edit popup stays open instead of closing with no change saved.
+                          if (result && 'success' in result && result.success === false && 'reason' in result) {
+                            toast.error(t('toast.couldNotUpdateHighlight'), {
+                              description: describeAnnotationMutationFailure(result.reason),
+                            })
+                            throw new Error(`updateAnnotation rejected: ${result.reason}`)
                           }
                         }}
                         onSaveAndSendFollowUp={handleSaveAndSendFollowUp}

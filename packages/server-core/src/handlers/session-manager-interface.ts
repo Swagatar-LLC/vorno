@@ -7,7 +7,7 @@
  */
 
 import type { Workspace, WorkspaceInfo, ActiveSessionInfo } from '@craft-agent/core/types'
-import type { StoredAttachment, AnnotationV1 } from '@craft-agent/core/types'
+import type { StoredAttachment, AnnotationV1, AnnotationMutationResult } from '@craft-agent/core/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/mode-types'
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import type { AuthResult } from '@craft-agent/shared/agent'
@@ -93,14 +93,14 @@ export interface ISessionManager {
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
   killShell(sessionId: string, shellId: string): Promise<{ success: boolean; error?: string }>
   getTaskOutput(taskId: string): Promise<string | null>
-  addMessageAnnotation(sessionId: string, messageId: string, annotation: AnnotationV1): void
-  removeMessageAnnotation(sessionId: string, messageId: string, annotationId: string): void
+  addMessageAnnotation(sessionId: string, messageId: string, annotation: AnnotationV1): AnnotationMutationResult
+  removeMessageAnnotation(sessionId: string, messageId: string, annotationId: string): AnnotationMutationResult
   updateMessageAnnotation(
     sessionId: string,
     messageId: string,
     annotationId: string,
     patch: Partial<AnnotationV1>,
-  ): void
+  ): AnnotationMutationResult
 
   // ---------------------------------------------------------------------------
   // Permissions & credentials
