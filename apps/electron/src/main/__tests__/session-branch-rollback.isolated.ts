@@ -15,6 +15,11 @@ let mockedProvider: 'anthropic' | 'pi' = 'anthropic'
 // Partial-mock baseline: import real modules via file paths (avoids recursive mock imports)
 const actualSharedAgentModule = await import('../../../../../packages/shared/src/agent/index.ts')
 const actualSharedAgentBackendModule = await import('../../../../../packages/shared/src/agent/backend/index.ts')
+// Spread the real config barrel so pure capability helpers (modelSupportsImages,
+// defaultMidStreamBehavior, etc.) stay in sync automatically — the config leaves
+// are side-effect-free at import time (only lazy module-level vars). Explicit
+// overrides below replace the fs/electron-touching entry points the test controls.
+const actualSharedConfigModule = await import('../../../../../packages/shared/src/config/index.ts')
 
 mock.module('electron', () => ({
   app: {
@@ -57,6 +62,7 @@ mock.module('../logger', () => {
 })
 
 mock.module('@craft-agent/shared/config', () => ({
+  ...actualSharedConfigModule,
   getWorkspaceByNameOrId: (id: string) => (id === workspace.id ? workspace : null),
   getWorkspaces: () => [workspace],
   loadConfigDefaults: () => ({
@@ -365,5 +371,75 @@ describe('session branch rollback on preflight failure', () => {
     expect(getOrCreateAgentCalled).toBe(true)
     expect(deletedIds).toEqual(['child-1'])
     expect(storedById.has('child-1')).toBe(false)
+  })
+
+  // Regression guard for the "Browser pane manager unavailable despite passing
+  // the gate" bug. The real getOrCreateAgent wires up browser-pane tools via
+  // getBrowserPaneManagerForSession(sid); on the remote-bridge path that resolver
+  // looks the session up in this.sessions. If createSession runs the branch
+  // preflight (which calls getOrCreateAgent) BEFORE registering the session, the
+  // resolver returns null and the branch fails. This test pins the ordering:
+  // the child session must already be in this.sessions when getOrCreateAgent
+  // runs during preflight.
+  it('registers the branch session in this.sessions BEFORE running preflight (getOrCreateAgent)', async () => {
+    const manager = new SessionManager()
+
+    let sessionRegisteredAtAgentCreation: boolean | null = null
+
+    ;(manager as any).ensureMessagesLoaded = async (_managed: any) => {}
+    ;(manager as any).getOrCreateAgent = async (managed: any) => {
+      sessionRegisteredAtAgentCreation = (manager as any).sessions.has(managed.id)
+      managed.agent = {
+        supportsBranching: true,
+        ensureBranchReady: async () => {},
+        destroy: () => {},
+      }
+      return managed.agent
+    }
+
+    await manager.createSession('ws-1', {
+      branchFromSessionId: 'source-1',
+      branchFromMessageId: 'm1',
+    } as any)
+
+    expect(sessionRegisteredAtAgentCreation).toBe(true)
+    // Happy path: the session stays registered after a successful preflight.
+    expect((manager as any).sessions.has('child-1')).toBe(true)
+  })
+})
+
+describe('SessionManager — browser-pane gate/resolver invariant', () => {
+  // Mirror of the gate in getOrCreateAgent: the BPF block runs when
+  // (browserPaneManager || rpcServer) is truthy. On the remote-bridge path
+  // (rpcServer set, no local browserPaneManager), getBrowserPaneManagerForSession
+  // must be able to resolve a BPM — which requires the session to be present in
+  // this.sessions. These tests document that contract so the gate and resolver
+  // can never silently disagree again.
+  const fakeRpcServer = () =>
+    ({
+      handle() {},
+      push() {},
+      async invokeClient() { return undefined },
+      hasClientCapability: () => false,
+      findClientsWithCapability: () => [],
+    }) as any
+
+  it('returns null when rpcServer is set but the session is not registered (the bug condition)', () => {
+    const manager = new SessionManager()
+    ;(manager as any).setRpcServer(fakeRpcServer())
+
+    // Gate would pass (rpcServer truthy) but the resolver cannot find the session.
+    expect((manager as any).getBrowserPaneManagerForSession('missing-session')).toBeNull()
+  })
+
+  it('resolves a RemoteBrowserPaneManager once the session is registered', () => {
+    const manager = new SessionManager()
+    ;(manager as any).setRpcServer(fakeRpcServer())
+    ;(manager as any).sessions.set('sess-x', { id: 'sess-x', workspace: { id: 'ws-1' } })
+
+    const bpm = (manager as any).getBrowserPaneManagerForSession('sess-x')
+    expect(bpm).not.toBeNull()
+    // Cached for repeat lookups (no re-allocation).
+    expect((manager as any).getBrowserPaneManagerForSession('sess-x')).toBe(bpm)
   })
 })

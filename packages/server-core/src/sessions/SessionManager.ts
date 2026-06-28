@@ -2826,6 +2826,30 @@ export class SessionManager implements ISessionManager {
       messagesLoaded: !isBranch,  // Branched sessions: lazy-load messages from JSONL
     })
 
+    // Initialize mode-manager state immediately to avoid UI/enforcement races
+    // before the agent instance is lazily created (the branch preflight below
+    // creates it eagerly). Done before registering in this.sessions so the
+    // invariant "a session visible in this.sessions has its permission mode
+    // initialized" holds throughout the branch-preflight await window.
+    setPermissionMode(storedSession.id, managed.permissionMode ?? 'ask', { changedBy: 'restore' })
+    if (managed.previousPermissionMode) {
+      hydratePreviousPermissionMode(storedSession.id, managed.previousPermissionMode)
+    }
+
+    // Register the session in the runtime map as soon as it is constructed —
+    // BEFORE the branch preflight below. The preflight calls getOrCreateAgent(),
+    // which wires up browser-pane tools via getBrowserPaneManagerForSession(sid).
+    // On the remote-bridge path (web/headless client: no local browserPaneManager,
+    // only an rpcServer), that resolver looks the session up in this.sessions to
+    // build a RemoteBrowserPaneManager. If the session isn't registered yet, the
+    // resolver returns null even though the BPF gate passed (rpcServer is set),
+    // and getOrCreateAgent throws "Browser pane manager unavailable despite
+    // passing the gate" — surfacing to the user as "Could not create branch".
+    // Local Electron is unaffected because the local BPM short-circuits the
+    // resolver before any this.sessions lookup. Registering here also makes the
+    // rollback's deleteFromRuntimeSessions() (in the preflight catch) effective.
+    this.sessions.set(storedSession.id, managed)
+
     // Eagerly load messages for branched sessions so the renderer gets the full
     // conversation immediately (needed for scroll-to-bottom on panel open)
     if (isBranch) {
@@ -2871,15 +2895,6 @@ export class SessionManager implements ISessionManager {
         }
       }
     }
-
-    // Initialize mode-manager state immediately to avoid UI/enforcement races
-    // before the agent instance is lazily created.
-    setPermissionMode(storedSession.id, managed.permissionMode ?? 'ask', { changedBy: 'restore' })
-    if (managed.previousPermissionMode) {
-      hydratePreviousPermissionMode(storedSession.id, managed.previousPermissionMode)
-    }
-
-    this.sessions.set(storedSession.id, managed)
 
     // Initialize session metadata in AutomationSystem for diffing
     const automationSystem = this.automationSystems.get(workspaceRootPath)
