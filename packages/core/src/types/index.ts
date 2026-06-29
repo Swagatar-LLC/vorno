@@ -38,6 +38,8 @@ export type {
   AnnotationSelector,
   AnnotationTarget,
   AnnotationV1,
+  AnnotationMutationFailureReason,
+  AnnotationMutationResult,
   Message,
   StoredMessage,
   TokenUsage,

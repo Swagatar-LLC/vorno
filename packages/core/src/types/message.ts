@@ -227,6 +227,31 @@ export interface AnnotationV1 {
 }
 
 /**
+ * Why an annotation add/update/remove was rejected by the server. Surfaced to
+ * the client so a failed mutation is never silently swallowed (it previously
+ * resolved as success, closing the follow-up UI with nothing saved).
+ */
+export type AnnotationMutationFailureReason =
+  | 'session-not-found'
+  | 'message-not-found'
+  | 'annotation-not-found'
+  | 'invalid-payload'
+  | 'message-id-mismatch'
+  | 'duplicate-id'
+  | 'too-large'
+  | 'limit-reached';
+
+/**
+ * Result of a message-annotation mutation (add/update/remove). `success: true`
+ * means the annotation store changed and a `message_annotations_updated` event
+ * was emitted; `success: false` carries a machine-readable reason the client
+ * can map to a user-facing message.
+ */
+export type AnnotationMutationResult =
+  | { success: true }
+  | { success: false; reason: AnnotationMutationFailureReason };
+
+/**
  * Stored attachment metadata (persisted to disk, no base64)
  * Created when user sends a message with attachments
  */

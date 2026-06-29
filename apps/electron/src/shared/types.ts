@@ -20,6 +20,7 @@ import type {
   ContentBadge,
   ToolDisplayMeta,
   AnnotationV1,
+  AnnotationMutationResult,
 } from '@craft-agent/core/types';
 
 // Mode types from dedicated subpath export (avoids pulling in SDK)
@@ -229,7 +230,7 @@ export interface ElectronAPI {
   respondToCredential(sessionId: string, requestId: string, response: CredentialResponse): Promise<boolean>
 
   // Consolidated session command handler
-  sessionCommand(sessionId: string, command: SessionCommand): Promise<void | ShareResult | RefreshTitleResult | { count: number }>
+  sessionCommand(sessionId: string, command: SessionCommand): Promise<void | ShareResult | RefreshTitleResult | { count: number } | AnnotationMutationResult>
 
   // Server info (REMOTE_ELIGIBLE — returns data from whichever server owns the workspace)
   getServerHomeDir(): Promise<string>
