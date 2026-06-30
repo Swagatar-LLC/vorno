@@ -1,6 +1,6 @@
 ---
 name: upstream-sync
-description: Merge the latest from lukilabs/craft-agents-oss into our fork on a branch, resolve standard conflicts, run validations, and open a PR
+description: Merge the latest from craft-ai-agents/craft-agents-oss into our fork on a branch, resolve standard conflicts, run validations, and open a PR
 ---
 
 # Skill: upstream-sync
