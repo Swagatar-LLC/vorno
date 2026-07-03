@@ -3,7 +3,7 @@ import { uptime as osUptime } from 'node:os'
 import { join } from 'node:path'
 import { OAuthFlowStore } from '@craft-agent/shared/auth'
 import { ensureConfigDir, loadStoredConfig, saveConfig } from '@craft-agent/shared/config'
-import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
+import { CONFIG_DIR, CONFIG_DIR_RESOLUTION } from '@craft-agent/shared/config/paths'
 import { setBundledAssetsRoot } from '@craft-agent/shared/utils'
 import { WsRpcServer, type WsRpcTlsOptions } from '../transport/server'
 import type { EventSink, RpcServer } from '../transport/types'
@@ -280,6 +280,13 @@ export async function bootstrapServer<TSessionManager, THandlerDeps>(
   }
 
   options.applyPlatformToSubsystems?.(platform)
+
+  // Config dir resolution (fork isolation, VOR-2): which dir is active and why.
+  // Resolution + one-time migration ran at module-eval of shared/config/paths.
+  platform.logger.info(`[config-dir] Using ${CONFIG_DIR_RESOLUTION.dir} — ${CONFIG_DIR_RESOLUTION.reason}`)
+  if (CONFIG_DIR_RESOLUTION.migration && CONFIG_DIR_RESOLUTION.migration.action !== 'already-done') {
+    platform.logger.info(`[config-dir] Migration outcome: ${JSON.stringify(CONFIG_DIR_RESOLUTION.migration)}`)
+  }
 
   bootstrapConfigArtifacts(platform)
   ensureGlobalConfigExists(platform)

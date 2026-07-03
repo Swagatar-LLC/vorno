@@ -21,9 +21,17 @@ import {
   toPortablePath,
 } from '../../utils/paths.ts';
 import type { PathProcessorConfig } from './types.ts';
+import { CONFIG_DIR_NAME } from '../../config/paths.ts';
 
 // Re-export useful utilities from paths.ts
 export { expandPath, normalizePath, pathStartsWith, toPortablePath };
+
+// Match both upstream's `.craft-agent` dir name and the active config dir
+// (fork default `.vorno-agent`, or a CRAFT_CONFIG_DIR override's basename).
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const CONFIG_ROOT_FRAGMENT = CONFIG_DIR_NAME === '.craft-agent'
+  ? '\\.craft-agent'
+  : `(?:\\.craft-agent|${escapeRegExp(CONFIG_DIR_NAME)})`;
 
 /**
  * Known configuration file patterns that may need validation before writing.
@@ -31,10 +39,10 @@ export { expandPath, normalizePath, pathStartsWith, toPortablePath };
  */
 const CONFIG_FILE_PATTERNS = [
   // Craft Agent configs
-  /\.craft-agent\/.*\/(config|permissions|theme|guide|labels|statuses)\.json$/,
-  /\.craft-agent\/config\.json$/,
-  /\.craft-agent\/preferences\.json$/,
-  /\.craft-agent\/.*\/SKILL\.md$/,
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/.*/(config|permissions|theme|guide|labels|statuses)\\.json$`),
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/config\\.json$`),
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/preferences\\.json$`),
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/.*/SKILL\\.md$`),
   // Common config files
   /package\.json$/,
   /tsconfig\.json$/,

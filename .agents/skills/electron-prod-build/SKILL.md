@@ -5,6 +5,15 @@ description: Produce a local production-mode Electron build for hands-on QA — 
 
 # Skill: electron-prod-build
 
+> **Config-dir note (2026-07-03, VOR-2 / ADR-0005):** the fork now defaults to
+> `~/.vorno-agent` automatically — **no `CRAFT_CONFIG_DIR` needed** for
+> isolation from upstream stable. References below to
+> `CRAFT_CONFIG_DIR=$HOME/.craft-agent-swagatar` predate this; do **not** set
+> that var anymore (it pins the app to the legacy pre-migration dir). Also note
+> some scripts referenced here (`electron:prod`) have drifted out of
+> `package.json` during upstream merges — verify against `package.json` before
+> quoting commands.
+
 `bun run electron:dev` is fine for iteration, but it ships unminified renderer assets through Vite's dev server with HMR overhead — perceivably slow on a real machine. When the user wants to **test** something the way it will ship (animations, scrolling, bundle behavior, IPC timing), build the prod bundle and launch the app against it.
 
 There are three flavors. Pick by what the user actually wants to do:

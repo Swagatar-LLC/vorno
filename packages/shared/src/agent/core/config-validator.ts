@@ -12,6 +12,7 @@
  */
 
 import type { ConfigValidationResult, ConfigFileType, ConfigValidatorConfig } from './types.ts';
+import { CONFIG_DIR_NAME } from '../../config/paths.ts';
 
 /**
  * Patterns for detecting known config file types.
@@ -28,25 +29,34 @@ const CONFIG_FILE_PATTERNS: { pattern: RegExp; type: ConfigFileType }[] = [
 
 /**
  * Craft Agent specific config files that have known schemas.
+ *
+ * Matches both upstream's `.craft-agent` dir name and the active config dir
+ * (fork default `.vorno-agent`, or a CRAFT_CONFIG_DIR override's basename),
+ * so schema validation keeps working regardless of which root is in use.
  */
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const CONFIG_ROOT_FRAGMENT = CONFIG_DIR_NAME === '.craft-agent'
+  ? '\\.craft-agent'
+  : `(?:\\.craft-agent|${escapeRegExp(CONFIG_DIR_NAME)})`;
+
 const CRAFT_AGENT_CONFIG_PATTERNS = [
   // Main config
-  /\.craft-agent\/config\.json$/,
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/config\\.json$`),
   // Preferences
-  /\.craft-agent\/preferences\.json$/,
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/preferences\\.json$`),
   // Source configs
-  /\.craft-agent\/workspaces\/[^/]+\/sources\/[^/]+\/config\.json$/,
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/workspaces/[^/]+/sources/[^/]+/config\\.json$`),
   // Permissions
-  /\.craft-agent\/workspaces\/[^/]+\/permissions\.json$/,
-  /\.craft-agent\/permissions\/[^/]+\.json$/,
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/workspaces/[^/]+/permissions\\.json$`),
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/permissions/[^/]+\\.json$`),
   // Theme
-  /\.craft-agent\/workspaces\/[^/]+\/theme\.json$/,
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/workspaces/[^/]+/theme\\.json$`),
   // Statuses
-  /\.craft-agent\/workspaces\/[^/]+\/statuses\/config\.json$/,
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/workspaces/[^/]+/statuses/config\\.json$`),
   // Labels
-  /\.craft-agent\/workspaces\/[^/]+\/labels\.json$/,
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/workspaces/[^/]+/labels\\.json$`),
   // Tool icons
-  /\.craft-agent\/tool-icons\/tool-icons\.json$/,
+  new RegExp(`${CONFIG_ROOT_FRAGMENT}/tool-icons/tool-icons\\.json$`),
 ];
 
 /**

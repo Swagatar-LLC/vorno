@@ -15,6 +15,7 @@
 import { homedir } from 'os';
 import { existsSync, realpathSync } from 'fs';
 import { debug } from '../utils/debug.ts';
+import { CONFIG_DIR_NAME } from '../config/paths.ts';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 import { getSessionSafeAllowedToolNames } from '@craft-agent/session-tools-core';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
@@ -1700,13 +1701,18 @@ export function getPathHint(targetPath: string, plansFolderPath: string, dataFol
     return `Hint: Wrong session ID. Current session is "${originalSessionMatch?.[1] ?? plansSessionMatch[1]}".`;
   }
 
+  // Recognize the config root by either upstream's dir name or the active one
+  // (fork default .vorno-agent, or a CRAFT_CONFIG_DIR override's basename).
+  const configRootNames = ['/.craft-agent/', `/${CONFIG_DIR_NAME.toLowerCase()}/`];
+  const insideConfigRoot = configRootNames.some(name => normalizedTarget.includes(name));
+
   // Case: Writing to workspace root instead of session
-  if (normalizedTarget.includes('/.craft-agent/workspaces/') && !normalizedTarget.includes('/sessions/')) {
+  if (configRootNames.some(name => normalizedTarget.includes(`${name}workspaces/`)) && !normalizedTarget.includes('/sessions/')) {
     return 'Hint: Write to the session plans or data folder, not the workspace root.';
   }
 
-  // Case: Writing outside .craft-agent entirely
-  if (!normalizedTarget.includes('/.craft-agent/')) {
+  // Case: Writing outside the config dir entirely
+  if (!insideConfigRoot) {
     return 'Hint: Files must be written to the session plans or data folder. Use plansFolderPath or dataFolderPath from <session_state>.';
   }
 
