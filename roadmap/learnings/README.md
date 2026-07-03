@@ -59,6 +59,9 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [003](LEARNING-003-shared-subpath-exports-vite-enforced.md) | Shared subpath imports must be in `exports` or vite/webui build breaks | build | active |
 | [004](LEARNING-004-live-fetch-pi-model-selection-mode.md) | Live-fetch Pi providers need both the refresh-guard bypass and the backfill mode-force | config/models | active |
 | [005](LEARNING-005-clean-rebase-hides-cross-scope-import-drift.md) | A clean text-rebase can hide a broken cross-scope import after an upstream scope rename | build / upstream-sync | active |
+| [006](LEARNING-006-bpm-gate-resolver-ordering-on-branch.md) | Browser-pane gate and resolver disagree when a session runs preflight before registration | server-core / sessions | active |
+| [007](LEARNING-007-silent-void-command-handlers-mask-rejection.md) | Void-returning command handlers make rejections resolve as success, hiding the failure | server-core / RPC contract | active |
+| [008](LEARNING-008-node-modules-sdk-drift-forces-async-subagents.md) | node_modules SDK drift past the lockfile silently changes live-spawned Claude Code behavior | agent | active |
 
 ## Related skills
 

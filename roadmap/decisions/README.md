@@ -31,3 +31,4 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0001](0001-fork-relationship-with-upstream.md) | Fork relationship with upstream | accepted |
 | [0002](0002-roadmap-folder-status-workflow.md) | Roadmap-as-files, plans-as-folder-status | accepted |
 | [0003](0003-canvas-as-paradigm-direction.md) | Canvas as the paradigm direction | accepted |
+| [0004](0004-sessionevent-extensible-union-and-renderer-mirroring.md) | SessionEvent extensible union & renderer mirroring | accepted |
