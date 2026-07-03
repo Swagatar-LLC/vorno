@@ -6,13 +6,17 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.10.4` |
-| Last merged upstream commit | `556c59a7` |
-| Merge PR | [#39](https://github.com/Swagatar-LLC/craft-agents-oss/pull/39) |
-| Merge commit on main | `cc80c469` |
-| Date synced | 2026-06-24 |
+| Last merged upstream tag | `v0.10.5` |
+| Last merged upstream commit | `c9d9a26f` |
+| Merge PR | [#44](https://github.com/Swagatar-LLC/craft-agents-oss/pull/44) |
+| Merge commit on main | `bba36699` |
+| Date synced | 2026-07-03 |
 
 ## Versions covered in last merge
+
+- `v0.10.5` — **Claude Sonnet 5 + Agent SDK 0.3.197.** `claude-sonnet-5` (released 2026-06-30) added to the model picker with a 1M-token context window and adaptive thinking; Sonnet 4.6 retained as previous generation; Bedrock US/EU/Global inference-profile routing and connection defaults wired. Default model unchanged (Opus 4.8). Claude Agent SDK uplifted `0.3.170` → `0.3.197` (Claude Code 2.1.197 parity — the bundled CLI is itself Sonnet 5-aware; includes a Windows CLI subprocess console-flash fix). No upstream breaking changes. **Conflicts:** `bun.lock` (mechanical `--theirs` + `bun install`) and `packages/shared/tests/models.test.ts` (both-added: kept our fork-only `Opus 4.8 registry presence` / fast-mode block alongside upstream's new `Sonnet registry` block). **Fork-side follow-up (same PR, commit `56bb5dd6`):** Claude Code 2.1.197 launches Task subagents **async by default** behind the remote `tengu_amber_heron` GrowthBook gate — the LEARNING-008 failure mode. `buildClaudeSubprocessEnv()` now pins `DISABLE_GROWTHBOOK=1` (gates resolve to compiled-in defaults ⇒ blocking-by-default restored, explicit `run_in_background` preserved, no remote-config influence over spawned-CLI behavior); new `logSdkCliVersion()` logs the spawned CLI version at agent creation and loudly on mid-process change (drift signature); `upstream-sync` skill now re-verifies subagent-launch gating on every SDK bump; regression test `claude-subprocess-env.test.ts` locks the env contract.
+
+## Versions covered in prior merge (PR #39, 2026-06-24)
 
 - `v0.10.4` — **GLM-5 family on z.ai + Pi SDK uplift.** Pi SDK uplifted `0.73.1` → `0.79.9` with a scope migration from the now-frozen `@mariozechner/*` to the rebranded `@earendil-works/*` across all manifests + `bun.lock` (`pi-ai`, `pi-coding-agent`, `pi-agent-core`). The regenerated models.dev catalog surfaces GLM-5.2 / 5.1 / 5-turbo automatically on the existing z.ai provider with correct thinking / `reasoning_effort` handling, plus newer models for OpenRouter and other Pi providers. GitHub Copilot device-code login now consumes the SDK's structured `onDeviceCode` callback in place of a free-text regex. **Automatic `config.json` startup backups** (keeps newest 3; earliest good same-day snapshot preserved). **Always-on auto-update diagnostic log** at `~/.craft-agent/logs/auto-update.log` (partially addresses #891 — diagnostics only). **Session titles honour your language** by reading Appearance → Language from disk, auto-detecting written language when unset (fixes #885). No upstream breaking changes. **Conflicts:** `bun.lock` only (mechanical `--theirs` + `bun install`); `options.ts` did not conflict and the `CLAUDECODE` strip is preserved. **Fork-side follow-up (same branch):** stale `@mariozechner` scope refs in `LEARNING-001` and the `upstream-sync` skill recipes updated to `@earendil-works` (commit `2f521d08`). Fork-only `supportsFastMode: true` / `getModelSupportsFastMode()` registry delta verified intact after the models.dev regeneration.
 
@@ -62,7 +66,8 @@ Snapshot of our most recent upstream sync.
 - `bun.lock` — resolved with `git checkout --theirs bun.lock && bun install`. Mechanical.
 - `package.json` version-bump cluster (root + each app + each package) — resolved with `--theirs` to adopt upstream version stamp. Mechanical, will recur on every minor release.
 - `apps/electron/src/renderer/index.html` — fork title vs. upstream title; resolve `--ours` each cycle.
-- `packages/shared/src/agent/options.ts` — historically conflicted with our `CLAUDECODE` env strip; now upstream-aligned via `buildClaudeSubprocessEnv()`. Re-check on each merge.
+- `packages/shared/src/agent/options.ts` — historically conflicted with our `CLAUDECODE` env strip; now upstream-aligned via `buildClaudeSubprocessEnv()` (which also carries our fork-only `DISABLE_GROWTHBOOK=1` pin since v0.10.5). Re-check on each merge.
+- `packages/shared/tests/models.test.ts` — both-added conflicts when the fork and upstream each append model-registry test blocks (seen v0.10.5: our fast-mode block vs upstream's Sonnet 5 block). Resolution: keep both blocks.
 
 ## Recurring post-sync issues
 
