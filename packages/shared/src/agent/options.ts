@@ -1,5 +1,6 @@
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import { join } from "path";
+import { join, dirname } from "path";
+import { createRequire } from "module";
 import { homedir } from "os";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "fs";
 import { debug } from "../utils/debug";
@@ -205,7 +206,68 @@ export function buildClaudeSubprocessEnv(
     delete env.AWS_BEARER_TOKEN_BEDROCK;
     delete env.ANTHROPIC_BEDROCK_BASE_URL;
 
+    // Pin subagent semantics: Claude Code >= 2.1.197 launches Task subagents
+    // async by default when the remote `tengu_amber_heron` GrowthBook gate is
+    // on. Craft requires blocking subagents unless `run_in_background` is
+    // explicitly set — async launches die with the SDK subprocess on agent
+    // dispose/recreate and are invisible to tool-matching.ts backgrounded-task
+    // detection (LEARNING-008). Disabling GrowthBook makes the CLI resolve all
+    // feature gates to their compiled-in defaults (the async gate defaults
+    // off), so behavior cannot flip via remote config mid-flight. Explicit
+    // `run_in_background: true` remains available, unlike the blunter
+    // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS which removes the parameter.
+    if (env.DISABLE_GROWTHBOOK === undefined) {
+        env.DISABLE_GROWTHBOOK = '1';
+    }
+
     return env;
+}
+
+let lastLoggedSdkCliVersion: string | null = null;
+
+/**
+ * Read the version of the Claude Code CLI binary that the SDK will spawn.
+ *
+ * The version comes from the package.json adjacent to the resolved binary
+ * (the platform package, e.g. `@anthropic-ai/claude-agent-sdk-darwin-arm64`),
+ * falling back to the SDK package itself when the binary is auto-discovered.
+ * Returns null when neither can be read (e.g. packaged layouts without a
+ * manifest) — callers must treat that as "unknown", not an error.
+ */
+function readSdkCliVersion(binaryPath: string | undefined): string | null {
+    try {
+        const pkgJsonPath = binaryPath
+            ? join(dirname(binaryPath), 'package.json')
+            : createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk/package.json');
+        const parsed = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'));
+        return typeof parsed.version === 'string' ? parsed.version : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Log the spawned CLI version at agent creation so on-disk SDK drift shows up
+ * in server logs instead of as a behavior mystery (LEARNING-008: the binary is
+ * spawned fresh from disk per agent creation, so node_modules drifting past
+ * the lockfile changes live behavior without a restart or code change).
+ *
+ * Logs on first resolution and again whenever the version CHANGES mid-process
+ * — a mid-process change is exactly the drift signature.
+ */
+export function logSdkCliVersion(binaryPath: string | undefined): void {
+    const version = readSdkCliVersion(binaryPath);
+    if (!version || version === lastLoggedSdkCliVersion) return;
+    if (lastLoggedSdkCliVersion === null) {
+        console.error(`[ClaudeAgent] Claude Agent SDK CLI version: ${version}`);
+    } else {
+        console.error(
+            `[ClaudeAgent] Claude Agent SDK CLI version CHANGED mid-process: ` +
+            `${lastLoggedSdkCliVersion} -> ${version} — node_modules drifted past ` +
+            `the lockfile? See LEARNING-008.`,
+        );
+    }
+    lastLoggedSdkCliVersion = version;
 }
 
 /** Filename of the per-platform native Claude binary inside its npm package. */

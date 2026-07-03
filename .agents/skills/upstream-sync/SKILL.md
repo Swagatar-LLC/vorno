@@ -95,6 +95,19 @@ rm -rf packages/{shared,server-core,pi-agent-server}/node_modules/@earendil-work
 bun build packages/pi-agent-server/src/index.ts --target=bun --outdir=/tmp/pi-build --no-splitting 2>&1 | tail -3
 ```
 
+If the merge bumps `@anthropic-ai/claude-agent-sdk`, also verify subagent-launch semantics in the new CLI binary. Context ([LEARNING-008](../../../roadmap/learnings/LEARNING-008-node-modules-sdk-drift-forces-async-subagents.md)): Claude Code ≥ 2.1.197 launches Task subagents async by default behind the remote `tengu_amber_heron` GrowthBook gate; we pin `DISABLE_GROWTHBOOK=1` in `buildClaudeSubprocessEnv()` (`packages/shared/src/agent/options.ts`) so all gates resolve to their compiled-in defaults and the async gate defaults off.
+
+```bash
+# 1. The async decision should still be feature-gated (expect >= 1):
+strings -a node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude | grep -c "tengu_amber_heron"
+
+# 2. Inspect the launch decision; confirm it is still ANDed with the
+#    disable flag and gated on the GrowthBook lookup:
+strings -a node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude | grep -o ".\{300\}tengu_amber_heron.\{80\}" | head -2
+```
+
+The invariant to confirm (minified names change every version): the feature-gate helper returns the passed compiled-in default when `DISABLE_GROWTHBOOK` is set, *before* consulting cached gate values, and the Task launch path only goes async via that gate or an explicit `run_in_background`/`background: true`. If the gate disappears or async becomes unconditional, stop and re-audit blocking semantics before merging — the fork's orchestration and `tool-matching.ts` backgrounded-task detection assume blocking-by-default.
+
 Report counts. If `apps/server` tests fail → abort, don't push.
 
 ### Step 5 — Push and open PR
