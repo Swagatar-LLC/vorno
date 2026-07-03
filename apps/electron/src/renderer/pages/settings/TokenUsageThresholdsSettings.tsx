@@ -17,6 +17,7 @@
  * the indicator re-renders live without round-tripping IPC.
  */
 
+import { BACKEND_DISPLAY_NAME } from '@craft-agent/shared/branding'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSetAtom } from 'jotai'
@@ -278,9 +279,9 @@ function providerLabel(providerId: string): string {
     case 'anthropic':
       return 'Anthropic'
     case 'pi':
-      return 'Craft Agents Backend'
+      return BACKEND_DISPLAY_NAME
     case 'pi_compat':
-      return 'Craft Agents Backend (Compat)'
+      return `${BACKEND_DISPLAY_NAME} (Compat)`
     default:
       return providerId
   }

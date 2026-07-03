@@ -13,6 +13,7 @@
  * NEVER import this file from renderer components or from files that the renderer imports.
  */
 
+import { BACKEND_DISPLAY_NAME } from '../branding.ts';
 import { getProviders, getModels } from '@earendil-works/pi-ai';
 import type { KnownProvider, Model, Api } from '@earendil-works/pi-ai';
 import type { ModelDefinition } from './models.ts';
@@ -32,7 +33,7 @@ function piModelToDefinition(m: Model<Api>): ModelDefinition {
     id: `pi/${m.id}`,
     name: m.name,
     shortName,
-    description: `${m.provider} model via Craft Agents Backend`,
+    description: `${m.provider} model via ${BACKEND_DISPLAY_NAME}`,
     provider: 'pi',
     contextWindow: m.contextWindow,
     supportsThinking: m.reasoning,

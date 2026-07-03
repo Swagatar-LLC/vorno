@@ -1,3 +1,4 @@
+import { BACKEND_DISPLAY_NAME } from '@craft-agent/shared/branding'
 import {
   isLocalConnection,
   type LlmConnection,
@@ -39,7 +40,7 @@ export function groupConnectionsByProvider<T extends LlmConnection>(
   const groups: Record<string, T[]> = {
     'Anthropic': [],
     'Local': [],
-    'Craft Agents Backend': [],
+    [BACKEND_DISPLAY_NAME]: [],
   }
   for (const conn of connections) {
     const provider = conn.providerType || 'anthropic'
@@ -48,7 +49,7 @@ export function groupConnectionsByProvider<T extends LlmConnection>(
     } else if (provider === 'pi_compat' && isLocalConnection(conn)) {
       groups['Local'].push(conn)
     } else if (provider === 'pi' || provider === 'pi_compat') {
-      groups['Craft Agents Backend'].push(conn)
+      groups[BACKEND_DISPLAY_NAME].push(conn)
     }
   }
   return Object.entries(groups).filter(([, conns]) => conns.length > 0)

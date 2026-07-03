@@ -2,6 +2,7 @@
  * Header - App header with branding and controls
  */
 
+import { PRODUCT_NAME_SINGULAR, VIEWER_URL } from '@craft-agent/core/branding'
 import { Sun, Moon, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -40,9 +41,9 @@ export function Header({ hasSession, sessionTitle, isDark, onToggleTheme, onClea
     <header className="shrink-0 grid grid-cols-[auto_1fr_auto] items-center px-4 py-3">
       {/* Logo - links to main site */}
       <a
-        href="https://agents.craft.do"
+        href={VIEWER_URL}
         className="hover:opacity-80 transition-opacity"
-        title="Craft Agent"
+        title={PRODUCT_NAME_SINGULAR}
       >
         <CraftAgentLogo className="w-6 h-6 text-[#9570BE]" />
       </a>

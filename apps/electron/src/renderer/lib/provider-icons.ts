@@ -5,6 +5,7 @@
  * Used in AI Settings page and anywhere connection logos are needed.
  */
 
+import { BACKEND_DISPLAY_NAME } from '@craft-agent/shared/branding'
 import awsIcon from '@/assets/provider-icons/aws.svg'
 import azureIcon from '@/assets/provider-icons/azure.svg'
 import claudeIcon from '@/assets/provider-icons/claude.svg'
@@ -55,8 +56,8 @@ const providerDisplayNames: Record<string, string> = {
   minimax: 'Minimax',
   ollama: 'Ollama',
   openrouter: 'OpenRouter',
-  pi: 'Craft Agents Backend',
-  pi_compat: 'Craft Agents Backend',
+  pi: BACKEND_DISPLAY_NAME,
+  pi_compat: BACKEND_DISPLAY_NAME,
   vercel: 'Vercel',
 }
 

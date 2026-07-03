@@ -1,3 +1,4 @@
+import { WINDOW_TITLE } from '@craft-agent/shared/branding'
 import { BrowserWindow, shell, nativeTheme, Menu, app } from 'electron'
 import { windowLog } from './logger'
 import { join, resolve, sep } from 'path'
@@ -230,7 +231,7 @@ export class WindowManager {
       minWidth: 800,
       minHeight: 600,
       show: false, // Don't show until ready-to-show event (faster perceived startup)
-      title: 'Craft Agents (Swagatar Fork)',
+      title: WINDOW_TITLE,
       icon: iconExists ? iconPath : undefined,
       // macOS-specific: hidden title bar with inset traffic lights
       ...(isMac && {

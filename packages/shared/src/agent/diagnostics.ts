@@ -6,6 +6,7 @@
  * sessions don't run Anthropic-specific credential/endpoint checks.
  */
 
+import { BACKEND_DISPLAY_NAME } from '../branding.ts';
 import { getLastApiError } from '../interceptor-common.ts';
 import { type AuthType, getDefaultLlmConnection, getLlmConnection } from '../config/storage.ts';
 import { getCredentialManager } from '../credentials/index.ts';
@@ -136,7 +137,7 @@ function getProviderLabelFromType(providerType?: LlmProviderType, baseUrl?: stri
     switch (providerType) {
       case 'anthropic': return 'Anthropic';
       case 'pi':
-      case 'pi_compat': return 'Craft Agents Backend';
+      case 'pi_compat': return BACKEND_DISPLAY_NAME;
     }
   }
   // Fallback: derive from base URL or default

@@ -1,6 +1,7 @@
+import { OAUTH_RELAY_CALLBACK_URL } from '../branding.ts';
 import type { PreparedOAuthFlow } from './oauth-flow-types.ts';
 
-export const OAUTH_RELAY_CALLBACK_URL = 'https://agents.craft.do/auth/callback';
+export { OAUTH_RELAY_CALLBACK_URL };
 const OAUTH_RELAY_STATE_PREFIX = 'ca1.';
 const OAUTH_RELAY_STATE_VERSION = 1;
 

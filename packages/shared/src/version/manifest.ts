@@ -1,6 +1,7 @@
+import { UPDATE_MANIFEST_BASE_URL } from '../branding.ts';
 import { debug } from "../utils/debug";
 
-const VERSIONS_URL = 'https://agents.craft.do/electron';
+const VERSIONS_URL = UPDATE_MANIFEST_BASE_URL;
 
 export async function getLatestVersion(): Promise<string | null> {
     try {

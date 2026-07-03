@@ -1,18 +1,10 @@
 /**
- * Centralized branding assets for Craft Agent
- * Used by OAuth callback pages
+ * Centralized branding for Craft Agent (VOR-3).
+ *
+ * Canonical values live in @craft-agent/core/branding so that packages
+ * without a dependency on @craft-agent/shared (e.g. apps/viewer) can import
+ * them. This module re-exports everything for the rest of the codebase —
+ * import from here (`@craft-agent/shared/branding`) unless you can only
+ * reach core.
  */
-
-export const CRAFT_LOGO = [
-  '  ████████ █████████    ██████   ██████████ ██████████',
-  '██████████ ██████████ ██████████ █████████  ██████████',
-  '██████     ██████████ ██████████ ████████   ██████████',
-  '██████████ ████████   ██████████ ███████      ██████  ',
-  '  ████████ ████  ████ ████  ████ █████        ██████  ',
-] as const;
-
-/** Logo as a single string for HTML templates */
-export const CRAFT_LOGO_HTML = CRAFT_LOGO.map((line) => line.trimEnd()).join('\n');
-
-/** Session viewer base URL */
-export const VIEWER_URL = 'https://agents.craft.do';
+export * from '@craft-agent/core/branding';

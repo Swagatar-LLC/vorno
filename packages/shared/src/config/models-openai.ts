@@ -12,6 +12,7 @@
  * imports the SDK itself.
  */
 
+import { BACKEND_DISPLAY_NAME } from '../branding.ts';
 import type { ModelDefinition } from './models.ts';
 
 /** Default OpenAI API root when a connection doesn't override `baseUrl`. */
@@ -124,7 +125,7 @@ export function deriveOpenAiModelDefinition(rawId: string, catalog?: OpenAiCatal
     id: `pi/${rawId}`,
     name,
     shortName: deriveShortName(name),
-    description: 'OpenAI model via Craft Agents Backend',
+    description: `OpenAI model via ${BACKEND_DISPLAY_NAME}`,
     provider: 'pi',
     contextWindow: catalog?.contextWindow ?? inferOpenAiContextWindow(rawId),
     supportsThinking: reasoning,

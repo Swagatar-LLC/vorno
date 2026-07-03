@@ -9,6 +9,7 @@
  * file owns the user-facing text and recovery actions for each code.
  */
 
+import { PRODUCT_NAME, PRODUCT_NAME_SINGULAR } from '../branding.ts';
 import type { ErrorCode } from '@craft-agent/core/types';
 import { getProviderMetadata } from '../config/provider-metadata.ts';
 
@@ -175,7 +176,7 @@ const ERROR_DEFINITIONS: Record<ErrorCode, Omit<AgentError, 'code' | 'originalEr
   },
   model_no_tool_support: {
     title: 'Model Does Not Support Tools',
-    message: 'The selected model does not support tool/function calling, which is required for Craft Agent. Please choose a model with tool support (e.g., Claude, GPT-4, Gemini).',
+    message: `The selected model does not support tool/function calling, which is required for ${PRODUCT_NAME_SINGULAR}. Please choose a model with tool support (e.g., Claude, GPT-4, Gemini).`,
     actions: [
       { key: 's', label: 'Change model', command: '/settings', action: 'settings' },
     ],
@@ -233,7 +234,7 @@ const ERROR_DEFINITIONS: Record<ErrorCode, Omit<AgentError, 'code' | 'originalEr
     message:
       'The Claude Agent SDK binary expected on disk is not present. ' +
       'This usually means the app bundle is incomplete (interrupted download, partial update, ' +
-      'or a security tool removed it). Reinstalling Craft Agents typically fixes this.',
+      `or a security tool removed it). Reinstalling ${PRODUCT_NAME} typically fixes this.`,
     actions: [
       { key: 'r', label: 'Retry', action: 'retry' },
     ],
@@ -483,7 +484,7 @@ export function parseError(
       return {
         code,
         ...definition,
-        message: `Model "${modelMatch[1]}" does not support tool/function calling, which is required for Craft Agent. Please choose a different model with tool support in Settings.`,
+        message: `Model "${modelMatch[1]}" does not support tool/function calling, which is required for ${PRODUCT_NAME_SINGULAR}. Please choose a different model with tool support in Settings.`,
         originalError: errorMessage,
         providerInfo,
       };

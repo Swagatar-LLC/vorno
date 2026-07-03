@@ -10,6 +10,7 @@
  * compatibility but returns empty results.
  */
 
+import { DOCS_MCP_URL, PRODUCT_NAME } from '../branding.ts';
 import type { LoadedSource, FolderSourceConfig } from './types.ts';
 
 /**
@@ -37,17 +38,17 @@ export function getDocsSource(workspaceId: string, workspaceRootPath: string): L
   // Return a placeholder - this shouldn't be called anymore
   const placeholderConfig: FolderSourceConfig = {
     id: 'builtin-craft-agents-docs',
-    name: 'Craft Agents Docs',
+    name: `${PRODUCT_NAME} Docs`,
     slug: 'craft-agents-docs',
     enabled: false,
     provider: 'mintlify',
     type: 'mcp',
     mcp: {
       transport: 'http',
-      url: 'https://agents.craft.do/docs/mcp',
+      url: DOCS_MCP_URL,
       authType: 'none',
     },
-    tagline: 'Search Craft Agents documentation and source setup guides',
+    tagline: `Search ${PRODUCT_NAME} documentation and source setup guides`,
     icon: '📚',
     isAuthenticated: true,
     connectionStatus: 'connected',

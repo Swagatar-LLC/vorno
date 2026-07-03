@@ -1,3 +1,4 @@
+import { DOCS_URL, PRODUCT_NAME } from '@craft-agent/shared/branding'
 import { Menu, app, shell, BrowserWindow } from 'electron'
 import { i18n } from '@craft-agent/shared/i18n'
 import { RPC_CHANNELS, type BroadcastEventMap } from '../shared/types'
@@ -79,7 +80,7 @@ export async function rebuildMenu(): Promise<void> {
   const template: Electron.MenuItemConstructorOptions[] = [
     // App menu (macOS only)
     ...(isMac ? [{
-      label: 'Craft Agents',
+      label: PRODUCT_NAME,
       submenu: [
         { role: 'about' as const, label: i18n.t('menu.aboutCraftAgents') },
         updateMenuItem,
@@ -234,7 +235,7 @@ export async function rebuildMenu(): Promise<void> {
       submenu: [
         {
           label: i18n.t("menu.helpAndDocs"),
-          click: () => shell.openExternal('https://agents.craft.do/docs')
+          click: () => shell.openExternal(DOCS_URL)
         },
         {
           label: i18n.t("menu.keyboardShortcuts"),

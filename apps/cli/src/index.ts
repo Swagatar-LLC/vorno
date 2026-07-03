@@ -7,6 +7,7 @@
  * messages with real-time streaming, and validating server health.
  */
 
+import { PRODUCT_NAME_SINGULAR } from '@craft-agent/shared/branding';
 import { resolve } from 'path'
 import { CliRpcClient } from './client.ts'
 
@@ -1891,7 +1892,7 @@ export async function runValidation(
 // ---------------------------------------------------------------------------
 
 function printHelp(): void {
-  process.stdout.write(`craft-cli — Terminal client for Craft Agent server
+  process.stdout.write(`craft-cli — Terminal client for ${PRODUCT_NAME_SINGULAR} server
 
 Usage: craft-cli [options] <command> [args...]
 

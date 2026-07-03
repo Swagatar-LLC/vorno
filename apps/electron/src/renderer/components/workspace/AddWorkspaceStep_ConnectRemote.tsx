@@ -1,3 +1,4 @@
+import { PRODUCT_NAME_SINGULAR } from '@craft-agent/shared/branding'
 import { useState, useEffect, useCallback, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { ArrowLeft, CheckCircle, XCircle, Plus } from "lucide-react"
@@ -204,7 +205,7 @@ export function AddWorkspaceStep_ConnectRemote({
         title={isReconnectMode ? t("workspace.reconnect", { name: reconnectWorkspace!.name }) : "Connect to remote server"}
         description={isReconnectMode
           ? "Update the server URL or token to restore the connection."
-          : "Connect to a remote Craft Agent Server for this workspace."}
+          : `Connect to a remote ${PRODUCT_NAME_SINGULAR} Server for this workspace.`}
       />
 
       <div className="mt-6 w-full space-y-5">

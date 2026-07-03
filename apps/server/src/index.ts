@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from '@craft-agent/shared/branding';
 import { loadServerConfig } from './config.ts';
 import { createRouter } from './router.ts';
 import { SessionPool } from './services/session-pool.ts';
@@ -17,7 +18,7 @@ import { ClientRegistry, WsTransport } from './transport/index.ts';
 const config = loadServerConfig();
 
 if (!config.enabled) {
-  console.log('Craft Agents server is disabled. Enable it in server-config.json or via the Electron UI.');
+  console.log(`${PRODUCT_NAME} server is disabled. Enable it in server-config.json or via the Electron UI.`);
   console.log(`Config path: ~/.craft-agent/server-config.json`);
   console.log('Set "enabled": true to start the server.');
   process.exit(0);
@@ -65,7 +66,7 @@ const server = Bun.serve({
 // Start WebSocket heartbeat
 wsTransport.startHeartbeat();
 
-console.log(`Craft Agents server running at http://${config.host}:${config.port}`);
+console.log(`${PRODUCT_NAME} server running at http://${config.host}:${config.port}`);
 console.log(`  Health:     http://${config.host}:${config.port}/health`);
 console.log(`  REST API:   http://${config.host}:${config.port}/api/`);
 console.log(`  WebSocket:  ws://${config.host}:${config.port}/ws`);

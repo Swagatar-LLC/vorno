@@ -9,6 +9,7 @@
  * Follows the Appearance settings pattern: app-level defaults + workspace overrides.
  */
 
+import { BACKEND_DISPLAY_NAME } from '@craft-agent/shared/branding'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
@@ -244,13 +245,13 @@ function ConnectionRow({ connection, isLastConnection, onRenameClick, onDelete, 
         const piLabel = !isSubscription && connection.piAuthProvider
           ? PI_AUTH_PROVIDER_LABELS[connection.piAuthProvider]
           : null
-        parts.push(piLabel ?? 'Craft Agents Backend')
+        parts.push(piLabel ?? BACKEND_DISPLAY_NAME)
         break
       }
       case 'pi_compat':
         parts.push(connection.baseUrl?.toLowerCase().includes('manifest.build')
           ? 'Manifest'
-          : 'Craft Agents Backend Compatible')
+          : `${BACKEND_DISPLAY_NAME} Compatible`)
         break
       default: parts.push(provider || 'Unknown')
     }
@@ -570,7 +571,7 @@ function WorkspaceOverrideCard({ workspace, llmConnections, onSettingsChange }: 
                     value: conn.slug,
                     label: conn.name,
                     description: conn.providerType === 'anthropic' ? 'Anthropic' :
-                                 conn.providerType === 'pi' ? 'Craft Agents Backend' :
+                                 conn.providerType === 'pi' ? BACKEND_DISPLAY_NAME :
                                  conn.providerType || 'Unknown',
                   })),
                 ]}
@@ -1063,8 +1064,8 @@ export default function AiSettingsPage() {
                       value: conn.slug,
                       label: conn.name,
                       description: conn.providerType === 'anthropic' ? 'Anthropic API' :
-                                   conn.providerType === 'pi' ? 'Craft Agents Backend' :
-                                   conn.providerType === 'pi_compat' ? (conn.baseUrl?.toLowerCase().includes('manifest.build') ? 'Manifest' : 'Craft Agents Backend Compatible') :
+                                   conn.providerType === 'pi' ? BACKEND_DISPLAY_NAME :
+                                   conn.providerType === 'pi_compat' ? (conn.baseUrl?.toLowerCase().includes('manifest.build') ? 'Manifest' : `${BACKEND_DISPLAY_NAME} Compatible`) :
                                    conn.providerType || 'Unknown',
                     }))}
                   />
