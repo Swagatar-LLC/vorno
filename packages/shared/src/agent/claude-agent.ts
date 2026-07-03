@@ -1,5 +1,5 @@
 import { query, createSdkMcpServer, tool, AbortError, type Query, type SDKUserMessage, type SDKAssistantMessageError, type Options } from '@anthropic-ai/claude-agent-sdk';
-import { getDefaultOptions, resetClaudeConfigCheck } from './options.ts';
+import { getDefaultOptions, resetClaudeConfigCheck, logSdkCliVersion } from './options.ts';
 // Local type for SDK user message content blocks (text, image, document)
 // Replaces import from @anthropic-ai/sdk/resources — keeps SDK as agent-only dependency
 type ContentBlockParam =
@@ -1375,6 +1375,9 @@ export class ClaudeAgent extends BaseAgent {
       // auto-discovery via node_modules). Used by the ENOENT classifier to tell
       // "binary missing" apart from "cwd missing" — both surface as ENOENT from spawn().
       const resolvedBinaryPath = options.pathToClaudeCodeExecutable;
+
+      // Surface the version of the CLI binary this query will spawn (drift guard, LEARNING-008)
+      logSdkCliVersion(resolvedBinaryPath);
 
       // Track whether we're trying to resume a session (for error handling)
       // Also covers branch fork attempts where sessionId is null but branchFromSdkSessionId is set
