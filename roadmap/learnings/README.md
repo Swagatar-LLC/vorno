@@ -62,6 +62,7 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [006](LEARNING-006-bpm-gate-resolver-ordering-on-branch.md) | Browser-pane gate and resolver disagree when a session runs preflight before registration | server-core / sessions | active |
 | [007](LEARNING-007-silent-void-command-handlers-mask-rejection.md) | Void-returning command handlers make rejections resolve as success, hiding the failure | server-core / RPC contract | active |
 | [008](LEARNING-008-node-modules-sdk-drift-forces-async-subagents.md) | node_modules SDK drift past the lockfile silently changes live-spawned Claude Code behavior | agent | active |
+| [009](LEARNING-009-per-app-tsconfig-paths-break-cross-package-reexports.md) | Per-app tsconfig paths silently break cross-package re-exports (TS2305 at consumers) | build/typecheck | active |
 
 ## Related skills
 

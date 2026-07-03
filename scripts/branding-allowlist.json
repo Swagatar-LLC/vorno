@@ -1,0 +1,131 @@
+{
+  "$comment": "Reviewed allowlist for the branding gate (scripts/check-branding.ts, VOR-3). Each entry exempts a path prefix (repo-relative), optionally narrowed to specific rule ids. Classes: wire-contract (must never change — roadmap/upstream/compatibility.md), upstream-internal (upstream-owned files/demo data), flip-sync (static yml/json/html that cannot import TS — the rebrand flip ticket must sweep these in the same PR as the branding.ts value change), flip-deferred (source intentionally deferred to the flip ticket). Adding an entry requires PR review — do not exempt new product code; import from @craft-agent/shared/branding instead.",
+  "entries": [
+    {
+      "path": "packages/shared/src/i18n/locales/",
+      "class": "flip-deferred",
+      "reason": "Locale values legitimately contain the brand until the rebrand flip (values are unchanged by VOR-3). JSON cannot import the branding module; the flip ticket sweeps all locale files in one mechanical pass, guarded by lint:i18n:parity/coverage."
+    },
+    {
+      "path": "apps/electron/electron-builder.yml",
+      "class": "flip-sync",
+      "reason": "Build config cannot import TS. Contains appId com.lukilabs.craft-agent (bundle ID — change is sequenced with VOR-2 migration, NOT the flip ticket), productName/copyright/maintainer, artifact names, and the auto-update publish URL https://agents.craft.do/electron which MUST stay equal to UPDATE_MANIFEST_BASE_URL in packages/core/src/branding.ts."
+    },
+    {
+      "path": "apps/electron/package.json",
+      "class": "flip-sync",
+      "reason": "Package metadata (description/author/homepage) — static JSON, swept by the flip ticket."
+    },
+    {
+      "path": "apps/server/package.json",
+      "class": "flip-sync",
+      "reason": "Package description — static JSON, swept by the flip ticket."
+    },
+    {
+      "path": "apps/cli/package.json",
+      "class": "flip-sync",
+      "reason": "Package description — static JSON, swept by the flip ticket."
+    },
+    {
+      "path": "apps/electron/src/renderer/index.html",
+      "class": "flip-sync",
+      "reason": "Static HTML shell title (replaced at runtime by window-manager, which uses WINDOW_TITLE from branding)."
+    },
+    {
+      "path": "apps/electron/src/renderer/playground.html",
+      "class": "upstream-internal",
+      "reason": "Design-system playground shell — internal dev surface, not shipped UX."
+    },
+    {
+      "path": "apps/electron/src/renderer/playground/",
+      "class": "upstream-internal",
+      "reason": "Design-system playground demo/sample data (fake chats, sample links) — internal dev surface."
+    },
+    {
+      "path": "apps/electron/resources/",
+      "class": "upstream-internal",
+      "reason": "Bundled docs, release notes, and config-defaults.json shipped as static assets; regenerated/reviewed on upstream sync, swept by the flip ticket where user-visible."
+    },
+    {
+      "path": "apps/webui/src/index.html",
+      "class": "flip-sync",
+      "reason": "Static HTML shell title — swept by the flip ticket."
+    },
+    {
+      "path": "apps/webui/src/login.html",
+      "class": "flip-sync",
+      "reason": "Static login page title/heading — swept by the flip ticket."
+    },
+    {
+      "path": "apps/webui/src/public/manifest.json",
+      "class": "flip-sync",
+      "reason": "PWA manifest name/short_name — static JSON, swept by the flip ticket."
+    },
+    {
+      "path": "apps/viewer/index.html",
+      "class": "flip-sync",
+      "reason": "Static HTML shell title/meta — swept by the flip ticket."
+    },
+    {
+      "path": "apps/viewer/vite.config.ts",
+      "rules": ["upstream-domain"],
+      "class": "upstream-internal",
+      "reason": "Dev-server proxy target to the production session API — dev-only tooling, not shipped."
+    },
+    {
+      "path": "packages/shared/src/docs/source-guides.ts",
+      "rules": ["upstream-domain"],
+      "class": "upstream-internal",
+      "reason": "Maps the external Craft (docs product) source to its own domain craft.do — a third-party integration reference, not our brand endpoint."
+    },
+    {
+      "path": "packages/session-tools-core/",
+      "rules": ["product-name"],
+      "class": "flip-deferred",
+      "reason": "Dependency-free package (cannot import the branding module without adding a workspace edge that complicates weekly upstream merges). Three LLM-visible tool-description strings — swept by the flip ticket."
+    },
+    {
+      "path": "apps/viewer/package.json",
+      "class": "flip-sync",
+      "reason": "Package description — static JSON, swept by the flip ticket."
+    },
+    {
+      "path": "packages/core/package.json",
+      "class": "flip-sync",
+      "reason": "Package description — static JSON, swept by the flip ticket."
+    },
+    {
+      "path": "packages/shared/package.json",
+      "class": "flip-sync",
+      "reason": "Package description — static JSON, swept by the flip ticket."
+    },
+    {
+      "path": "packages/ui/package.json",
+      "class": "flip-sync",
+      "reason": "Package description — static JSON, swept by the flip ticket."
+    },
+    {
+      "path": "packages/shared/src/validation/url-validator.ts",
+      "rules": ["upstream-domain", "product-name"],
+      "class": "upstream-internal",
+      "reason": "LLM validator prompt for the external Craft (docs product) MCP server — mcp.craft.do is that product's own domain and part of functional validation rules, not our brand endpoint."
+    },
+    {
+      "path": "packages/shared/src/prompts/print-system-prompt.ts",
+      "rules": ["product-name"],
+      "class": "upstream-internal",
+      "reason": "Developer debug script (bun run print:system-prompt) — annotation labels printed to a developer terminal, not shipped UX."
+    },
+    {
+      "path": "apps/electron/scripts/afterPack.cjs",
+      "class": "flip-sync",
+      "reason": "electron-builder hook resolving the packaged 'Craft Agents.app' path — must stay equal to productName in electron-builder.yml; swept by the flip ticket together with that file."
+    },
+    {
+      "path": "apps/electron/eslint-rules/no-localstorage.cjs",
+      "rules": ["product-name"],
+      "class": "upstream-internal",
+      "reason": "Lint-rule message shown to developers at lint time — not shipped UX."
+    }
+  ]
+}
