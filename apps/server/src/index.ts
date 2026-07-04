@@ -1,5 +1,6 @@
 import { PRODUCT_NAME } from '@craft-agent/shared/branding';
 import { loadServerConfig } from './config.ts';
+import { CONFIG_DIR } from '@craft-agent/shared/config/paths';
 import { createRouter } from './router.ts';
 import { SessionPool } from './services/session-pool.ts';
 import { EventBus } from './services/event-bus.ts';

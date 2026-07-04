@@ -2,11 +2,30 @@
 id: LEARNING-002
 title: Fork vs upstream stable collide on `~/.craft-agent/.server.lock`
 date: 2026-04-29
-status: active
+status: resolved
 component: electron / fork-isolation
 related-plans: [PLAN-001]
-related-decisions: []
+related-decisions: [ADR-0005]
 ---
+
+> **RESOLVED (2026-07-03, VOR-2 / ADR-0005).** The fork now defaults to its own
+> config dir `~/.vorno-agent` with **no env var required**, so it can never
+> contend for upstream's `~/.craft-agent/.server.lock` or data. On first start,
+> existing fork data is migrated **once, copy-not-move** (source precedence:
+> `~/.craft-agent-swagatar`, then `~/.craft-agent`) via a marker-file state
+> machine with a sha256 backup manifest; the source dir is checksum-verified
+> byte-identical afterwards, and `~/.claude/` (Claude SDK native-resume store)
+> is never touched. `CRAFT_CONFIG_DIR` remains the escape hatch and always wins
+> — `scripts/daily-driver.ts` still uses it deliberately to share
+> `~/.craft-agent` in thin-client mode. Startup logs which dir is active and
+> why. Implementation: `packages/shared/src/config/config-dir-migration.ts`
+> (+ `paths.ts`); tests: `packages/shared/src/config/__tests__/config-dir-migration.test.ts`.
+>
+> Note for archaeology: the `package.json` `electron:dev*` env-var fix described
+> below was silently lost in a later upstream merge (by v0.10.5 the scripts no
+> longer set `CRAFT_CONFIG_DIR`), which re-exposed the hazard in dev — exactly
+> the "will recur" prediction. The build-time-default approach in ADR-0005
+> removes the dependency on any script-level env plumbing.
 
 # LEARNING-002 — Fork vs upstream stable collide on `~/.craft-agent/.server.lock`
 
