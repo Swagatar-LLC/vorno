@@ -16,7 +16,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { debug } from '../utils/debug.ts';
 import { readJsonFileSync, safeJsonParse } from '../utils/files.ts';
-import { CONFIG_DIR } from '../config/paths.ts';
+import { CONFIG_DIR, resolveConfigDirFromEnv } from '../config/paths.ts';
 import { getBundledAssetsDir } from '../utils/paths.ts';
 import { getSourcePath } from '../sources/storage.ts';
 import { isValidPermissionsFile } from '../config/validators.ts';
@@ -42,12 +42,12 @@ let permissionsInitialized = false;
 
 /**
  * Get the app-level permissions directory.
- * Default permissions are stored at ~/.craft-agent/permissions/
- * Reads env var dynamically so tests can override via CRAFT_CONFIG_DIR.
+ * Default permissions are stored at {configDir}/permissions/
+ * Resolves dynamically (env override → fork default) so tests can override
+ * via CRAFT_CONFIG_DIR.
  */
 export function getAppPermissionsDir(): string {
-  const configDir = process.env.CRAFT_CONFIG_DIR || join(homedir(), '.craft-agent');
-  return join(configDir, 'permissions');
+  return join(resolveConfigDirFromEnv(), 'permissions');
 }
 
 /**

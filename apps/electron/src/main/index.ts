@@ -99,6 +99,7 @@ import { createApplicationMenu } from './menu'
 import { WindowManager } from './window-manager'
 import { loadWindowState, saveWindowState } from './window-state'
 import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig } from '@craft-agent/shared/config'
+import { CONFIG_DIR_RESOLUTION } from '@craft-agent/shared/config/paths'
 import { getDefaultWorkspacesDir } from '@craft-agent/shared/workspaces'
 import { initializeDocs } from '@craft-agent/shared/docs'
 import { initializeReleaseNotes } from '@craft-agent/shared/release-notes'
@@ -129,6 +130,14 @@ mainLog.info('[i18n] startup hydration', {
   persistedUiLanguage: persistedUiLanguage ?? null,
   resolvedLanguageAfterHydration: i18n.resolvedLanguage ?? null,
 })
+
+// Config dir resolution (fork isolation, VOR-2): which dir is active and why.
+// The resolution + one-time migration already ran at module-eval of
+// @craft-agent/shared/config/paths — this is the deferred startup log line.
+mainLog.info(`[config-dir] Using ${CONFIG_DIR_RESOLUTION.dir} — ${CONFIG_DIR_RESOLUTION.reason}`)
+if (CONFIG_DIR_RESOLUTION.migration && CONFIG_DIR_RESOLUTION.migration.action !== 'already-done') {
+  mainLog.info('[config-dir] Migration outcome', CONFIG_DIR_RESOLUTION.migration)
+}
 
 // Enable debug/perf in dev mode (running from source)
 if (isDebugMode) {
@@ -666,13 +675,13 @@ app.whenReady().then(async () => {
             sessionManager: sm,
             credentialManager: getCredentialManager(),
             getMessagingDir: (wsId: string) =>
-              join(homedir(), '.craft-agent', 'workspaces', wsId, 'messaging'),
+              join(CONFIG_DIR_RESOLUTION.dir, 'workspaces', wsId, 'messaging'),
             getLegacyMessagingDir: (wsId: string) => {
               const ws = getWorkspaces().find((w) => w.id === wsId)
               return ws ? join(ws.rootPath, 'messaging') : undefined
             },
             // Route messaging diagnostics through the dedicated messaging log
-            // at ~/.craft-agent/logs/messaging-gateway.log.
+            // at {CONFIG_DIR}/logs/messaging-gateway.log.
             logger: messagingGatewayLog,
             // WhatsApp worker runs under Electron's embedded Node via
             // ELECTRON_RUN_AS_NODE (WhatsAppAdapter defaults nodeBin to
