@@ -151,6 +151,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.10"
+      # No `bun install` needed: check-branding.ts imports only node built-ins
+      # (fs/path), so the gate runs dependency-free and fast.
 
       - name: Check brand/endpoint strings route through branding module
         run: bun run scripts/check-branding.ts

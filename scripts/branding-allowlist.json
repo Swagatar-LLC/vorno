@@ -44,7 +44,7 @@
     {
       "path": "apps/electron/resources/",
       "class": "upstream-internal",
-      "reason": "Bundled docs, release notes, and config-defaults.json shipped as static assets; regenerated/reviewed on upstream sync, swept by the flip ticket where user-visible."
+      "reason": "Static bundled assets (config-defaults.json and other scanned html/json/yml under resources/); regenerated/reviewed on upstream sync, swept by the flip ticket where user-visible. Note: bundled docs and release notes are .md, which the gate does not scan at all."
     },
     {
       "path": "apps/webui/src/index.html",

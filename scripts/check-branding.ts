@@ -146,6 +146,8 @@ for (const root of SCAN_ROOTS) {
       if (isCommentLine(rawLine)) continue;
       // Trailing line comments are not user-visible; `https://` never matches
       // the ' // ' separator, so URLs in code survive the split.
+      // Known limitation: the split is textual — a string literal that itself
+      // contains ' // ' would have its tail (and any violation there) skipped.
       const line = rawLine.split(' // ')[0]!;
       for (const rule of RULES) {
         if (!rule.re.test(line)) continue;
