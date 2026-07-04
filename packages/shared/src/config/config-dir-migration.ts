@@ -22,7 +22,14 @@
  *   - marker `in-progress`, owner alive → wait briefly, then fail rather than
  *     launch against a half-copied dir
  *   - marker `complete`                → no-op (idempotent)
+ *   - marker corrupt (unparseable)     → confirmed over several re-reads (it may
+ *     just be a concurrent claimant mid-write); then adopt as-is when the dir
+ *     holds user data (never roll back real data), else treat as crashed
  *   - no marker, target has data       → adopt as-is (user-managed dir), never clobber
+ *
+ * First-run claims are taken via exclusive create (`wx`) of the marker file,
+ * so two processes launching simultaneously (Electron + headless server)
+ * cannot both start copying into the target.
  *
  * Sources are strictly read-only: files are copied and checksum-verified
  * (sha256 recorded in the marker as the backup manifest); the legacy dir is
@@ -143,6 +150,19 @@ function assertOutsideClaudeStore(path: string, homeDir: string, role: string): 
   }
 }
 
+/**
+ * Delete a partially-migrated target dir so migration can start over.
+ * Callers must have established that the dir holds no user data (either the
+ * marker parsed cleanly as in-progress, or the dir is empty apart from a
+ * corrupt marker).
+ */
+function rollbackTarget(dir: string, homeDir: string): void {
+  if (resolve(dir) !== resolve(join(homeDir, FORK_CONFIG_DIR_NAME))) {
+    throw new Error(`[config-dir] Refusing rollback: unexpected target ${dir}`);
+  }
+  rmSync(dir, { recursive: true, force: true });
+}
+
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -172,22 +192,51 @@ function hashFileSync(path: string): string {
   return hash.digest('hex');
 }
 
-function readMarker(markerPath: string): MigrationMarker | null {
+type MarkerRead =
+  | { kind: 'complete' | 'in-progress'; marker: MigrationMarker }
+  | { kind: 'corrupt' }
+  | null;
+
+function readMarker(markerPath: string): MarkerRead {
   if (!existsSync(markerPath)) return null;
   try {
     const parsed = JSON.parse(readFileSync(markerPath, 'utf-8')) as MigrationMarker;
-    if (parsed && (parsed.state === 'in-progress' || parsed.state === 'complete')) return parsed;
+    if (parsed && (parsed.state === 'in-progress' || parsed.state === 'complete')) {
+      return { kind: parsed.state, marker: parsed };
+    }
   } catch {
-    /* corrupt marker — treated as crashed in-progress below */
+    /* fall through */
   }
-  return { version: 1, state: 'in-progress', sourceDir: null };
+  // Unparseable / unknown-shaped marker. Deliberately NOT treated as a crashed
+  // in-progress migration: rollback deletes the whole target dir, which would
+  // destroy a long-established config dir whose marker got corrupted. The
+  // caller decides based on whether the dir holds user data.
+  return { kind: 'corrupt' };
 }
 
+/** Overwrite the marker we already own (atomic via tmp + rename). */
 function writeMarker(dir: string, marker: MigrationMarker): void {
   const markerPath = join(dir, MIGRATION_MARKER_FILENAME);
   const tmpPath = `${markerPath}.tmp-${process.pid}`;
   writeFileSync(tmpPath, JSON.stringify(marker, null, 2), 'utf-8');
   renameSync(tmpPath, markerPath);
+}
+
+/**
+ * Atomically claim the marker for this process via exclusive create (O_EXCL).
+ * Returns false when another process created the marker first — the caller
+ * must loop back to re-read the marker instead of proceeding. This is what
+ * prevents two simultaneous first-run launches (e.g. Electron + headless
+ * server) from both copying into the target dir.
+ */
+export function claimMarker(dir: string, marker: MigrationMarker): boolean {
+  try {
+    writeFileSync(join(dir, MIGRATION_MARKER_FILENAME), JSON.stringify(marker, null, 2), { encoding: 'utf-8', flag: 'wx' });
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw err;
+  }
 }
 
 /** Does this directory look like a Craft Agent config root with real data? */
@@ -278,13 +327,16 @@ export function ensureConfigDirReady(options: EnsureConfigDirOptions = {}): Conf
 
   const markerPath = join(dir, MIGRATION_MARKER_FILENAME);
   let recoveredFromCrash = false;
+  let consecutiveCorruptReads = 0;
   const deadline = Date.now() + waitMs;
 
-  // Marker state machine loop (revisited after waiting on a live migrator).
+  // Marker state machine loop (revisited after waiting on a live migrator or
+  // losing an exclusive-create claim race to another process).
   for (;;) {
-    const marker = readMarker(markerPath);
+    const read = readMarker(markerPath);
 
-    if (marker?.state === 'complete') {
+    if (read?.kind === 'complete') {
+      const marker = read.marker;
       return {
         dir,
         source,
@@ -300,7 +352,43 @@ export function ensureConfigDirReady(options: EnsureConfigDirOptions = {}): Conf
       };
     }
 
-    if (marker?.state === 'in-progress') {
+    if (read?.kind === 'corrupt') {
+      // A concurrent claimant's exclusive create + content write is not one
+      // atomic step — a reader can catch the marker empty/partial for an
+      // instant. Require several consecutive corrupt reads before treating
+      // the corruption as permanent.
+      consecutiveCorruptReads += 1;
+      if (consecutiveCorruptReads < 3) {
+        sleepSync(150);
+        continue;
+      }
+      if (targetHasUserData(dir)) {
+        // A populated dir with an unreadable marker is almost certainly an
+        // established config root whose marker got damaged — adopt it as-is.
+        // Rolling back here would delete real user data.
+        writeMarker(dir, {
+          version: 1,
+          state: 'complete',
+          action: 'adopted-existing',
+          sourceDir: null,
+          completedAt: new Date().toISOString(),
+        });
+        return {
+          dir,
+          source,
+          reason: 'fork default (adopted existing directory; replaced corrupt migration marker)',
+          migration: { action: 'adopted-existing', sourceDir: null, fileCount: 0, recoveredFromCrash },
+        };
+      }
+      // Only the corrupt marker itself lives in the dir — nothing to lose.
+      rollbackTarget(dir, homeDir);
+      recoveredFromCrash = true;
+      continue;
+    }
+    consecutiveCorruptReads = 0;
+
+    if (read?.kind === 'in-progress') {
+      const marker = read.marker;
       const ownerAlive = typeof marker.pid === 'number' && marker.pid !== process.pid && isProcessAlive(marker.pid);
       if (ownerAlive) {
         if (Date.now() >= deadline) {
@@ -312,13 +400,11 @@ export function ensureConfigDirReady(options: EnsureConfigDirOptions = {}): Conf
         sleepSync(250);
         continue;
       }
-      // Crashed mid-migration: the target dir contains only migration-written
-      // files (nothing else can launch before the marker turns complete), so
-      // rolling back == deleting the partial copy and starting over.
-      if (resolve(dir) !== resolve(join(homeDir, FORK_CONFIG_DIR_NAME))) {
-        throw new Error(`[config-dir] Refusing rollback: unexpected target ${dir}`);
-      }
-      rmSync(dir, { recursive: true, force: true });
+      // Crashed mid-migration (marker parsed cleanly as in-progress): the
+      // target dir contains only migration-written files (nothing can launch
+      // before the marker turns complete), so rolling back == deleting the
+      // partial copy and starting over.
+      rollbackTarget(dir, homeDir);
       recoveredFromCrash = true;
       continue;
     }
@@ -327,13 +413,15 @@ export function ensureConfigDirReady(options: EnsureConfigDirOptions = {}): Conf
     if (targetHasUserData(dir)) {
       // Pre-existing user-managed dir (or one created before markers existed):
       // adopt it as-is; never overwrite with legacy data.
-      writeMarker(dir, {
+      if (!claimMarker(dir, {
         version: 1,
         state: 'complete',
         action: 'adopted-existing',
         sourceDir: null,
         completedAt: new Date().toISOString(),
-      });
+      })) {
+        continue; // lost the claim race — re-read the winner's marker
+      }
       return {
         dir,
         source,
@@ -349,13 +437,15 @@ export function ensureConfigDirReady(options: EnsureConfigDirOptions = {}): Conf
 
     if (!migrationSource) {
       mkdirSync(dir, { recursive: true });
-      writeMarker(dir, {
+      if (!claimMarker(dir, {
         version: 1,
         state: 'complete',
         action: 'fresh',
         sourceDir: null,
         completedAt: new Date().toISOString(),
-      });
+      })) {
+        continue; // lost the claim race — re-read the winner's marker
+      }
       return {
         dir,
         source,
@@ -367,13 +457,15 @@ export function ensureConfigDirReady(options: EnsureConfigDirOptions = {}): Conf
     assertOutsideClaudeStore(migrationSource, homeDir, 'migration source');
 
     mkdirSync(dir, { recursive: true });
-    writeMarker(dir, {
+    if (!claimMarker(dir, {
       version: 1,
       state: 'in-progress',
       sourceDir: migrationSource,
       pid: process.pid,
       startedAt: new Date().toISOString(),
-    });
+    })) {
+      continue; // another process claimed first — loop back and wait on it
+    }
 
     const manifest = copyTreeVerified(migrationSource, dir);
 

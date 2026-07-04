@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { randomBytes, createHash } from 'crypto';
+import { CONFIG_DIR } from '@craft-agent/shared/config/paths';
 
 /**
  * API key permissions scoped to specific workspaces and permission levels.
@@ -38,7 +39,7 @@ export interface RateLimits {
 }
 
 /**
- * Server configuration stored at ~/.craft-agent/server-config.json
+ * Server configuration stored at {CONFIG_DIR}/server-config.json
  */
 export interface ServerConfig {
   enabled: boolean;
@@ -59,11 +60,7 @@ const DEFAULT_CONFIG: ServerConfig = {
   },
 };
 
-const CONFIG_PATH = join(
-  process.env.HOME || process.env.USERPROFILE || '~',
-  '.craft-agent',
-  'server-config.json'
-);
+const CONFIG_PATH = join(CONFIG_DIR, 'server-config.json');
 
 /**
  * Load server configuration from disk.

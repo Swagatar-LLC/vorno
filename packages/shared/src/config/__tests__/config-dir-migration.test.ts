@@ -27,6 +27,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 import {
+  claimMarker,
   ensureConfigDirReady,
   FORK_CONFIG_DIR_NAME,
   LEGACY_FORK_CONFIG_DIR_NAME,
@@ -34,6 +35,8 @@ import {
   resolveConfigDir,
   UPSTREAM_CONFIG_DIR_NAME,
 } from '../config-dir-migration.ts'
+
+const MIGRATION_MODULE_URL = pathToFileURL(join(import.meta.dir, '..', 'config-dir-migration.ts')).href
 
 const PATHS_MODULE_URL = pathToFileURL(join(import.meta.dir, '..', 'paths.ts')).href
 
@@ -238,7 +241,7 @@ describe('ensureConfigDirReady', () => {
     expect(readMarker(target).state).toBe('complete')
   })
 
-  it('corrupt marker is treated as a crashed migration and recovered', () => {
+  it('corrupt marker in an otherwise-empty dir is treated as a crashed migration and recovered', () => {
     const home = makeHome()
     seedCraftData(join(home, UPSTREAM_CONFIG_DIR_NAME), 'good')
     const target = join(home, FORK_CONFIG_DIR_NAME)
@@ -248,6 +251,69 @@ describe('ensureConfigDirReady', () => {
     const res = ensureConfigDirReady({ env: {}, homeDir: home })
     expect(res.migration?.action).toBe('migrated')
     expect(res.migration?.recoveredFromCrash).toBe(true)
+  })
+
+  it('corrupt marker on a POPULATED dir adopts it as-is — user data survives, no rollback', () => {
+    const home = makeHome()
+    // Legacy data present too — must NOT be copied over the established dir.
+    seedCraftData(join(home, UPSTREAM_CONFIG_DIR_NAME), 'legacy')
+    const target = join(home, FORK_CONFIG_DIR_NAME)
+    seedCraftData(target, 'established-vorno-data')
+    writeFileSync(join(target, MIGRATION_MARKER_FILENAME), '{"state": tru') // damaged
+
+    const res = ensureConfigDirReady({ env: {}, homeDir: home })
+
+    expect(res.migration?.action).toBe('adopted-existing')
+    expect(JSON.parse(readFileSync(join(target, 'config.json'), 'utf-8')).tag).toBe('established-vorno-data')
+    expect(readFileSync(join(target, 'credentials.enc'), 'utf-8')).toBe('encrypted-credentials-established-vorno-data')
+    const marker = readMarker(target)
+    expect(marker.state).toBe('complete')
+    expect(marker.action).toBe('adopted-existing')
+  })
+
+  it('claimMarker is exclusive: the second claimant loses', () => {
+    const home = makeHome()
+    const target = join(home, FORK_CONFIG_DIR_NAME)
+    mkdirSync(target, { recursive: true })
+    const marker = { version: 1 as const, state: 'in-progress' as const, sourceDir: null, pid: process.pid }
+    expect(claimMarker(target, marker)).toBe(true)
+    expect(claimMarker(target, marker)).toBe(false)
+  })
+
+  it('two simultaneous first-run processes migrate exactly once and end consistent', async () => {
+    const home = makeHome()
+    const legacy = join(home, UPSTREAM_CONFIG_DIR_NAME)
+    seedCraftData(legacy, 'raced')
+    const legacyBefore = hashTree(legacy)
+
+    const spawnRunner = () =>
+      Bun.spawn(
+        [process.execPath, '--eval', `
+          const { ensureConfigDirReady } = await import('${MIGRATION_MODULE_URL}');
+          const res = ensureConfigDirReady({ env: {}, homeDir: ${JSON.stringify(home)} });
+          console.log(JSON.stringify({ action: res.migration?.action }));
+        `],
+        { stdout: 'pipe', stderr: 'pipe' },
+      )
+
+    const [a, b] = [spawnRunner(), spawnRunner()]
+    const [exitA, exitB] = await Promise.all([a.exited, b.exited])
+    expect(exitA).toBe(0)
+    expect(exitB).toBe(0)
+
+    const actions = (await Promise.all([new Response(a.stdout).text(), new Response(b.stdout).text()]))
+      .map(out => JSON.parse(out.trim().split('\n').pop()!).action)
+      .sort()
+    // Exactly one process performed the copy; the other observed it.
+    expect(actions.filter(x => x === 'migrated')).toHaveLength(1)
+
+    // Target is complete and correct; legacy untouched.
+    const target = join(home, FORK_CONFIG_DIR_NAME)
+    expect(readMarker(target).state).toBe('complete')
+    expect(JSON.parse(readFileSync(join(target, 'config.json'), 'utf-8')).tag).toBe('raced')
+    const legacyAfter = hashTree(legacy)
+    expect(legacyAfter.size).toBe(legacyBefore.size)
+    for (const [path, hash] of legacyBefore) expect(legacyAfter.get(path)).toBe(hash)
   })
 
   it('live concurrent migration: waits, then refuses to launch against a half-copied dir', async () => {

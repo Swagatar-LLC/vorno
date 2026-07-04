@@ -1,4 +1,5 @@
 import { loadServerConfig } from './config.ts';
+import { CONFIG_DIR } from '@craft-agent/shared/config/paths';
 import { createRouter } from './router.ts';
 import { SessionPool } from './services/session-pool.ts';
 import { EventBus } from './services/event-bus.ts';
@@ -18,7 +19,7 @@ const config = loadServerConfig();
 
 if (!config.enabled) {
   console.log('Craft Agents server is disabled. Enable it in server-config.json or via the Electron UI.');
-  console.log(`Config path: ~/.craft-agent/server-config.json`);
+  console.log(`Config path: ${CONFIG_DIR}/server-config.json`);
   console.log('Set "enabled": true to start the server.');
   process.exit(0);
 }

@@ -30,7 +30,11 @@ VOR-2 (VORNO M1 "Nameplate") makes isolation automatic.
    machine in `packages/shared/src/config/config-dir-migration.ts` and run
    synchronously at module-eval of `config/paths.ts` (no partial-state launch
    window). Source precedence: `~/.craft-agent-swagatar` (unambiguously
-   fork-originated dev data) then `~/.craft-agent`. Sources are read-only and
+   fork-originated dev data) then `~/.craft-agent`. Note: `hasCraftData()`
+   deliberately treats *any* populated `~/.craft-agent` as migratable — there
+   is no reliable fork-origin fingerprint inside the dir, and since migration
+   is copy-only with upstream left byte-identical, over-inclusion costs disk
+   space, never data. Sources are read-only and
    checksum-verified byte-identical afterwards; a sha256 backup manifest is
    recorded in `.config-dir-migration.json`. Stale `.server.lock` and `logs/`
    are not carried over. Crash mid-copy → rollback (delete partial copy) and
