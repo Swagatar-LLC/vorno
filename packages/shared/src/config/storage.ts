@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from '../branding.ts';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, readdirSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { getCredentialManager } from '../credentials/index.ts';
@@ -114,7 +115,7 @@ let configDefaultsSynced = false;
 /** Minimal config-defaults used when bundled assets aren't available (CI, standalone server). */
 const FALLBACK_CONFIG_DEFAULTS: ConfigDefaults = {
   version: '1.0',
-  description: 'Default configuration values for Craft Agents',
+  description: `Default configuration values for ${PRODUCT_NAME}`,
   defaults: {
     notificationsEnabled: true,
     colorTheme: 'default',

@@ -50,6 +50,7 @@
     "lint:i18n:strings": "bash scripts/lint-i18n-strings.sh",
     "lint:i18n:parity": "bun run scripts/check-i18n-parity.ts",
     "lint:i18n:coverage": "bun run scripts/check-i18n-coverage.ts",
+    "lint:branding": "bun run scripts/check-branding.ts",
     "sort-locales": "bun scripts/sort-locales.ts",
     "lint:i18n:sorted": "bun scripts/sort-locales.ts --check",
     "lint": "bun run lint:ipc-sends && bun run lint:tool-name-checks && bun run lint:electron && bun run lint:shared && bun run lint:ui",

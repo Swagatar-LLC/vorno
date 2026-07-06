@@ -7,6 +7,7 @@
  * - Renders badge icons via Canvas API (main process drives badge count directly)
  */
 
+import { PRODUCT_NAME_SINGULAR } from '@craft-agent/shared/branding'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import type { Session } from '../../shared/types'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
@@ -229,7 +230,7 @@ export function useNotifications({
     const title = session.name || 'New message'
 
     // Get message preview (truncate if needed)
-    let body = messagePreview || 'Craft Agent has a new message for you'
+    let body = messagePreview || `${PRODUCT_NAME_SINGULAR} has a new message for you`
     if (body.length > 100) {
       body = body.substring(0, 97) + '...'
     }

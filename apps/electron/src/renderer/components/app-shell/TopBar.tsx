@@ -7,6 +7,7 @@
  * macOS: offset left to avoid stoplight controls.
  */
 
+import { DOCS_URL } from '@craft-agent/shared/branding'
 import { useTranslation } from "react-i18next"
 import * as Icons from "lucide-react"
 import { Tooltip, TooltipTrigger, TooltipContent } from "@craft-agent/ui"
@@ -284,7 +285,7 @@ export function TopBar({
               <Icons.ExternalLink className="h-3 w-3 text-muted-foreground" />
             </StyledDropdownMenuItem>
             <StyledDropdownMenuSeparator />
-            <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl('https://agents.craft.do/docs')}>
+            <StyledDropdownMenuItem onClick={() => window.electronAPI.openUrl(DOCS_URL)}>
               <Icons.ExternalLink className="h-3.5 w-3.5" />
               <span className="flex-1">{t("menu.allDocumentation")}</span>
             </StyledDropdownMenuItem>

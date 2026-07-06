@@ -1,3 +1,4 @@
+import { DOCS_MCP_URL, PRODUCT_NAME } from '../branding.ts';
 import { query, createSdkMcpServer, tool, AbortError, type Query, type SDKUserMessage, type SDKAssistantMessageError, type Options } from '@anthropic-ai/claude-agent-sdk';
 import { getDefaultOptions, resetClaudeConfigCheck, logSdkCliVersion } from './options.ts';
 // Local type for SDK user message content blocks (text, image, document)
@@ -894,7 +895,7 @@ export class ClaudeAgent extends BaseAgent {
         // This is a public Mintlify MCP server, no auth needed
         'craft-agents-docs': {
           type: 'http',
-          url: 'https://agents.craft.do/docs/mcp',
+          url: DOCS_MCP_URL,
         },
         // Per-source proxy servers from centralized MCP pool (MCP + API sources)
         // Each source gets its own SDK server keyed by slug (e.g., 'linear', 'github', 'gmail')
@@ -1993,7 +1994,7 @@ This is a branched conversation. All prior messages in this conversation are par
               message:
                 'The Claude Agent SDK binary expected on disk is not present. ' +
                 'This usually means the app bundle is incomplete (interrupted download, partial update, ' +
-                'or a security tool removed it). Reinstalling Craft Agents typically fixes this.',
+                `or a security tool removed it). Reinstalling ${PRODUCT_NAME} typically fixes this.`,
               details: [
                 probedBinary ? `Expected binary: ${probedBinary}` : 'Binary path: unknown',
                 probedCwd ? `Subprocess cwd: ${probedCwd} (${cwdExists ? 'exists' : 'missing'})` : '',

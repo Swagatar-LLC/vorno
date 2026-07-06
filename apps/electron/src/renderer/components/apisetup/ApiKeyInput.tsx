@@ -10,6 +10,7 @@
  * Used in: Onboarding CredentialsStep, Settings API dialog
  */
 
+import { BACKEND_DISPLAY_NAME } from '@craft-agent/shared/branding'
 import { useState, useEffect, useCallback, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { Command as CommandPrimitive } from "cmdk"
@@ -132,7 +133,7 @@ const OPENAI_PRESETS: Preset[] = [
 
 // Pi provider presets - unified API for 20+ LLM providers
 const PI_PRESETS: Preset[] = [
-  { key: 'pi', label: 'Craft Agents Backend (Direct)', url: '' },
+  { key: 'pi', label: `${BACKEND_DISPLAY_NAME} (Direct)`, url: '' },
   { key: 'openrouter', label: 'OpenRouter', url: 'https://openrouter.ai/api' },
   { key: 'custom', label: 'Custom', url: '' },
 ]

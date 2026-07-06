@@ -1,3 +1,4 @@
+import { OAUTH_CLIENT_NAME } from '../branding.ts';
 import { createServer, type Server } from 'http';
 import { URL } from 'url';
 import { randomBytes, createHash } from 'crypto';
@@ -26,7 +27,7 @@ export interface OAuthCallbacks {
 const CALLBACK_PORT_START = 8914;
 const CALLBACK_PORT_END = 8924;
 const CALLBACK_PATH = '/oauth/callback';
-const CLIENT_NAME = 'Claude Code (Craft Agent)';
+const CLIENT_NAME = OAUTH_CLIENT_NAME;
 
 // Generate PKCE code verifier and challenge
 function generatePKCE(): { verifier: string; challenge: string } {

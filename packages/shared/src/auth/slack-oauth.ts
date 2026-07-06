@@ -11,6 +11,7 @@
  * This allows posting messages as the authenticated user.
  */
 
+import { SLACK_OAUTH_RELAY_CALLBACK_URL } from '../branding.ts';
 import { URL } from 'url';
 import { randomBytes } from 'crypto';
 import { openUrl } from '../utils/open-url.ts';
@@ -266,7 +267,7 @@ export function prepareSlackOAuth(options: PrepareSlackOAuthOptions): PreparedOA
 
   // Slack requires HTTPS → use Cloudflare relay when using callbackPort
   const redirectUri = options.callbackUrl
-    ?? `https://agents.craft.do/auth/slack/callback?port=${options.callbackPort}`;
+    ?? `${SLACK_OAUTH_RELAY_CALLBACK_URL}?port=${options.callbackPort}`;
 
   const authUrl = new URL(SLACK_AUTH_URL);
   authUrl.searchParams.set('client_id', SLACK_CLIENT_ID);
@@ -357,7 +358,7 @@ export async function startSlackOAuth(options: SlackOAuthOptions = {}): Promise<
 
     // Use Cloudflare Worker relay for Slack OAuth (Slack requires HTTPS)
     // The relay redirects: https://agents.craft.do/auth/slack/callback → http://localhost:{port}/callback
-    const redirectUri = `https://agents.craft.do/auth/slack/callback?port=${port}`;
+    const redirectUri = `${SLACK_OAUTH_RELAY_CALLBACK_URL}?port=${port}`;
 
     // Build authorization URL
     // Use user_scope (not scope) to get a user token instead of bot token
