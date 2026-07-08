@@ -278,7 +278,7 @@ async function fetchOpenAiModelsLive(
   // sane metadata for ids the catalog doesn't know about (i.e. brand-new drops).
   let catalog: Map<string, OpenAiCatalogEntry> | undefined;
   try {
-    const { getModels } = await import('@earendil-works/pi-ai');
+    const { getModels } = await import('@earendil-works/pi-ai/compat');
     const entries = new Map<string, OpenAiCatalogEntry>();
     for (const m of getModels('openai')) {
       entries.set(m.id, {
