@@ -1,3 +1,5 @@
+> **Archived 2026-07-08** — superseded by upstream v0.11.0 background-task/Conductor system; VORNO program paused. Retained for research only.
+
 ---
 id: PLAN-008
 title: Orchestration panel — richer per-step/phase progress (additive protocol)
