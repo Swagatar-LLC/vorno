@@ -650,6 +650,9 @@ export default function AiSettingsPage() {
   const [defaultThinking, setDefaultThinking] = useState<ThinkingLevel>(DEFAULT_THINKING_LEVEL)
   const [extendedPromptCache, setExtendedPromptCache] = useState(false)
   const [enable1MContext, setEnable1MContext] = useState(false)
+  // fork(PLAN-011): background-agent keep-alive (default on; env var can force it)
+  const [keepBgAgentsAlive, setKeepBgAgentsAlive] = useState(true)
+  const [keepBgAgentsAliveEnvOverride, setKeepBgAgentsAliveEnvOverride] = useState(false)
   const [rtkEnabled, setRtkEnabled] = useState(false)
   const [rtkStatus, setRtkStatus] = useState<{ installed: boolean; path: string | null; version: string | null } | null>(null)
   const [rtkRechecking, setRtkRechecking] = useState(false)
@@ -685,6 +688,11 @@ export default function AiSettingsPage() {
 
         const enable1M = await window.electronAPI.getEnable1MContext()
         setEnable1MContext(enable1M)
+
+        // fork(PLAN-011): keep-alive state carries envOverride so we can disable the toggle
+        const keepAlive = await window.electronAPI.getKeepBackgroundAgentsAlive()
+        setKeepBgAgentsAlive(keepAlive.enabled)
+        setKeepBgAgentsAliveEnvOverride(keepAlive.envOverride)
 
         const rtkOn = await window.electronAPI.getRtkEnabled()
         setRtkEnabled(rtkOn)
@@ -999,6 +1007,12 @@ export default function AiSettingsPage() {
     await window.electronAPI?.setEnable1MContext(enabled)
   }, [])
 
+  // fork(PLAN-011): optimistic set + persist. Takes effect at each session's next message.
+  const handleKeepBgAgentsAliveChange = useCallback(async (enabled: boolean) => {
+    setKeepBgAgentsAlive(enabled)
+    await window.electronAPI?.setKeepBackgroundAgentsAlive(enabled)
+  }, [])
+
   const handleRtkToggle = useCallback(async (enabled: boolean) => {
     setRtkEnabled(enabled)
     await window.electronAPI?.setRtkEnabled(enabled)
@@ -1185,6 +1199,21 @@ export default function AiSettingsPage() {
                     checked={extendedPromptCache}
                     onCheckedChange={handleExtendedPromptCacheChange}
                   />
+                  {/* fork(PLAN-011): background-agent keep-alive toggle */}
+                  <SettingsToggle
+                    label={t("settings.ai.keepBgAgentsAlive")}
+                    description={t("settings.ai.keepBgAgentsAliveDesc")}
+                    checked={keepBgAgentsAlive}
+                    onCheckedChange={handleKeepBgAgentsAliveChange}
+                    disabled={keepBgAgentsAliveEnvOverride}
+                  />
+                  {keepBgAgentsAliveEnvOverride && (
+                    <div className="px-4 pb-4 -mt-1">
+                      <div className="text-xs text-foreground/60">
+                        {t("settings.ai.keepBgAgentsAliveEnvOverride")}
+                      </div>
+                    </div>
+                  )}
                   {rtkStatus?.installed ? (
                     <>
                       <SettingsToggle

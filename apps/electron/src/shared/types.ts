@@ -580,6 +580,10 @@ export interface ElectronAPI {
   getEnable1MContext(): Promise<boolean>
   setEnable1MContext(enabled: boolean): Promise<void>
 
+  // fork(PLAN-011): background-agent keep-alive
+  getKeepBackgroundAgentsAlive(): Promise<{ enabled: boolean; envOverride: boolean }>
+  setKeepBackgroundAgentsAlive(enabled: boolean): Promise<void>
+
   // RTK token optimization
   getRtkEnabled(): Promise<boolean>
   setRtkEnabled(enabled: boolean): Promise<void>
