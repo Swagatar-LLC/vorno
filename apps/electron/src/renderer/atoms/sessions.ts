@@ -694,13 +694,6 @@ export const forceSessionMessagesReloadAtom = atom(
 )
 
 /**
- * Background task lifecycle status.
- * 'running' is the live state; the rest are terminal "done" states retained in
- * the orchestration panel until the session closes (PLAN-007).
- */
-export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'stopped'
-
-/**
  * Background task for ActiveTasksBar display
  */
 /**

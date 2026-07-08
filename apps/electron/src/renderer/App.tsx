@@ -216,22 +216,8 @@ function handleBackgroundTaskEvent(
       /"backgroundTaskId":\s*"[a-zA-Z0-9_-]+"/.test(result)
     )
     if (!isBackgroundingResult) {
-      // PLAN-007: a finishing tool_result transitions the matching task to a
-      // terminal status (persisted for the orchestration panel) rather than
-      // removing it. Result errors map to 'failed'.
-      const resultIsError = typeof result === 'string' && /^\s*(\[ERROR\]|Error:|error:)/.test(result)
-      const completedAt = Date.now()
       const currentTasks = store.get(backgroundTasksAtom)
-      store.set(backgroundTasksAtom, currentTasks.map(t =>
-        t.toolUseId === evt.toolUseId && (t.status ?? 'running') === 'running'
-          ? {
-              ...t,
-              status: resultIsError ? 'failed' as const : 'completed' as const,
-              completedAt,
-              durationMs: completedAt - t.startTime,
-            }
-          : t
-      ))
+      store.set(backgroundTasksAtom, currentTasks.filter(t => t.toolUseId !== evt.toolUseId))
     }
   } else if (event.type === 'complete' || event.type === 'interrupted' || event.type === 'error') {
     // Orphan backstop: when the turn ends, any chip still marked 'running' belongs

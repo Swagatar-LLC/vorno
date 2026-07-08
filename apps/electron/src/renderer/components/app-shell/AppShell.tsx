@@ -147,7 +147,6 @@ import {
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
-import { OrchestrationDesktopRail } from "./OrchestrationRail"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -3676,11 +3675,6 @@ function AppShellContent({
           />
         </div>
         )}
-
-        {/* PLAN-007: persistent cross-session orchestration/activity rail (desktop).
-            The mobile drawer is mounted in the input zone (ChatInputZone) instead,
-            so it doesn't overlap content. Gated by the fork feature flag. */}
-        <OrchestrationDesktopRail isCompact={isAutoCompact} />
 
       </div>
 
