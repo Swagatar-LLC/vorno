@@ -338,6 +338,12 @@ export const RPC_CHANNELS = {
     GET_STATUS: 'rtk:getStatus',
     GET_GAIN: 'rtk:getGain',
   },
+  // fork(PLAN-011): namespaced under craft-fork:* per roadmap/upstream/compatibility.md
+  // so a future upstream keep-alive setting can't collide.
+  bgAgents: {
+    GET_KEEP_ALIVE: 'craft-fork:bgAgents:getKeepAlive',
+    SET_KEEP_ALIVE: 'craft-fork:bgAgents:setKeepAlive',
+  },
   badge: {
     REFRESH: 'badge:refresh',
     SET_ICON: 'badge:setIcon',

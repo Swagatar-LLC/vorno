@@ -20,6 +20,7 @@ export interface ConfigDefaults {
     keepAwakeWhileRunning: boolean;
     richToolDescriptions: boolean;
     extendedPromptCache: boolean;
+    keepBackgroundAgentsAlive: boolean;  // fork(PLAN-011)
     browserToolEnabled: boolean;
     /**
      * Allow remote agents to call `browser_tool evaluate <expression>`.

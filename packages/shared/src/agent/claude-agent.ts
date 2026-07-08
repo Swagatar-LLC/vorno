@@ -33,7 +33,9 @@ import { consumeLlmQueryMessages } from './claude-llm-query.ts';
 import { debug } from '../utils/debug.ts';
 import { guardLargeResult } from '../utils/large-response.ts';
 import { SourceActivationDrainController } from './source-activation-drain.ts';
-import { resolveKeepBackgroundTasksAlive, createPushableInputStream, type PushableInputStream } from './backend/claude/persistent-input.ts';
+import { createPushableInputStream, type PushableInputStream } from './backend/claude/persistent-input.ts';
+// fork(PLAN-011): settings-driven keep-alive (env var still wins). See keep-alive-setting.ts.
+import { isKeepBackgroundTasksAliveEnabled } from './backend/claude/keep-alive-setting.ts';
 import {
   getSessionPlansDir,
   getLastPlanFilePath,
@@ -510,11 +512,15 @@ export class ClaudeAgent extends BaseAgent {
   /**
    * WS2 keep-alive: when true, use one long-lived streaming-input `query()` per
    * session so background sub-agents survive across turns (instead of a fresh
-   * per-turn subprocess that tears them down at turn end). Resolved once from
-   * `CRAFT_KEEP_BG_AGENTS_ALIVE` via the shared resolver. Default is ON (opt-out);
-   * set `CRAFT_KEEP_BG_AGENTS_ALIVE=0` to force the per-turn kill-switch path.
+   * per-turn subprocess that tears them down at turn end).
+   *
+   * fork(PLAN-011): settings-driven; initialized from the resolver and
+   * re-snapshotted at each chatImpl() start so a Settings toggle takes effect on
+   * the next message without a restart. The env var CRAFT_KEEP_BG_AGENTS_ALIVE
+   * still wins when explicitly set. Snapshotted per turn (not per read) so a turn
+   * stays internally consistent.
    */
-  private readonly keepBackgroundTasksAlive: boolean = resolveKeepBackgroundTasksAlive();
+  private keepBackgroundTasksAlive: boolean = isKeepBackgroundTasksAliveEnabled();
 
   // ── WS2 persistent streaming-input query state (flag ON only) ─────────────
   /** Pushable prompt feeding the one long-lived `query()`; `push()` per turn, `end()` to tear down. */
@@ -1003,6 +1009,16 @@ export class ClaudeAgent extends BaseAgent {
 
     try {
       const sessionId = this.config.session?.id || `temp-${Date.now()}`;
+
+      // fork(PLAN-011): re-snapshot the settings-driven keep-alive flag per turn so a
+      // Settings toggle applies on the next message without a restart (env var still
+      // wins). If it was just turned off while a persistent query is open, tear that
+      // query down here so this turn takes the per-turn query() path (below) instead
+      // of leaking the old subprocess. teardownPersistentQuery is idempotent.
+      this.keepBackgroundTasksAlive = isKeepBackgroundTasksAliveEnabled();
+      if (!this.keepBackgroundTasksAlive && this.persistentInput) {
+        this.teardownPersistentQuery('keep-alive setting toggled off');
+      }
 
       // Pin system prompt components on first chat() call for consistency after compaction
       // The SDK's resume mechanism expects system prompt consistency within a session

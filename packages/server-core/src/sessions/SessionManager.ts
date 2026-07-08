@@ -8,7 +8,7 @@ import { basename, dirname, join } from 'path'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
-import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
+import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, isKeepBackgroundTasksAliveEnabled } from '@craft-agent/shared/agent'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
@@ -1224,11 +1224,21 @@ export class SessionManager implements ISessionManager {
    * turns so background sub-agents survive, and orphaning is suppressed. When
    * false (kill-switch), sub-agents are bound to a single turn's subprocess and
    * die at turn end, so markOrphanedBackgroundTasks() flips still-running registry
-   * entries to `orphaned` on turn completion. Resolved via the shared
-   * `resolveKeepBackgroundTasksAlive` so the main process and the Claude backend
-   * can never disagree about whether keep-alive is on.
+   * entries to `orphaned` on turn completion.
+   *
+   * fork(PLAN-011): live read via the settings-driven resolver so a Settings toggle
+   * applies without a restart — every call site (complete events, orphan sweep, idle
+   * surfacing) is per-turn/per-event and picks up the new value immediately. The
+   * shared resolver keeps the main process and the Claude backend in agreement, and
+   * the env var CRAFT_KEEP_BG_AGENTS_ALIVE still wins when explicitly set. The setter
+   * preserves the test seam (background-task-surface.test.ts assigns the field
+   * directly); a getter-only accessor would throw in strict mode.
    */
-  private readonly keepBackgroundTasksAlive: boolean = resolveKeepBackgroundTasksAlive()
+  private keepBackgroundTasksAliveForced: boolean | null = null
+  private get keepBackgroundTasksAlive(): boolean {
+    return this.keepBackgroundTasksAliveForced ?? isKeepBackgroundTasksAliveEnabled()
+  }
+  private set keepBackgroundTasksAlive(v: boolean) { this.keepBackgroundTasksAliveForced = v }
   /**
    * Per-session in-flight runtime-refresh promise. Ensures `updateRuntimeConfig`
    * (or a dispose) cannot overlap with another refresh OR with a send-path

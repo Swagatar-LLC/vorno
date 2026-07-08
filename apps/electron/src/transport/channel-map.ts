@@ -318,6 +318,10 @@ export const CHANNEL_MAP = {
   getEnable1MContext: invoke(RPC_CHANNELS.caching.GET_ENABLE_1M_CONTEXT),
   setEnable1MContext: invoke(RPC_CHANNELS.caching.SET_ENABLE_1M_CONTEXT),
 
+  // fork(PLAN-011): background-agent keep-alive
+  getKeepBackgroundAgentsAlive: invoke(RPC_CHANNELS.bgAgents.GET_KEEP_ALIVE),
+  setKeepBackgroundAgentsAlive: invoke(RPC_CHANNELS.bgAgents.SET_KEEP_ALIVE),
+
   // RTK token optimization
   getRtkEnabled: invoke(RPC_CHANNELS.rtk.GET_ENABLED),
   setRtkEnabled: invoke(RPC_CHANNELS.rtk.SET_ENABLED),

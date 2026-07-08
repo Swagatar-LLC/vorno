@@ -74,6 +74,8 @@ const EXPECTED_CHANNELS: string[] = [
   'copilot:getAuthStatus',
   'copilot:logout',
   'copilot:startOAuth',
+  'craft-fork:bgAgents:getKeepAlive',
+  'craft-fork:bgAgents:setKeepAlive',
   'credentials:healthCheck',
   'debug:log',
   'deeplink:navigate',

@@ -45,6 +45,9 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.rtk.SET_ENABLED,
   RPC_CHANNELS.rtk.GET_STATUS,
   RPC_CHANNELS.rtk.GET_GAIN,
+  // fork(PLAN-011): background-agent keep-alive setting
+  RPC_CHANNELS.bgAgents.GET_KEEP_ALIVE,
+  RPC_CHANNELS.bgAgents.SET_KEEP_ALIVE,
 ] as const
 
 export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): void {
@@ -337,6 +340,26 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
   server.handle(RPC_CHANNELS.caching.SET_ENABLE_1M_CONTEXT, async (_ctx, enabled: boolean) => {
     const { setEnable1MContext } = await import('@craft-agent/shared/config/storage')
     setEnable1MContext(enabled)
+  })
+
+  // ============================================================
+  // fork(PLAN-011): Background-Agent Keep-Alive Setting
+  // ============================================================
+
+  // Get keep-alive state: { enabled, envOverride }. The env var wins when set,
+  // in which case envOverride is true and the UI disables the toggle.
+  server.handle(RPC_CHANNELS.bgAgents.GET_KEEP_ALIVE, async () => {
+    const { getKeepBackgroundTasksAliveState } = await import('@craft-agent/shared/agent')
+    return getKeepBackgroundTasksAliveState()
+  })
+
+  // Set the stored keep-alive setting. Consumers read live from storage, so the
+  // change applies at each session's next message; no push/broadcast needed.
+  server.handle(RPC_CHANNELS.bgAgents.SET_KEEP_ALIVE, async (_ctx, enabled: boolean) => {
+    if (typeof enabled !== 'boolean') throw new Error('enabled must be a boolean')
+    const { setKeepBackgroundAgentsAlive } = await import('@craft-agent/shared/config/storage')
+    setKeepBackgroundAgentsAlive(enabled)
+    deps.platform.logger.info(`Background-agent keep-alive set to: ${enabled}`)
   })
 
   // ============================================================
