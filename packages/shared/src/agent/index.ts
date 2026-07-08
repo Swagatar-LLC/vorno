@@ -170,3 +170,11 @@ export {
   createPushableInputStream,
   type PushableInputStream,
 } from './backend/claude/persistent-input.ts';
+
+// fork(PLAN-011): settings-driven keep-alive resolver (layers an app-level
+// setting under the env var; leaves persistent-input.ts untouched).
+export {
+  getKeepBackgroundTasksAliveState,
+  isKeepBackgroundTasksAliveEnabled,
+  type KeepAliveState,
+} from './backend/claude/keep-alive-setting.ts';

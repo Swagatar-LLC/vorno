@@ -83,6 +83,8 @@ export interface StoredConfig {
   // Prompt caching & context
   extendedPromptCache?: boolean;  // Use 1h prompt cache TTL instead of 5m (default: false)
   enable1MContext?: boolean;  // Enable 1M context window for supported models (default: false — opt-in; requires Anthropic Tier 4+)
+  // Background agents
+  keepBackgroundAgentsAlive?: boolean;  // fork(PLAN-011): Keep background subagents alive across turns (default: true; env CRAFT_KEEP_BG_AGENTS_ALIVE overrides)
   // Token optimization
   rtkEnabled?: boolean;  // Route Bash commands through rtk to compress tool output (default: false). https://github.com/rtk-ai/rtk
   // Network proxy
@@ -125,6 +127,7 @@ const FALLBACK_CONFIG_DEFAULTS: ConfigDefaults = {
     keepAwakeWhileRunning: false,
     richToolDescriptions: true,
     extendedPromptCache: false,
+    keepBackgroundAgentsAlive: true,
     browserToolEnabled: true,
     allowRemoteEvaluate: true,
   },
@@ -490,6 +493,28 @@ export function setExtendedPromptCache(enabled: boolean): void {
   const config = loadStoredConfig();
   if (!config) return;
   config.extendedPromptCache = enabled;
+  saveConfig(config);
+}
+
+/**
+ * fork(PLAN-011): Get whether background subagents are kept alive across turns.
+ * When enabled, background agents keep running after a turn ends and idle sessions
+ * wake up when one finishes. Defaults to true (upstream default). The env var
+ * CRAFT_KEEP_BG_AGENTS_ALIVE takes precedence when explicitly set — see
+ * agent/backend/claude/keep-alive-setting.ts for the resolution order.
+ */
+export function getKeepBackgroundAgentsAlive(): boolean {
+  const config = loadStoredConfig();
+  return config?.keepBackgroundAgentsAlive ?? true;
+}
+
+/**
+ * fork(PLAN-011): Set whether background subagents are kept alive across turns.
+ */
+export function setKeepBackgroundAgentsAlive(enabled: boolean): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.keepBackgroundAgentsAlive = enabled;
   saveConfig(config);
 }
 
