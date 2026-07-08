@@ -63,6 +63,7 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [007](LEARNING-007-silent-void-command-handlers-mask-rejection.md) | Void-returning command handlers make rejections resolve as success, hiding the failure | server-core / RPC contract | active |
 | [008](LEARNING-008-node-modules-sdk-drift-forces-async-subagents.md) | node_modules SDK drift past the lockfile silently changes live-spawned Claude Code behavior | agent | active |
 | [009](LEARNING-009-per-app-tsconfig-paths-break-cross-package-reexports.md) | Per-app tsconfig paths silently break cross-package re-exports (TS2305 at consumers) | build/typecheck | active |
+| [010](LEARNING-010-missing-nested-jiti-blocks-pi-agent-server-build.md) | Missing nested `jiti@2.7.0` breaks the pi-agent-server bundle after a Pi SDK bump (`Could not resolve: "jiti/static"`) | build | active |
 
 ## Related skills
 

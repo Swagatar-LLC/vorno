@@ -6,13 +6,15 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.10.5` |
-| Last merged upstream commit | `c9d9a26f` |
-| Merge PR | [#44](https://github.com/Swagatar-LLC/craft-agents-oss/pull/44) |
-| Merge commit on main | `bba36699` |
-| Date synced | 2026-07-03 |
+| Last merged upstream tag | `v0.11.0` |
+| Last merged upstream commit | `f4e172bf` |
+| Merge PR | [#47](https://github.com/Swagatar-LLC/craft-agents-oss/pull/47) |
+| Merge commit on branch | `58e51a7b` |
+| Date synced | 2026-07-08 |
 
 ## Versions covered in last merge
+
+- `v0.11.0` — **Projects + Kanban/Tasks board with a beta Conductor, background-agent keep-alive, Pi SDK 0.80.3.** Introduces workspace-scoped **Projects** (config + assets; sessions bind via `projectId`), a **Kanban/Tasks** board UI, and a beta **Conductor** that runs task specs as in-process orchestrations (new `packages/shared/src/tasks/` module + `packages/server-core/src/tasks/TaskRunner.ts` + `handlers/rpc/{projects,tasks}.ts` + new `SessionManager` Conductor seams `onSessionComplete` / `getSessionFinalText`). Background sub-agents can be kept alive across turns via `CRAFT_KEEP_BG_AGENTS_ALIVE`. **Pi SDK 0.80.3** moves model/provider discovery to the `@earendil-works/pi-ai/compat` entrypoint. **Conflicts (9 files + `bun.lock`):** `bun.lock` (mechanical `--theirs` + `bun install`); `models-pi.ts` (keep our `BACKEND_DISPLAY_NAME`, take upstream `/compat`); `claude-agent.ts` (keep branding + `logSdkCliVersion` + `getModelSupportsFastMode`, take upstream `SDKMessage` + projects/storage imports); `pi-agent.ts` (keep `BACKEND_DISPLAY_NAME`, take upstream `projectContext` arg); `SessionManager.ts` (keep `AnnotationMutationResult` + take upstream `TokenUsage`); `session-manager-interface.ts` (take upstream Conductor seams, keep our `AnnotationMutationResult` return types); `App.tsx` / `atoms/sessions.ts` / `ActiveTasksBar.tsx` / `FreeFormInput.tsx` (take upstream — fork Activity pane dropped). **Fork decision ([ADR-0006](../decisions/0006-pause-vorno-align-0.11-drop-activity-pane.md)):** VORNO paused; fork Activity/orchestration pane (PLAN-007/008/009) removed in favor of upstream's background-task/Conductor system; PLAN-010 paused. **Retained fork features:** token-usage indicator (PLAN-002/003) re-applied onto upstream's refactored `FreeFormInput`; subprocess-env security contract (`DISABLE_GROWTHBOOK=1`, LEARNING-008) intact; config-dir isolation (ADR-0005); branding gate (VOR-3); fast mode (PLAN-006). `CRAFT_KEEP_BG_AGENTS_ALIVE` left default-ON; a user-facing settings toggle follows in a separate PR.
 
 - `v0.10.5` — **Claude Sonnet 5 + Agent SDK 0.3.197.** `claude-sonnet-5` (released 2026-06-30) added to the model picker with a 1M-token context window and adaptive thinking; Sonnet 4.6 retained as previous generation; Bedrock US/EU/Global inference-profile routing and connection defaults wired. Default model unchanged (Opus 4.8). Claude Agent SDK uplifted `0.3.170` → `0.3.197` (Claude Code 2.1.197 parity — the bundled CLI is itself Sonnet 5-aware; includes a Windows CLI subprocess console-flash fix). No upstream breaking changes. **Conflicts:** `bun.lock` (mechanical `--theirs` + `bun install`) and `packages/shared/tests/models.test.ts` (both-added: kept our fork-only `Opus 4.8 registry presence` / fast-mode block alongside upstream's new `Sonnet registry` block). **Fork-side follow-up (same PR, commit `56bb5dd6`):** Claude Code 2.1.197 launches Task subagents **async by default** behind the remote `tengu_amber_heron` GrowthBook gate — the LEARNING-008 failure mode. `buildClaudeSubprocessEnv()` now pins `DISABLE_GROWTHBOOK=1` (gates resolve to compiled-in defaults ⇒ blocking-by-default restored, explicit `run_in_background` preserved, no remote-config influence over spawned-CLI behavior); new `logSdkCliVersion()` logs the spawned CLI version at agent creation and loudly on mid-process change (drift signature); `upstream-sync` skill now re-verifies subagent-launch gating on every SDK bump; regression test `claude-subprocess-env.test.ts` locks the env contract.
 

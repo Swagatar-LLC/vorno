@@ -33,3 +33,4 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0003](0003-canvas-as-paradigm-direction.md) | Canvas as the paradigm direction | accepted |
 | [0004](0004-sessionevent-extensible-union-and-renderer-mirroring.md) | SessionEvent extensible union & renderer mirroring | accepted |
 | [0005](0005-fork-owned-config-dir-vorno-agent.md) | Fork-owned config dir `~/.vorno-agent` + one-time copy migration | accepted |
+| [0006](0006-pause-vorno-align-0.11-drop-activity-pane.md) | Pause VORNO, align to 0.11.x, drop fork Activity pane | accepted |

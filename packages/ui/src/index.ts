@@ -91,6 +91,7 @@ export {
 // UI primitives
 export {
   Spinner,
+  LoadingIndicator,
   SimpleDropdown,
   SimpleDropdownItem,
   PreviewHeader,
@@ -114,6 +115,7 @@ export {
   IslandFollowUpContentView,
   useIslandNavigation,
   type SpinnerProps,
+  type LoadingIndicatorProps,
   type SimpleDropdownProps,
   type SimpleDropdownItemProps,
   type PreviewHeaderProps,
@@ -277,22 +279,6 @@ export {
 
 // Turn utilities (pure functions)
 export * from './components/chat/turn-utils'
-
-// Orchestration panel (shared cross-session activity view + DIR-02 renderer seam)
-export {
-  OrchestrationPanel,
-  DefaultOrchestrationItem,
-  registerOrchestrationItemRenderer,
-  getOrchestrationItemRenderer,
-  type OrchestrationPanelProps,
-  type OrchestrationItemRendererProps,
-  type OrchestrationItemRenderer,
-  type OrchestrationItem,
-  type OrchestrationItemKind,
-  type OrchestrationItemStatus,
-  type OrchestrationSessionGroup,
-  type OrchestrationData,
-} from './components/orchestration'
 
 // Icons
 export {

@@ -75,11 +75,6 @@ import { CHAT_LAYOUT } from "@/config/layout"
 import { collectFileChangesFromActivities, getFirstFileChangeIdForActivity } from "@/lib/file-changes"
 import { resolveBranchNewPanelOption } from "./branching"
 import { handleErrorMessageAction } from "./error-message-actions"
-import { useAtom } from "jotai"
-import {
-  orchestrationScrollTargetAtom,
-  resolveToolUseTurnIndex,
-} from "@/atoms/orchestration"
 
 // ============================================================================
 // CSS Custom Highlight API helper
@@ -1463,77 +1458,6 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     }
   }, [assistantTurnIndexByMessageId, allTurns, visibleTurnCount])
 
-  // --- Orchestration click-to-jump (PLAN-009 item 4) ---------------------
-  //
-  // When an Activity-panel row is clicked, OrchestrationRail focuses this
-  // session AND sets `orchestrationScrollTargetAtom`. Here (only for the active
-  // session) we resolve the originating tool-use → its assistant turn and scroll
-  // to it, mirroring `scrollToFollowUpTurn` (virtualization-aware), then CLEAR
-  // the atom so it fires exactly once. Keyed on session id + target + allTurns so
-  // it runs AFTER the session switch lands and after turns are grouped.
-  const [orchestrationScrollTarget, setOrchestrationScrollTarget] = useAtom(
-    orchestrationScrollTargetAtom,
-  )
-  useEffect(() => {
-    const target = orchestrationScrollTarget
-    if (!target || !session) return
-    // Only the active/target session's ChatDisplay handles + clears it. Other
-    // mounted ChatDisplays (if any) must not consume someone else's target.
-    if (target.sessionId !== session.id) return
-
-    // Resolve the tool-use → assistant turn index. Best-effort: if we cannot
-    // localize the tool-use in the current turns (e.g. virtualized data not yet
-    // present, or no toolUseId), we still clear the target and no-op gracefully
-    // (NEVER crash, NEVER jump to the wrong session — we are already on the
-    // right session).
-    const targetTurnIndex = target.toolUseId
-      ? resolveToolUseTurnIndex(allTurns, target.toolUseId)
-      : -1
-
-    // Consume the target regardless so it fires once.
-    setOrchestrationScrollTarget(null)
-
-    if (targetTurnIndex < 0) return
-
-    const ensureVisibleCount = allTurns.length - targetTurnIndex
-
-    const scrollToTurn = () => {
-      const targetTurn = allTurns[targetTurnIndex]
-      if (!targetTurn) return false
-      const turnKey = getTurnKey(targetTurn)
-      const turnContainer = turnRefs.current.get(turnKey)
-      if (!turnContainer) return false
-      turnContainer.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      return true
-    }
-
-    if (ensureVisibleCount > visibleTurnCount) {
-      setVisibleTurnCount(ensureVisibleCount)
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (!scrollToTurn()) {
-            setTimeout(() => {
-              void scrollToTurn()
-            }, 80)
-          }
-        })
-      })
-      return
-    }
-
-    if (!scrollToTurn()) {
-      requestAnimationFrame(() => {
-        void scrollToTurn()
-      })
-    }
-  }, [
-    orchestrationScrollTarget,
-    session,
-    allTurns,
-    visibleTurnCount,
-    setOrchestrationScrollTarget,
-  ])
-
   const handleFollowUpChipClick = useCallback((item: {
     messageId: string
     annotationId: string
@@ -1634,7 +1558,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                           } as React.CSSProperties}
                         >
                           <AlertTriangle className="mx-auto mb-2 h-4 w-4 text-destructive/70" />
-                          <div className="text-sm font-medium text-destructive">Failed to load conversation</div>
+                          <div className="text-sm font-medium text-destructive">{t("chat.failedToLoadConversation")}</div>
                           <p className="mt-1 break-words text-xs text-destructive/70">{messagesLoadError}</p>
                           {onRetryMessagesLoad && (
                             <button
@@ -1643,7 +1567,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                               disabled={messagesRetrying}
                               className="mt-3 rounded border border-destructive/20 px-2 py-0.5 text-xs text-destructive/70 transition-colors hover:border-destructive/40 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              {messagesRetrying ? 'Retrying…' : 'Retry'}
+                              {messagesRetrying ? t("common.retrying") : t("common.retry")}
                             </button>
                           )}
                         </div>
@@ -2032,7 +1956,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
             tasks={backgroundTasks}
             sessionId={session.id}
             sessionFolderPath={sessionFolderPath}
-            onKillTask={(taskId) => killTask(taskId, backgroundTasks.find(t => t.id === taskId)?.type ?? 'shell')}
+            onKillTask={(taskId) => killTask(taskId, backgroundTasks.find(t => t.id === taskId)?.type === 'shell' ? 'shell' : 'agent')}
             onInsertMessage={onInputChange}
             sessionLabels={session.labels}
             labels={labels}

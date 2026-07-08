@@ -1,6 +1,6 @@
 {
   "name": "@craft-agent/ui",
-  "version": "0.10.5",
+  "version": "0.11.0",
   "license": "Apache-2.0",
   "description": "Shared React UI components for Craft Agents - session viewer, chat display, markdown rendering",
   "type": "module",
@@ -12,8 +12,6 @@
     "./chat/SessionViewer": "./src/components/chat/SessionViewer.tsx",
     "./chat/TurnCard": "./src/components/chat/TurnCard.tsx",
     "./chat/turn-utils": "./src/components/chat/turn-utils.ts",
-    "./orchestration": "./src/components/orchestration/index.ts",
-    "./orchestration/types": "./src/components/orchestration/types.ts",
     "./markdown": "./src/components/markdown/index.ts",
     "./annotations/follow-up-state": "./src/components/annotations/follow-up-state.ts",
     "./ui/drawer": "./src/components/ui/drawer.tsx",

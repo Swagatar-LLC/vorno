@@ -2,9 +2,9 @@
 
 Files we own that differ from `upstream/main`. Refresh via `[skill:upstream-delta-report]`.
 
-**Last refresh:** 2026-07-03 (post-v0.10.5 merge, PR #44)
-**Method:** `git diff --name-only upstream/main...main`
-**Total files in delta:** 188 (up from 122 on 2026-05-28 — growth is mostly the orchestration activity panel (PLAN-007/009), per-session fast mode (PLAN-006), live model enumeration (PLAN-010 WIP), and roadmap/governance docs)
+**Last refresh:** 2026-07-08 (post-v0.11.0 merge)
+**Method:** `git diff --name-only upstream/main...HEAD`
+**Total files in delta:** 227 (the **code** delta SHRINKS this cycle — the fork Activity/orchestration panel is gone: `atoms/orchestration.ts`, `OrchestrationRail.tsx`, and the whole `packages/ui/src/components/orchestration/` dir removed per ADR-0006. The net file count is higher only because roadmap/governance docs grew: 5 plans moved into `plans/archived/`, ADR-0006 added, and this merge's tracking updates. The remaining `orchestration`-named entries in the delta are the **archived roadmap markdown**, retained for research — no orchestration code ships. Protocol `channels.ts` / `events.ts` / `routing.ts` now match upstream byte-for-byte (empty diff); only `protocol/dto.ts` carries a fork delta (+28 lines: `TokenUsageThresholdsDto`, `tokenUsageThresholds`, `tokenUsageModelOverrides` — PLAN-003). Remaining code delta is dominated by the dual-transport server, config-dir isolation, branding, the token indicator, fast mode, and the subprocess-env security keeps.)
 
 ## Major owned components
 
