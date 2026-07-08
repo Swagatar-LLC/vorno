@@ -93,8 +93,52 @@ This broke `electron:build`'s post-bundle **verification** step and husky's `pre
 - Bake the winning recipe (single-arch + `NODE_OPTIONS` + `node@22` on PATH) into `.agents/skills/electron-prod-build/SKILL.md` so agents don't rediscover it.
 - Consider adding a `bunfig.toml` `[install] linker = "hoisted"` if the symlink store causes further collector-adjacent grief (flattens the tree, removes cycles). Not needed once on 26.15.x, but it's the fallback lever (was ATTEMPT 3 in the triage ladder).
 
+## Part 2 — the 26.15.x build packages but the app won't launch ("Cannot find module")
+
+Fixing the OOM was necessary but **not sufficient**. The 26.15.x build produces a `.dmg`, but launching the packaged app crashes immediately:
+
+```
+Error: Cannot find module '@anthropic-ai/claude-agent-sdk'
+  (from Contents/Resources/app/dist/main.cjs)
+```
+
+### Part 2 root cause
+
+Two independent facts combine:
+
+1. `apps/electron/build:main` bundles the main process with esbuild but **externalizes the SDK**: `--external:@anthropic-ai/claude-agent-sdk`. So `main.cjs` keeps a **static top-level `require("@anthropic-ai/claude-agent-sdk")`** and depends on it being present in `node_modules` at runtime.
+2. `electron-builder.yml` ships that SDK (plus the arch-matched native binary alias `claude-agent-sdk-binary` and `@vscode/ripgrep`) via **`extraResources`** with `from: node_modules/@anthropic-ai/claude-agent-sdk` — **not** via the file collector (`files:` explicitly excludes `node_modules/**`, because electron-builder auto-excludes node_modules since v20.15.2).
+
+Under the repo's bun **hoisted** linker (`bunfig.toml → linker = "hoisted"`), those packages are installed at the **monorepo root** `node_modules`, so `apps/electron/node_modules/@anthropic-ai/…` does not exist. electron-builder logs `file source doesn't exist from=…/node_modules/@anthropic-ai/claude-agent-sdk` and **silently skips** the missing `extraResources`, producing a bundle with **no SDK** → runtime `require` throws at launch. (The earlier "empty collection" symptom is the same missing-source condition, not a broken files filter.)
+
+Corollary: **`bun run electron:dist:dev:mac` alone can never produce a runnable app** on this repo. It only runs electron-builder; it does not stage the hoisted deps into `apps/electron/node_modules` first. The 172 MB dmg produced in Part 1 packaged fine but was **not launchable** — a runnable arm64 dmg is ~259 MB because it includes the ~217 MB `claude` native binary that staging brings in.
+
+### Part 2 fix — use the upstream-canonical staging path
+
+`apps/electron/scripts/build-dmg.sh` (aka `bun run --cwd apps/electron dist:mac`) exists precisely to stage the hoisted deps into `apps/electron/node_modules` before electron-builder runs: it copies the SDK core from root `node_modules`, resolves the arch-matched native binary to the stable `claude-agent-sdk-binary` alias, copies `@vscode/ripgrep`, copies the interceptor sources, and downloads the pinned vendored Bun — then packages.
+
+Run it adapted for unsigned local use (no `op`/`.env` needed; the script's 1Password + signing branches no-op when absent; the forced `CSC_IDENTITY_AUTO_DISCOVERY=true` finds no valid Developer ID and cleanly skips signing):
+
+```bash
+PATH="/opt/homebrew/opt/node@22/bin:$PATH" \
+  CRAFT_DEV_RUNTIME=1 NODE_OPTIONS=--max-old-space-size=16384 \
+  bash apps/electron/scripts/build-dmg.sh arm64
+```
+
+Verified end-to-end: bundle now contains `Contents/Resources/app/node_modules/@anthropic-ai/claude-agent-sdk` (v0.3.197), `claude-agent-sdk-binary/claude` (217 MB), and `@vscode/ripgrep/bin/rg`; `require.resolve('@anthropic-ai/claude-agent-sdk')` from `dist/` resolves into the bundle; the packaged main process boots through full init (shell-env → i18n → config-dir → CLI tools → proxy) with **no "Cannot find module"**.
+
+Gotchas hit while running it: `set -e` + a stale `release/mac-arm64` made the initial `rm -rf` fail with "Directory not empty" — clear `apps/electron/{release,vendor,packages,node_modules/@anthropic-ai}` by hand and re-run. And the script calls `bun install` / `npx electron-builder`, so keep `node@22` on PATH (see the node@25/simdjson gotcha above).
+
+### Part 2 prevention
+
+- The `electron-prod-build` skill's flavor table was corrected: **`electron:dist:dev:mac` does NOT yield a shareable/runnable artifact** — use `dist:mac` (build-dmg.sh) for anything you launch or hand to a user.
+- If a one-command dev-runtime packaging flow is ever wanted, it must first stage the SDK/ripgrep into `apps/electron/node_modules` (the build-dmg.sh steps) — a bare electron-builder invocation will always ship an SDK-less bundle under the hoisted linker.
+
 ## References
 
 - electron-builder collector cycle-guard fixes: 26.3.4 / 26.9.1 / 26.11.0 line; stricter-collector follow-ups tracked in electron-builder issues #9654 and #9445.
+- `apps/electron/scripts/build-dmg.sh` — canonical staging + packaging path (Part 2).
+- `apps/electron/electron-builder.yml` — `extraResources` SDK staging + `files: "!node_modules/**"` (why staging is mandatory).
+- electron-builder auto-excludes `node_modules` from `files` since v20.15.2: https://github.com/electron-userland/electron-builder/issues/3104
 - [`roadmap/learnings/LEARNING-001`](LEARNING-001-stale-nested-mariozechner-deps.md) — sibling "bun monorepo tree confuses an external tool" failure mode.
 - [`roadmap/upstream/compatibility.md`](../upstream/compatibility.md) — why the `^26.0.12` pin means 26.15.x is a lockfile-only, in-contract bump.

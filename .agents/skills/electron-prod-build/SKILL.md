@@ -23,7 +23,9 @@ There are three flavors. Pick by what the user actually wants to do:
 | **Build only** | `bun run electron:build` | Optimized `apps/electron/dist/` assets | User wants to launch it themselves (Finder, separate terminal, repeat runs) |
 | **Build + launch (fork)** | `bun run electron:prod` | Builds, then launches the fork's prod bundle with `CRAFT_CONFIG_DIR=$HOME/.craft-agent-swagatar` already set, using the repo-local Electron binary (no global install) | The default for hands-on QA on this fork. One-shot smoke test that mirrors the shipped build *and* keeps the fork's config dir isolated from upstream stable |
 | **Build + launch (raw)** | `bun run electron:start` | Same build, but launches with whatever `CRAFT_CONFIG_DIR` is already in your shell (so it falls through to upstream's default) | Only when you explicitly want to point the prod-mode launch at a different config dir (e.g. testing against an upstream-shaped workspace) |
-| **Build + package** (`.app` / `.dmg`, unsigned) | `bun run electron:dist:dev:mac` (mac) / `electron:dist:dev:win` (win) | Real installer in `apps/electron/dist/`, but skips Apple signing/notarization (`CSC_IDENTITY_AUTO_DISCOVERY=false`, `CRAFT_DEV_RUNTIME=1`) | User wants an artifact they can share, drag to Applications, or test exactly the way an end user would launch it |
+| **Build + package** (`.app` / `.dmg`, unsigned) | mac: `bash apps/electron/scripts/build-dmg.sh arm64` (aka `--cwd apps/electron dist:mac`) / win: `electron:dist:win` | Runnable installer in `apps/electron/release/` | User wants an artifact they can share, drag to Applications, or launch the way an end user would |
+
+> **⚠️ Do NOT use `electron:dist:dev:mac` for a shareable/runnable artifact (2026-07-08, LEARNING-011 Part 2).** It runs electron-builder without **staging** the SDK, so under the repo's bun hoisted linker the `extraResources` sources (`node_modules/@anthropic-ai/claude-agent-sdk`, the `claude-agent-sdk-binary` native alias, `@vscode/ripgrep`) don't exist in `apps/electron/node_modules`, electron-builder silently skips them, and the packaged app crashes at launch with `Cannot find module '@anthropic-ai/claude-agent-sdk'`. **`build-dmg.sh` is the canonical path** — it stages those deps first. A correct runnable arm64 dmg is ~259 MB (includes the ~217 MB `claude` binary); a broken SDK-less one is ~172 MB. Output lands in `apps/electron/release/`, not `dist/`.
 
 The fork uses `CRAFT_CONFIG_DIR=$HOME/.craft-agent-swagatar` so it doesn't collide with upstream stable. `electron:dev` and `electron:prod` set it automatically; `electron:start` does **not** — it's the bare upstream-style launch and falls through to whatever's in your shell.
 
@@ -74,13 +76,14 @@ Same build, but does **not** set `CRAFT_CONFIG_DIR` and uses a bare `electron ap
 ### Build + package (unsigned)
 
 ```bash
-# macOS
-bun run electron:dist:dev:mac
+# macOS — canonical staging path (build-dmg.sh). Keep node@22 on PATH.
+PATH="/opt/homebrew/opt/node@22/bin:$PATH" CRAFT_DEV_RUNTIME=1 NODE_OPTIONS=--max-old-space-size=16384 \
+  bash apps/electron/scripts/build-dmg.sh arm64
 # Windows
 bun run electron:dist:dev:win
 ```
 
-These set `CSC_IDENTITY_AUTO_DISCOVERY=false` and `CRAFT_DEV_RUNTIME=1` so electron-builder skips Apple/Microsoft signing — the resulting `.app` / `.dmg` / installer will Gatekeeper-warn on first open but is otherwise identical to what ships. Output: `apps/electron/dist/<name>-<version>-<arch>.dmg` (mac) or the win installer.
+`build-dmg.sh` stages the SDK core + arch-matched native `claude` binary (as the `claude-agent-sdk-binary` alias) + `@vscode/ripgrep` + interceptor sources + vendored Bun into `apps/electron/node_modules`, then runs electron-builder. It skips Apple signing automatically when no valid Developer ID / `.env` creds exist (the resulting `.app` / `.dmg` Gatekeeper-warns on first open — right-click → Open — but is otherwise what ships). **Output: `apps/electron/release/Craft-Agents-<arch>.dmg`** (not `dist/`). If a stale `release/` makes the script's `rm -rf` fail with "Directory not empty" under `set -e`, clear `apps/electron/{release,vendor,packages,node_modules/@anthropic-ai}` by hand and re-run.
 
 Don't reach for the **un-suffixed** `electron:dist:mac` / `electron:dist:win` unless the user explicitly wants signed/notarized output — those require Apple/Microsoft credentials in `.env` (or 1Password CLI for the DMG script).
 

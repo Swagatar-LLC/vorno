@@ -11,6 +11,14 @@ concurrency:
   group: validate-pr-${{ github.ref }}
   cancel-in-progress: true
 
+# @vscode/ripgrep's postinstall downloads the `rg` binary from api.github.com.
+# Unauthenticated requests share the runner's public IP and hit GitHub's 60/hr
+# rate limit → intermittent `Download failed with 403` during bun install.
+# Exposing the auto-provided GITHUB_TOKEN authenticates the download (1000/hr
+# per-repo). vscode-ripgrep's download.js reads this env var directly.
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
   # ---------------------------------------------------------------------------
   # Typecheck — all packages that pass (excludes apps/electron — broken upstream)
