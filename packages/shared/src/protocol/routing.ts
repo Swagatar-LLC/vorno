@@ -162,6 +162,10 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.rtk.GET_STATUS,
   RPC_CHANNELS.rtk.GET_GAIN,
 
+  // fork(PLAN-011): background-agent keep-alive setting — local-only, reads app config
+  RPC_CHANNELS.bgAgents.GET_KEEP_ALIVE,
+  RPC_CHANNELS.bgAgents.SET_KEEP_ALIVE,
+
   // tools — local tool settings
   RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
   RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
