@@ -15,6 +15,8 @@ import {
 import { Icon_Home, Spinner } from '@craft-agent/ui'
 
 import * as storage from '@/lib/local-storage'
+import { ContextUsageIndicator } from '@/components/chat/ContextUsageIndicator'
+import { useTokenUsageThresholds } from '@/hooks/useTokenUsageThresholds'
 import { Button } from '@/components/ui/button'
 import {
   InlineSlashCommand,
