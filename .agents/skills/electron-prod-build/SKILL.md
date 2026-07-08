@@ -84,6 +84,21 @@ These set `CSC_IDENTITY_AUTO_DISCOVERY=false` and `CRAFT_DEV_RUNTIME=1` so elect
 
 Don't reach for the **un-suffixed** `electron:dist:mac` / `electron:dist:win` unless the user explicitly wants signed/notarized output — those require Apple/Microsoft credentials in `.env` (or 1Password CLI for the DMG script).
 
+> **Packaging OOM — read this before debugging a heap crash (2026-07-08, LEARNING-011).**
+> If `electron:dist:dev:mac` dies with `FATAL ERROR: Ineffective mark-compacts near heap limit` / `Abort trap: 6` (exit 134) during "utilizing NPM node module collector", it's electron-builder's pre-cycle-guard collector looping on bun's symlink store — **not** a Node version or heap-size problem (reproduces on Node 22 *and* 25, at 4/8/16 GB). Fix, in order:
+> 1. Ensure `electron-builder` resolves to **≥ 26.15.x** (`cat node_modules/electron-builder/package.json | grep version`). Upstream pins `^26.0.12`, so `bun update electron-builder` is a lockfile-only, in-contract bump to the collector that fixed this (`file traversal collector`).
+> 2. Build in two explicit steps with a **working Node on PATH** and **single-arch + big heap**:
+> ```bash
+> # compile (Node 22 so the post-build verify step works — see gotcha below)
+> PATH="/opt/homebrew/opt/node@22/bin:$PATH" CSC_IDENTITY_AUTO_DISCOVERY=false CRAFT_DEV_RUNTIME=1 bun run electron:build
+> # package — electron-builder lives in the REPO ROOT node_modules/.bin
+> cd apps/electron && NODE_OPTIONS=--max-old-space-size=16384 CSC_IDENTITY_AUTO_DISCOVERY=false \
+>   PATH="/opt/homebrew/opt/node@22/bin:$PATH" ../../node_modules/.bin/electron-builder --config electron-builder.yml --mac --arm64
+> ```
+> Artifacts land in **`apps/electron/release/`** (`Craft-Agents-arm64.dmg`, `release/mac-arm64/*.app`), not `dist/`. The config emits both arches even with `--arm64`.
+>
+> **Gotcha — broken Homebrew `node` 25:** if bare `node` aborts with `Library not loaded: .../libsimdjson.29.dylib`, the default Homebrew node is broken (simdjson drift) and it takes down `electron:build`'s verify step and husky's `prepare` hook. Prefix installs/builds with `PATH="/opt/homebrew/opt/node@22/bin:$PATH"`; permanent fix is `brew reinstall node`.
+
 ## Launching the build manually
 
 If you went the build-only route, the cleanest way to launch is:
