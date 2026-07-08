@@ -14,7 +14,7 @@
  */
 
 import { BACKEND_DISPLAY_NAME } from '../branding.ts';
-import { getProviders, getModels } from '@earendil-works/pi-ai';
+import { getProviders, getModels } from '@earendil-works/pi-ai/compat';
 import type { KnownProvider, Model, Api } from '@earendil-works/pi-ai';
 import type { ModelDefinition } from './models.ts';
 
