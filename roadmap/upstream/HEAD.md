@@ -8,7 +8,7 @@ Snapshot of our most recent upstream sync.
 |-------|-------|
 | Last merged upstream tag | `v0.11.0` |
 | Last merged upstream commit | `f4e172bf` |
-| Merge PR | _PR link pending — filled in final commit_ |
+| Merge PR | [#47](https://github.com/Swagatar-LLC/craft-agents-oss/pull/47) |
 | Merge commit on branch | `58e51a7b` |
 | Date synced | 2026-07-08 |
 
