@@ -1,5 +1,5 @@
 ---
-id: LEARNING-014
+id: LEARNING-015
 title: Smoke-verifying the packaged app needs userData isolation and can't rely on logs
 date: 2026-07-09
 status: active
@@ -8,7 +8,7 @@ related-plans: [PLAN-012]
 related-decisions: []
 ---
 
-# LEARNING-014 — Smoke-verifying the packaged app needs userData isolation and can't rely on logs
+# LEARNING-015 — Smoke-verifying the packaged app needs userData isolation and can't rely on logs
 
 Two non-obvious things bit while running the PLAN-012 / VOR-42 packaged-build smoke checklist against a real DMG while Jeff's daily-driver app was also running. Neither is derivable from an error message — both surface as *silence*.
 

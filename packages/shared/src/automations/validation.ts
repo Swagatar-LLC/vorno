@@ -19,6 +19,10 @@ import { Cron } from 'croner';
 import type { ValidationResult, ValidationIssue } from '../config/validators.ts';
 import type { AutomationsConfig, AutomationsValidationResult } from './types.ts';
 import { MAX_CONDITION_DEPTH_EXCLUSIVE, CONDITION_DEPTH_WARNING_THRESHOLD } from './conditions-constants.ts';
+import { isValidJsonPathLite } from './webhook-ingest/jsonpath-lite.ts';
+
+/** fork(PLAN-014): action types that are only valid on WebhookReceived matchers (v1). */
+const WEBHOOK_ONLY_ACTION_TYPES = new Set(['set-status', 'set-labels', 'send-message']);
 
 /**
  * Validate automations config (internal - returns parsed config)
@@ -58,9 +62,19 @@ function runMatcherSemanticValidations(
 ): void {
   for (const [event, matchers] of Object.entries(config.automations)) {
     if (!matchers) continue;
+    // fork(PLAN-014): slug uniqueness is per-workspace, tracked across this
+    // event's matchers (hooks only live on WebhookReceived).
+    const seenHookSlugs = new Set<string>();
     for (let i = 0; i < matchers.length; i++) {
       const matcher = matchers[i];
       if (!matcher) continue;
+
+      // ----------------------------------------------------------------------
+      // fork(PLAN-014): hook ↔ event exclusivity, slug uniqueness, matchField,
+      // and action-type scoping.
+      // ----------------------------------------------------------------------
+      validateWebhookMatcher(matcher, event, i, seenHookSlugs, file, errors);
+
       // Warn about allow-all permission mode
       if (matcher.permissionMode === 'allow-all') {
         warnings.push({
@@ -174,6 +188,94 @@ function runMatcherSemanticValidations(
       // Validate conditions
       if (matcher.conditions && Array.isArray(matcher.conditions)) {
         validateConditionsArray(matcher.conditions, `automations.${event}[${i}].conditions`, event, file, errors, warnings, 0);
+      }
+    }
+  }
+}
+
+/**
+ * fork(PLAN-014): semantic validation of webhook-specific matcher fields.
+ * - `hook` is required on WebhookReceived matchers and rejected on all others
+ *   (mirror of the cron↔SchedulerTick rule).
+ * - hook slugs are unique per workspace (per event array here).
+ * - `matchField` must be valid JSONPath-lite and is WebhookReceived-only.
+ * - the new session-mutation action types are gated to WebhookReceived (v1).
+ */
+function validateWebhookMatcher(
+  matcher: import('./types.ts').AutomationMatcher,
+  event: string,
+  i: number,
+  seenHookSlugs: Set<string>,
+  file: string,
+  errors: ValidationIssue[],
+): void {
+  const isWebhookEvent = event === 'WebhookReceived';
+
+  if (isWebhookEvent) {
+    if (!matcher.hook) {
+      errors.push({
+        file,
+        path: `automations.${event}[${i}].hook`,
+        message: 'WebhookReceived matchers require a "hook" registration',
+        severity: 'error',
+        suggestion: 'Add a hook with a slug and tokenHash (mint one via mint-hook-token.ts)',
+      });
+    } else {
+      const slug = matcher.hook.slug;
+      if (seenHookSlugs.has(slug)) {
+        errors.push({
+          file,
+          path: `automations.${event}[${i}].hook.slug`,
+          message: `Duplicate hook slug "${slug}" — slugs must be unique per workspace`,
+          severity: 'error',
+          suggestion: 'Rename one of the hooks to a unique slug',
+        });
+      } else {
+        seenHookSlugs.add(slug);
+      }
+    }
+  } else if (matcher.hook) {
+    errors.push({
+      file,
+      path: `automations.${event}[${i}].hook`,
+      message: `"hook" is only valid on WebhookReceived matchers, not ${event}`,
+      severity: 'error',
+      suggestion: 'Move this matcher under the WebhookReceived event, or remove the hook field',
+    });
+  }
+
+  // matchField — WebhookReceived-only, valid JSONPath-lite
+  if (matcher.matchField !== undefined) {
+    if (!isWebhookEvent) {
+      errors.push({
+        file,
+        path: `automations.${event}[${i}].matchField`,
+        message: `"matchField" is only valid on WebhookReceived matchers, not ${event}`,
+        severity: 'error',
+      });
+    } else if (!isValidJsonPathLite(matcher.matchField)) {
+      errors.push({
+        file,
+        path: `automations.${event}[${i}].matchField`,
+        message: `Invalid matchField "${matcher.matchField}" — expected JSONPath-lite (e.g. $.type)`,
+        severity: 'error',
+        suggestion: 'Use $, $.field, $.a.b, or $.items[0].id',
+      });
+    }
+  }
+
+  // Session-mutation action types are WebhookReceived-only in v1.
+  if (!isWebhookEvent && Array.isArray(matcher.actions)) {
+    for (let j = 0; j < matcher.actions.length; j++) {
+      const action = matcher.actions[j] as { type?: string } | undefined;
+      if (action && typeof action.type === 'string' && WEBHOOK_ONLY_ACTION_TYPES.has(action.type)) {
+        errors.push({
+          file,
+          path: `automations.${event}[${i}].actions[${j}]`,
+          message: `Action type "${action.type}" is only supported on WebhookReceived matchers (v1)`,
+          severity: 'error',
+          suggestion: 'Use these actions under the WebhookReceived event',
+        });
       }
     }
   }

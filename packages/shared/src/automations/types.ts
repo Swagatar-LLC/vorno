@@ -19,7 +19,10 @@ export type AppEvent =
   | 'PermissionModeChange'
   | 'FlagChange'
   | 'SessionStatusChange'
-  | 'SchedulerTick';
+  | 'SchedulerTick'
+  // fork(PLAN-014): inbound webhook tick with payload. Emitted on the
+  // WorkspaceEventBus by the receiver in `webhook-ingest/`.
+  | 'WebhookReceived';
 
 /** Agent events - passed to Claude SDK */
 export type AgentEvent =
@@ -41,7 +44,8 @@ export type AutomationEvent = AppEvent | AgentEvent;
 
 export const APP_EVENTS: AppEvent[] = [
   'LabelAdd', 'LabelRemove', 'LabelConfigChange',
-  'PermissionModeChange', 'FlagChange', 'SessionStatusChange', 'SchedulerTick'
+  'PermissionModeChange', 'FlagChange', 'SessionStatusChange', 'SchedulerTick',
+  'WebhookReceived', // fork(PLAN-014)
 ];
 
 export const AGENT_EVENTS: AgentEvent[] = [
@@ -104,7 +108,131 @@ export interface WebhookAction {
   auth?: WebhookAuth;
 }
 
-export type AutomationAction = PromptAction | WebhookAction;
+// ============================================================================
+// Session Actions (fork(PLAN-014) — M2 action vocabulary)
+// ============================================================================
+
+/**
+ * Selects which existing session an action targets. Exactly one of `id` /
+ * `label` is used; string values support `$ENV` expansion and `$.jsonpath`
+ * extraction from the webhook body (resolved by the handler before delivery).
+ */
+export interface SessionTargetSelector {
+  /** Explicit session id (literal, `$ENV`, or `$.jsonpath` into the payload). */
+  id?: string;
+  /**
+   * A label (or `id::value`). Resolves to the most recently active session
+   * carrying that label. Resolution is host-side (needs a workspace scan).
+   */
+  label?: string;
+}
+
+/** Set the status of an existing session. */
+export interface SetStatusAction {
+  type: 'set-status';
+  session: SessionTargetSelector;
+  status: string;
+  /**
+   * When false (default), a closed status (`done`/`cancelled`) is rejected —
+   * mirrors the house rule that agents never close tasks. `true` is explicit
+   * user intent at registration time.
+   */
+  allowClosed?: boolean;
+}
+
+/** Add and/or remove labels on an existing session. */
+export interface SetLabelsAction {
+  type: 'set-labels';
+  session: SessionTargetSelector;
+  /** Labels to add (supports valued `id::value` entries). */
+  add?: string[];
+  /** Labels to remove. */
+  remove?: string[];
+}
+
+/** Send a message to an existing session. */
+export interface SendMessageAction {
+  type: 'send-message';
+  session: SessionTargetSelector;
+  message: string;
+}
+
+/** The three new session-mutation actions. */
+export type SessionAction = SetStatusAction | SetLabelsAction | SendMessageAction;
+
+export type AutomationAction =
+  | PromptAction
+  | WebhookAction
+  | SetStatusAction
+  | SetLabelsAction
+  | SendMessageAction;
+
+// ============================================================================
+// Hook Registration (fork(PLAN-014))
+// ============================================================================
+
+/** Optional HMAC verification (Phase 2 — parsed & validated in Phase 1, enforced later). */
+export interface HookVerification {
+  type: 'hmac-sha256';
+  /** Env var holding the shared secret (never stored in automations.json). */
+  secretEnv: string;
+  /** Header carrying the provider signature. */
+  signatureHeader: string;
+  /** Replay tolerance for signed timestamps, in ms. */
+  timestampToleranceMs?: number;
+}
+
+/** Where to read the idempotency key from. */
+export interface HookIdempotencyKey {
+  source: 'header' | 'body';
+  /** Header name, or JSONPath-lite expression into the body. */
+  name: string;
+}
+
+/** Debounce/coalesce config (Phase 2). */
+export interface HookDebounce {
+  windowMs: number;
+  maxWaitMs?: number;
+  strategy?: 'trailing' | 'collect';
+  debounceKey?: string;
+}
+
+/** Per-hook rate limit (Phase 1). */
+export interface HookRateLimit {
+  perMinute: number;
+  burst?: number;
+}
+
+/** Per-hook concurrency guard (Phase 2). */
+export interface HookConcurrency {
+  maxActiveSessions: number;
+  overflow?: 'queue' | 'coalesce' | 'drop';
+}
+
+/**
+ * Hook registration — to `WebhookReceived` what `cron` is to `SchedulerTick`.
+ * Lives on the matcher; the endpoint token is hashed at rest.
+ */
+export interface HookConfig {
+  /** URL segment; unique per workspace; `[a-z0-9-]{1,64}`. */
+  slug: string;
+  /** Capability-URL token, hashed at rest (`sha256:<hex64>`). */
+  tokenHash: string;
+  /** Display-only token prefix (e.g. `craft_whk_...f3a`). */
+  tokenPrefix?: string;
+  /** Optional HMAC verification (Phase 2). */
+  verification?: HookVerification;
+  /** Idempotency key extraction (falls back to body SHA-256 when omitted). */
+  idempotencyKey?: HookIdempotencyKey;
+  /** Debounce/coalesce (Phase 2). */
+  debounce?: HookDebounce;
+  /** Per-hook rate limit (Phase 1). */
+  rateLimit?: HookRateLimit;
+  /** Concurrency guard (Phase 2). */
+  concurrency?: HookConcurrency;
+  /** Body size cap in bytes (defaults to the receiver default). */
+  bodyCapBytes?: number;
+}
 
 // ============================================================================
 // Condition Types
@@ -162,6 +290,16 @@ export interface AutomationMatcher {
   matcher?: string;
   /** Cron expression for SchedulerTick events (5-field format) */
   cron?: string;
+  /**
+   * fork(PLAN-014): hook registration — required on `WebhookReceived` matchers,
+   * rejected on all other events (mirror of the cron↔SchedulerTick rule).
+   */
+  hook?: HookConfig;
+  /**
+   * fork(PLAN-014): JSONPath-lite expression selecting the field of the webhook
+   * body that `matcher` is tested against (e.g. `$.type`). WebhookReceived only.
+   */
+  matchField?: string;
   /** IANA timezone for cron evaluation (e.g., "Europe/Budapest", "America/New_York") */
   timezone?: string;
   /** Permission mode for sessions created by prompt actions. */
@@ -273,6 +411,34 @@ export interface AutomationResult {
   results: ActionExecutionResult[];
   /** Prompts that should be executed by Craft Agent (with metadata) */
   pendingPrompts: PendingPrompt[];
+}
+
+/**
+ * fork(PLAN-014): a resolved session-mutation action ready for the host to
+ * execute. The handler computes (expands `$ENV` and `$.jsonpath`); the host
+ * executes (resolves label→session, validates, writes to disk).
+ */
+export interface PendingSessionAction {
+  /** Originating matcher ID (for history correlation). */
+  matcherId?: string;
+  /** Human-readable automation name. */
+  automationName?: string;
+  /** The action kind. */
+  type: 'set-status' | 'set-labels' | 'send-message';
+  /** Target selector with `$ENV`/`$.jsonpath` already expanded to literals. */
+  target: SessionTargetSelector;
+  /** set-status */
+  status?: string;
+  /** set-status: allow closing statuses (done/cancelled). */
+  allowClosed?: boolean;
+  /** set-labels */
+  add?: string[];
+  remove?: string[];
+  /** send-message */
+  message?: string;
+  /** Correlation to the originating webhook delivery. */
+  hookId?: string;
+  eventId?: string;
 }
 
 // ============================================================================

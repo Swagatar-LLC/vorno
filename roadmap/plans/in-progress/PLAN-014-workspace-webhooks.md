@@ -1,7 +1,7 @@
 ---
 id: PLAN-014
 title: Per-workspace webhooks
-status: planned
+status: in-progress
 direction: none
 owner: jh
 created: 2026-07-08
@@ -356,3 +356,4 @@ Parked: VOR-36 (IAM/SSO research for the hosted management plane) — excluded f
 ## Status log
 
 - `2026-07-08` — created in `planned/`; ported from the approved 2026-07-06 Notion design spec (VOR-40); spec references re-verified against main @ `ec74ea3e`.
+- `2026-07-08` — moved from planned to in-progress; Phase 1 (VOR-33) implementation started in worktree branch `jh/2026-07-08_plan-014-webhooks-impl`.

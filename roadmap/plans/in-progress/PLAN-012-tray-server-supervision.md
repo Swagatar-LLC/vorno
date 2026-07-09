@@ -291,7 +291,7 @@ Ran the §8 checklist against a real packaged arm64 DMG built with the canonical
 - Staging verified present in the bundle: `@anthropic-ai/claude-agent-sdk` v0.3.197, `@anthropic-ai/claude-agent-sdk-binary/claude` (224 MB native), `@vscode/ripgrep/bin/rg`, `vendor/bun` (57.5 MB), `dist/main.cjs` (43.7 MB). No "Cannot find module" at launch.
 - Bundled runtime: **Electron 39.2.7 / Node 22.21.1** (queried via `ELECTRON_RUN_AS_NODE=1`).
 
-### Method notes (see LEARNING-014)
+### Method notes (see LEARNING-015)
 
 Verification ran while Jeff's daily-driver app was live, so the throwaway instance was isolated with **both** `CRAFT_CONFIG_DIR=/tmp/vor42-cfg` **and** `--user-data-dir=/tmp/vor42-userdata` (the single-instance lock is keyed on userData, not `CRAFT_CONFIG_DIR`; without the second flag the launch is bounced and quits silently). Packaged production builds disable all electron-log transports, so every check below was made through the **HTTP surface / process observation**, never logs. Port 34871 used throughout. Jeff's daily-driver (PID 45598) was untouched.
 
@@ -323,7 +323,7 @@ Verification ran while Jeff's daily-driver app was live, so the throwaway instan
 
 ### Fixes made
 
-None. The packaged build behaved correctly across every automatable check; no code changes were required. One observability gap (no logs in packaged builds → a failed autostart is undiagnosable in the field) is captured as **LEARNING-014** and flagged to the orchestrator as a possible follow-up policy change to `logger.ts` — deliberately not changed here (app-wide production-logging policy is out of a verification pass's scope).
+None. The packaged build behaved correctly across every automatable check; no code changes were required. One observability gap (no logs in packaged builds → a failed autostart is undiagnosable in the field) is captured as **LEARNING-015** and flagged to the orchestrator as a possible follow-up policy change to `logger.ts` — deliberately not changed here (app-wide production-logging policy is out of a verification pass's scope).
 
 ## Acceptance
 
@@ -349,5 +349,5 @@ None. The packaged build behaved correctly across every automatable check; no co
 ## Status log
 
 - 2026-07-08 — created in `planned/` (design doc, VOR-38); ADR-0007 drafted in the same PR.
-- 2026-07-09 — VOR-42 packaged-build verification complete (§10). Built the canonical arm64 DMG (Electron 39.2.7 / Node 22.21.1, SDK 0.3.197 + native binary staged, no OOM, no missing-module crash). Every automatable §8 item passed against a throwaway `CRAFT_CONFIG_DIR` + isolated `--user-data-dir`: autostart reconcile, `/health` fork fingerprint, 401→200 auth (CLI key applied live), 429 rate limit, WS `handshake_ack`, SSE no-hang, port-conflict error-without-crash + recovery, `closeAllConnections` present, clean quit (no orphans, port freed), fork features shipped in the bundle. No code fixes needed. Two non-obvious verification gotchas captured as LEARNING-014 (single-instance lock keyed on userData; production builds disable all electron-log transports). Visual items (tray glyph/menu, FORK badge, Remote Access page walk-through, full SSE stream) flagged for Jeff.
+- 2026-07-09 — VOR-42 packaged-build verification complete (§10). Built the canonical arm64 DMG (Electron 39.2.7 / Node 22.21.1, SDK 0.3.197 + native binary staged, no OOM, no missing-module crash). Every automatable §8 item passed against a throwaway `CRAFT_CONFIG_DIR` + isolated `--user-data-dir`: autostart reconcile, `/health` fork fingerprint, 401→200 auth (CLI key applied live), 429 rate limit, WS `handshake_ack`, SSE no-hang, port-conflict error-without-crash + recovery, `closeAllConnections` present, clean quit (no orphans, port freed), fork features shipped in the bundle. No code fixes needed. Two non-obvious verification gotchas captured as LEARNING-015 (single-instance lock keyed on userData; production builds disable all electron-log transports). Visual items (tray glyph/menu, FORK badge, Remote Access page walk-through, full SSE stream) flagged for Jeff.
 - 2026-07-08 — moved from planned to in-progress: PR-1 (VOR-41) implemented — runtime-neutral `createTriggerServer` core + `WsProtocol`/`WsSocketAdapter` split (WS adapter PORTED, not deferred; standalone Bun path byte-identical, strict tests green), embedded node:http + `ws` host, `TriggerServerSupervisor` (state machine + autostart + port-conflict + `/health` fork fingerprint), macOS tray, `craft-fork:triggerServer:*` IPC, completed `RemoteAccessSettingsPage`, deleted `server-lifecycle.ts`. ADR-0007 flipped proposed → accepted. Rebased onto main @ 09f9ee27 (absorbed PLAN-013 provisioning + standalone host — both compose on the new core). VOR-42 (packaged DMG verification) remains.

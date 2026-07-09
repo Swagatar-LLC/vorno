@@ -68,6 +68,29 @@ export interface GenericEventPayload extends BaseEventPayload {
   data: Record<string, unknown>;
 }
 
+/**
+ * fork(PLAN-014): inbound webhook event payload. Emitted by the receiver after
+ * a delivery is verified, deduped, and rate-admitted. `body` rides the payload
+ * for matching only; prompts receive the file path (`payloadPath`), never the
+ * inlined content.
+ */
+export interface WebhookReceivedPayload extends BaseEventPayload {
+  /** Matcher (hook) ID that admitted this delivery. */
+  hookId: string;
+  /** Hook slug (URL segment). */
+  hookSlug: string;
+  /** Idempotency-scoped event ID (`hookId:idempotencyKey`). */
+  eventId: string;
+  /** Absolute path to the staged raw payload file, if written. */
+  payloadPath?: string;
+  /** Number of payloads collected into this event (1 in Phase 1). */
+  payloadCount?: number;
+  /** Allowlisted request headers. */
+  headers: Record<string, string>;
+  /** Parsed JSON body (or undefined when the body was not JSON). */
+  body?: unknown;
+}
+
 // ============================================================================
 // Event Payload Map
 // ============================================================================
@@ -84,6 +107,7 @@ export interface EventPayloadMap {
   FlagChange: FlagChangePayload;
   SessionStatusChange: SessionStatusChangePayload;
   SchedulerTick: SchedulerTickPayload;
+  WebhookReceived: WebhookReceivedPayload; // fork(PLAN-014)
 
   // Agent events (generic payload)
   PreToolUse: GenericEventPayload;
@@ -125,10 +149,19 @@ interface RateWindow {
 
 const DEFAULT_RATE_LIMIT = 10;
 const SCHEDULER_RATE_LIMIT = 60;
+/**
+ * fork(PLAN-014): the per-hook receiver rate-gate is the real limiter for
+ * webhooks. The bus limit must sit ABOVE any per-hook ceiling so the gate lives
+ * at the receiver, not here — otherwise legitimate bursts admitted by the hook
+ * would be silently dropped by the bus. Pinned by an event-bus test.
+ */
+const WEBHOOK_RATE_LIMIT = 600;
 const RATE_WINDOW_MS = 60_000; // 1 minute
 
 function getRateLimit(event: AutomationEvent): number {
-  return event === 'SchedulerTick' ? SCHEDULER_RATE_LIMIT : DEFAULT_RATE_LIMIT;
+  if (event === 'SchedulerTick') return SCHEDULER_RATE_LIMIT;
+  if (event === 'WebhookReceived') return WEBHOOK_RATE_LIMIT;
+  return DEFAULT_RATE_LIMIT;
 }
 
 // ============================================================================
