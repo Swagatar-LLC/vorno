@@ -21,6 +21,7 @@ export interface ConfigDefaults {
     richToolDescriptions: boolean;
     extendedPromptCache: boolean;
     keepBackgroundAgentsAlive: boolean;  // fork(PLAN-011)
+    logLevel: 'error' | 'warn' | 'info' | 'debug';  // fork(PLAN-015): production file-log level
     browserToolEnabled: boolean;
     /**
      * Allow remote agents to call `browser_tool evaluate <expression>`.

@@ -85,6 +85,8 @@ export interface StoredConfig {
   enable1MContext?: boolean;  // Enable 1M context window for supported models (default: false — opt-in; requires Anthropic Tier 4+)
   // Background agents
   keepBackgroundAgentsAlive?: boolean;  // fork(PLAN-011): Keep background subagents alive across turns (default: true; env CRAFT_KEEP_BG_AGENTS_ALIVE overrides)
+  // Logging
+  logLevel?: 'error' | 'warn' | 'info' | 'debug';  // fork(PLAN-015): production file-log level (default: 'info'; env CRAFT_LOG_LEVEL overrides)
   // Token optimization
   rtkEnabled?: boolean;  // Route Bash commands through rtk to compress tool output (default: false). https://github.com/rtk-ai/rtk
   // Network proxy
@@ -128,6 +130,7 @@ const FALLBACK_CONFIG_DEFAULTS: ConfigDefaults = {
     richToolDescriptions: true,
     extendedPromptCache: false,
     keepBackgroundAgentsAlive: true,
+    logLevel: 'info',
     browserToolEnabled: true,
     allowRemoteEvaluate: true,
   },
@@ -515,6 +518,26 @@ export function setKeepBackgroundAgentsAlive(enabled: boolean): void {
   const config = loadStoredConfig();
   if (!config) return;
   config.keepBackgroundAgentsAlive = enabled;
+  saveConfig(config);
+}
+
+/**
+ * fork(PLAN-015): Get the production file-log level. Defaults to 'info'.
+ * The env var CRAFT_LOG_LEVEL takes precedence when explicitly set — see
+ * logging/file-log.ts for the resolution order.
+ */
+export function getLogLevel(): 'error' | 'warn' | 'info' | 'debug' {
+  const config = loadStoredConfig();
+  return config?.logLevel ?? 'info';
+}
+
+/**
+ * fork(PLAN-015): Set the production file-log level (persists across restarts).
+ */
+export function setLogLevel(level: 'error' | 'warn' | 'info' | 'debug'): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  config.logLevel = level;
   saveConfig(config);
 }
 
