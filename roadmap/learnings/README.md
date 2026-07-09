@@ -65,6 +65,7 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [009](LEARNING-009-per-app-tsconfig-paths-break-cross-package-reexports.md) | Per-app tsconfig paths silently break cross-package re-exports (TS2305 at consumers) | build/typecheck | active |
 | [010](LEARNING-010-missing-nested-jiti-blocks-pi-agent-server-build.md) | Missing nested `jiti@2.7.0` breaks the pi-agent-server bundle after a Pi SDK bump (`Could not resolve: "jiti/static"`) | build | active |
 | [013](LEARNING-013-ipc-channels-inventory-hand-maintained.md) | `ipc-channels` EXPECTED_CHANNELS is hand-maintained despite the "auto-generated" banner (referenced generator script doesn't exist) | tests | active |
+| [014](LEARNING-014-packaged-smoke-verify-no-logs-single-instance.md) | Smoke-verifying the packaged app needs `--user-data-dir` isolation and can't rely on logs (production transports disabled) | electron | active |
 
 ## Related skills
 

@@ -280,6 +280,51 @@ Sized as **two implementation PRs** mapping to the board:
 
 If PR-1 reviews too large, the natural split line is steps 1–2 (server-side refactor, standalone-only risk) from 3–6 (Electron-side) — but the packaged acceptance only holds with both, so prefer one PR.
 
+## 10. Packaged-build verification results (VOR-42 — 2026-07-09)
+
+Ran the §8 checklist against a real packaged arm64 DMG built with the canonical LEARNING-011 recipe. Every **automatable** item passed. Items requiring a human looking at pixels are listed at the end.
+
+### Build
+
+- Recipe: `PATH="/opt/homebrew/opt/node@22/bin:$PATH" CRAFT_DEV_RUNTIME=1 NODE_OPTIONS=--max-old-space-size=16384 bash apps/electron/scripts/build-dmg.sh arm64` — exit 0, no collector OOM.
+- Artifact: `apps/electron/release/Craft-Agents-arm64.dmg` (~219 MB); app at `release/mac-arm64/Craft Agents.app`.
+- Staging verified present in the bundle: `@anthropic-ai/claude-agent-sdk` v0.3.197, `@anthropic-ai/claude-agent-sdk-binary/claude` (224 MB native), `@vscode/ripgrep/bin/rg`, `vendor/bun` (57.5 MB), `dist/main.cjs` (43.7 MB). No "Cannot find module" at launch.
+- Bundled runtime: **Electron 39.2.7 / Node 22.21.1** (queried via `ELECTRON_RUN_AS_NODE=1`).
+
+### Method notes (see LEARNING-014)
+
+Verification ran while Jeff's daily-driver app was live, so the throwaway instance was isolated with **both** `CRAFT_CONFIG_DIR=/tmp/vor42-cfg` **and** `--user-data-dir=/tmp/vor42-userdata` (the single-instance lock is keyed on userData, not `CRAFT_CONFIG_DIR`; without the second flag the launch is bounced and quits silently). Packaged production builds disable all electron-log transports, so every check below was made through the **HTTP surface / process observation**, never logs. Port 34871 used throughout. Jeff's daily-driver (PID 45598) was untouched.
+
+### Checklist results
+
+| # | Item | Result | Evidence |
+|---|------|--------|----------|
+| 1 | App launches packaged, no missing-module crash | PASS | Full process tree came up; renderer bootstrapped; SDK/binary/ripgrep resolve in-bundle. |
+| 1b | Autostart reconcile: `enabled:true` in config → server starts on launch | PASS | With `server-config.json{enabled:true,port:34871}`, `lsof` showed `Craft Agents` LISTEN on 127.0.0.1:34871 ~12 s after launch, no manual start. |
+| 2 | `GET /health` → 200, fork fingerprint | PASS | `{"status":"ok","fork":"trigger-server","version":"0.4.0",…}` HTTP 200. |
+| 3a | `/api/*` without key → 401 | PASS | `/api/workspaces` (GET) and `/api/sessions` (POST) both 401; bogus `craft_sk_` key also 401. |
+| 3b | API key via provisioning CLI (same config dir) → authorized 200 **live** | PASS | `--generate-api-key` wrote the hash to the shared `server-config.json`; `Bearer <key>` on `/api/workspaces` returned 200 with **no restart** (router calls `loadServerConfig()` per request, `router.ts:64`). |
+| 3c | Rate limit → 429 | PASS | 30 authorized reqs/min succeeded, the next 7 returned 429 (`X-RateLimit-Remaining`, `Retry-After:60`). |
+| 4a | WS handshake (`/ws`) | PASS | 101 upgrade; full protocol handshake with the key returned `handshake_ack` (clientId + registeredChannels). Bad path `/nope` correctly refused (socket destroyed). |
+| 4b | SSE reachability / no-hang | PASS (partial) | `curl -N` on `/api/sessions/<none>/events` with key returned 404 in <1 ms (fetch-bridge streams and does not hang). Full SSE event stream needs a live session (workspace + LLM key) the throwaway config lacks — see "needs Jeff". |
+| 5 | Port conflict → error state, no crash, no port theft | PASS | Occupied 34871 with a dummy listener, then launched: app main process stayed alive (`ps` STAT `SN`), the squatter kept the port, the app bound nothing. `EADDRINUSE` caught at `listen()` → supervisor error state (message not observable — logs off). |
+| 5b | Recovery after port freed | PASS | Freed the port, relaunched → bound 34871, `/health` 200. |
+| 6a | `httpServer.closeAllConnections` available in bundled Node | PASS | `typeof …closeAllConnections === "function"` on Node 22.21.1 (≥18.2). |
+| 6b | Clean quit: `lsof :34871` empty, no orphans | PASS | SIGTERM to main → within ~4 s port free, zero remaining instance/helper processes. |
+| 7 | Fork-retained features ship in the packaged renderer | PASS (structural) | Rust FORK-badge accent `#c2410c` present in shipped `main-*.js` (the `VITE_HIDE_FORK_BADGE` guard is compile-inlined, so the badge always renders in prod); token-usage, keep-alive (PLAN-011), and `RemoteAccess*`/`craft-fork:triggerServer:*` markers present in the shipped bundle. |
+
+### Needs Jeff's eyes (not programmatically verifiable)
+
+- **Tray glyph** appearance and legibility in the macOS menu bar, light **and** dark mode, and the state variants (plain = stopped, dot = running, exclamation = error). Tray creation runs without crashing; the rendered image was not captured (two same-named app instances made PID-safe window capture unreliable, and full-screen capture would have grabbed the daily-driver).
+- **Tray menu** contents and interaction feel (Start/Stop/Retry, Copy Server URL, status lines, ⌥-Restart).
+- **FORK badge** visually on-screen (structurally confirmed shipped; the 2 px rust bar at the top should be visible).
+- **Settings → Remote Access page** rendered interaction — status poll, host/port edit, key create show-once dialog, 0.0.0.0 warning. (IPC handlers and DTOs are wired and the page is in the bundle; live UI walk-through not automated.)
+- **Full SSE event stream** end-to-end (create a session against a real workspace + LLM connection, then `curl -N` the events endpoint and watch frames flush).
+
+### Fixes made
+
+None. The packaged build behaved correctly across every automatable check; no code changes were required. One observability gap (no logs in packaged builds → a failed autostart is undiagnosable in the field) is captured as **LEARNING-014** and flagged to the orchestrator as a possible follow-up policy change to `logger.ts` — deliberately not changed here (app-wide production-logging policy is out of a verification pass's scope).
+
 ## Acceptance
 
 - [ ] Tray shows correct state (stopped/starting/running/error) and start/stop works from tray and settings, both driving one supervisor.
@@ -304,4 +349,5 @@ If PR-1 reviews too large, the natural split line is steps 1–2 (server-side re
 ## Status log
 
 - 2026-07-08 — created in `planned/` (design doc, VOR-38); ADR-0007 drafted in the same PR.
+- 2026-07-09 — VOR-42 packaged-build verification complete (§10). Built the canonical arm64 DMG (Electron 39.2.7 / Node 22.21.1, SDK 0.3.197 + native binary staged, no OOM, no missing-module crash). Every automatable §8 item passed against a throwaway `CRAFT_CONFIG_DIR` + isolated `--user-data-dir`: autostart reconcile, `/health` fork fingerprint, 401→200 auth (CLI key applied live), 429 rate limit, WS `handshake_ack`, SSE no-hang, port-conflict error-without-crash + recovery, `closeAllConnections` present, clean quit (no orphans, port freed), fork features shipped in the bundle. No code fixes needed. Two non-obvious verification gotchas captured as LEARNING-014 (single-instance lock keyed on userData; production builds disable all electron-log transports). Visual items (tray glyph/menu, FORK badge, Remote Access page walk-through, full SSE stream) flagged for Jeff.
 - 2026-07-08 — moved from planned to in-progress: PR-1 (VOR-41) implemented — runtime-neutral `createTriggerServer` core + `WsProtocol`/`WsSocketAdapter` split (WS adapter PORTED, not deferred; standalone Bun path byte-identical, strict tests green), embedded node:http + `ws` host, `TriggerServerSupervisor` (state machine + autostart + port-conflict + `/health` fork fingerprint), macOS tray, `craft-fork:triggerServer:*` IPC, completed `RemoteAccessSettingsPage`, deleted `server-lifecycle.ts`. ADR-0007 flipped proposed → accepted. Rebased onto main @ 09f9ee27 (absorbed PLAN-013 provisioning + standalone host — both compose on the new core). VOR-42 (packaged DMG verification) remains.
