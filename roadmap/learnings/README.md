@@ -68,6 +68,8 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [014](LEARNING-014-shared-subpath-missing-from-package-exports.md) | A `@craft-agent/shared` subpath tsc resolves can still break `bun build` if it's missing from package.json `exports` | build | active |
 | [015](LEARNING-015-packaged-smoke-verify-no-logs-single-instance.md) | Smoke-verifying the packaged app needs `--user-data-dir` isolation and can't rely on logs (production transports disabled) | electron | active |
 | [016](LEARNING-016-bun-harness-electron-main-modules-dist-stub.md) | Electron main-process modules run under plain Bun for verification if `ELECTRON_OVERRIDE_DIST_PATH` stubs the missing dist (`require('electron')` throws otherwise) | electron | active |
+| [017](LEARNING-017-electron-build-never-staged-pi-agent-server.md) | `electron:build` never staged pi-agent-server; dead staging helpers + config-dir-masked repro hid it | build | active |
+| [018](LEARNING-018-embedded-host-does-not-serve-webhooks.md) | The packaged (embedded) trigger server does not serve `/hooks` — POST returns 401, not 202 (webhooks are standalone-only) | electron | active |
 
 ## Related skills
 

@@ -10,6 +10,16 @@ related-decisions: []
 
 # LEARNING-015 — Smoke-verifying the packaged app needs userData isolation and can't rely on logs
 
+> **Update (2026-07-09, VOR-45):** the *no-logs* half of this learning (Root cause
+> #2 / the second Recurrence bullet) is **superseded by PLAN-015**. Packaged builds
+> now write `CONFIG_DIR/logs/main-<date>.log` at `info` by default, and the
+> `[trigger-server]` lifecycle lines (autostart / running / **`start failed: Port …
+> in use`** / stopped) are grep-able there — verified in a real DMG during VOR-45.
+> The **single-instance-lock** half (Root cause #1: still isolate with
+> `--user-data-dir=$(mktemp -d)`) remains fully in force. So: keep the userData
+> isolation, but you *can* and *should* now read `CONFIG_DIR/logs/main-<date>.log`
+> to diagnose a packaged build.
+
 Two non-obvious things bit while running the PLAN-012 / VOR-42 packaged-build smoke checklist against a real DMG while Jeff's daily-driver app was also running. Neither is derivable from an error message — both surface as *silence*.
 
 ## Signal
