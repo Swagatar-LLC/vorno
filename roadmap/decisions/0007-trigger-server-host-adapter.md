@@ -1,7 +1,7 @@
 ---
 id: ADR-0007
 title: Trigger-server host adapter — in-process embedded host in Electron, Bun standalone host
-status: proposed
+status: accepted
 date: 2026-07-08
 supersedes: []
 superseded-by: []
