@@ -63,20 +63,72 @@ const DEFAULT_CONFIG: ServerConfig = {
 const CONFIG_PATH = join(CONFIG_DIR, 'server-config.json');
 
 /**
+ * Apply optional, non-secret bind-address overrides from the environment.
+ *
+ * `CRAFT_TRIGGER_HOST` / `CRAFT_TRIGGER_PORT` take precedence over the persisted
+ * host/port in server-config.json (PLAN-013 work item 4). These are deliberately
+ * env-driven: bind address is not a secret, and in a container the config file
+ * lives in a mounted volume that may be provisioned separately from the runtime
+ * environment. Invalid values are ignored (with a warning) rather than fatal, so
+ * a typo can never silently change the bind address to something unexpected.
+ * Returns the same object (mutated) for convenience.
+ */
+export function applyEnvOverrides(config: ServerConfig): ServerConfig {
+  // Enable/disable the server without editing the persisted file — lets a
+  // container run against a fresh volume (no server-config.json yet) or lets an
+  // operator flip a deployment on/off from the environment. Non-secret.
+  const enabledRaw = process.env.CRAFT_TRIGGER_ENABLED?.trim().toLowerCase();
+  if (enabledRaw !== undefined && enabledRaw !== '') {
+    if (['1', 'true', 'yes', 'on'].includes(enabledRaw)) {
+      config.enabled = true;
+    } else if (['0', 'false', 'no', 'off'].includes(enabledRaw)) {
+      config.enabled = false;
+    } else {
+      console.warn(
+        `[config] Ignoring unrecognized CRAFT_TRIGGER_ENABLED=${enabledRaw} ` +
+        `(use 1/0, true/false, yes/no, on/off); using ${config.enabled}.`
+      );
+    }
+  }
+
+  const host = process.env.CRAFT_TRIGGER_HOST?.trim();
+  if (host) {
+    config.host = host;
+  }
+
+  const portRaw = process.env.CRAFT_TRIGGER_PORT?.trim();
+  if (portRaw) {
+    const port = Number.parseInt(portRaw, 10);
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) {
+      config.port = port;
+    } else {
+      console.warn(
+        `[config] Ignoring invalid CRAFT_TRIGGER_PORT=${portRaw} (must be an integer 1-65535); ` +
+        `using ${config.port}.`
+      );
+    }
+  }
+
+  return config;
+}
+
+/**
  * Load server configuration from disk.
  * Returns default config if file doesn't exist.
+ * Env overrides (CRAFT_TRIGGER_HOST/PORT) are applied last and always win.
  */
 export function loadServerConfig(): ServerConfig {
+  let config: ServerConfig = { ...DEFAULT_CONFIG };
   try {
     if (existsSync(CONFIG_PATH)) {
       const raw = readFileSync(CONFIG_PATH, 'utf-8');
       const parsed = JSON.parse(raw);
-      return { ...DEFAULT_CONFIG, ...parsed };
+      config = { ...DEFAULT_CONFIG, ...parsed };
     }
   } catch {
     // Fall through to defaults
   }
-  return { ...DEFAULT_CONFIG };
+  return applyEnvOverrides(config);
 }
 
 /**

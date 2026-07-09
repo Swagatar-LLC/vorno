@@ -72,3 +72,6 @@ credentials.enc
 # act (local GitHub Actions runner)
 .secrets
 .actrc
+
+# PLAN-013: container vault machine-id (secret-ish; never commit)
+/machine-id

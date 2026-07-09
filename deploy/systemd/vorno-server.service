@@ -1,0 +1,35 @@
+[Unit]
+Description=VORNO trigger server (apps/server) — headless AI trigger + automation host
+Documentation=https://github.com/Swagatar-LLC/craft-agents-oss/blob/main/docs/server-deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vorno
+Group=vorno
+WorkingDirectory=/opt/craft-agents-oss
+
+# No Environment= secrets. Config + credentials live in the service user's
+# CONFIG_DIR. On bare metal the ADR-0005 fork default (~/.vorno-agent) is honored
+# with NO env var at all — the real machine-id makes the vault key strong.
+Environment=CRAFT_STANDALONE=1
+Environment=CRAFT_TRIGGER_ENABLED=1
+# Bind localhost; front with the reverse proxy in deploy/reverse-proxy/.
+Environment=CRAFT_TRIGGER_HOST=127.0.0.1
+Environment=CRAFT_TRIGGER_PORT=3847
+
+ExecStart=/usr/local/bin/bun run apps/server/src/index.ts
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=false
+PrivateTmp=true
+# The service user's home holds ~/.vorno-agent (CONFIG_DIR) and ~/.claude.
+ReadWritePaths=/home/vorno
+
+[Install]
+WantedBy=multi-user.target

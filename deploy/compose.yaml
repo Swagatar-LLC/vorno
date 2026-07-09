@@ -1,0 +1,55 @@
+# VORNO trigger server — Docker Compose (PLAN-013 primary runtime recipe)
+#
+# Quick start (from the repo root):
+#   ./machine-id  must exist first — see deploy/README.md ("machine-id").
+#   docker compose -f deploy/compose.yaml up -d --build
+#
+# All persistent secrets live in files inside the mounted volumes — never in this
+# file, never in the environment. See deploy/README.md and docs/server-deployment.md.
+
+services:
+  vorno-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: vorno-server
+    container_name: vorno-server
+    restart: unless-stopped
+
+    ports:
+      # localhost-only: front with a reverse proxy (deploy/reverse-proxy/) or a
+      # tailnet. Never publish the bare port to 0.0.0.0 on a public host.
+      - "127.0.0.1:3847:3847"
+
+    environment:
+      # Non-secret runtime overrides only. Secrets are provisioned into the
+      # volume (server-config.json hashes + credentials.enc), never set here.
+      CRAFT_CONFIG_DIR: /data/vorno-agent
+      CRAFT_STANDALONE: "1"
+      CRAFT_TRIGGER_ENABLED: "1"
+      CRAFT_TRIGGER_HOST: "0.0.0.0"
+      CRAFT_TRIGGER_PORT: "3847"
+      HOME: /home/vorno
+
+    volumes:
+      # The essential volume: config.json, server-config.json, credentials.enc,
+      # workspaces/{id}/ (sources, skills, session metadata).
+      - vorno-data:/data/vorno-agent
+      # The SDK's native resume store (~/.claude). Pairs with vorno-data — do not
+      # split them across hosts (ADR-0005 §4 / PLAN-013 risk note).
+      - vorno-home:/home/vorno
+      # Stable machine-id for vault key derivation. Generate ONCE (deploy/README).
+      # Without it the vault falls back to a guessable username:homedir constant.
+      - ./machine-id:/etc/machine-id:ro
+
+    healthcheck:
+      # /health is unauthenticated by design (liveness). Uses the in-image bun.
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3847/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  vorno-data:
+  vorno-home:

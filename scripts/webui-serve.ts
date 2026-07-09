@@ -1,24 +1,27 @@
 #!/usr/bin/env bun
 /**
  * webui-serve — launch packages/server with the WebUI bundle, bound to the
- * host's Tailscale IPv4 so it's reachable from any tailnet device (iPad, etc.)
- * while sharing ~/.craft-agent with the upstream desktop release.
+ * host's Tailscale IPv4 so it's reachable from any tailnet device (iPad, etc.).
+ *
+ * Config dir (post ADR-0005): defaults to the fork's CONFIG_DIR
+ * (`~/.vorno-agent`, or whatever the migration resolved). To deliberately share
+ * the upstream desktop release's data dir (the original PLAN-005 behavior),
+ * export `CRAFT_CONFIG_DIR=~/.craft-agent` — the env override always wins.
  *
  * Required env (export from your shell — keep in a vault, not in this repo):
  *   CRAFT_SERVER_TOKEN     — long random token (used as WS bearer auth)
  *   CRAFT_WEBUI_PASSWORD   — short shareable password for browser login
  *
- * See PLAN-005 for the design.
+ * See PLAN-005 for the design and ADR-0005 for the config-dir resolution.
  */
 
 import { spawn, spawnSync } from 'bun'
 import { existsSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 
 const ROOT_DIR = join(import.meta.dir, '..')
 const PORT = '9100'
-const CONFIG_DIR = join(homedir(), '.craft-agent')
 
 function fail(msg: string): never {
   console.error(`\n[webui-serve] ${msg}\n`)
@@ -80,8 +83,9 @@ const webuiPassword = requireEnv(
 if (!existsSync(CONFIG_DIR)) {
   fail(
     `Config dir ${CONFIG_DIR} does not exist.\n` +
-    `  This script reuses the upstream desktop release's data dir; install/launch the\n` +
-    `  upstream desktop app once to create it.`
+    `  Launch the fork desktop app once to create it, or provision it headless\n` +
+    `  (see docs/server-deployment.md). To reuse the upstream desktop release's\n` +
+    `  data dir instead, export CRAFT_CONFIG_DIR=~/.craft-agent before running.`
   )
 }
 

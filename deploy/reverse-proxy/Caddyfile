@@ -1,0 +1,29 @@
+# VORNO trigger server — Caddy reverse proxy (auto-HTTPS).
+#
+# Caddy handles SSE and WebSocket upgrades transparently: it does not buffer
+# responses and forwards Upgrade/Connection headers automatically, so /api/*/events
+# (SSE) and /ws (WebSocket) work with no special directives. The one thing that
+# matters for long-lived streams is a generous flush/timeout, set below.
+#
+# Usage: put your domain in place of vorno.example.com, then:
+#   caddy run --config deploy/reverse-proxy/Caddyfile
+
+vorno.example.com {
+	# reverse_proxy streams SSE and upgrades WebSockets out of the box.
+	reverse_proxy 127.0.0.1:3847 {
+		# Don't cap long-lived SSE/WS connections.
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+		# Flush the SSE stream immediately rather than buffering.
+		flush_interval -1
+	}
+
+	# Optional: restrict the unauthenticated /health probe to your own network.
+	# @health path /health
+	# handle @health {
+	# 	remote_ip 100.64.0.0/10 10.0.0.0/8
+	# 	reverse_proxy 127.0.0.1:3847
+	# }
+}
