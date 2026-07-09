@@ -17,6 +17,7 @@ import {
   Tag,
   ToggleRight,
   UserCircle,
+  Wrench,
 } from 'lucide-react'
 import type { SettingsSubpage } from '../../../shared/types'
 
@@ -31,6 +32,7 @@ export const PermissionsIcon = ({ className }: IconProps) => <ShieldCheck classN
 export const LabelsIcon = ({ className }: IconProps) => <Tag className={className} />
 export const MessagingSettingsIcon = ({ className }: IconProps) => <MessageSquare className={className} />
 export const ServerSettingsIcon = ({ className }: IconProps) => <Server className={className} />
+export const AdvancedIcon = ({ className }: IconProps) => <Wrench className={className} /> // fork(PLAN-015)
 export const ShortcutsIcon = ({ className }: IconProps) => <Keyboard className={className} />
 export const PreferencesIcon = ({ className }: IconProps) => <UserCircle className={className} />
 
@@ -49,6 +51,7 @@ export const SETTINGS_ICONS: Record<SettingsSubpage, React.ComponentType<IconPro
   messaging: MessagingSettingsIcon,
   server: ServerSettingsIcon,
   'remote-access': ServerSettingsIcon, // fork(PLAN-012): HTTP trigger server
+  advanced: AdvancedIcon, // fork(PLAN-015): diagnostics / production logging
   shortcuts: ShortcutsIcon,
   preferences: PreferencesIcon,
 }

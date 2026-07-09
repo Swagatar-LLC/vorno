@@ -30,6 +30,7 @@
     "./config/server-config": "./src/config/server-config.ts",
     "./config/storage": "./src/config/storage.ts",
     "./credentials": "./src/credentials/index.ts",
+    "./logging": "./src/logging/index.ts",
     "./mcp": "./src/mcp/index.ts",
     "./prompts": "./src/prompts/index.ts",
     "./sessions": "./src/sessions/index.ts",

@@ -46,6 +46,8 @@ export const SETTINGS_PAGES = [
   { id: 'server' as const, labelKey: 'settings.server.title', descriptionKey: 'settings.server.description' },
   // fork(PLAN-012): embedded HTTP trigger server (external automations / webhooks)
   { id: 'remote-access' as const, labelKey: 'settings.remoteAccess.title', descriptionKey: 'settings.remoteAccess.description' },
+  // fork(PLAN-015): advanced diagnostics (production logging)
+  { id: 'advanced' as const, labelKey: 'settings.advanced.title', descriptionKey: 'settings.advanced.description' },
   { id: 'shortcuts' as const, labelKey: 'settings.shortcuts.title', descriptionKey: 'settings.shortcuts.description' },
   { id: 'preferences' as const, labelKey: 'settings.preferences.title', descriptionKey: 'settings.preferences.description' },
 ] satisfies readonly SettingsPageDefinition[]

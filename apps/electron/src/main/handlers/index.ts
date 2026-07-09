@@ -8,12 +8,15 @@ import { registerSystemGuiHandlers } from './system'
 import { registerWorkspaceGuiHandlers } from './workspace'
 import { registerBrowserHandlers } from './browser'
 import { registerSettingsGuiHandlers } from './settings'
+// fork(PLAN-015): production logging control
+import { registerLoggingHandlers } from './logging'
 
 export function registerGuiRpcHandlers(server: RpcServer, deps: HandlerDeps): void {
   registerSystemGuiHandlers(server, deps)
   registerWorkspaceGuiHandlers(server, deps)
   registerBrowserHandlers(server, deps)
   registerSettingsGuiHandlers(server, deps)
+  registerLoggingHandlers(server) // fork(PLAN-015)
 }
 
 export function registerAllRpcHandlers(server: RpcServer, deps: HandlerDeps, serverCtx?: ServerHandlerContext): void {

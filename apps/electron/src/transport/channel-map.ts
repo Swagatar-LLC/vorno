@@ -331,6 +331,12 @@ export const CHANNEL_MAP = {
   createRemoteAccessApiKey: invoke(RPC_CHANNELS.triggerServer.CREATE_API_KEY),
   revokeRemoteAccessApiKey: invoke(RPC_CHANNELS.triggerServer.REVOKE_API_KEY),
 
+  // fork(PLAN-015): production logging control
+  getLoggingState: invoke(RPC_CHANNELS.logging.GET_STATE),
+  setLogLevel: invoke(RPC_CHANNELS.logging.SET_LEVEL),
+  openLogFolder: invoke(RPC_CHANNELS.logging.OPEN_LOG_FOLDER),
+  revealLogFile: invoke(RPC_CHANNELS.logging.REVEAL_LOG_FILE),
+
   // RTK token optimization
   getRtkEnabled: invoke(RPC_CHANNELS.rtk.GET_ENABLED),
   setRtkEnabled: invoke(RPC_CHANNELS.rtk.SET_ENABLED),
