@@ -344,6 +344,18 @@ export const RPC_CHANNELS = {
     GET_KEEP_ALIVE: 'craft-fork:bgAgents:getKeepAlive',
     SET_KEEP_ALIVE: 'craft-fork:bgAgents:setKeepAlive',
   },
+  // fork(PLAN-012): embedded HTTP trigger-server supervision. LOCAL_ONLY — the
+  // supervisor is main-process state. Namespaced under craft-fork:* per
+  // roadmap/upstream/compatibility.md.
+  triggerServer: {
+    GET_CONFIG: 'craft-fork:triggerServer:getConfig',
+    UPDATE_CONFIG: 'craft-fork:triggerServer:updateConfig',
+    GET_STATUS: 'craft-fork:triggerServer:getStatus',
+    START: 'craft-fork:triggerServer:start',
+    STOP: 'craft-fork:triggerServer:stop',
+    CREATE_API_KEY: 'craft-fork:triggerServer:createApiKey',
+    REVOKE_API_KEY: 'craft-fork:triggerServer:revokeApiKey',
+  },
   badge: {
     REFRESH: 'badge:refresh',
     SET_ICON: 'badge:setIcon',

@@ -166,6 +166,16 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.bgAgents.GET_KEEP_ALIVE,
   RPC_CHANNELS.bgAgents.SET_KEEP_ALIVE,
 
+  // fork(PLAN-012): embedded trigger-server supervision — local-only, main-process
+  // supervisor state (never proxied to a remote workspace server)
+  RPC_CHANNELS.triggerServer.GET_CONFIG,
+  RPC_CHANNELS.triggerServer.UPDATE_CONFIG,
+  RPC_CHANNELS.triggerServer.GET_STATUS,
+  RPC_CHANNELS.triggerServer.START,
+  RPC_CHANNELS.triggerServer.STOP,
+  RPC_CHANNELS.triggerServer.CREATE_API_KEY,
+  RPC_CHANNELS.triggerServer.REVOKE_API_KEY,
+
   // tools — local tool settings
   RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
   RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,

@@ -1,7 +1,7 @@
 ---
 id: PLAN-012
 title: Tray-based server supervision (embedded trigger-server host)
-status: planned
+status: in-progress
 direction: none
 owner: jh
 created: 2026-07-08
@@ -304,3 +304,4 @@ If PR-1 reviews too large, the natural split line is steps 1–2 (server-side re
 ## Status log
 
 - 2026-07-08 — created in `planned/` (design doc, VOR-38); ADR-0007 drafted in the same PR.
+- 2026-07-08 — moved from planned to in-progress: PR-1 (VOR-41) implemented — runtime-neutral `createTriggerServer` core + `WsProtocol`/`WsSocketAdapter` split (WS adapter PORTED, not deferred; standalone Bun path byte-identical, strict tests green), embedded node:http + `ws` host, `TriggerServerSupervisor` (state machine + autostart + port-conflict + `/health` fork fingerprint), macOS tray, `craft-fork:triggerServer:*` IPC, completed `RemoteAccessSettingsPage`, deleted `server-lifecycle.ts`. ADR-0007 flipped proposed → accepted. Rebased onto main @ 09f9ee27 (absorbed PLAN-013 provisioning + standalone host — both compose on the new core). VOR-42 (packaged DMG verification) remains.

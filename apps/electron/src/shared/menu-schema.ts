@@ -389,6 +389,7 @@ const SETTINGS_ICONS: Record<SettingsSubpage, string> = {
   labels: 'Tag',
   messaging: 'MessageSquare',
   server: 'Server',
+  'remote-access': 'Server', // fork(PLAN-012): HTTP trigger server
   shortcuts: 'Keyboard',
   preferences: 'UserCircle',
 }

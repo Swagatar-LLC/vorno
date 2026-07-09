@@ -224,6 +224,65 @@ import type {
   ImportRemoteSessionTransferResult,
 } from '@craft-agent/shared/protocol'
 
+// =============================================================================
+// fork(PLAN-012): Trigger-server (Remote Access) supervision DTOs
+//
+// The renderer-facing shape of the embedded HTTP trigger server's config and
+// status. API keys cross IPC as metadata only — never the SHA-256 hash. The
+// full plaintext key crosses exactly once, as the return of createApiKey.
+// =============================================================================
+
+export interface RemoteAccessApiKeyPermissions {
+  /** Workspace IDs this key can access (empty = all). */
+  workspaceIds: string[]
+  /** Maximum permission policy this key can use. */
+  permissionPolicy: 'deny-all' | 'allow-safe' | 'allow-all'
+  /** Max concurrent sessions for this key. */
+  maxConcurrentSessions: number
+}
+
+export interface RemoteAccessApiKeyInfo {
+  id: string
+  name: string
+  /** Display prefix only (e.g. "craft_sk_...a3f") — never the hash. */
+  keyPrefix: string
+  createdAt: number
+  lastUsedAt: number | null
+  permissions: RemoteAccessApiKeyPermissions
+}
+
+export interface RemoteAccessConfig {
+  enabled: boolean
+  host: string
+  port: number
+  apiKeys: RemoteAccessApiKeyInfo[]
+  rateLimits: { requestsPerMinute: number; concurrentSessions: number }
+}
+
+export type RemoteAccessState = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'
+
+export interface RemoteAccessStatus {
+  running: boolean
+  state: RemoteAccessState
+  host?: string
+  port?: number
+  startedAt?: number
+  activeSessions: number
+  /** Host/port/rate-limit change persisted but pending a restart to apply. */
+  configStale?: boolean
+  lastError?: string
+}
+
+export interface RemoteAccessStartResult {
+  success: boolean
+  error?: string
+}
+
+export interface RemoteAccessCreatedKey {
+  fullKey: string
+  info: RemoteAccessApiKeyInfo
+}
+
 export interface ElectronAPI {
   // Session management
   getSessions(): Promise<Session[]>
@@ -583,6 +642,15 @@ export interface ElectronAPI {
   // fork(PLAN-011): background-agent keep-alive
   getKeepBackgroundAgentsAlive(): Promise<{ enabled: boolean; envOverride: boolean }>
   setKeepBackgroundAgentsAlive(enabled: boolean): Promise<void>
+
+  // fork(PLAN-012): embedded trigger server (Remote Access) supervision
+  getRemoteAccessConfig(): Promise<RemoteAccessConfig>
+  updateRemoteAccessConfig(updates: Partial<RemoteAccessConfig>): Promise<RemoteAccessConfig>
+  getRemoteAccessStatus(): Promise<RemoteAccessStatus>
+  startRemoteAccessServer(): Promise<RemoteAccessStartResult>
+  stopRemoteAccessServer(): Promise<void>
+  createRemoteAccessApiKey(name: string, permissions: RemoteAccessApiKeyPermissions): Promise<RemoteAccessCreatedKey>
+  revokeRemoteAccessApiKey(keyId: string): Promise<void>
 
   // RTK token optimization
   getRtkEnabled(): Promise<boolean>

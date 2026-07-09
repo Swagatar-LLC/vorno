@@ -10,6 +10,10 @@ const startTime = Date.now();
 export function handleHealth(pool: SessionPool, registry?: ClientRegistry): Response {
   return jsonResponse({
     status: 'ok',
+    // Fork fingerprint (PLAN-012): lets the embedded-host supervisor disambiguate
+    // "another trigger-server instance holds this port" from "some unrelated app".
+    // Static, non-branded, leaks no version beyond `version` below.
+    fork: 'trigger-server',
     version: '0.4.0',
     uptime: Math.floor((Date.now() - startTime) / 1000),
     activeSessions: pool.activeCount,

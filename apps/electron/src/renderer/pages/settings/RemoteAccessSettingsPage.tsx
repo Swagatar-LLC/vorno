@@ -13,8 +13,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { HeaderMenu } from '@/components/ui/HeaderMenu'
-import { routes } from '@/lib/navigate'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import type {
   RemoteAccessConfig,
@@ -38,7 +36,7 @@ export const meta: DetailsPageMeta = {
 
 export default function RemoteAccessSettingsPage() {
   const [config, setConfig] = useState<RemoteAccessConfig | null>(null)
-  const [status, setStatus] = useState<RemoteAccessStatus>({ running: false, activeSessions: 0 })
+  const [status, setStatus] = useState<RemoteAccessStatus>({ running: false, state: 'stopped', activeSessions: 0 })
   const [newKeyName, setNewKeyName] = useState('')
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [copiedKey, setCopiedKey] = useState(false)
@@ -61,9 +59,9 @@ export default function RemoteAccessSettingsPage() {
     load()
   }, [])
 
-  // Poll status every 5 seconds while running
+  // Poll status every 5 seconds while mounted so starting/error/configStale
+  // transitions surface even when the server isn't running.
   useEffect(() => {
-    if (!status.running) return
     const interval = setInterval(async () => {
       if (!window.electronAPI) return
       try {
@@ -74,24 +72,24 @@ export default function RemoteAccessSettingsPage() {
       }
     }, 5000)
     return () => clearInterval(interval)
-  }, [status.running])
+  }, [])
 
   const handleToggleServer = useCallback(async () => {
     if (!window.electronAPI || !config) return
     try {
       if (status.running) {
         await window.electronAPI.stopRemoteAccessServer()
-        setStatus({ running: false, activeSessions: 0 })
       } else {
-        const result = await window.electronAPI.startRemoteAccessServer()
-        if (result.success) {
-          setStatus({ running: true, port: config.port, host: config.host, activeSessions: 0 })
-        }
+        // stopped or error → (re)start
+        await window.electronAPI.startRemoteAccessServer()
       }
+      // Re-read the authoritative status from the supervisor rather than guessing.
+      const sts = await window.electronAPI.getRemoteAccessStatus()
+      setStatus(sts)
     } catch (error) {
       console.error('Failed to toggle server:', error)
     }
-  }, [config, status.running])
+  }, [config, status.running, status.state])
 
   const handleUpdateConfig = useCallback(async (updates: Partial<RemoteAccessConfig>) => {
     if (!window.electronAPI || !config) return
@@ -156,9 +154,7 @@ export default function RemoteAccessSettingsPage() {
 
   return (
     <div className="h-full flex flex-col">
-      <PanelHeader title="Remote Access">
-        <HeaderMenu items={[routes.settings.menu('remote-access')]} />
-      </PanelHeader>
+      <PanelHeader title="Remote Access" />
       <div className="flex-1 min-h-0 mask-fade-y">
         <ScrollArea className="h-full">
           <div className="px-5 py-7 max-w-3xl mx-auto">
@@ -169,21 +165,33 @@ export default function RemoteAccessSettingsPage() {
                 <SettingsCard>
                   <SettingsRow
                     label="Status"
-                    description={status.running
-                      ? `Running on ${status.host}:${status.port}`
-                      : 'Server is stopped'}
+                    description={
+                      status.state === 'running' ? `Running on ${status.host}:${status.port}`
+                        : status.state === 'starting' ? 'Starting…'
+                        : status.state === 'stopping' ? 'Stopping…'
+                        : status.state === 'error' ? (status.lastError ?? 'Server error')
+                        : 'Server is stopped'
+                    }
                   >
                     <button
                       onClick={handleToggleServer}
-                      className={`px-3 py-1 text-sm rounded-md font-medium ${
+                      disabled={status.state === 'starting' || status.state === 'stopping'}
+                      className={`px-3 py-1 text-sm rounded-md font-medium disabled:opacity-50 ${
                         status.running
                           ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20'
-                          : 'bg-green-500/10 text-green-500 hover:bg-green-500/20'
+                          : status.state === 'error'
+                            ? 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20'
+                            : 'bg-green-500/10 text-green-500 hover:bg-green-500/20'
                       }`}
                     >
-                      {status.running ? 'Stop' : 'Start'}
+                      {status.running ? 'Stop' : status.state === 'error' ? 'Retry' : 'Start'}
                     </button>
                   </SettingsRow>
+                  {status.configStale && (
+                    <div className="px-4 py-2 text-xs text-amber-500 bg-amber-500/5 rounded-md mx-3 mb-3">
+                      Host, port, or rate-limit changes apply after restarting the server.
+                    </div>
+                  )}
                 </SettingsCard>
               </SettingsSection>
 

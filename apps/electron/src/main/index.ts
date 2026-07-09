@@ -87,6 +87,10 @@ import { existsSync, readFileSync } from 'fs'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
 import { registerAllRpcHandlers } from './handlers/index'
+import { registerTriggerServerHandlers } from './handlers/trigger-server'
+import { TriggerServerSupervisor } from './trigger-server/supervisor'
+import { TriggerServerTray } from './trigger-server/tray'
+import type { HostBridge } from '@craft-agent/http-trigger/core'
 import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import type { PlatformServices } from '../runtime/platform'
 import { createElectronPlatform } from './platform'
@@ -231,6 +235,11 @@ let moduleClientResolver: ((webContentsId: number) => string | undefined) | null
 // directly.
 let messagingHandle: MessagingBootstrapHandle | null = null
 
+// fork(PLAN-012): embedded HTTP trigger-server supervisor + macOS tray. Created
+// after bootstrapServer resolves; single source of runtime truth for the server.
+let triggerServerSupervisor: TriggerServerSupervisor | null = null
+let triggerServerTray: TriggerServerTray | null = null
+
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
 
@@ -337,6 +346,24 @@ if (!gotTheLock) {
 }
 
 // Helper to create initial windows on startup
+/**
+ * fork(PLAN-012): focus an existing app window (or create one for the first
+ * workspace) so the tray's "Show Window" / "Remote Access Settings…" items work.
+ */
+function showMainWindowForTray(): void {
+  if (!windowManager) return
+  const existing = windowManager.getAllWindows()
+  if (existing.length > 0) {
+    const win = existing[0].window
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+    return
+  }
+  const firstWorkspace = getWorkspaces()[0]?.id
+  if (firstWorkspace) windowManager.focusOrCreateWindow(firstWorkspace)
+}
+
 async function createInitialWindows(): Promise<void> {
   if (!windowManager) return
 
@@ -1041,6 +1068,53 @@ app.whenReady().then(async () => {
         console.log(`CRAFT_SERVER_URL=${instance.protocol}://${instance.host}:${instance.port}`)
         console.log(`CRAFT_SERVER_TOKEN=${instance.token}`)
       }
+
+      // ---------------------------------------------------------------------
+      // fork(PLAN-012): embedded HTTP trigger-server supervision + tray.
+      // The supervisor is the single source of runtime truth; the tray and the
+      // RemoteAccessSettingsPage (craft-fork:triggerServer:* IPC) both drive it.
+      // Registered here because it needs `instance.wsServer` (in scope inside
+      // the bootstrap block only).
+      // ---------------------------------------------------------------------
+      {
+        // HostBridge seam: onWebhookEvent is bound to the desktop here so the
+        // webhook receiver (VOR-33) can reach the workspace AutomationSystem via
+        // SessionManager. Injected now; logs until the receiver emits (ADR-0007).
+        const hostBridge: HostBridge = {
+          onWebhookEvent: (workspaceId, payload) => {
+            mainLog.info(`[trigger-server] webhook event for workspace ${workspaceId} from ${payload.source}`)
+            // Future (VOR-33): route into the workspace AutomationSystem via sessionManager.
+          },
+        }
+
+        const supervisor = new TriggerServerSupervisor({
+          hostBridge,
+          log: {
+            info: (m) => mainLog.info(m),
+            warn: (m) => mainLog.warn(m),
+            error: (m, err) => mainLog.error(m, err),
+          },
+          onStateChange: () => { triggerServerTray?.refresh() },
+        })
+        triggerServerSupervisor = supervisor
+        registerTriggerServerHandlers(instance.wsServer, supervisor)
+
+        // Tray: macOS menu bar, GUI only. VOR-11 (quit/login-item) out of scope.
+        if (!isHeadless && process.platform === 'darwin') {
+          triggerServerTray = new TriggerServerTray({
+            supervisor,
+            onOpenSettings: () => {
+              showMainWindowForTray()
+              moduleSink?.(RPC_CHANNELS.menu.OPEN_SETTINGS, { to: 'all' })
+            },
+            onShowWindow: () => showMainWindowForTray(),
+          })
+          try { triggerServerTray.create() } catch (err) { mainLog.error('[trigger-server] tray create failed', err) }
+        }
+
+        // Autostart reconciliation — starts iff server-config.json enabled=true.
+        void supervisor.reconcile().catch((err) => mainLog.error('[trigger-server] reconcile failed', err))
+      }
     }
 
     // Create initial windows (restores from saved state or opens first workspace)
@@ -1247,6 +1321,19 @@ app.on('before-quit', async (event) => {
       } catch (err) {
         mainLog.error('[messaging] dispose failed:', err)
       }
+    }
+
+    // fork(PLAN-012): tear down the embedded trigger server (close listener,
+    // drain sessions) and destroy the tray. Preserves desired-state (enabled).
+    if (triggerServerSupervisor) {
+      try {
+        await triggerServerSupervisor.dispose()
+      } catch (err) {
+        mainLog.error('[trigger-server] dispose failed:', err)
+      }
+    }
+    if (triggerServerTray) {
+      try { triggerServerTray.destroy() } catch { /* ignore */ }
     }
 
     // Clean up power manager (release power blocker)

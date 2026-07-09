@@ -1,22 +1,23 @@
 import { PRODUCT_NAME } from '@craft-agent/shared/branding';
 import { loadServerConfig, getConfigPath } from './config.ts';
-import { CONFIG_DIR } from '@craft-agent/shared/config/paths';
-import { createRouter } from './router.ts';
-import { SessionPool } from './services/session-pool.ts';
-import { EventBus } from './services/event-bus.ts';
-import { ClientRegistry, WsTransport } from './transport/index.ts';
+import { createTriggerServer } from './core/create-trigger-server.ts';
+import { WsTransport } from './transport/index.ts';
 import { runProvisioningCli } from './provisioning.ts';
 import { createStandaloneHost, isStandaloneEnabled, type StandaloneHost } from './standalone/host.ts';
 import { version as packageVersion } from '../package.json';
 
 /**
- * Craft Agents Dual-Transport Server
+ * Craft Agents Dual-Transport Server — standalone Bun host.
  *
  * Exposes both REST+SSE and WebSocket transports on a single port.
  * - HTTP/SSE: REST API for external triggers (webhooks, scripts, CI/CD)
  * - WebSocket: upstream MessageEnvelope protocol for CLI and programmatic clients
  *
- * Both transports share the same SessionPool, EventBus, and ClientRegistry.
+ * This entry composes the runtime-neutral core (createTriggerServer, PLAN-012)
+ * with Bun's socket adapter (WsTransport). The embedded Electron host composes
+ * the same core with a node:http + `ws` adapter. Behavior here is unchanged from
+ * the pre-refactor server. Standalone mode (PLAN-013) layers an in-process
+ * headless SessionManager + AutomationSystem alongside the trigger surface.
  */
 
 // Headless provisioning CLI (PLAN-013): handle --generate-api-key /
@@ -35,23 +36,17 @@ if (!config.enabled) {
   process.exit(0);
 }
 
-// Initialize shared services
-const eventBus = new EventBus();
-const pool = new SessionPool(eventBus);
-const registry = new ClientRegistry();
-const wsTransport = new WsTransport(pool, eventBus, registry);
-const router = createRouter(pool, registry);
+// Construct the runtime-neutral core (PLAN-012). The standalone Bun entry injects
+// an empty HostBridge — the trigger-surface webhook seam is bound by the embedded
+// host; standalone mode's own headless webhook seam lives at the host layer below.
+const core = createTriggerServer(config, {});
 
-// Idle session eviction (every 5 minutes, evict sessions idle for 30 minutes)
-const EVICTION_INTERVAL_MS = 5 * 60 * 1000;
-const MAX_IDLE_MS = 30 * 60 * 1000;
+// Bun socket adapter wrapping the core's shared WS protocol (one protocol /
+// registry / pool instance across both transports).
+const wsTransport = new WsTransport(core.wsProtocol);
 
-const evictionTimer = setInterval(() => {
-  const evicted = pool.evictIdle(MAX_IDLE_MS);
-  if (evicted.length > 0) {
-    console.log(`Evicted ${evicted.length} idle session(s): ${evicted.join(', ')}`);
-  }
-}, EVICTION_INTERVAL_MS);
+// Idle session eviction (every 5 minutes, evict sessions idle for 30 minutes).
+const stopEviction = core.startEviction();
 
 // Start dual-transport server
 const server = Bun.serve({
@@ -67,7 +62,7 @@ const server = Bun.serve({
     }
 
     // Fall through to HTTP router
-    return router(request);
+    return core.fetchHandler(request);
   },
 
   // WebSocket handler — delegates to WsTransport
@@ -93,7 +88,7 @@ if (isStandaloneEnabled()) {
     console.log('Standalone mode: headless SessionManager + AutomationSystem active.');
   } catch (err) {
     console.error(`Failed to start standalone host: ${err instanceof Error ? err.message : String(err)}`);
-    clearInterval(evictionTimer);
+    stopEviction();
     wsTransport.shutdown();
     server.stop();
     process.exit(1);
@@ -103,9 +98,8 @@ if (isStandaloneEnabled()) {
 // Graceful shutdown
 async function shutdown(signal: string) {
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
-  clearInterval(evictionTimer);
-  wsTransport.shutdown();
-  await pool.drainAll();
+  stopEviction();
+  await core.shutdown();
   if (standaloneHost) {
     await standaloneHost.dispose();
   }
