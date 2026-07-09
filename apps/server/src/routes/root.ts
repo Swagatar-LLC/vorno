@@ -63,52 +63,46 @@ export function handleRoot(request: Request, pool: SessionPool): Response {
 <meta name="robots" content="noindex, nofollow">
 <title>${safeName}</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root { color-scheme: light; }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     line-height: 1.55;
-    background: #0e0f11;
-    color: #e6e7e9;
+    background: #f6f7f8;
+    color: #1b1c1e;
     display: flex;
     justify-content: center;
     padding: 3rem 1.25rem;
   }
-  @media (prefers-color-scheme: light) {
-    body { background: #f6f7f8; color: #1b1c1e; }
-    .card { background: #ffffff; border-color: #e4e5e7; }
-    code, pre { background: #f0f1f3; }
-    .muted { color: #5b5e63; }
-    .hr { background: #e4e5e7; }
-  }
   main { width: 100%; max-width: 640px; }
   .card {
-    background: #17181b;
-    border: 1px solid #26282c;
+    background: #ffffff;
+    border: 1px solid #e4e5e7;
     border-radius: 14px;
     padding: 1.75rem 1.9rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   }
   h1 { font-size: 1.4rem; margin: 0 0 0.15rem; display: flex; align-items: center; gap: 0.6rem; }
-  h2 { font-size: 0.95rem; margin: 1.6rem 0 0.5rem; text-transform: uppercase; letter-spacing: 0.04em; }
-  .muted { color: #9a9da3; font-size: 0.9rem; }
+  h2 { font-size: 0.9rem; margin: 1.6rem 0 0.5rem; text-transform: uppercase; letter-spacing: 0.04em; color: #6b6e73; }
+  .muted { color: #5b5e63; font-size: 0.9rem; }
   .badge {
     display: inline-flex; align-items: center; gap: 0.4rem;
     font-size: 0.75rem; font-weight: 600; padding: 0.2rem 0.6rem;
-    border-radius: 999px; background: rgba(52, 199, 89, 0.14); color: #34c759;
+    border-radius: 999px; background: rgba(52, 199, 89, 0.14); color: #1f9d4d;
   }
   .dot { width: 0.5rem; height: 0.5rem; border-radius: 999px; background: #34c759; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 0.35rem 1.25rem; margin: 0.75rem 0 0; font-size: 0.9rem; }
-  dt { color: #9a9da3; }
+  dt { color: #6b6e73; }
   dd { margin: 0; font-variant-numeric: tabular-nums; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; background: #26282c; padding: 0.1rem 0.35rem; border-radius: 5px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; background: #f0f1f3; padding: 0.1rem 0.35rem; border-radius: 5px; }
   pre {
-    background: #26282c; border-radius: 9px; padding: 0.9rem 1rem;
+    background: #1d1f23; color: #e6e7e9; border-radius: 9px; padding: 0.9rem 1rem;
     overflow-x: auto; font-size: 0.82rem; margin: 0.4rem 0 0;
   }
-  pre code { background: none; padding: 0; }
-  .hr { height: 1px; background: #26282c; border: 0; margin: 1.6rem 0; }
-  a { color: #4a9eff; text-decoration: none; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .hr { height: 1px; background: #e4e5e7; border: 0; margin: 1.6rem 0; }
+  a { color: #2563eb; text-decoration: none; }
   a:hover { text-decoration: underline; }
   p { margin: 0.5rem 0; font-size: 0.9rem; }
 </style>
