@@ -14,13 +14,25 @@ blocked-by: []
 
 # PLAN-013 — Server-only deployment path (Linux/remote)
 
+## Provenance
+
+This plan operationalizes the **approved** "Inbound Webhooks & Headless Server — Design Spec" (Notion, approved 2026-07-06: <https://app.notion.com/p/395d0b5898d8812fbdc4edf4b42d205c>), specifically its "Deployment topology — headless & hosted" amendment. That amendment is decided architecture, not re-derived here:
+
+- `apps/server` must be able to run headless/hosted (VPS/container/cloud), not only Electron-spawned.
+- **Standalone mode** = `apps/server` instantiates an in-process headless `SessionManager` (the `packages/server-core` path) plus the `AutomationSystem`, with workspace config provisioned without a desktop app. The webhook seam is a constructor-injected callback (`onWebhookEvent`, same shape as `onPromptsReady`).
+- IAM/SSO for a hosted offering is **parked for M2** — machine-to-machine `craft_sk_*` keys are sufficient; this plan mentions but does not design SSO.
+
+Board tickets: design = **VOR-39**; implementation = **VOR-43** and **VOR-35** ("Headless server mode: apps/server standalone").
+
+**Spec-vs-tree drift check (main @ `ec74ea3e`, 2026-07-08):** `AutomationSystem` and the `onPromptsReady` seam exist as the spec describes (`packages/shared/src/automations/automation-system.ts:52`). However, in the current tree `AutomationSystem` is instantiated *only inside* `packages/server-core/src/sessions/SessionManager.ts:1695` (per-workspace), not by any host directly — so the standalone composition point is "instantiate the server-core `SessionManager`, which owns `AutomationSystem`", and the `onWebhookEvent` callback (not yet present anywhere) will thread through `SessionManager`/`AutomationSystem` options. Also note `apps/server` today runs its **own** session stack (`SessionPool`/`AgentSession` wrapping `CraftAgent` directly) and has no `server-core` dependency; standalone mode is therefore an addition to `apps/server`, not a rename of what it already does. Both points are reflected in the work items below.
+
 ## Goal
 
 A clear, reproducible path to running the fork's server stack headless on Linux or remote infrastructure: a working deployment recipe (Docker primary, systemd documented), credential management that does not depend on hand-exported env vars, and validation that a session can be triggered over HTTP from another machine. "Clear path" means this design doc + a working proof-of-concept + docs — **not** full productization.
 
 ## Scope
 
-- Decide and document what runs headless (entrypoint choice: `apps/server` vs `packages/server`).
+- Decide and document what runs headless (entrypoint choice: `apps/server` vs `packages/server`), formalizing the approved spec's **standalone mode** for `apps/server` (in-process headless `SessionManager` + `AutomationSystem`, `onWebhookEvent` seam instantiated by this host).
 - Runtime recipe: bun on Linux, containerized (primary) and systemd unit (documented alternative).
 - Config + credential provisioning without persistent hand-exported env vars: `server-config.json` (hashed API keys), the encrypted credential vault (`credentials.enc`), LLM provider keys.
 - Network/security posture: bind address, TLS/reverse-proxy guidance, existing rate limiting.
@@ -50,7 +62,7 @@ The repo has **two** server stacks. They are different products:
 | Lock | Takes no `.server.lock` | `bootstrapServer` acquires `{CONFIG_DIR}/.server.lock` |
 | CI | Strict tests (`apps/server && bun test`) + build check | Upstream-owned, threshold-based |
 
-**Decision: `apps/server` is the headless deployment unit for this plan.** Rationale:
+**Decision (per the approved spec): `apps/server` is the headless deployment unit, extended with a standalone mode.** Standalone mode composes, in-process: the existing trigger surface (REST+SSE+WS, API keys, rate limiting) **plus** a headless `server-core` `SessionManager` — which itself owns the per-workspace `AutomationSystem` — so automations and (via PLAN-014) webhooks run without any Electron host. The injection seam for webhook events is a constructor callback (`onWebhookEvent`, same shape as the existing `onPromptsReady` in `automation-system.ts:52`); PLAN-014 defines what flows through it, this plan delivers the host that instantiates it. Rationale for `apps/server` as the unit:
 
 1. It is the fork-owned surface with real multi-key auth, scoping, and rate limiting — the right posture for a box reachable from elsewhere.
 2. "Trigger a session over HTTP from another machine" (the acceptance demo) is exactly its job.
@@ -178,6 +190,7 @@ The provisioning subcommands are new (work item). Reading from stdin (or `--from
 - **Auth and rate limiting already exist**: Bearer `craft_sk_*` per request, per-key sliding-window requests/minute and concurrent-session caps (`apps/server/src/middleware/auth.ts`). The recipe documents key scoping (`workspaceIds`, `permissionPolicy`) so a trigger key for one workspace can't touch others.
 - `/health` is unauthenticated by design (liveness probes); it leaks version + session counts. Recipe note: restrict at the proxy if that matters for the deployment.
 - Container hardening: non-root user, read-only rootfs where feasible, no `--privileged`. systemd hardening flags in the unit sketch above.
+- **Identity model for M2: machine-to-machine `craft_sk_*` keys only.** IAM/SSO for a hosted multi-user offering is parked per the approved spec amendment — acknowledged as future work, deliberately not designed here.
 - Agent blast radius: sessions execute tools on the server host. The recipe defaults new keys to `allow-safe` and documents that `allow-all` on a remote box means "remote code execution for whoever holds the key" — deliberate operator choice.
 
 ## Persistence — what needs volumes
@@ -239,18 +252,19 @@ bun build apps/server/src/index.ts --target=bun --outdir=/tmp/build-check --no-s
 1. **Fix pre-ADR-0005 config-dir literals in headless launch paths.**
    - `scripts/webui-serve.ts:21` hardcodes `~/.craft-agent` and `:96` pins `CRAFT_CONFIG_DIR` to it at spawn. Change: respect an existing `CRAFT_CONFIG_DIR` from the environment; otherwise default to the fork's `CONFIG_DIR` from `packages/shared/src/config/paths.ts`. (PLAN-005 designed the sharing deliberately pre-ADR-0005; post-ADR-0005 the *default* must be the fork dir, with sharing upstream's dir an explicit opt-in via the env var.)
    - Related literal found during this design: `packages/server/src/index.ts` `getMessagingDir` builds `join(homedir(), '.craft-agent', 'workspaces', …)` — should route through `CONFIG_DIR`. Small, same-PR fix candidate; verify against upstream-merge surface first.
-2. **Headless provisioning CLI on `apps/server`** — additive flags, no route changes: `--generate-api-key <name> [--policy …] [--workspaces …]`, `--provision-llm-key <connection-slug>` (stdin / `--from-file`), `--show-config`. Unit tests alongside existing strict suite.
-3. **Optional env overrides for host/port** (`CRAFT_TRIGGER_HOST` / `CRAFT_TRIGGER_PORT` or config-file-only — decide during implementation; config-file-only is acceptable since the file lives in the volume). Non-secret, so either is compliant.
-4. **`deploy/` artifacts**: Dockerfile, compose.yaml, systemd unit, machine-id generation note, Caddy + nginx snippets (SSE + WS upgrade), `docs/server-deployment.md` walking the PoC end-to-end.
-5. **PoC execution + verification checkpoints**: SDK node-subprocess resolution under bun-on-Linux (image contents), vault round-trip in-container across restart *and* image rebuild, SSE through the reverse proxy, idle-session eviction behavior under long-lived deployments.
-6. **ADR — "apps/server is the fork's headless deployment unit; Docker primary"**: warranted (deployment architecture + entrypoint commitment). Authored in the implementation phase with the then-next free ADR number — PLAN-012's workstream may claim 0007 in parallel, so this doc deliberately does not reserve a number.
+2. **Standalone-mode host composition** (VOR-35/VOR-43): `apps/server` gains an in-process headless `SessionManager` from `packages/server-core` (which owns the per-workspace `AutomationSystem`), wired alongside the existing `SessionPool` trigger path. This plan delivers the composition + lifecycle (startup, shutdown, workspace init) and instantiates the `onWebhookEvent` constructor seam; the callback's payload semantics and everything downstream of it are PLAN-014's. Design note for implementation: today `AutomationSystem` is only constructed inside `SessionManager` (`SessionManager.ts:1695`), so the seam threads through `SessionManager`/`AutomationSystem` options rather than a separate instantiation.
+3. **Headless provisioning CLI on `apps/server`** — additive flags, no route changes: `--generate-api-key <name> [--policy …] [--workspaces …]`, `--provision-llm-key <connection-slug>` (stdin / `--from-file`), `--show-config`. Unit tests alongside existing strict suite.
+4. **Optional env overrides for host/port** (`CRAFT_TRIGGER_HOST` / `CRAFT_TRIGGER_PORT` or config-file-only — decide during implementation; config-file-only is acceptable since the file lives in the volume). Non-secret, so either is compliant.
+5. **`deploy/` artifacts**: Dockerfile, compose.yaml, systemd unit, machine-id generation note, Caddy + nginx snippets (SSE + WS upgrade), `docs/server-deployment.md` walking the PoC end-to-end.
+6. **PoC execution + verification checkpoints**: SDK node-subprocess resolution under bun-on-Linux (image contents), vault round-trip in-container across restart *and* image rebuild, SSE through the reverse proxy, idle-session eviction behavior under long-lived deployments.
+7. **ADR — "apps/server is the fork's headless deployment unit; Docker primary"**: warranted (deployment architecture + entrypoint commitment). Authored in the implementation phase with the then-next free ADR number — PLAN-012's workstream may claim 0007 in parallel, so this doc deliberately does not reserve a number.
 
 ## Boundary with PLAN-014 (per-workspace webhooks)
 
-Both plans land code in `apps/server`. Division of ownership:
+Both plans implement the same approved spec and land code in `apps/server`. Division of ownership (confirmed by the orchestrator against the spec):
 
-- **PLAN-013 owns**: deployment/runtime recipe, config-dir correctness, credential provisioning, CLI flags on the entrypoint, `deploy/` + deployment docs. Code changes are additive and confined to `apps/server/src/index.ts` (flag parsing), `config.ts` (provisioning helpers), `scripts/webui-serve.ts`, and new `deploy/` files.
-- **PLAN-014 owns**: webhook endpoints, routing (`src/router.ts`, `src/routes/*`), action vocabulary, payload schemas. PLAN-013 does not touch `src/routes/` or `src/router.ts`.
+- **PLAN-013 owns**: deployment/runtime recipe, config-dir correctness, credential provisioning, CLI flags on the entrypoint, `deploy/` + deployment docs, **and the standalone host path** — the in-process `SessionManager`/`AutomationSystem` composition and the instantiation of the `onWebhookEvent` seam. Code changes confined to `apps/server/src/index.ts` (flag parsing, composition), `config.ts` (provisioning helpers), new service/composition modules, `scripts/webui-serve.ts`, and new `deploy/` files.
+- **PLAN-014 owns**: the webhook feature itself — endpoints, routing (`src/router.ts`, `src/routes/*`), action vocabulary, payload schemas, and the semantics of what flows through `onWebhookEvent`. PLAN-013 does not touch `src/routes/` or `src/router.ts`.
 - **Sequencing**: independent until merge; second-to-land rebases. The only shared file risk is `src/config.ts` if PLAN-014 adds webhook config — coordinate by keeping PLAN-013's additions to new exported functions (no reshaping of `ServerConfig` beyond what provisioning needs). Whatever PLAN-014 deploys rides this plan's recipe unchanged — webhooks are just more routes on the same port.
 
 ## Wire compatibility
@@ -259,7 +273,8 @@ No protocol surface changes. The WS transport keeps mirroring upstream's close c
 
 ## Acceptance
 
-- [ ] Design doc merged (this file) with entrypoint decision, Docker-primary/systemd-documented recommendation, and credential model recorded.
+- [ ] Design doc merged (this file) with entrypoint decision, Docker-primary/systemd-documented recommendation, and credential model recorded, reconciled with the approved Notion spec (VOR-39).
+- [ ] Standalone mode landed (VOR-35/VOR-43): `apps/server` composes the headless `server-core` `SessionManager` + `AutomationSystem` in-process with the `onWebhookEvent` seam instantiable — no Electron host required.
 - [ ] PoC: all five validation steps pass from a machine other than the server, on Linux (container) — session triggered over HTTP, response streamed over SSE.
 - [ ] No secret-bearing env vars required at runtime; secrets live only in `CONFIG_DIR` files (hashed or vault-encrypted); no secrets in the repo.
 - [ ] Headless deployment honors ADR-0005 (`~/.vorno-agent` default on metal; explicit `CRAFT_CONFIG_DIR` in the container; resolution logged at startup).
@@ -274,6 +289,7 @@ No protocol surface changes. The WS transport keeps mirroring upstream's close c
 - **SDK subprocess runtime on Linux/bun** — the Claude Agent SDK's CLI subprocess resolution under bun-on-Linux in a container is unverified; the image includes Node defensively. First PoC checkpoint.
 - **Container vault key strength** — mitigated by the mounted machine-id file, but an operator who skips that step silently gets the weak `username:homedir` derivation. Consider a startup warning when the fallback is active (candidate addition to work item 2).
 - **`~/.claude` growth and session resume across redeploys** — resume depends on both the HOME volume and `CONFIG_DIR` staying paired; splitting them across hosts breaks `claudeSessionId` references (ADR-0005 §4). Recipe pairs the volumes; doc calls it out.
+- **Two session stacks in one process** — standalone mode puts the fork's `SessionPool`/`AgentSession` (trigger path) and server-core's `SessionManager` (automation/webhook path) side by side in `apps/server`. Whether they stay parallel or converge is an implementation-phase decision; also decide whether standalone mode acquires `{CONFIG_DIR}/.server.lock` (today only `bootstrapServer` does — composing `SessionManager` directly would skip it, leaving no guard against a concurrently launched `packages/server` on the same config dir).
 - **Concurrent `apps/server` + `packages/server` on one config dir** — no lock conflict, but shared-state writer semantics unvalidated. Out of PoC; revisit when remote WebUI access is wanted.
 - **Idle eviction vs long triggers** — sessions idle >30 min are evicted (`apps/server/src/index.ts`); fine for triggers, but long-running remote work may need tuning exposed via config later.
 - **LLM OAuth (Claude subscription auth) headless** — provisioning flow above covers API keys; OAuth flows need a browser and are out of scope for the PoC (API-key connections only). Flagged for productization.
