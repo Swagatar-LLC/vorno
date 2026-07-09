@@ -74,6 +74,23 @@ const CONFIG_PATH = join(CONFIG_DIR, 'server-config.json');
  * Returns the same object (mutated) for convenience.
  */
 export function applyEnvOverrides(config: ServerConfig): ServerConfig {
+  // Enable/disable the server without editing the persisted file — lets a
+  // container run against a fresh volume (no server-config.json yet) or lets an
+  // operator flip a deployment on/off from the environment. Non-secret.
+  const enabledRaw = process.env.CRAFT_TRIGGER_ENABLED?.trim().toLowerCase();
+  if (enabledRaw !== undefined && enabledRaw !== '') {
+    if (['1', 'true', 'yes', 'on'].includes(enabledRaw)) {
+      config.enabled = true;
+    } else if (['0', 'false', 'no', 'off'].includes(enabledRaw)) {
+      config.enabled = false;
+    } else {
+      console.warn(
+        `[config] Ignoring unrecognized CRAFT_TRIGGER_ENABLED=${enabledRaw} ` +
+        `(use 1/0, true/false, yes/no, on/off); using ${config.enabled}.`
+      );
+    }
+  }
+
   const host = process.env.CRAFT_TRIGGER_HOST?.trim();
   if (host) {
     config.host = host;

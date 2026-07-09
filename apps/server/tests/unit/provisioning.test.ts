@@ -113,6 +113,7 @@ describe('config env overrides (CRAFT_TRIGGER_HOST/PORT)', () => {
   afterEach(() => {
     delete process.env.CRAFT_TRIGGER_HOST;
     delete process.env.CRAFT_TRIGGER_PORT;
+    delete process.env.CRAFT_TRIGGER_ENABLED;
   });
 
   function base(): ServerConfig {
@@ -149,5 +150,26 @@ describe('config env overrides (CRAFT_TRIGGER_HOST/PORT)', () => {
   test('ignores a non-numeric port', () => {
     process.env.CRAFT_TRIGGER_PORT = 'abc';
     expect(applyEnvOverrides(base()).port).toBe(3847);
+  });
+
+  test('enables via CRAFT_TRIGGER_ENABLED truthy values', () => {
+    for (const v of ['1', 'true', 'yes', 'on']) {
+      process.env.CRAFT_TRIGGER_ENABLED = v;
+      const c = base();
+      c.enabled = false;
+      expect(applyEnvOverrides(c).enabled).toBe(true);
+    }
+  });
+
+  test('disables via CRAFT_TRIGGER_ENABLED falsy values', () => {
+    for (const v of ['0', 'false', 'no', 'off']) {
+      process.env.CRAFT_TRIGGER_ENABLED = v;
+      expect(applyEnvOverrides(base()).enabled).toBe(false);
+    }
+  });
+
+  test('ignores an unrecognized CRAFT_TRIGGER_ENABLED and keeps config', () => {
+    process.env.CRAFT_TRIGGER_ENABLED = 'maybe';
+    expect(applyEnvOverrides(base()).enabled).toBe(true);
   });
 });
