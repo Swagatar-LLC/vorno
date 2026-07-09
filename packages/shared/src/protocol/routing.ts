@@ -166,6 +166,13 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.bgAgents.GET_KEEP_ALIVE,
   RPC_CHANNELS.bgAgents.SET_KEEP_ALIVE,
 
+  // fork(PLAN-015): production logging control — local-only, main-process
+  // logger state (level, file paths, reveal actions)
+  RPC_CHANNELS.logging.GET_STATE,
+  RPC_CHANNELS.logging.SET_LEVEL,
+  RPC_CHANNELS.logging.OPEN_LOG_FOLDER,
+  RPC_CHANNELS.logging.REVEAL_LOG_FILE,
+
   // fork(PLAN-012): embedded trigger-server supervision — local-only, main-process
   // supervisor state (never proxied to a remote workspace server)
   RPC_CHANNELS.triggerServer.GET_CONFIG,

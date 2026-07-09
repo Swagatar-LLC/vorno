@@ -390,6 +390,7 @@ const SETTINGS_ICONS: Record<SettingsSubpage, string> = {
   messaging: 'MessageSquare',
   server: 'Server',
   'remote-access': 'Server', // fork(PLAN-012): HTTP trigger server
+  advanced: 'Wrench', // fork(PLAN-015): diagnostics / production logging
   shortcuts: 'Keyboard',
   preferences: 'UserCircle',
 }

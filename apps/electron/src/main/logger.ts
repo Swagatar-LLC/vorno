@@ -1,7 +1,18 @@
 import log from 'electron-log/main'
 import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
+// fork(PLAN-015): production file logging
+import {
+  dailyLogFileName,
+  formatLogLine,
+  nextArchiveFileName,
+  pruneDailyLogs,
+  redactSecrets,
+  resolveLogLevel,
+  type LogLevel,
+} from '@craft-agent/shared/logging'
+import { getLogLevel, setLogLevel } from '@craft-agent/shared/config/storage'
 import type {
   MessagingLogContext,
   MessagingLogMeta,
@@ -35,6 +46,14 @@ function resolveDebugMode(): boolean {
 
 export const isDebugMode = resolveDebugMode()
 
+// fork(PLAN-015): production log location and retention policy.
+// CONFIG_DIR/logs (ADR-0005) — same folder as the messaging-gateway and
+// auto-update dedicated logs, so all field diagnostics live in one place.
+const PROD_LOG_DIR = join(CONFIG_DIR, 'logs')
+const PROD_LOG_PREFIX = 'main'
+const PROD_LOG_MAX_BYTES = 10 * 1024 * 1024 // 10 MiB per-file safety valve
+const PROD_LOG_MAX_AGE_DAYS = 14
+
 // Configure transports based on debug mode
 if (isDebugMode) {
   // JSON format for file (agent-parseable)
@@ -62,9 +81,90 @@ if (isDebugMode) {
   }
   log.transports.console.level = 'debug'
 } else {
-  // Disable file and console transports in production
-  log.transports.file.level = false
+  // fork(PLAN-015): production file logging. Packaged builds used to disable
+  // every transport, which left field failures — trigger-server autostart,
+  // port conflicts, update errors — undiagnosable (LEARNING-015). The file
+  // transport now stays ON: plain single-line text (grep/lnav-friendly) under
+  // CONFIG_DIR/logs/, one file per day (resolvePathFn is consulted per
+  // message, so the date rolls over naturally at midnight) with a size cap as
+  // a safety valve and startup pruning by age. Level comes from the app
+  // config (Settings -> Advanced; craft-fork:logging:* IPC changes it live)
+  // with CRAFT_LOG_LEVEL taking precedence. Console stays off in production.
+  log.transports.file.format = ({ message }) => {
+    const text = message.data
+      .map((d: unknown) => (typeof d === 'object' ? JSON.stringify(normalizeLogValue(d)) : String(d)))
+      .join(' ')
+    return [
+      redactSecrets(
+        formatLogLine({ date: message.date, level: message.level, scope: message.scope || undefined, text }),
+      ),
+    ]
+  }
+  log.transports.file.resolvePathFn = () =>
+    join(PROD_LOG_DIR, dailyLogFileName(PROD_LOG_PREFIX, new Date()))
+  log.transports.file.maxSize = PROD_LOG_MAX_BYTES
+  // Size-cap archive: main-2026-07-09.log -> main-2026-07-09.1.log (never
+  // clobbers an existing archive). Falls back to cropping like upstream's
+  // default archiveLogFn if the rename fails.
+  log.transports.file.archiveLogFn = (file) => {
+    const oldPath = file.path
+    const dir = dirname(oldPath)
+    try {
+      renameSync(oldPath, join(dir, nextArchiveFileName(dir, basename(oldPath))))
+    } catch {
+      // crop() exists at runtime but isn't in electron-log's LogFile typings
+      try { (file as unknown as { crop?: (bytes: number) => void }).crop?.(256 * 1024) }
+      catch { /* keep logging into the oversized file */ }
+    }
+  }
+  log.transports.file.level = resolveLogLevel(process.env, getLogLevel).level
   log.transports.console.level = false
+
+  try {
+    pruneDailyLogs(PROD_LOG_DIR, { prefix: PROD_LOG_PREFIX, maxAgeDays: PROD_LOG_MAX_AGE_DAYS })
+  } catch { /* housekeeping only — never block startup */ }
+}
+
+// fork(PLAN-015): runtime log-level control + state for the Settings UI.
+
+export interface LoggingState {
+  level: LogLevel
+  /** True when CRAFT_LOG_LEVEL forces the level (selector disabled in UI). */
+  envOverride: boolean
+  /** Debug builds log everything to the dev location; the level applies to packaged builds. */
+  debugMode: boolean
+  logDirectory: string
+  currentLogFile: string | undefined
+}
+
+export function getLoggingState(): LoggingState {
+  const { level, envOverride } = resolveLogLevel(process.env, getLogLevel)
+  return {
+    level,
+    envOverride,
+    debugMode: isDebugMode,
+    logDirectory: getLogDirectory(),
+    currentLogFile: getLogFilePath(),
+  }
+}
+
+/**
+ * Persist the log level and apply it to the live file transport — no restart.
+ * If CRAFT_LOG_LEVEL is set it keeps winning (the stored value still persists
+ * for the next launch without the override).
+ */
+export function setRuntimeLogLevel(level: LogLevel): void {
+  setLogLevel(level)
+  if (!isDebugMode) {
+    log.transports.file.level = resolveLogLevel(process.env, getLogLevel).level
+  }
+}
+
+/** Directory containing the active log file (production: CONFIG_DIR/logs). */
+export function getLogDirectory(): string {
+  if (!isDebugMode) return PROD_LOG_DIR
+  const devPath = log.transports.file.getFile()?.path
+  return devPath ? dirname(devPath) : PROD_LOG_DIR
 }
 
 // Export scoped loggers for different modules
@@ -270,10 +370,12 @@ export function getAutoUpdateLogFilePath(): string {
 
 /**
  * Get the path to the current Electron main log file.
- * Returns undefined if file logging is disabled.
+ * fork(PLAN-015): production file logging is always on, so this now answers
+ * in packaged builds too (today's daily file) instead of returning undefined.
  */
 export function getLogFilePath(): string | undefined {
-  if (!isDebugMode) return undefined
+  // fork(PLAN-015): packaged builds write daily files under CONFIG_DIR/logs
+  if (!isDebugMode) return join(PROD_LOG_DIR, dailyLogFileName(PROD_LOG_PREFIX, new Date()))
   return log.transports.file.getFile()?.path
 }
 

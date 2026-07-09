@@ -283,6 +283,20 @@ export interface RemoteAccessCreatedKey {
   info: RemoteAccessApiKeyInfo
 }
 
+// fork(PLAN-015): production logging control (craft-fork:logging:*).
+// Structural mirror of LoggingState in apps/electron/src/main/logger.ts.
+export type ProductionLogLevel = 'error' | 'warn' | 'info' | 'debug'
+
+export interface LoggingState {
+  level: ProductionLogLevel
+  /** True when CRAFT_LOG_LEVEL forces the level (selector disabled in UI). */
+  envOverride: boolean
+  /** Debug builds always log at debug to the dev location; the level applies to packaged builds. */
+  debugMode: boolean
+  logDirectory: string
+  currentLogFile: string | undefined
+}
+
 export interface ElectronAPI {
   // Session management
   getSessions(): Promise<Session[]>
@@ -651,6 +665,12 @@ export interface ElectronAPI {
   stopRemoteAccessServer(): Promise<void>
   createRemoteAccessApiKey(name: string, permissions: RemoteAccessApiKeyPermissions): Promise<RemoteAccessCreatedKey>
   revokeRemoteAccessApiKey(keyId: string): Promise<void>
+
+  // fork(PLAN-015): production logging control
+  getLoggingState(): Promise<LoggingState>
+  setLogLevel(level: ProductionLogLevel): Promise<LoggingState>
+  openLogFolder(): Promise<void>
+  revealLogFile(): Promise<void>
 
   // RTK token optimization
   getRtkEnabled(): Promise<boolean>

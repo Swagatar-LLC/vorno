@@ -24,6 +24,8 @@ import LabelsSettingsPage from './LabelsSettingsPage'
 import MessagingSettingsPage from './MessagingSettingsPage'
 import ServerSettingsPage from './ServerSettingsPage'
 import RemoteAccessSettingsPage from './RemoteAccessSettingsPage'
+// fork(PLAN-015): advanced diagnostics (production logging)
+import AdvancedSettingsPage from './AdvancedSettingsPage'
 import ShortcutsPage from './ShortcutsPage'
 import PreferencesPage from './PreferencesPage'
 
@@ -42,6 +44,7 @@ export const SETTINGS_PAGE_COMPONENTS: Record<SettingsSubpage, ComponentType> = 
   messaging: MessagingSettingsPage,
   server: ServerSettingsPage,
   'remote-access': RemoteAccessSettingsPage,
+  advanced: AdvancedSettingsPage, // fork(PLAN-015)
   shortcuts: ShortcutsPage,
   preferences: PreferencesPage,
 }

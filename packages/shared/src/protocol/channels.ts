@@ -344,6 +344,15 @@ export const RPC_CHANNELS = {
     GET_KEEP_ALIVE: 'craft-fork:bgAgents:getKeepAlive',
     SET_KEEP_ALIVE: 'craft-fork:bgAgents:setKeepAlive',
   },
+  // fork(PLAN-015): production logging control. LOCAL_ONLY — the log level and
+  // log files live on the local machine's main process. Namespaced under
+  // craft-fork:* per roadmap/upstream/compatibility.md.
+  logging: {
+    GET_STATE: 'craft-fork:logging:getState',
+    SET_LEVEL: 'craft-fork:logging:setLevel',
+    OPEN_LOG_FOLDER: 'craft-fork:logging:openLogFolder',
+    REVEAL_LOG_FILE: 'craft-fork:logging:revealLogFile',
+  },
   // fork(PLAN-012): embedded HTTP trigger-server supervision. LOCAL_ONLY — the
   // supervisor is main-process state. Namespaced under craft-fork:* per
   // roadmap/upstream/compatibility.md.
