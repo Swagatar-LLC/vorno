@@ -10,6 +10,7 @@ related-plans:
   - PLAN-007-orchestration-activity-panel.md
   - PLAN-008-orchestration-richer-progress.md
   - PLAN-009-orchestration-panel-phase-1_5.md
+  - PLAN-013-server-only-deployment.md
 ---
 
 # Direction 3 — The Live Observatory
