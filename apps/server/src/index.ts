@@ -1,10 +1,11 @@
 import { PRODUCT_NAME } from '@craft-agent/shared/branding';
-import { loadServerConfig } from './config.ts';
+import { loadServerConfig, getConfigPath } from './config.ts';
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths';
 import { createRouter } from './router.ts';
 import { SessionPool } from './services/session-pool.ts';
 import { EventBus } from './services/event-bus.ts';
 import { ClientRegistry, WsTransport } from './transport/index.ts';
+import { runProvisioningCli } from './provisioning.ts';
 
 /**
  * Craft Agents Dual-Transport Server
@@ -16,11 +17,18 @@ import { ClientRegistry, WsTransport } from './transport/index.ts';
  * Both transports share the same SessionPool, EventBus, and ClientRegistry.
  */
 
+// Headless provisioning CLI (PLAN-013): handle --generate-api-key /
+// --provision-llm-key / --show-config and exit before touching the server.
+const provisioning = await runProvisioningCli(process.argv);
+if (provisioning.handled) {
+  process.exit(provisioning.exitCode);
+}
+
 const config = loadServerConfig();
 
 if (!config.enabled) {
   console.log(`${PRODUCT_NAME} server is disabled. Enable it in server-config.json or via the Electron UI.`);
-  console.log(`Config path: ~/.craft-agent/server-config.json`);
+  console.log(`Config path: ${getConfigPath()}`);
   console.log('Set "enabled": true to start the server.');
   process.exit(0);
 }
