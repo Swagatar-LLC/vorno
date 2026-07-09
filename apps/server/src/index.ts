@@ -6,6 +6,8 @@ import { SessionPool } from './services/session-pool.ts';
 import { EventBus } from './services/event-bus.ts';
 import { ClientRegistry, WsTransport } from './transport/index.ts';
 import { runProvisioningCli } from './provisioning.ts';
+import { createStandaloneHost, isStandaloneEnabled, type StandaloneHost } from './standalone/host.ts';
+import { version as packageVersion } from '../package.json';
 
 /**
  * Craft Agents Dual-Transport Server
@@ -80,12 +82,33 @@ console.log(`  Health:     http://${config.host}:${config.port}/health`);
 console.log(`  REST API:   http://${config.host}:${config.port}/api/`);
 console.log(`  WebSocket:  ws://${config.host}:${config.port}/ws`);
 
+// Standalone mode (PLAN-013): compose an in-process headless SessionManager +
+// AutomationSystem alongside the trigger surface. Opt-in via CRAFT_STANDALONE.
+// A failure here must not silently degrade the trigger server — log and exit so
+// the operator sees it (e.g. a held .server.lock from a concurrent host).
+let standaloneHost: StandaloneHost | null = null;
+if (isStandaloneEnabled()) {
+  try {
+    standaloneHost = await createStandaloneHost({ appVersion: packageVersion });
+    console.log('Standalone mode: headless SessionManager + AutomationSystem active.');
+  } catch (err) {
+    console.error(`Failed to start standalone host: ${err instanceof Error ? err.message : String(err)}`);
+    clearInterval(evictionTimer);
+    wsTransport.shutdown();
+    server.stop();
+    process.exit(1);
+  }
+}
+
 // Graceful shutdown
 async function shutdown(signal: string) {
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
   clearInterval(evictionTimer);
   wsTransport.shutdown();
   await pool.drainAll();
+  if (standaloneHost) {
+    await standaloneHost.dispose();
+  }
   server.stop();
   console.log('Server stopped.');
   process.exit(0);

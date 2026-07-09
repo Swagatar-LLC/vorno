@@ -168,7 +168,15 @@ function isLockFromPreviousBoot(startedAt: number): boolean {
   return startedAt < bootTime
 }
 
-function acquireServerLock(logger: PlatformServices['logger']): void {
+/**
+ * Acquire the exclusive `{CONFIG_DIR}/.server.lock`. Exported so alternative
+ * headless hosts (e.g. the fork's `apps/server` standalone mode, PLAN-013) can
+ * take the same lock — and thus be mutually exclusive with a `bootstrapServer`
+ * instance on the same config dir — without re-implementing the PID-reuse /
+ * previous-boot / Docker-PID-1 staleness handling. Throws if a live instance
+ * already holds it. Registers a `process.on('exit')` release safety net.
+ */
+export function acquireServerLock(logger: PlatformServices['logger']): void {
   if (existsSync(LOCK_FILE)) {
     try {
       const content = readFileSync(LOCK_FILE, 'utf-8')
