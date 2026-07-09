@@ -322,6 +322,15 @@ export const CHANNEL_MAP = {
   getKeepBackgroundAgentsAlive: invoke(RPC_CHANNELS.bgAgents.GET_KEEP_ALIVE),
   setKeepBackgroundAgentsAlive: invoke(RPC_CHANNELS.bgAgents.SET_KEEP_ALIVE),
 
+  // fork(PLAN-012): embedded trigger server (Remote Access) supervision
+  getRemoteAccessConfig: invoke(RPC_CHANNELS.triggerServer.GET_CONFIG),
+  updateRemoteAccessConfig: invoke(RPC_CHANNELS.triggerServer.UPDATE_CONFIG),
+  getRemoteAccessStatus: invoke(RPC_CHANNELS.triggerServer.GET_STATUS),
+  startRemoteAccessServer: invoke(RPC_CHANNELS.triggerServer.START),
+  stopRemoteAccessServer: invoke(RPC_CHANNELS.triggerServer.STOP),
+  createRemoteAccessApiKey: invoke(RPC_CHANNELS.triggerServer.CREATE_API_KEY),
+  revokeRemoteAccessApiKey: invoke(RPC_CHANNELS.triggerServer.REVOKE_API_KEY),
+
   // RTK token optimization
   getRtkEnabled: invoke(RPC_CHANNELS.rtk.GET_ENABLED),
   setRtkEnabled: invoke(RPC_CHANNELS.rtk.SET_ENABLED),

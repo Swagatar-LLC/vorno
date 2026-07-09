@@ -48,6 +48,7 @@ export const SETTINGS_ICONS: Record<SettingsSubpage, React.ComponentType<IconPro
   labels: LabelsIcon,
   messaging: MessagingSettingsIcon,
   server: ServerSettingsIcon,
+  'remote-access': ServerSettingsIcon, // fork(PLAN-012): HTTP trigger server
   shortcuts: ShortcutsIcon,
   preferences: PreferencesIcon,
 }

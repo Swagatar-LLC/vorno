@@ -24,4 +24,14 @@ export {
   createWsClientData,
 } from '../transport/index.ts';
 export type { WsClientData } from '../transport/types.ts';
-export { loadServerConfig, saveServerConfig, type ServerConfig } from '../config.ts';
+export {
+  loadServerConfig,
+  saveServerConfig,
+  generateApiKey,
+  addApiKey,
+  revokeApiKey,
+  type ServerConfig,
+  type StoredApiKey,
+  type ApiKeyPermissions,
+  type RateLimits,
+} from '../config.ts';
