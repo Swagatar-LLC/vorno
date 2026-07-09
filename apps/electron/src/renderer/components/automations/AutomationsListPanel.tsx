@@ -12,7 +12,7 @@
 import * as React from 'react'
 import { useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Webhook } from 'lucide-react'
+import { Webhook, Plus } from 'lucide-react'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@craft-agent/ui'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { EntityListEmptyScreen } from '@/components/ui/entity-list-empty'
@@ -23,6 +23,7 @@ import { AutomationMenu } from './AutomationMenu'
 import { BatchAutomationMenu } from './BatchAutomationMenu'
 import { AutomationAvatar } from './AutomationAvatar'
 import { SendResourceToWorkspaceDialog } from '@/components/app-shell/SendResourceToWorkspaceDialog'
+import { CreateWebhookDialog } from './CreateWebhookDialog'
 import { useAppShellContext } from '@/context/AppShellContext'
 import { cn } from '@/lib/utils'
 import { automationSelection } from '@/hooks/useEntitySelection'
@@ -191,6 +192,10 @@ export function AutomationsListPanel({
   const { workspaces, activeWorkspaceId } = useAppShellContext()
   const hasOtherWorkspaces = workspaces.length > 1
 
+  // fork(PLAN-014): webhook create flow, shown only under the Webhooks sub-filter.
+  const isWebhookFilter = automationFilter?.kind === 'webhook'
+  const [createWebhookOpen, setCreateWebhookOpen] = useState(false)
+
   // Send to Workspace dialog state
   const [sendDialogOpen, setSendDialogOpen] = useState(false)
   const [sendResourceId, setSendResourceId] = useState<string | null>(null)
@@ -213,6 +218,7 @@ export function AutomationsListPanel({
     if (kind === 'scheduled') return automations.filter(a => a.event === 'SchedulerTick')
     if (kind === 'app') return automations.filter(a => (APP_EVENTS as string[]).includes(a.event) && a.event !== 'SchedulerTick')
     if (kind === 'agent') return automations.filter(a => (AGENT_EVENTS as string[]).includes(a.event))
+    if (kind === 'webhook') return automations.filter(a => a.event === 'WebhookReceived') // fork(PLAN-014)
     return automations
   }, [automations, automationFilter?.kind])
 
@@ -257,11 +263,19 @@ export function AutomationsListPanel({
       <div className={cn('flex flex-col flex-1 min-h-0', className)}>
         <EntityListEmptyScreen
           icon={<Webhook />}
-          title={t('automations.noAutomationsConfigured')}
-          description={t('automations.emptyDescription')}
+          title={isWebhookFilter ? t('webhooks.noWebhooks') : t('automations.noAutomationsConfigured')}
+          description={isWebhookFilter ? t('webhooks.emptyDescription') : t('automations.emptyDescription')}
           docKey="automations"
         >
-          {workspaceRootPath && (
+          {isWebhookFilter && activeWorkspaceId ? (
+            <button
+              onClick={() => setCreateWebhookOpen(true)}
+              className="inline-flex items-center gap-1 h-7 px-3 text-xs font-medium rounded-[8px] bg-background shadow-minimal hover:bg-foreground/[0.03] transition-colors"
+            >
+              <Plus className="h-3 w-3" />
+              {t('webhooks.newWebhook')}
+            </button>
+          ) : workspaceRootPath ? (
             <EditPopover
               align="center"
               trigger={
@@ -271,8 +285,11 @@ export function AutomationsListPanel({
               }
               {...getEditConfig('automation-config', workspaceRootPath)}
             />
-          )}
+          ) : null}
         </EntityListEmptyScreen>
+        {activeWorkspaceId && (
+          <CreateWebhookDialog open={createWebhookOpen} onOpenChange={setCreateWebhookOpen} workspaceId={activeWorkspaceId} />
+        )}
       </div>
     )
   }
@@ -293,20 +310,43 @@ export function AutomationsListPanel({
         />
       )}
 
+      {/* fork(PLAN-014): New webhook action under the Webhooks sub-filter */}
+      {isWebhookFilter && activeWorkspaceId && !isSearchMode && (
+        <div className="flex items-center justify-end px-3 py-1.5">
+          <button
+            onClick={() => setCreateWebhookOpen(true)}
+            className="inline-flex items-center gap-1 h-6 px-2 text-xs font-medium rounded-[6px] bg-background shadow-minimal hover:bg-foreground/[0.03] transition-colors"
+          >
+            <Plus className="h-3 w-3" />
+            {t('webhooks.newWebhook')}
+          </button>
+        </div>
+      )}
+
       {/* Filtered empty state */}
       {filteredAutomations.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-1">
+        <div className="flex-1 flex flex-col items-center justify-center gap-2">
           <p className="text-sm text-muted-foreground">
-            {isSearchMode ? t('automations.noAutomationsFound') : t('automations.noAutomationsConfigured')}
+            {isSearchMode ? t('automations.noAutomationsFound')
+              : isWebhookFilter ? t('webhooks.noWebhooks')
+              : t('automations.noAutomationsConfigured')}
           </p>
-          {isSearchMode && (
+          {isSearchMode ? (
             <button
               onClick={() => setSearchQuery('')}
               className="text-xs text-foreground hover:underline"
             >
               {t('automations.clearSearch')}
             </button>
-          )}
+          ) : isWebhookFilter && activeWorkspaceId ? (
+            <button
+              onClick={() => setCreateWebhookOpen(true)}
+              className="inline-flex items-center gap-1 h-7 px-3 text-xs font-medium rounded-[8px] bg-background shadow-minimal hover:bg-foreground/[0.03] transition-colors"
+            >
+              <Plus className="h-3 w-3" />
+              {t('webhooks.newWebhook')}
+            </button>
+          ) : null}
         </div>
       ) : (
         <ScrollArea className="flex-1">
@@ -337,6 +377,11 @@ export function AutomationsListPanel({
             </div>
           </div>
         </ScrollArea>
+      )}
+
+      {/* fork(PLAN-014): create-webhook dialog */}
+      {activeWorkspaceId && (
+        <CreateWebhookDialog open={createWebhookOpen} onOpenChange={setCreateWebhookOpen} workspaceId={activeWorkspaceId} />
       )}
 
       {/* Send to Workspace dialog */}

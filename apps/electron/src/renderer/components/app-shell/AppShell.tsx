@@ -30,6 +30,7 @@ import {
   Clock,
   Radio,
   Bot,
+  Webhook,
   Info,
   MailOpen,
   FolderKanban,
@@ -1531,9 +1532,10 @@ function AppShellContent({
 
   // Count automations by type for the Automations dropdown subcategories
   const automationTypeCounts = useMemo(() => {
-    const counts = { scheduled: 0, event: 0, agentic: 0 }
+    const counts = { scheduled: 0, event: 0, agentic: 0, webhook: 0 }
     for (const automation of automations) {
-      if (automation.event === 'SchedulerTick') counts.scheduled++
+      if (automation.event === 'WebhookReceived') counts.webhook++ // fork(PLAN-014)
+      else if (automation.event === 'SchedulerTick') counts.scheduled++
       else if ((APP_EVENTS as string[]).includes(automation.event)) counts.event++
       else if ((AGENT_EVENTS as string[]).includes(automation.event)) counts.agentic++
     }
@@ -1840,6 +1842,11 @@ function AppShellContent({
 
   const handleAutomationsAgenticClick = useCallback(() => {
     navigate(routes.view.automationsAgentic())
+  }, [])
+
+  // fork(PLAN-014): Webhooks sub-view (WebhookReceived automations).
+  const handleAutomationsWebhooksClick = useCallback(() => {
+    navigate(routes.view.automationsWebhooks())
   }, [])
 
   // Handler for settings view. With no arg → bare `settings` route (navigator-only
@@ -2272,6 +2279,7 @@ function AppShellContent({
         case 'scheduled': return t("sidebar.scheduled")
         case 'event': return t("sidebar.eventBased")
         case 'agentic': return t("sidebar.agentic")
+        case 'webhook': return t("sidebar.webhooks")
         default: return t("sidebar.allAutomations")
       }
     }
@@ -2669,6 +2677,16 @@ function AppShellContent({
                           icon: Bot,
                           variant: (automationFilter?.kind === 'type' && automationFilter.automationType === 'agentic') ? "default" : "ghost",
                           onClick: handleAutomationsAgenticClick,
+                          contextMenu: { type: 'automations' as const, onAddAutomation: openAddAutomation },
+                        },
+                        {
+                          // fork(PLAN-014): Webhooks — inbound WebhookReceived automations.
+                          id: "nav:automations:webhook",
+                          title: t("sidebar.webhooks"),
+                          label: String(automationTypeCounts.webhook),
+                          icon: Webhook,
+                          variant: (automationFilter?.kind === 'type' && automationFilter.automationType === 'webhook') ? "default" : "ghost",
+                          onClick: handleAutomationsWebhooksClick,
                           contextMenu: { type: 'automations' as const, onAddAutomation: openAddAutomation },
                         },
                       ],

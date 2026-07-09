@@ -159,11 +159,11 @@ export const routes = {
     },
 
     /** Automations view (automations navigator) - supports type filtering */
-    automations: (params?: { automationId?: string; type?: 'scheduled' | 'event' | 'agentic' }) => {
+    automations: (params?: { automationId?: string; type?: 'scheduled' | 'event' | 'agentic' | 'webhook' }) => {
       const { automationId, type } = params ?? {}
       const base = type ? `automations/${type}` : 'automations'
       if (automationId) return `${base}/automation/${automationId}` as const
-      return base as 'automations' | `automations/${'scheduled' | 'event' | 'agentic'}`
+      return base as 'automations' | `automations/${'scheduled' | 'event' | 'agentic' | 'webhook'}`
     },
 
     /** Scheduled automations view (automations navigator, scheduled filter) */
@@ -177,6 +177,10 @@ export const routes = {
     /** Agentic automations view (automations navigator, agentic filter) */
     automationsAgentic: (automationId?: string) =>
       automationId ? `automations/agentic/automation/${automationId}` as const : 'automations/agentic' as const,
+
+    /** Webhooks view (automations navigator, WebhookReceived filter). fork(PLAN-014) */
+    automationsWebhooks: (automationId?: string) =>
+      automationId ? `automations/webhook/automation/${automationId}` as const : 'automations/webhook' as const,
 
     /** Settings view (settings navigator) - uses SettingsSubpage from registry */
     settings: (subpage?: SettingsSubpage) =>

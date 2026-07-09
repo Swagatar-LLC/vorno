@@ -182,3 +182,17 @@ export {
   WEBHOOK_DEFAULT_RATE_PER_MINUTE,
   WEBHOOKS_PAYLOADS_DIR,
 } from './constants.ts';
+
+// fork(PLAN-014) Phase 3: webhook management (CRUD over WebhookReceived matchers)
+export {
+  listWebhooks,
+  upsertWebhook,
+  revokeWebhookToken,
+  readWebhookDeliveries,
+  type WebhookSummary,
+  type WebhookUpsertInput,
+  type WebhookUpsertResult,
+  type WebhookRevokeAction,
+  type WebhookRevokeResult,
+  type WebhookDelivery,
+} from './webhook-management.ts';

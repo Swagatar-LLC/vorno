@@ -23,6 +23,7 @@ import { AutomationMenu } from './AutomationMenu'
 import { AutomationActionRow } from './AutomationActionRow'
 import { AutomationTestPanel } from './AutomationTestPanel'
 import { AutomationEventTimeline } from './AutomationEventTimeline'
+import { WebhookEndpointSection } from './WebhookEndpointSection'
 import { PhaseBadge } from './PhaseBadge'
 import { getEventDisplayName, getPermissionDisplayName, flattenConditions, type AutomationListItem, type ExecutionEntry, type TestResult } from './types'
 import { describeCron, computeNextRuns } from './utils'
@@ -121,6 +122,11 @@ export function AutomationInfoPage({
               {t('automations.pausedDescription')}
             </Info_Alert.Description>
           </Info_Alert>
+        )}
+
+        {/* fork(PLAN-014): webhook endpoint management (URL, token, deliveries) */}
+        {automation.event === 'WebhookReceived' && workspace?.id && (
+          <WebhookEndpointSection workspaceId={workspace.id} matcherId={automation.id} />
         )}
 
         {/* Section: When */}

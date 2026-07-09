@@ -183,6 +183,14 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.triggerServer.CREATE_API_KEY,
   RPC_CHANNELS.triggerServer.REVOKE_API_KEY,
 
+  // fork(PLAN-014): per-workspace webhook management — local-only, main-process
+  // hook CRUD against the workspace's automations.json (never proxied to a
+  // remote workspace server; the receiver it configures is the local trigger server)
+  RPC_CHANNELS.webhooks.LIST,
+  RPC_CHANNELS.webhooks.UPSERT,
+  RPC_CHANNELS.webhooks.REVOKE,
+  RPC_CHANNELS.webhooks.DELIVERIES,
+
   // tools — local tool settings
   RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
   RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
