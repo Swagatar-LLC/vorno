@@ -28,6 +28,9 @@ export type AppEvent =
   | 'TodoStateChange'
   | 'SessionStatusChange'
   | 'SchedulerTick'
+  // fork(PLAN-014): inbound webhook trigger. Deliberately NOT in APP_EVENTS so it
+  // forms its own "Webhooks" sub-group rather than folding into "Event-based".
+  | 'WebhookReceived'
 
 export type AgentEvent =
   | 'PreToolUse'
@@ -237,7 +240,7 @@ export interface AutomationListItem {
 // Filter
 // ============================================================================
 
-export type AutomationFilterKind = 'all' | 'app' | 'agent' | 'scheduled'
+export type AutomationFilterKind = 'all' | 'app' | 'agent' | 'scheduled' | 'webhook'
 
 export interface AutomationListFilter {
   kind: AutomationFilterKind
@@ -248,6 +251,7 @@ export const AUTOMATION_TYPE_TO_FILTER_KIND: Record<string, AutomationFilterKind
   scheduled: 'scheduled',
   event: 'app',
   agentic: 'agent',
+  webhook: 'webhook', // fork(PLAN-014)
 }
 
 // ============================================================================
@@ -312,6 +316,7 @@ export const EVENT_DISPLAY_NAMES: Record<AutomationTrigger, string> = {
   TodoStateChange:      'Task Updated',
   SessionStatusChange:  'Status Changed',
   SchedulerTick:        'Scheduled',
+  WebhookReceived:      'Webhook', // fork(PLAN-014)
 
   // Agent events
   PreToolUse:           'Before Tool Runs',
