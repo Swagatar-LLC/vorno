@@ -11,6 +11,8 @@ import { tokensMatch } from './tokens.ts';
 
 /** Constant-time token check against the hook's stored hash. */
 export function verifyToken(hook: HookConfig, providedToken: string): boolean {
+  // A hook with no stored hash (un-minted or REVOKE-cleared) cannot be invoked.
+  if (!hook.tokenHash) return false;
   return tokensMatch(providedToken, hook.tokenHash);
 }
 

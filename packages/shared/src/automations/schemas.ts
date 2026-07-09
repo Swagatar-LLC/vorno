@@ -149,7 +149,9 @@ const HookConcurrencySchema = z.object({
 
 export const HookConfigSchema = z.object({
   slug: z.string().regex(/^[a-z0-9-]{1,64}$/, 'slug must match [a-z0-9-]{1,64}'),
-  tokenHash: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'tokenHash must be "sha256:<hex64>"'),
+  // Optional: a hook may exist un-minted or have its token cleared (REVOKE). A
+  // hook without a tokenHash cannot be invoked — the receiver 404s. fork(PLAN-014)
+  tokenHash: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'tokenHash must be "sha256:<hex64>"').optional(),
   tokenPrefix: z.string().optional(),
   verification: HookVerificationSchema.optional(),
   idempotencyKey: HookIdempotencyKeySchema.optional(),

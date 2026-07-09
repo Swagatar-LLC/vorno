@@ -365,6 +365,17 @@ export const RPC_CHANNELS = {
     CREATE_API_KEY: 'craft-fork:triggerServer:createApiKey',
     REVOKE_API_KEY: 'craft-fork:triggerServer:revokeApiKey',
   },
+  // fork(PLAN-014): per-workspace webhook management. LOCAL_ONLY — hook CRUD is
+  // main-process-side against the workspace's automations.json, mirroring the
+  // trigger-server it feeds. Namespaced under craft-fork:* per
+  // roadmap/upstream/compatibility.md. Token plaintext is returned exactly once
+  // from UPSERT/REVOKE(rotate) and never persisted.
+  webhooks: {
+    LIST: 'craft-fork:webhooks:list',
+    UPSERT: 'craft-fork:webhooks:upsert',
+    REVOKE: 'craft-fork:webhooks:revoke',
+    DELIVERIES: 'craft-fork:webhooks:deliveries',
+  },
   badge: {
     REFRESH: 'badge:refresh',
     SET_ICON: 'badge:setIcon',

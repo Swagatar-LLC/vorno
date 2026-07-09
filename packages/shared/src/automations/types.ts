@@ -216,8 +216,13 @@ export interface HookConcurrency {
 export interface HookConfig {
   /** URL segment; unique per workspace; `[a-z0-9-]{1,64}`. */
   slug: string;
-  /** Capability-URL token, hashed at rest (`sha256:<hex64>`). */
-  tokenHash: string;
+  /**
+   * Capability-URL token, hashed at rest (`sha256:<hex64>`). Optional so a hook
+   * can be registered before its token is minted, and so REVOKE(clear) can strip
+   * the token — a hook without a `tokenHash` cannot be invoked (the receiver
+   * 404s every token). fork(PLAN-014)
+   */
+  tokenHash?: string;
   /** Display-only token prefix (e.g. `craft_whk_...f3a`). */
   tokenPrefix?: string;
   /** Optional HMAC verification (Phase 2). */
