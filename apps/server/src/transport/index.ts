@@ -6,6 +6,8 @@
  */
 export { ClientRegistry, type PushCallback } from './client-registry.ts';
 export { WsTransport, type WsTransportOptions } from './ws-transport.ts';
+export { WsProtocol, type WsProtocolOptions } from './ws-protocol.ts';
+export { createWsClientData, type WsSocketAdapter } from './ws-socket.ts';
 export type {
   TransportKind,
   TransportClient,
