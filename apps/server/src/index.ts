@@ -1,8 +1,10 @@
 import { PRODUCT_NAME } from '@craft-agent/shared/branding';
 import { loadServerConfig, getConfigPath } from './config.ts';
 import { createTriggerServer } from './core/create-trigger-server.ts';
+import type { HostBridge } from './core/host-bridge.ts'; // fork(PLAN-014)
 import { WsTransport } from './transport/index.ts';
 import { runProvisioningCli } from './provisioning.ts';
+import { initWebhooks, createWebhookDispatcher } from './webhooks/init.ts'; // fork(PLAN-014)
 import { createStandaloneHost, isStandaloneEnabled, type StandaloneHost } from './standalone/host.ts';
 import { version as packageVersion } from '../package.json';
 
@@ -36,10 +38,17 @@ if (!config.enabled) {
   process.exit(0);
 }
 
-// Construct the runtime-neutral core (PLAN-012). The standalone Bun entry injects
-// an empty HostBridge — the trigger-surface webhook seam is bound by the embedded
-// host; standalone mode's own headless webhook seam lives at the host layer below.
-const core = createTriggerServer(config, {});
+// fork(PLAN-014): the standalone Bun host binds the trigger-surface webhook seam.
+// The dispatcher routes verified deliveries into a per-workspace AutomationSystem
+// registry (scheduler off) and is exposed through the core HostBridge.onWebhookEvent
+// seam (ADR-0007) — the receiver (also built here) emits through that same seam.
+const webhookDispatcher = createWebhookDispatcher();
+const hostBridge: HostBridge = { onWebhookEvent: webhookDispatcher.dispatch };
+const webhooks = initWebhooks(hostBridge.onWebhookEvent!);
+
+// Construct the runtime-neutral core (PLAN-012) with the webhook receiver wired
+// into its pre-auth route composition.
+const core = createTriggerServer(config, hostBridge, { webhooks });
 
 // Bun socket adapter wrapping the core's shared WS protocol (one protocol /
 // registry / pool instance across both transports).
@@ -100,6 +109,8 @@ async function shutdown(signal: string) {
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
   stopEviction();
   await core.shutdown();
+  await webhooks.dispose(); // fork(PLAN-014)
+  await webhookDispatcher.dispose(); // fork(PLAN-014)
   if (standaloneHost) {
     await standaloneHost.dispose();
   }

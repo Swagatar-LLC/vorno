@@ -21,10 +21,14 @@
  * what AutomationSystem's onPromptsReady consumers expect (a workspace id plus a
  * free-form payload the automation matchers inspect).
  *
- * NOTE: PLAN-014 introduces a shared `webhook-ingest` module. When it lands this
- * local type can be re-pointed at the shared definition without reshaping the
- * seam.
+ * fork(PLAN-014): the shared `webhook-ingest` module has landed. Per this note's
+ * own guidance, the canonical payload is now `WebhookReceivedPayload` (imported +
+ * re-exported below); `WebhookIngestEvent` is retained as a structural alias so
+ * any pre-PLAN-014 reference keeps resolving. The seam shape is unchanged.
  */
+import type { WebhookReceivedPayload } from '@craft-agent/shared/automations';
+export type { WebhookReceivedPayload };
+
 export interface WebhookIngestEvent {
   /** Source that produced the event (e.g. a capability-URL slug). */
   source: string;
@@ -45,11 +49,16 @@ export interface WebhookIngestEvent {
 export interface HostBridge {
   /**
    * Spec seam — same shape/role as AutomationSystem's onPromptsReady. The
-   * webhook receiver (VOR-33) emits through this; the embedded host binds it to
-   * the desktop AutomationSystem/SessionManager, the standalone host to headless
-   * instances. PLAN-012 only guarantees it exists and is injected.
+   * webhook receiver (VOR-33/PLAN-014) emits through this; the embedded host
+   * binds it to the desktop AutomationSystem/SessionManager, the standalone host
+   * to headless instances.
+   *
+   * fork(PLAN-014): the payload is the canonical `WebhookReceivedPayload`, and the
+   * return type admits `Promise<void>` so the receiver can await executor work and
+   * mark its durable queue entry complete (or retry on rejection). PLAN-012's
+   * logging-stub still satisfies the `void` branch.
    */
-  onWebhookEvent?: (workspaceId: string, payload: WebhookIngestEvent) => void;
+  onWebhookEvent?: (workspaceId: string, payload: WebhookReceivedPayload) => void | Promise<void>;
 
   /**
    * Optional session-creation route-through (open question 2 in PLAN-012).

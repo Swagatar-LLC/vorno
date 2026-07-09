@@ -22,6 +22,7 @@ import { ClientRegistry } from '../transport/client-registry.ts';
 import { WsProtocol } from '../transport/ws-protocol.ts';
 import type { ServerConfig } from '../config.ts';
 import type { HostBridge } from './host-bridge.ts';
+import type { WebhooksHandle } from '../webhooks/init.ts'; // fork(PLAN-014)
 
 // Idle session eviction (every 5 minutes, evict sessions idle for 30 minutes)
 const EVICTION_INTERVAL_MS = 5 * 60 * 1000;
@@ -49,6 +50,13 @@ export interface CreateTriggerServerOptions {
   getConfig?: () => ServerConfig;
   /** Optional logger for eviction notices (defaults to console.log). */
   log?: (msg: string) => void;
+  /**
+   * fork(PLAN-014): the inbound-webhook receiver handle. When present, the router
+   * composes the pre-auth `/hooks/:workspace/:hookSlug/:token` route. The host
+   * builds this (see `initWebhooks`) and binds its dispatch through
+   * {@link HostBridge.onWebhookEvent}.
+   */
+  webhooks?: WebhooksHandle;
 }
 
 /**
@@ -73,7 +81,7 @@ export function createTriggerServer(
     registry,
     getConfig: options.getConfig,
   });
-  const router = createRouter(pool, registry);
+  const router = createRouter(pool, registry, options.webhooks); // fork(PLAN-014)
 
   const fetchHandler = (request: Request): Promise<Response> => router(request);
 
