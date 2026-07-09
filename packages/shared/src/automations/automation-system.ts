@@ -22,7 +22,8 @@ import { compactAutomationHistorySync } from './history-store.ts';
 import { createLogger } from '../utils/debug.ts';
 import { WorkspaceEventBus, type EventPayloadMap } from './event-bus.ts';
 import { PromptHandler, EventLogHandler, WebhookHandler, type AutomationsConfigProvider } from './handlers/index.ts';
-import { type AutomationsConfig, type AutomationEvent, type AutomationMatcher, type PendingPrompt, type WebhookActionResult, type AppEvent, type AgentEvent, type SdkAutomationCallbackMatcher, type SdkAutomationInput } from './types.ts';
+import { SessionActionHandler } from './handlers/session-action-handler.ts';
+import { type AutomationsConfig, type AutomationEvent, type AutomationMatcher, type PendingPrompt, type PendingSessionAction, type WebhookActionResult, type AppEvent, type AgentEvent, type SdkAutomationCallbackMatcher, type SdkAutomationInput } from './types.ts';
 import { validateAutomationsConfig } from './validation.ts';
 import { matcherMatchesSdk } from './utils.ts';
 import { SchedulerService, type SchedulerTickPayload } from '../scheduler/scheduler-service.ts';
@@ -50,6 +51,12 @@ export interface AutomationSystemOptions {
   enableScheduler?: boolean;
   /** Called when prompts are ready to be executed */
   onPromptsReady?: (prompts: PendingPrompt[]) => void;
+  /**
+   * fork(PLAN-014): called when session-mutation actions (set-status /
+   * set-labels / send-message) are ready. The handler computes; the host
+   * executes (resolves label→session, validates, writes to disk).
+   */
+  onSessionActions?: (actions: PendingSessionAction[]) => void;
   /** Called when webhook results are available */
   onWebhookResults?: (results: WebhookActionResult[]) => void;
   /** Called when an error occurs during automation execution */
@@ -69,6 +76,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
   private config: AutomationsConfig | null = null;
   private promptHandler: PromptHandler | null = null;
   private webhookHandler: WebhookHandler | null = null;
+  private sessionActionHandler: SessionActionHandler | null = null; // fork(PLAN-014)
   private eventLogHandler: EventLogHandler | null = null;
   private scheduler: SchedulerService | null = null;
   private disposed = false;
@@ -267,6 +275,18 @@ export class AutomationSystem implements AutomationsConfigProvider {
       this
     );
     this.webhookHandler.subscribe(this.eventBus);
+
+    // fork(PLAN-014): session-action handler (set-status / set-labels / send-message)
+    this.sessionActionHandler = new SessionActionHandler(
+      {
+        workspaceId: this.options.workspaceId,
+        workspaceRootPath: this.options.workspaceRootPath,
+        onSessionActions: this.options.onSessionActions,
+        onError: this.options.onError,
+      },
+      this
+    );
+    this.sessionActionHandler.subscribe(this.eventBus);
 
     // Event log handler
     this.eventLogHandler = new EventLogHandler({
@@ -549,6 +569,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
     // Dispose handlers
     this.promptHandler?.dispose();
     this.webhookHandler?.dispose();
+    this.sessionActionHandler?.dispose(); // fork(PLAN-014)
     await this.eventLogHandler?.dispose();
 
     // Dispose event bus

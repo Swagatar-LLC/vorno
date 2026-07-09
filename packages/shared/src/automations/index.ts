@@ -33,6 +33,19 @@ export type {
   ActionExecutionResult,
   PendingPrompt,
   AutomationResult,
+  // fork(PLAN-014)
+  HookConfig,
+  HookVerification,
+  HookIdempotencyKey,
+  HookDebounce,
+  HookRateLimit,
+  HookConcurrency,
+  SessionTargetSelector,
+  SetStatusAction,
+  SetLabelsAction,
+  SendMessageAction,
+  SessionAction,
+  PendingSessionAction,
   AutomationsValidationResult,
   SdkAutomationInput,
   SdkAutomationCallback,
@@ -137,3 +150,34 @@ export {
   type WebhookHandlerOptions,
   type AutomationsConfigProvider,
 } from './handlers/index.ts';
+
+// fork(PLAN-014): webhook ingest (verify/dedup/rate/queue/receiver) + session actions
+export { SessionActionHandler, type SessionActionHandlerOptions } from './handlers/session-action-handler.ts';
+export {
+  createWebhookReceiver,
+  generateHookToken,
+  hashHookToken,
+  tokensMatch,
+  extractIdempotencyKey,
+  WebhookDedupStore,
+  WebhookRateGate,
+  WebhookIngestQueue,
+  resolveJsonPathLite,
+  resolveJsonPathLiteString,
+  isValidJsonPathLite,
+  verifyToken,
+  withinBodyCap,
+  type WebhookReceiver,
+  type WebhookReceiverDeps,
+  type WebhookRequest,
+  type WebhookResult,
+  type ResolvedWorkspace,
+  type MintedHookToken,
+  type IngestQueueEntry,
+} from './webhook-ingest/index.ts';
+export {
+  WEBHOOK_TOKEN_PREFIX,
+  WEBHOOK_DEFAULT_BODY_CAP_BYTES,
+  WEBHOOK_DEFAULT_RATE_PER_MINUTE,
+  WEBHOOKS_PAYLOADS_DIR,
+} from './constants.ts';
