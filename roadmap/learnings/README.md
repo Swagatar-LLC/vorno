@@ -67,6 +67,7 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [013](LEARNING-013-ipc-channels-inventory-hand-maintained.md) | `ipc-channels` EXPECTED_CHANNELS is hand-maintained despite the "auto-generated" banner (referenced generator script doesn't exist) | tests | active |
 | [014](LEARNING-014-shared-subpath-missing-from-package-exports.md) | A `@craft-agent/shared` subpath tsc resolves can still break `bun build` if it's missing from package.json `exports` | build | active |
 | [015](LEARNING-015-packaged-smoke-verify-no-logs-single-instance.md) | Smoke-verifying the packaged app needs `--user-data-dir` isolation and can't rely on logs (production transports disabled) | electron | active |
+| [016](LEARNING-016-bun-harness-electron-main-modules-dist-stub.md) | Electron main-process modules run under plain Bun for verification if `ELECTRON_OVERRIDE_DIST_PATH` stubs the missing dist (`require('electron')` throws otherwise) | electron | active |
 
 ## Related skills
 
