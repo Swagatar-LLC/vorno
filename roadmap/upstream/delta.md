@@ -20,8 +20,29 @@ Files (all owned, not in upstream):
 - `apps/server/src/routes/{health,sessions,workspaces}.ts`
 - `apps/server/src/services/{event-bus,session-pool}.ts`
 - `apps/server/src/transport/{client-registry,types,ws-transport,index}.ts`
+- `apps/server/src/provisioning.ts` (PLAN-013 — headless provisioning CLI)
+- `apps/server/src/standalone/host.ts` (PLAN-013 — standalone headless host composition)
 - `apps/server/tests/**/*.test.ts`
 - `apps/server/README.md`, `apps/server/package.json`, `apps/server/tsconfig.json`
+
+### Headless deployment (`deploy/`, PLAN-013 / ADR-0008)
+
+Fork-only deployment artifacts + docs for running `apps/server` headless:
+
+- `deploy/{Dockerfile,compose.yaml,README.md}`, `deploy/systemd/vorno-server.service`,
+  `deploy/reverse-proxy/{Caddyfile,nginx.conf}`
+- `docs/server-deployment.md`
+
+Two upstream-adjacent edits widen the diff (small, additive, in-process — not
+wire changes; recorded here per PLAN-013):
+
+- `packages/server/src/index.ts` `getMessagingDir` now routes through `CONFIG_DIR`
+  instead of a hardcoded `~/.craft-agent` literal. This file is fork-exclusive
+  (the standalone-server messaging bootstrap is a Swagatar addition), so no
+  upstream collision.
+- `packages/server-core/src/bootstrap/headless-start.ts` exports
+  `acquireServerLock` (was module-private) so the standalone host reuses identical
+  `.server.lock` staleness handling. One added `export` keyword.
 
 ### Documentation we own
 
