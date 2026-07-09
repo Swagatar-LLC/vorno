@@ -29,6 +29,11 @@ export function deriveAutomationName(event: string, matcher: AutomationMatcher):
     return label.length > 40 ? label.slice(0, 40) + '...' : label;
   }
 
+  // fork(PLAN-014): session-mutation actions derive from their kind.
+  if (firstAction.type === 'set-status') return `Set status ${firstAction.status}`;
+  if (firstAction.type === 'set-labels') return 'Set labels';
+  if (firstAction.type === 'send-message') return 'Send message';
+
   // Extract @skill/@source mention
   const mentionMatch = firstAction.prompt.match(/@(\S+)/);
   if (mentionMatch) return `${mentionMatch[1]} prompt`;

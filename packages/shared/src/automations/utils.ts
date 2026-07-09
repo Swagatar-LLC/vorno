@@ -10,6 +10,7 @@ import type { AutomationEvent, AutomationMatcher, PromptReferences, AgentEvent, 
 import { matchesCron } from './cron-matcher.ts';
 import { sanitizeForShell } from './security.ts';
 import { evaluateConditions } from './conditions.ts';
+import { resolveJsonPathLiteString } from './webhook-ingest/jsonpath-lite.ts';
 
 // ============================================================================
 // String Utilities
@@ -103,9 +104,26 @@ export function getMatchValue(event: AutomationEvent, data: Record<string, unkno
     case 'SchedulerTick':
       // SchedulerTick uses cron matching, not regex
       return '';
+    case 'WebhookReceived':
+      // fork(PLAN-014): default match target is the whole body. A matcher's
+      // `matchField` narrows this to a specific field — handled in
+      // matcherMatches() where the matcher (and thus matchField) is available.
+      return data.body !== undefined ? JSON.stringify(data.body) : '';
     default:
       return JSON.stringify(data);
   }
+}
+
+/**
+ * fork(PLAN-014): compute the regex match target for a WebhookReceived matcher,
+ * honoring its optional `matchField` (JSONPath-lite into the body).
+ */
+function getWebhookMatchValue(matcher: AutomationMatcher, data: Record<string, unknown>): string {
+  const body = data.body;
+  if (matcher.matchField) {
+    return resolveJsonPathLiteString(body, matcher.matchField);
+  }
+  return body !== undefined ? JSON.stringify(body) : '';
 }
 
 /**
@@ -185,8 +203,11 @@ export function matcherMatchesWithContext(
  * App-event adapter for canonical matcher evaluation.
  */
 export function matcherMatches(matcher: AutomationMatcher, event: AutomationEvent, data: Record<string, unknown>): boolean {
+  const matchValue = event === 'WebhookReceived'
+    ? getWebhookMatchValue(matcher, data)
+    : getMatchValue(event, data);
   return matcherMatchesWithContext(matcher, event, {
-    matchValue: getMatchValue(event, data),
+    matchValue,
     payload: data,
     matcherTimezone: matcher.timezone,
   });
@@ -222,6 +243,15 @@ export function cleanEnv(): Record<string, string> {
 const PAYLOAD_SKIP_KEYS = new Set(['sessionId', 'sessionName', 'workspaceId', 'timestamp']);
 
 /**
+ * fork(PLAN-014): WebhookReceived payload keys that get dedicated CRAFT_WEBHOOK_*
+ * vars instead of the generic CRAFT_<KEY> dump (which would stringify objects as
+ * "[object Object]" and inline body content — both undesirable).
+ */
+const WEBHOOK_PAYLOAD_KEYS = new Set([
+  'hookId', 'hookSlug', 'eventId', 'payloadPath', 'payloadCount', 'headers', 'body',
+]);
+
+/**
  * Build the base CRAFT_* environment variables shared by both prompt and webhook actions.
  * Contains event info, session metadata, scheduler time, and payload fields (unsanitized).
  */
@@ -250,9 +280,20 @@ function buildBaseEventEnv(event: AutomationEvent, payload: BaseEventPayload): R
     env.CRAFT_LOCAL_DATE = now.toISOString().split('T')[0]!;
   }
 
+  // fork(PLAN-014): explicit webhook vars. Payload content is delivered as a
+  // file path, never inlined.
+  if (event === 'WebhookReceived') {
+    const p = payload as unknown as Record<string, unknown>;
+    if (p.payloadPath) env.CRAFT_WEBHOOK_PAYLOAD_PATH = String(p.payloadPath);
+    if (p.hookSlug) env.CRAFT_WEBHOOK_HOOK = String(p.hookSlug);
+    if (p.eventId) env.CRAFT_WEBHOOK_EVENT_ID = String(p.eventId);
+    env.CRAFT_WEBHOOK_COUNT = String(p.payloadCount ?? 1);
+  }
+
   // Payload fields as CRAFT_ vars (raw — callers apply sanitization if needed)
   for (const [key, value] of Object.entries(payload)) {
     if (PAYLOAD_SKIP_KEYS.has(key)) continue;
+    if (event === 'WebhookReceived' && WEBHOOK_PAYLOAD_KEYS.has(key)) continue;
     const envKey = `CRAFT_${toSnakeCase(key).toUpperCase()}`;
     env[envKey] = typeof value === 'string' ? value : String(value);
   }
@@ -274,6 +315,7 @@ export function buildEnvFromPayload(event: AutomationEvent, payload: BaseEventPa
   // Sanitize payload field values for shell context
   for (const [key, value] of Object.entries(payload)) {
     if (PAYLOAD_SKIP_KEYS.has(key)) continue;
+    if (event === 'WebhookReceived' && WEBHOOK_PAYLOAD_KEYS.has(key)) continue;
     const envKey = `CRAFT_${toSnakeCase(key).toUpperCase()}`;
     env[envKey] = typeof value === 'string' ? sanitizeForShell(value) : String(value);
   }

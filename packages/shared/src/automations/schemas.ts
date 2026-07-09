@@ -64,12 +64,100 @@ export const WebhookActionSchema = z.object({
   ]).optional(),
 });
 
+// ============================================================================
+// Session Actions (fork(PLAN-014))
+// ============================================================================
+
+/** Exactly one of id/label; both support $ENV and $.jsonpath (resolved at runtime). */
+export const SessionTargetSelectorSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    label: z.string().min(1).optional(),
+  })
+  .refine(
+    (s) => (s.id === undefined) !== (s.label === undefined),
+    'session selector must set exactly one of "id" or "label"',
+  );
+
+export const SetStatusActionSchema = z.object({
+  type: z.literal('set-status'),
+  session: SessionTargetSelectorSchema,
+  status: z.string().min(1),
+  allowClosed: z.boolean().optional(),
+});
+
+export const SetLabelsActionSchema = z
+  .object({
+    type: z.literal('set-labels'),
+    session: SessionTargetSelectorSchema,
+    add: z.array(z.string().min(1)).optional(),
+    remove: z.array(z.string().min(1)).optional(),
+  })
+  .refine(
+    (a) => (a.add?.length ?? 0) + (a.remove?.length ?? 0) > 0,
+    'set-labels requires at least one of "add" or "remove"',
+  );
+
+export const SendMessageActionSchema = z.object({
+  type: z.literal('send-message'),
+  session: SessionTargetSelectorSchema,
+  message: z.string().min(1),
+});
+
 /** Accepts prompt and webhook actions strictly; passes through legacy/unknown action types without erroring */
 export const ActionDefinitionSchema = z.union([
   PromptActionSchema,
   WebhookActionSchema,
+  SetStatusActionSchema,
+  SetLabelsActionSchema,
+  SendMessageActionSchema,
   z.object({ type: z.string() }).passthrough(),
 ]);
+
+// ============================================================================
+// Hook Registration Schema (fork(PLAN-014))
+// ============================================================================
+
+const HookVerificationSchema = z.object({
+  type: z.literal('hmac-sha256'),
+  secretEnv: z.string().regex(/^CRAFT_WH_[A-Z0-9_]+$/, 'secretEnv must match ^CRAFT_WH_[A-Z0-9_]+$'),
+  signatureHeader: z.string().min(1),
+  timestampToleranceMs: z.number().int().positive().optional(),
+});
+
+const HookIdempotencyKeySchema = z.object({
+  source: z.enum(['header', 'body']),
+  name: z.string().min(1),
+});
+
+const HookDebounceSchema = z.object({
+  windowMs: z.number().int().nonnegative(),
+  maxWaitMs: z.number().int().positive().optional(),
+  strategy: z.enum(['trailing', 'collect']).optional(),
+  debounceKey: z.string().optional(),
+});
+
+const HookRateLimitSchema = z.object({
+  perMinute: z.number().int().positive().max(100000),
+  burst: z.number().int().nonnegative().optional(),
+});
+
+const HookConcurrencySchema = z.object({
+  maxActiveSessions: z.number().int().positive(),
+  overflow: z.enum(['queue', 'coalesce', 'drop']).optional(),
+});
+
+export const HookConfigSchema = z.object({
+  slug: z.string().regex(/^[a-z0-9-]{1,64}$/, 'slug must match [a-z0-9-]{1,64}'),
+  tokenHash: z.string().regex(/^sha256:[a-f0-9]{64}$/, 'tokenHash must be "sha256:<hex64>"'),
+  tokenPrefix: z.string().optional(),
+  verification: HookVerificationSchema.optional(),
+  idempotencyKey: HookIdempotencyKeySchema.optional(),
+  debounce: HookDebounceSchema.optional(),
+  rateLimit: HookRateLimitSchema.optional(),
+  concurrency: HookConcurrencySchema.optional(),
+  bodyCapBytes: z.number().int().positive().optional(),
+});
 
 // ============================================================================
 // Condition Schemas
@@ -143,6 +231,9 @@ export const AutomationMatcherSchema = z.object({
   name: z.string().optional(),
   matcher: z.string().optional(),
   cron: z.string().optional(),
+  // fork(PLAN-014): hook registration + payload match field
+  hook: HookConfigSchema.optional(),
+  matchField: z.string().optional(),
   timezone: z.string().optional(),
   permissionMode: z.enum(['safe', 'ask', 'allow-all']).optional(),
   labels: z.array(z.string()).optional(),
