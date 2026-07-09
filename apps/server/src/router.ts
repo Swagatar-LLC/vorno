@@ -7,6 +7,7 @@ import type { ClientRegistry } from './transport/client-registry.ts';
 
 // Route handlers
 import { handleHealth } from './routes/health.ts';
+import { handleRoot } from './routes/root.ts'; // fork(VOR-48)
 import { handleWebhookRoute } from './routes/hooks.ts'; // fork(PLAN-014)
 import type { WebhooksHandle } from './webhooks/init.ts'; // fork(PLAN-014)
 import { handleListWorkspaces, handleListSources } from './routes/workspaces.ts';
@@ -60,6 +61,15 @@ export function createRouter(pool: SessionPool, registry?: ClientRegistry, webho
     // Health check (no auth required)
     if (method === 'GET' && path === '/health') {
       return handleHealth(pool, registry);
+    }
+
+    // fork(VOR-48): friendly, unauthenticated landing page at the server root.
+    // Answers "is this on / how do I authenticate" for anyone who opens the URL
+    // in a browser, instead of a raw 401 JSON. Exposes no secrets or session
+    // data; /api/* stays authenticated. Registered BEFORE the auth gate, like
+    // /health and /hooks.
+    if (method === 'GET' && (path === '/' || path === '/index.html')) {
+      return handleRoot(request, pool);
     }
 
     // fork(PLAN-014): inbound webhook receiver — an unauthenticated route class
