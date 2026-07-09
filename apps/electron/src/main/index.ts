@@ -91,6 +91,7 @@ import { registerTriggerServerHandlers } from './handlers/trigger-server'
 import { registerWebhooksHandlers } from './handlers/webhooks' // fork(PLAN-014)
 import { TriggerServerSupervisor } from './trigger-server/supervisor'
 import { TriggerServerTray } from './trigger-server/tray'
+import { createEmbeddedWebhooks, type EmbeddedWebhooks } from './trigger-server/webhooks' // fork(PLAN-014)
 import type { HostBridge } from '@craft-agent/http-trigger/core'
 import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import type { PlatformServices } from '../runtime/platform'
@@ -240,6 +241,8 @@ let messagingHandle: MessagingBootstrapHandle | null = null
 // after bootstrapServer resolves; single source of runtime truth for the server.
 let triggerServerSupervisor: TriggerServerSupervisor | null = null
 let triggerServerTray: TriggerServerTray | null = null
+// fork(PLAN-014): embedded webhook receiver + dispatcher, disposed on teardown.
+let embeddedWebhooks: EmbeddedWebhooks | null = null
 
 // Store pending deep link if app not ready yet (cold start)
 let pendingDeepLink: string | null = null
@@ -1078,22 +1081,29 @@ app.whenReady().then(async () => {
       // the bootstrap block only).
       // ---------------------------------------------------------------------
       {
-        // HostBridge seam: onWebhookEvent is bound to the desktop here so the
-        // webhook receiver (VOR-33) can reach the workspace AutomationSystem via
-        // SessionManager. Injected now; logs until the receiver emits (ADR-0007).
+        // fork(PLAN-014): embedded webhook stack — the receiver (served on the
+        // pre-auth /hooks route) + a dispatcher bound to the LIVE desktop
+        // SessionManager. Prompt deliveries land as live sessions in the running
+        // app (executePromptAutomation); set-status/labels/send-message reflect in
+        // the UI. Closes LEARNING-018 (the embedded host no longer 401s /hooks).
+        embeddedWebhooks = createEmbeddedWebhooks(instance.sessionManager)
+
+        // HostBridge seam: onWebhookEvent routes verified deliveries into the
+        // desktop AutomationSystem via the dispatcher (ADR-0007).
         const hostBridge: HostBridge = {
-          onWebhookEvent: (workspaceId, payload) => {
-            mainLog.info(`[trigger-server] webhook event for workspace ${workspaceId} from ${payload.source}`)
-            // Future (VOR-33): route into the workspace AutomationSystem via sessionManager.
-          },
+          onWebhookEvent: embeddedWebhooks.dispatch,
         }
 
         const supervisor = new TriggerServerSupervisor({
           hostBridge,
+          webhooks: embeddedWebhooks.handle, // fork(PLAN-014): serve POST /hooks/...
           log: {
             info: (m) => mainLog.info(m),
             warn: (m) => mainLog.warn(m),
-            error: (m, err) => mainLog.error(m, err),
+            // fork(PLAN-014): don't forward an undefined `err` — electron-log
+            // renders it as a trailing "undefined" on error-only lines (e.g. the
+            // port-conflict start-failed log). See LEARNING-018.
+            error: (m, err) => { err === undefined ? mainLog.error(m) : mainLog.error(m, err) },
           },
           onStateChange: () => { triggerServerTray?.refresh() },
         })
@@ -1340,6 +1350,16 @@ app.on('before-quit', async (event) => {
         await triggerServerSupervisor.dispose()
       } catch (err) {
         mainLog.error('[trigger-server] dispose failed:', err)
+      }
+    }
+    // fork(PLAN-014): tear down the webhook receiver (retry timer) + per-workspace
+    // AutomationSystems built for webhook dispatch. Owned here, not by the
+    // supervisor, so start/stop cycles reuse the same receiver handle.
+    if (embeddedWebhooks) {
+      try {
+        await embeddedWebhooks.dispose()
+      } catch (err) {
+        mainLog.error('[webhooks] dispose failed:', err)
       }
     }
     if (triggerServerTray) {

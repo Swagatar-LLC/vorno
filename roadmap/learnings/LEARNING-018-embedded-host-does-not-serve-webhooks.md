@@ -2,10 +2,11 @@
 id: LEARNING-018
 title: The packaged (embedded) trigger server does not serve /hooks — POST returns 401, not 202
 date: 2026-07-09
-status: active
+status: resolved
 component: electron
 related-plans: [PLAN-012, PLAN-014]
 related-decisions: [ADR-0007]
+resolved-by: jh/2026-07-09_embedded-hooks-receiver (PLAN-014 §5(2) embedded host)
 ---
 
 # LEARNING-018 — the embedded host does not serve `/hooks` (webhook receiver is standalone-only)
@@ -65,23 +66,43 @@ wired the *standalone* host as the E2E path and explicitly deferred the embedded
 executor bindings to the PLAN-013 headless/embedded host work. PR #57's VOR-42
 verification never exercised webhooks, so nothing that worked before is broken.
 
-## Fix (deferred — not applied in the verification pass)
+## Fix (APPLIED — `jh/2026-07-09_embedded-hooks-receiver`, PLAN-014 §5(2))
 
-The receiver module (`packages/shared/src/automations/webhook-ingest/` +
-`apps/server/src/webhooks/init.ts`) is HTTP-agnostic and not Bun-specific, so
-closing the gap is mechanically small:
+The receiver module is HTTP-agnostic, so the gap was mechanically small exactly as
+predicted — no architectural change (`SessionManager` is reachable at the wiring
+site via `instance.sessionManager`, and every desktop mutation used is a public
+`ISessionManager` method). What shipped:
 
-1. In the Electron main bootstrap, build `createWebhookDispatcher()` + `initWebhooks()`
-   the same way `apps/server/src/index.ts` does, binding the dispatcher to the real
-   desktop `AutomationSystem`/`SessionManager` instead of the log-only stub.
-2. Thread the resulting `WebhooksHandle` into the supervisor and pass it through
-   `createTriggerServer(config, hostBridge, { log, webhooks })`.
-3. Dispose it in the supervisor teardown (mirror `apps/server`'s `shutdown`).
+1. **Extracted the shared composition** out of `apps/server/src/webhooks/init.ts`
+   into host-agnostic modules in `packages/shared/src/automations/webhook-ingest/`:
+   - `dispatcher.ts` — `createWebhookDispatcher(executors)`: the per-workspace
+     `AutomationSystem` registry (scheduler OFF) + mutex/collector, now
+     **parameterized by injected executors** (was hardcoded to the standalone
+     disk executors).
+   - `host.ts` — `initWebhooks(onWebhookEvent)` + `WebhooksHandle`, verbatim.
+   `apps/server/src/webhooks/init.ts` became a thin wrapper binding the DISK-ONLY
+   executors — standalone behavior byte-for-byte identical (182 strict tests green).
+2. **Embedded host wiring** (`apps/electron/src/main/trigger-server/`):
+   - `webhook-executors.ts` — desktop executors bound to the live `SessionManager`:
+     prompt → `executePromptAutomation` (LIVE session, `waitForCompletion:false`),
+     set-status → `setSessionStatus`, set-labels → `setSessionLabels`,
+     send-message → `sendMessage` (the case standalone can't serve, PLAN-014 Risk #2).
+   - `webhooks.ts` — `createEmbeddedWebhooks(sessionManager)` composes the SAME
+     shared dispatcher + receiver, differing ONLY in the injected executors.
+   - `supervisor.ts` — new `webhooks?: WebhooksHandle` option, threaded into every
+     `createTriggerServer(config, hostBridge, { log, webhooks })`.
+   - `index.ts` — the log-only stub is replaced by `createEmbeddedWebhooks(...)`;
+     `hostBridge.onWebhookEvent = embeddedWebhooks.dispatch`; disposed on app teardown.
+3. **Cosmetic:** the supervisor logger wrapper no longer forwards an `undefined`
+   `err` to `mainLog.error` (electron-log rendered it as a trailing "undefined" on
+   the port-conflict start-failed line).
 
-Until then, webhooks only work end-to-end against a **standalone `apps/server`**
-process (or the headless deployment PLAN-013 owns), even though the desktop UI
-advertises ingest URLs for the embedded server. Anyone verifying webhooks must run
-the standalone host — pointing curl at the desktop app's port will always `401`.
+Verified: a real-HTTP E2E through the embedded host + receiver + dispatcher +
+desktop executor (`webhooks-e2e.test.ts`) — valid token + matching payload → **202**
+→ `executePromptAutomation` fires (live session); duplicate → **200**; wrong token
+→ **404**. Plus the inverse of the probe below is now a CI-gated regression guard
+(`apps/server/tests/unit/webhook-route-mounting.test.ts`): webhooks handle present →
+`/hooks` mounted (404 on unknown ws); absent → auth gate 401.
 
 ## Recurrence
 

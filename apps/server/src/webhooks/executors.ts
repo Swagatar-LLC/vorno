@@ -28,15 +28,10 @@ import {
   type PendingPrompt,
   type PendingSessionAction,
   type SessionTargetSelector,
+  type ExecResult,
 } from '@craft-agent/shared/automations';
 
-export interface ExecResult {
-  ok: boolean;
-  error?: string;
-  sessionId?: string;
-  /** Terminal non-success note (e.g. rejected / deferred) — not retried. */
-  note?: string;
-}
+export type { ExecResult };
 
 /** Build a session-action history entry (matches the history-store envelope). */
 function sessionActionHistoryEntry(action: PendingSessionAction, outcome: string, ok: boolean, extra?: Record<string, unknown>): Record<string, unknown> {
