@@ -88,6 +88,7 @@ import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
 import { registerAllRpcHandlers } from './handlers/index'
 import { registerTriggerServerHandlers } from './handlers/trigger-server'
+import { registerWebhooksHandlers } from './handlers/webhooks' // fork(PLAN-014)
 import { TriggerServerSupervisor } from './trigger-server/supervisor'
 import { TriggerServerTray } from './trigger-server/tray'
 import type { HostBridge } from '@craft-agent/http-trigger/core'
@@ -1098,6 +1099,15 @@ app.whenReady().then(async () => {
         })
         triggerServerSupervisor = supervisor
         registerTriggerServerHandlers(instance.wsServer, supervisor)
+        // fork(PLAN-014): per-workspace webhook management (craft-fork:webhooks:*).
+        // Reads the trigger-server host/port from the same supervisor to compose
+        // copyable ingest URLs; hook CRUD writes the workspace's automations.json.
+        registerWebhooksHandlers(instance.wsServer, {
+          getServerConfig: () => {
+            const cfg = supervisor.getConfig()
+            return { host: cfg.host, port: cfg.port }
+          },
+        })
 
         // Tray: macOS menu bar, GUI only. VOR-11 (quit/login-item) out of scope.
         if (!isHeadless && process.platform === 'darwin') {

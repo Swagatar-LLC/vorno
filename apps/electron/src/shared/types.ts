@@ -297,6 +297,49 @@ export interface LoggingState {
   currentLogFile: string | undefined
 }
 
+// fork(PLAN-014): per-workspace webhook management (craft-fork:webhooks:*).
+// A webhook is a WebhookReceived automation matcher; these DTOs are the wire
+// shapes the renderer consumes. WebhookSummary/WebhookDelivery/AutomationAction
+// are the shared read-models (type-only — erased at runtime, no fs pull-in).
+import type {
+  WebhookSummary as SharedWebhookSummary,
+  WebhookDelivery as SharedWebhookDelivery,
+  AutomationAction as SharedAutomationAction,
+} from '@craft-agent/shared/automations'
+export type WebhookSummary = SharedWebhookSummary
+export type WebhookDelivery = SharedWebhookDelivery
+
+/** A webhook plus its resolved ingest URL (host from the trigger-server config). */
+export interface WebhookView extends SharedWebhookSummary {
+  /** Full ingest URL WITHOUT the token: {base}/hooks/{workspace}/{slug}. */
+  ingestUrl: string
+}
+
+/** Result of create/edit/rotate/clear. Token + tokenUrl appear exactly once. */
+export interface WebhookMutationResult {
+  webhook: WebhookView
+  /** Plaintext token — present only on create and rotate. */
+  token?: string
+  /** Full ingest URL WITH the token — present only on create and rotate. */
+  tokenUrl?: string
+}
+
+/** Create/edit request. `id` present + found → edit; otherwise → create. */
+export interface WebhookUpsertRequest {
+  workspaceId: string
+  id?: string
+  name: string
+  slug: string
+  matcher?: string
+  matchField?: string
+  permissionMode?: PermissionMode
+  labels?: string[]
+  enabled?: boolean
+  actions?: SharedAutomationAction[]
+}
+
+export type WebhookRevokeAction = 'rotate' | 'clear'
+
 export interface ElectronAPI {
   // Session management
   getSessions(): Promise<Session[]>
@@ -671,6 +714,12 @@ export interface ElectronAPI {
   setLogLevel(level: ProductionLogLevel): Promise<LoggingState>
   openLogFolder(): Promise<void>
   revealLogFile(): Promise<void>
+
+  // fork(PLAN-014): per-workspace webhook management
+  listWebhooks(workspaceId: string): Promise<WebhookView[]>
+  upsertWebhook(request: WebhookUpsertRequest): Promise<WebhookMutationResult>
+  revokeWebhookToken(workspaceId: string, id: string, action: WebhookRevokeAction): Promise<WebhookMutationResult>
+  getWebhookDeliveries(workspaceId: string, hookId: string, limit?: number): Promise<WebhookDelivery[]>
 
   // RTK token optimization
   getRtkEnabled(): Promise<boolean>

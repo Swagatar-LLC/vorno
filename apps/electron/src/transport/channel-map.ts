@@ -337,6 +337,12 @@ export const CHANNEL_MAP = {
   openLogFolder: invoke(RPC_CHANNELS.logging.OPEN_LOG_FOLDER),
   revealLogFile: invoke(RPC_CHANNELS.logging.REVEAL_LOG_FILE),
 
+  // fork(PLAN-014): per-workspace webhook management
+  listWebhooks: invoke(RPC_CHANNELS.webhooks.LIST),
+  upsertWebhook: invoke(RPC_CHANNELS.webhooks.UPSERT),
+  revokeWebhookToken: invoke(RPC_CHANNELS.webhooks.REVOKE),
+  getWebhookDeliveries: invoke(RPC_CHANNELS.webhooks.DELIVERIES),
+
   // RTK token optimization
   getRtkEnabled: invoke(RPC_CHANNELS.rtk.GET_ENABLED),
   setRtkEnabled: invoke(RPC_CHANNELS.rtk.SET_ENABLED),
