@@ -11,6 +11,9 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { AnimatePresence, motion } from 'motion/react'
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
@@ -35,11 +38,13 @@ export const meta: DetailsPageMeta = {
 }
 
 export default function RemoteAccessSettingsPage() {
+  const { t } = useTranslation()
   const [config, setConfig] = useState<RemoteAccessConfig | null>(null)
   const [status, setStatus] = useState<RemoteAccessStatus>({ running: false, state: 'stopped', activeSessions: 0 })
   const [newKeyName, setNewKeyName] = useState('')
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [copiedKey, setCopiedKey] = useState(false)
+  const [showExplainer, setShowExplainer] = useState(false)
 
   // Load config and status on mount
   useEffect(() => {
@@ -159,6 +164,67 @@ export default function RemoteAccessSettingsPage() {
         <ScrollArea className="h-full">
           <div className="px-5 py-7 max-w-3xl mx-auto">
             <div className="space-y-8">
+
+              {/* Inline explainer (VOR-48) — collapsible "how it works" instructions */}
+              <SettingsCard divided={false}>
+                <button
+                  type="button"
+                  onClick={() => setShowExplainer(v => !v)}
+                  className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-foreground/[0.02]"
+                  aria-expanded={showExplainer}
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium">{t('settings.remoteAccess.explainer.header')}</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      {t('settings.remoteAccess.explainer.subtitle')}
+                    </div>
+                  </div>
+                  {showExplainer
+                    ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                    : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
+                </button>
+                <AnimatePresence initial={false}>
+                  {showExplainer && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
+                      className="overflow-hidden"
+                    >
+                      <div className="px-4 pb-4 pt-1 space-y-4 text-sm text-muted-foreground border-t border-border/50">
+                        <ExplainerBlock
+                          title={t('settings.remoteAccess.explainer.introTitle')}
+                          body={t('settings.remoteAccess.explainer.introBody')}
+                        />
+                        <ExplainerBlock
+                          title={t('settings.remoteAccess.explainer.bindTitle')}
+                          body={t('settings.remoteAccess.explainer.bindBody')}
+                        />
+                        <div className="space-y-1.5">
+                          <div className="text-foreground font-medium">
+                            {t('settings.remoteAccess.explainer.keysTitle')}
+                          </div>
+                          <p>{t('settings.remoteAccess.explainer.keysBody')}</p>
+                          <p className="pt-1">{t('settings.remoteAccess.explainer.keysExampleLabel')}</p>
+                          <pre className="text-xs font-mono bg-muted p-3 rounded-md overflow-x-auto text-foreground/80">
+{`curl http://127.0.0.1:3847/api/workspaces \\
+  -H "Authorization: Bearer craft_sk_YOUR_KEY"`}
+                          </pre>
+                        </div>
+                        <ExplainerBlock
+                          title={t('settings.remoteAccess.explainer.trayTitle')}
+                          body={t('settings.remoteAccess.explainer.trayBody')}
+                        />
+                        <ExplainerBlock
+                          title={t('settings.remoteAccess.explainer.webhooksTitle')}
+                          body={t('settings.remoteAccess.explainer.webhooksBody')}
+                        />
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </SettingsCard>
 
               {/* Server Status */}
               <SettingsSection title="Server">
@@ -333,6 +399,18 @@ export default function RemoteAccessSettingsPage() {
           </div>
         </ScrollArea>
       </div>
+    </div>
+  )
+}
+
+/**
+ * A titled paragraph inside the "how it works" explainer (VOR-48).
+ */
+function ExplainerBlock({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-foreground font-medium">{title}</div>
+      <p>{body}</p>
     </div>
   )
 }
