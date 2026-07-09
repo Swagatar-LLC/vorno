@@ -25,6 +25,7 @@ import {
   type TriggerServerCore,
   type HostBridge,
 } from '@craft-agent/http-trigger/core';
+import type { WebhooksHandle } from '@craft-agent/shared/automations'; // fork(PLAN-014)
 import { createEmbeddedHost, type EmbeddedHost, type EmbeddedHostOptions } from './host';
 import type {
   RemoteAccessConfig,
@@ -60,6 +61,14 @@ export interface HealthProbeResult {
 export interface SupervisorOptions {
   /** The host-adapter seam (onWebhookEvent bound to the desktop automation system). */
   hostBridge?: HostBridge;
+  /**
+   * fork(PLAN-014): the inbound-webhook receiver handle. When present, it is
+   * threaded into every `createTriggerServer` construction so the embedded
+   * trigger server serves the pre-auth `POST /hooks/...` route (LEARNING-018).
+   * Owned by the caller (built once at bootstrap, disposed on app teardown); the
+   * supervisor only forwards it and never disposes it across start/stop cycles.
+   */
+  webhooks?: WebhooksHandle;
   log?: SupervisorLogger;
   /** Called on every state transition so the tray/UI can re-render. */
   onStateChange?: (status: RemoteAccessStatus) => void;
@@ -82,6 +91,7 @@ export class TriggerServerSupervisor {
   private boundPort: number | undefined;
 
   private readonly hostBridge: HostBridge;
+  private readonly webhooks: WebhooksHandle | undefined;
   private readonly log: SupervisorLogger;
   private readonly onStateChange: ((status: RemoteAccessStatus) => void) | undefined;
   private readonly hostFactory: (core: TriggerServerCore, opts: EmbeddedHostOptions) => EmbeddedHost;
@@ -89,6 +99,7 @@ export class TriggerServerSupervisor {
 
   constructor(opts: SupervisorOptions = {}) {
     this.hostBridge = opts.hostBridge ?? {};
+    this.webhooks = opts.webhooks;
     this.log = opts.log ?? NOOP_LOGGER;
     this.onStateChange = opts.onStateChange;
     this.hostFactory = opts.hostFactory ?? createEmbeddedHost;
@@ -223,6 +234,7 @@ export class TriggerServerSupervisor {
     try {
       core = createTriggerServer(config, this.hostBridge, {
         log: (msg) => this.log.info(`[trigger-server] ${msg}`),
+        webhooks: this.webhooks, // fork(PLAN-014): serve the pre-auth /hooks route
       });
       host = this.hostFactory(core, {
         onError: (err) => this.onHostError(err),

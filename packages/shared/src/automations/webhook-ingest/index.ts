@@ -23,3 +23,19 @@ export {
   type WebhookResult,
   type ResolvedWorkspace,
 } from './receiver.ts';
+export {
+  createWebhookDispatcher,
+  type WebhookDispatch,
+  type WebhookDispatcherHandle,
+  type WebhookDispatcherExecutors,
+  type WebhookDispatcherDeps,
+  type WebhookPromptExecutor,
+  type WebhookSessionActionExecutor,
+  type ExecResult,
+} from './dispatcher.ts';
+export {
+  initWebhooks,
+  readWebhookMatchers,
+  resolveWorkspaceById,
+  type WebhooksHandle,
+} from './host.ts';
