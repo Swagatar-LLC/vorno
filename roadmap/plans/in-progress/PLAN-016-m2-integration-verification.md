@@ -123,8 +123,32 @@ deliveries' action outcome — `{"type":"set-status","outcome":"deferred:target-
 - Tray menu contents + interaction feel (Start/Stop/Retry, Copy URL, ⌥-Restart).
 - FORK badge visually on-screen (the rust `#c2410c` bar; structurally confirmed shipped).
 - Settings → **Remote Access** and Settings → **Advanced** (log level selector, open/reveal log folder) rendered interaction.
-- Settings → Automations → **Webhooks** UI (hook CRUD, token show-once). Note the ingest URL it shows targets the embedded server, which does not yet receive (finding #1).
+- Settings → Automations → **Webhooks** UI (hook CRUD, token show-once). The ingest URL it shows targets the embedded server, which **now receives** as of PR #63 (see addendum).
 - Full SSE event stream against a real workspace + LLM connection.
+
+## Addendum — delta re-verification after PR #63 (embedded webhooks) — 2026-07-09
+
+PR #63 (`jh/2026-07-09_embedded-hooks-receiver`) resolved finding #1 / [LEARNING-018]:
+the embedded host now composes the shared webhook dispatcher + receiver with
+desktop-bound executors and threads the `WebhooksHandle` into `createTriggerServer`.
+Rebuilt the **final M2 DMG** off `main @ f5392bf8` and re-ran only the delta.
+
+- **DMG (final M2 artifact for Jeff's sign-off):** `apps/electron/release/Craft-Agents-arm64.dmg` — **240 MB**, exit 0, no OOM. `main.cjs` grew 43.8 → 45.9 MB (the embedded webhook wiring). Bundle quick pass unchanged and green: pi-agent-server (26.7 MB) + session-mcp-server (4.6 MB), SDK 0.3.197, native binary 224 MB, ripgrep, vendored bun; `craft-fork:webhooks`/`logging`/`triggerServer` (4/4/7) in `main.cjs`; FORK accent `#c2410c` in renderer.
+- **Webhook E2E against the EMBEDDED packaged server** (server enabled in throwaway `$CFG`, port 34871; hook + minted token; curl the ingest URL the desktop advertises):
+
+  | Case | Before (PR #62 verify) | Now | Result |
+  |---|---|---|---|
+  | Happy path (`x-delivery: e-001`) | 401 (not mounted) | **202** `{"eventId":"vor45hook2:e-001"}` | **FIXED** |
+  | Duplicate delivery | — | **200** `{"duplicate":true}` | PASS |
+  | Wrong token | — | **404** `{"error":"not found"}` | PASS |
+
+  The delivery routed through the **live desktop `SessionManager`**: `automations-history.jsonl` recorded `{"type":"set-status","outcome":"deferred:target-not-found",...}` for the fake session id (correct — action defers, ingest still 202); `webhooks-dedup.jsonl` recorded `e-001`.
+- **Port-conflict log cosmetic fix confirmed:** the ERROR line is now exactly
+  `ERROR [main] [trigger-server] start failed: Port 34871 is in use by another application`
+  — **no trailing `undefined`** (verified with a `undefined$` match). App stayed alive, squatter kept the port (no theft). Clean quit: port freed, no orphans.
+
+Net: all of VOR-45's automatable half is green, and the one finding is closed and
+re-verified in the packaged build. This DMG is the final M2 artifact.
 
 ## Status log
 
@@ -140,3 +164,8 @@ deliveries' action outcome — `{"type":"set-status","outcome":"deferred:target-
   passed against the standalone host. One finding captured as LEARNING-018 (embedded
   host doesn't mount `/hooks`); LEARNING-015 annotated as superseded on its no-logs
   half. No regressions vs PR #57. Visual half handed to Jeff.
+- `2026-07-09` — delta re-verification after PR #63 (see Addendum). Rebuilt the final
+  M2 DMG off `main @ f5392bf8`; the embedded packaged server now serves `/hooks`
+  (**202/200/404**, routed through the live `SessionManager`), closing LEARNING-018;
+  port-conflict log line's trailing `undefined` gone. This DMG is the final M2 artifact
+  for Jeff's sign-off.
