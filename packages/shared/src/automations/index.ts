@@ -128,6 +128,7 @@ export {
   type SchedulerTickPayload,
   type LabelConfigChangePayload,
   type GenericEventPayload,
+  type WebhookReceivedPayload,
   type EventHandler,
   type AnyEventHandler,
 } from './event-bus.ts';

@@ -33,6 +33,8 @@
     "./mcp": "./src/mcp/index.ts",
     "./prompts": "./src/prompts/index.ts",
     "./sessions": "./src/sessions/index.ts",
+    "./statuses": "./src/statuses/index.ts",
+    "./statuses/storage": "./src/statuses/storage.ts",
     "./projects": "./src/projects/index.ts",
     "./projects/types": "./src/projects/types.ts",
     "./sources": "./src/sources/index.ts",

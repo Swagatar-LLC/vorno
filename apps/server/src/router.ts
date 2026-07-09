@@ -7,6 +7,8 @@ import type { ClientRegistry } from './transport/client-registry.ts';
 
 // Route handlers
 import { handleHealth } from './routes/health.ts';
+import { handleWebhookRoute } from './routes/hooks.ts'; // fork(PLAN-014)
+import type { WebhooksHandle } from './webhooks/init.ts'; // fork(PLAN-014)
 import { handleListWorkspaces, handleListSources } from './routes/workspaces.ts';
 import {
   handleCreateSession,
@@ -44,7 +46,7 @@ function matchRoute(path: string, pattern: string): Record<string, string> | nul
 /**
  * Create the request router.
  */
-export function createRouter(pool: SessionPool, registry?: ClientRegistry) {
+export function createRouter(pool: SessionPool, registry?: ClientRegistry, webhooks?: WebhooksHandle) {
   return async function router(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -58,6 +60,20 @@ export function createRouter(pool: SessionPool, registry?: ClientRegistry) {
     // Health check (no auth required)
     if (method === 'GET' && path === '/health') {
       return handleHealth(pool, registry);
+    }
+
+    // fork(PLAN-014): inbound webhook receiver — an unauthenticated route class
+    // (providers can't send our craft_sk_ bearer). Security = capability URL +
+    // optional HMAC. Registered BEFORE the auth gate, like /health.
+    if (method === 'POST' && webhooks) {
+      const hookParams = matchRoute(path, '/hooks/:workspace/:hookSlug/:token');
+      if (hookParams) {
+        return handleWebhookRoute(
+          request,
+          { workspace: hookParams.workspace, hookSlug: hookParams.hookSlug, token: hookParams.token },
+          webhooks,
+        );
+      }
     }
 
     // All other routes require authentication
