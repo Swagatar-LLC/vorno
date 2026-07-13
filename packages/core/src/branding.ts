@@ -9,36 +9,43 @@
  * fails the build on non-allowlisted occurrences.
  *
  * Wire-protocol identifiers (`craft-fork:*` channels, `craft_sk_*` key
- * prefixes, `__craftRpcType`, `~/.craft-agent` config dir, MessageEnvelope
- * fields, the `com.lukilabs.craft-agent` appId) are NOT branding — they are
- * compatibility contracts per roadmap/upstream/compatibility.md and must not
- * route through this module.
+ * prefixes, `__craftRpcType`, `~/.craft-agent` migration-source path,
+ * MessageEnvelope fields) are NOT branding — they are compatibility contracts
+ * per roadmap/upstream/compatibility.md and must not route through this module.
+ *
+ * NOTE: the macOS appId is a deliberate exception. ADR-0009 flips it from
+ * `com.lukilabs.craft-agent` to `co.swagatar.vorno` (a clean break: the first
+ * Vorno build is a fresh /Applications install, not an in-place update). The
+ * appId lives in apps/electron/electron-builder.yml, not this module.
  */
 
 /** Product name (plural form used in app title, menus, installers). */
-export const PRODUCT_NAME = 'Craft Agents';
+export const PRODUCT_NAME = 'Vorno';
 
 /** Singular product name (agent self-identity, notifications, error text). */
-export const PRODUCT_NAME_SINGULAR = 'Craft Agent';
+export const PRODUCT_NAME_SINGULAR = 'Vorno';
 
 /** Bare brand name (OAuth callback page title prefix). */
-export const BRAND_NAME = 'Craft';
+export const BRAND_NAME = 'Vorno';
 
 /** Fork qualifier — the visible "FORK" distinction stays on (see CLAUDE.md). */
 export const FORK_QUALIFIER = 'Swagatar Fork';
 
-/** Main window title. */
-export const WINDOW_TITLE = `${PRODUCT_NAME} (${FORK_QUALIFIER})`;
+/**
+ * Main window title. The FORK distinction now lives in the accent stripe
+ * (fork-badge.tsx), so the title is the bare product name — no parenthetical.
+ */
+export const WINDOW_TITLE = PRODUCT_NAME;
 
-/** Display name for the built-in Pi backend ("Craft Agents Backend"). */
+/** Display name for the built-in Pi backend ("Vorno Backend"). */
 export const BACKEND_DISPLAY_NAME = `${PRODUCT_NAME} Backend`;
 
 /** Publisher metadata (installers, package manifests). */
-export const COMPANY_NAME = 'Craft Docs Ltd.';
-export const SUPPORT_EMAIL = 'support@craft.do';
+export const COMPANY_NAME = 'Swagatar LLC';
+export const SUPPORT_EMAIL = 'support@swagatar.co';
 
 /** Git co-author trailer identity injected into the system prompt. */
-export const GIT_COAUTHOR_EMAIL = 'agents-noreply@craft.do';
+export const GIT_COAUTHOR_EMAIL = 'agents-noreply@swagatar.co';
 export const GIT_COAUTHOR = `${PRODUCT_NAME_SINGULAR} <${GIT_COAUTHOR_EMAIL}>`;
 
 /**
@@ -52,7 +59,12 @@ export const OAUTH_CLIENT_NAME = `Claude Code (${PRODUCT_NAME_SINGULAR})`;
 // one of these points users' auto-update / OAuth / docs at upstream infra.
 // ---------------------------------------------------------------------------
 
-/** Base URL for the hosted service (viewer, docs, relay, update feed). */
+/**
+ * Base URL for the hosted service (viewer, docs, OAuth relay). NOTE: the update
+ * feed is no longer derived from this — see UPDATE_MANIFEST_BASE_URL (ADR-0009).
+ * Kept pointing at upstream infra on purpose: these are registered OAuth relay
+ * / docs endpoints; flipping them breaks source OAuth (see the endpoints below).
+ */
 export const SERVICE_BASE_URL = 'https://agents.craft.do';
 
 /** Session viewer base URL. */
@@ -63,8 +75,18 @@ export const DOCS_URL = `${SERVICE_BASE_URL}/docs`;
 export const DOCS_MCP_URL = `${DOCS_URL}/mcp`;
 export const DOCS_SHARING_URL = `${DOCS_URL}/go-further/sharing`;
 
-/** Auto-update version manifest base (electron feed lives under /electron). */
-export const UPDATE_MANIFEST_BASE_URL = `${SERVICE_BASE_URL}/electron`;
+/**
+ * "Download the latest release" link for the Vorno fork.
+ *
+ * DECOUPLED from SERVICE_BASE_URL (ADR-0009): the fork ships via electron-updater's
+ * github provider against the public Swagatar-LLC/vorno-releases feed, not the
+ * upstream /electron generic feed. This constant is now the user-facing
+ * "get the newest build" URL (the GitHub "latest release" page), NOT a
+ * generic-provider manifest endpoint. The in-app auto-updater reads the github
+ * feed directly (electron-builder.yml `publish:`); it does not consume this URL.
+ */
+export const UPDATE_MANIFEST_BASE_URL =
+  'https://github.com/Swagatar-LLC/vorno-releases/releases/latest';
 
 /**
  * OAuth relay endpoints. WARNING: these redirect URIs are registered with
@@ -79,13 +101,13 @@ export const SLACK_OAUTH_RELAY_CALLBACK_URL = `${SERVICE_BASE_URL}/auth/slack/ca
 // ---------------------------------------------------------------------------
 
 /** ASCII logo used by OAuth callback pages. */
-export const CRAFT_LOGO = [
-  '  ████████ █████████    ██████   ██████████ ██████████',
-  '██████████ ██████████ ██████████ █████████  ██████████',
-  '██████     ██████████ ██████████ ████████   ██████████',
-  '██████████ ████████   ██████████ ███████      ██████  ',
-  '  ████████ ████  ████ ████  ████ █████        ██████  ',
+export const VORNO_LOGO = [
+  '██      ██   ██████   ████████   ██      ██   ██████',
+  '██      ██ ██      ██ ██      ██ ████    ██ ██      ██',
+  '██      ██ ██      ██ ████████   ██  ██  ██ ██      ██',
+  '  ██  ██   ██      ██ ██    ██   ██    ████ ██      ██',
+  '    ██       ██████   ██      ██ ██      ██   ██████',
 ] as const;
 
 /** Logo as a single string for HTML templates */
-export const CRAFT_LOGO_HTML = CRAFT_LOGO.map((line) => line.trimEnd()).join('\n');
+export const VORNO_LOGO_HTML = VORNO_LOGO.map((line) => line.trimEnd()).join('\n');
