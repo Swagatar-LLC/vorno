@@ -95,7 +95,8 @@ import { listLabels, loadLabelConfig } from '@craft-agent/shared/labels/storage'
 import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
-import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import type { PromptAction as AutomationPromptAction } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
 
 // Import from server-core domain utilities
@@ -1696,48 +1697,8 @@ export class SessionManager implements ISessionManager {
         workspaceRootPath,
         workspaceId,
         enableScheduler: true,
-        onPromptsReady: async (prompts) => {
-          // Execute prompt automations by creating new sessions
-          const settled = await Promise.allSettled(
-            prompts.map((pending) =>
-              this.executePromptAutomation({
-                workspaceId,
-                workspaceRootPath,
-                prompt: pending.prompt,
-                labels: pending.labels,
-                permissionMode: pending.permissionMode,
-                mentions: pending.mentions,
-                llmConnection: pending.llmConnection,
-                model: pending.model,
-                thinkingLevel: pending.thinkingLevel,
-                fastMode: pending.fastMode,
-                automationName: pending.automationName,
-                telegramTopic: pending.telegramTopic,
-              })
-            )
-          )
-
-          // Write enriched history entries (with session IDs and prompt summaries)
-          for (const [idx, result] of settled.entries()) {
-            const pending = prompts[idx]
-            if (!pending.matcherId) continue
-
-            const entry = createPromptHistoryEntry({
-              matcherId: pending.matcherId,
-              ok: result.status === 'fulfilled',
-              sessionId: result.status === 'fulfilled' ? result.value.sessionId : undefined,
-              prompt: pending.prompt,
-              error: result.status === 'rejected' ? String(result.reason) : undefined,
-            })
-
-            appendAutomationHistoryEntry(workspaceRootPath, entry).catch(e => sessionLog.warn('[Automations] Failed to write history:', e))
-
-            if (result.status === 'rejected') {
-              sessionLog.error(`[Automations] Failed to execute prompt action ${idx + 1}:`, result.reason)
-            } else {
-              sessionLog.info(`[Automations] Created session ${result.value.sessionId} from prompt action`)
-            }
-          }
+        onPromptsReady: (prompts) => {
+          void this.handleAutomationPromptsReady(workspaceId, workspaceRootPath, prompts)
         },
         onError: (event, error) => {
           sessionLog.error(`Automation failed for ${event}:`, error.message)
@@ -8414,6 +8375,152 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * Handle a batch of automation prompts delivered by an AutomationSystem's
+   * `onPromptsReady` callback: create sessions, write dispatch history, and
+   * (fork(PLAN-017)) write outcome-reconciliation records + fire onFailure.
+   *
+   * Extracted from the inline callback so the outcome/onFailure wiring is
+   * unit-testable. Preserves file order: dispatch record → outcome record.
+   */
+  private async handleAutomationPromptsReady(
+    workspaceId: string,
+    workspaceRootPath: string,
+    prompts: import('@craft-agent/shared/automations').PendingPrompt[],
+  ): Promise<void> {
+    // Execute prompt automations by creating new sessions
+    const settled = await Promise.allSettled(
+      prompts.map((pending) =>
+        this.executePromptAutomation({
+          workspaceId,
+          workspaceRootPath,
+          prompt: pending.prompt,
+          labels: pending.labels,
+          permissionMode: pending.permissionMode,
+          mentions: pending.mentions,
+          llmConnection: pending.llmConnection,
+          model: pending.model,
+          thinkingLevel: pending.thinkingLevel,
+          fastMode: pending.fastMode,
+          automationName: pending.automationName,
+          telegramTopic: pending.telegramTopic,
+        })
+      )
+    )
+
+    // Write enriched history entries (with session IDs and prompt summaries)
+    for (const [idx, result] of settled.entries()) {
+      const pending = prompts[idx]
+      // fork(PLAN-017): pending prompts with no matcherId are onFailure-spawned
+      // (or test) runs — the skip here is the recursion guard: they get no
+      // dispatch/outcome record and therefore never trigger onFailure again.
+      if (!pending.matcherId) continue
+
+      const dispatchOk = result.status === 'fulfilled'
+      const entry = createPromptHistoryEntry({
+        matcherId: pending.matcherId,
+        ok: dispatchOk,
+        sessionId: dispatchOk ? result.value.sessionId : undefined,
+        prompt: pending.prompt,
+        error: result.status === 'rejected' ? String(result.reason) : undefined,
+      })
+
+      // Await the dispatch append so the outcome record is ordered strictly
+      // after it in the file (appends are mutex-serialized per workspace).
+      try {
+        await appendAutomationHistoryEntry(workspaceRootPath, entry)
+      } catch (e) {
+        sessionLog.warn('[Automations] Failed to write history:', e)
+      }
+
+      if (result.status === 'rejected') {
+        sessionLog.error(`[Automations] Failed to execute prompt action ${idx + 1}:`, result.reason)
+        // fork(PLAN-017): dispatch failed → fire onFailure.
+        this.fireAutomationOnFailure(workspaceId, workspaceRootPath, pending, {
+          automationId: pending.matcherId,
+          failureKind: 'dispatch',
+          error: String(result.reason),
+        })
+        continue
+      }
+
+      sessionLog.info(`[Automations] Created session ${result.value.sessionId} from prompt action`)
+
+      // fork(PLAN-017): outcome reconciliation. Awaited runs return errorCount;
+      // write an outcome record (ok = errorCount === 0) right after the dispatch
+      // record. waitForCompletion:false paths omit errorCount, so no outcome
+      // record is written for them.
+      const { errorCount } = result.value
+      if (errorCount !== undefined) {
+        const outcomeOk = errorCount === 0
+        const outcomeEntry = createOutcomeHistoryEntry({
+          matcherId: pending.matcherId,
+          ok: outcomeOk,
+          sessionId: result.value.sessionId,
+          errorCount,
+        })
+        try {
+          await appendAutomationHistoryEntry(workspaceRootPath, outcomeEntry)
+        } catch (e) {
+          sessionLog.warn('[Automations] Failed to write outcome history:', e)
+        }
+        if (!outcomeOk) {
+          // fork(PLAN-017): turn produced error-role messages → fire onFailure.
+          this.fireAutomationOnFailure(workspaceId, workspaceRootPath, pending, {
+            automationId: pending.matcherId,
+            failureKind: 'outcome',
+            sessionId: result.value.sessionId,
+            errorCount,
+          })
+        }
+      }
+    }
+  }
+
+  /**
+   * fork(PLAN-017): run a matcher's onFailure actions after a not-ok record was
+   * appended for one of its prompts (dispatch failure or outcome ok:false).
+   *
+   * Prompt onFailure actions are executed directly via executePromptAutomation
+   * WITHOUT a matcherId — so they create a session but write no dispatch/outcome
+   * history and are never themselves outcome-reconciled (recursion guard).
+   * Webhook onFailure actions are executed by the shared executor (no history).
+   * Fire-and-forget: never blocks; all failures are logged and swallowed.
+   */
+  private fireAutomationOnFailure(
+    workspaceId: string,
+    workspaceRootPath: string,
+    pending: { onFailure?: (AutomationPromptAction | import('@craft-agent/shared/automations').WebhookAction)[]; automationName?: string; permissionMode?: PermissionMode; labels?: string[] },
+    context: { automationId: string; failureKind: 'dispatch' | 'outcome' | 'missed'; sessionId?: string; errorCount?: number; error?: string },
+  ): void {
+    const onFailure = pending.onFailure
+    if (!onFailure || onFailure.length === 0) return
+
+    void runOnFailureActions({
+      onFailure,
+      automationName: pending.automationName,
+      workspaceRootPath,
+      context,
+      runPrompt: async (action: AutomationPromptAction) => {
+        // No matcherId ⇒ no history record ⇒ no outcome/onFailure recursion.
+        await this.executePromptAutomation({
+          workspaceId,
+          workspaceRootPath,
+          prompt: action.prompt,
+          labels: pending.labels,
+          permissionMode: pending.permissionMode,
+          llmConnection: action.llmConnection,
+          model: action.model,
+          thinkingLevel: action.thinkingLevel,
+          fastMode: action.fastMode,
+          automationName: pending.automationName ? `${pending.automationName} (onFailure)` : 'Automation onFailure',
+          // Fire-and-forget: don't block failure handling on the full turn.
+          waitForCompletion: false,
+        })
+      },
+    }).catch((e) => sessionLog.warn('[Automations] onFailure execution failed:', e))
+  }
+
+  /**
    * Execute a prompt automation by creating a new session and sending the prompt.
    *
    * The options-object form replaced the previous positional-args signature
@@ -8423,7 +8530,7 @@ export class SessionManager implements ISessionManager {
    */
   async executePromptAutomation(
     input: ExecutePromptAutomationInput,
-  ): Promise<{ sessionId: string }> {
+  ): Promise<{ sessionId: string; errorCount?: number }> {
     const {
       workspaceId,
       workspaceRootPath,
@@ -8525,7 +8632,63 @@ export class SessionManager implements ISessionManager {
       skillSlugs: resolved?.skillSlugs,
     })
 
-    return { sessionId: session.id }
+    // fork(PLAN-017): outcome reconciliation. The turn has completed; count the
+    // error-role messages produced in this freshly-created managed session. The
+    // session is automation-spawned, so every role==='error' message belongs to
+    // this run. `errorCount` drives the outcome record ok/notok in onPromptsReady.
+    //
+    // Race guard: an auth failure inside the turn triggers attemptAuthRetry,
+    // which re-dispatches the message via a detached setImmediate — the awaited
+    // sendMessage above can resolve while that retry is still pending/in-flight.
+    // Counting immediately would read a transient error state (or miss the
+    // retry's outcome entirely). Wait for the session to settle first.
+    await this.waitForAutomationSessionSettled(session.id)
+
+    let errorCount = 0
+    const completed = this.sessions.get(session.id)
+    if (completed) {
+      await this.ensureMessagesLoaded(completed)
+      errorCount = completed.messages.filter((m) => m.role === 'error').length
+    }
+
+    return { sessionId: session.id, errorCount }
+  }
+
+  /**
+   * fork(PLAN-017): wait until an automation-spawned session has settled —
+   * i.e. `!isProcessing && !authRetryInProgress` for TWO consecutive polls.
+   *
+   * The double-check matters: attemptAuthRetry's setImmediate body clears
+   * `authRetryInProgress` immediately before awaiting the retried sendMessage,
+   * so there is a microtask gap where both flags read false while the retry
+   * hasn't set `isProcessing` yet. A single snapshot in that gap would declare
+   * the session settled prematurely; requiring two consecutive quiet polls
+   * (250ms apart) rides it out.
+   *
+   * Resolves immediately if the session is gone. Hard-capped (default 15min)
+   * so a hung session can never block onPromptsReady forever — on cap expiry
+   * the caller just counts what's there.
+   */
+  private async waitForAutomationSessionSettled(sessionId: string, capMs = 15 * 60_000): Promise<void> {
+    const POLL_MS = 250
+    const deadline = Date.now() + capMs
+    let consecutiveQuiet = 0
+
+    for (;;) {
+      const managed = this.sessions.get(sessionId)
+      if (!managed) return
+
+      const quiet = !managed.isProcessing && !managed.authRetryInProgress
+      consecutiveQuiet = quiet ? consecutiveQuiet + 1 : 0
+      if (consecutiveQuiet >= 2) return
+
+      if (Date.now() >= deadline) {
+        sessionLog.warn(`[Automations] Session ${sessionId} did not settle within ${capMs}ms; counting outcome as-is`)
+        return
+      }
+
+      await new Promise((r) => setTimeout(r, POLL_MS))
+    }
   }
 
   /**

@@ -327,6 +327,15 @@ export interface AutomationMatcher {
    *   - The bot lacks "Manage Topics" permission in the supergroup
    */
   telegramTopic?: string;
+  /**
+   * fork(PLAN-017): actions to run when a not-ok history record is appended for
+   * this matcher — a dispatch failure, an outcome record with `ok:false`, or a
+   * missed-fire record. Only `prompt` and `webhook` actions are permitted here
+   * (validated in schemas/validation). onFailure runs are never themselves
+   * outcome-reconciled and never trigger onFailure (no recursion — the guard is
+   * that onFailure prompt sessions carry no `matcherId`).
+   */
+  onFailure?: (PromptAction | WebhookAction)[];
   actions: AutomationAction[];
 }
 
@@ -408,6 +417,12 @@ export interface PendingPrompt {
   fastMode?: boolean;
   /** Forum-topic name to bind the new session to (Telegram supergroup, when paired). */
   telegramTopic?: string;
+  /**
+   * fork(PLAN-017): the matcher's onFailure actions, carried through so the host
+   * can run them when this prompt's dispatch or outcome record is not-ok. Only
+   * present on records with a `matcherId` (onFailure-spawned prompts carry none).
+   */
+  onFailure?: (PromptAction | WebhookAction)[];
 }
 
 export interface AutomationResult {

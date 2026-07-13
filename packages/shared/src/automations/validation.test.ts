@@ -68,6 +68,118 @@ describe('validation', () => {
       expect(result.valid).toBe(true);
     });
 
+    // fork(PLAN-017): onFailure actions
+    it('should accept onFailure with a prompt action', () => {
+      const config = {
+        automations: {
+          SchedulerTick: [{
+            cron: '0 9 * * *',
+            actions: [{ type: 'prompt', prompt: 'daily' }],
+            onFailure: [{ type: 'prompt', prompt: 'the daily run failed' }],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    it('should accept onFailure with a webhook action', () => {
+      const config = {
+        automations: {
+          SchedulerTick: [{
+            cron: '0 9 * * *',
+            actions: [{ type: 'prompt', prompt: 'daily' }],
+            onFailure: [{ type: 'webhook', url: 'https://example.com/alert' }],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    it('should accept onFailure with both prompt and webhook actions', () => {
+      const config = {
+        automations: {
+          SchedulerTick: [{
+            cron: '0 9 * * *',
+            actions: [{ type: 'prompt', prompt: 'daily' }],
+            onFailure: [
+              { type: 'webhook', url: 'https://example.com/alert' },
+              { type: 'prompt', prompt: 'investigate the failure' },
+            ],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(true);
+    });
+
+    it('should reject onFailure containing a set-status action', () => {
+      const config = {
+        automations: {
+          WebhookReceived: [{
+            hook: { slug: 'wh1' },
+            actions: [{ type: 'prompt', prompt: 'handle' }],
+            onFailure: [{ type: 'set-status', session: { id: 's1' }, status: 'done' }],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => /onFailure/.test(e))).toBe(true);
+    });
+
+    it('should surface a clear error identifying the offending onFailure action type', () => {
+      const config = {
+        automations: {
+          WebhookReceived: [{
+            hook: { slug: 'wh1' },
+            actions: [{ type: 'prompt', prompt: 'handle' }],
+            onFailure: [{ type: 'send-message', session: { id: 's1' }, message: 'hi' }],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(false);
+      // Message names the offending type and the onFailure path.
+      expect(result.errors.some(e => /onFailure/.test(e) && /send-message|not allowed/.test(e))).toBe(true);
+    });
+
+    it('should surface the clear onFailure message through validateAutomationsContent (PreToolUse path)', () => {
+      const json = JSON.stringify({
+        automations: {
+          WebhookReceived: [{
+            hook: { slug: 'wh1' },
+            actions: [{ type: 'prompt', prompt: 'handle' }],
+            onFailure: [{ type: 'set-labels', session: { id: 's1' }, add: ['x'] }],
+          }],
+        },
+      });
+      const result = validateAutomationsContent(json);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e =>
+        e.path.includes('onFailure') && /set-labels/.test(e.message) && /not allowed/.test(e.message)
+      )).toBe(true);
+    });
+
+    it('should surface nested field validation errors inside onFailure actions', () => {
+      const config = {
+        automations: {
+          SchedulerTick: [{
+            cron: '0 9 * * *',
+            actions: [{ type: 'prompt', prompt: 'daily' }],
+            // Empty prompt is invalid per PromptActionSchema.
+            onFailure: [{ type: 'prompt', prompt: '' }],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(false);
+      expect(result.errors.length).toBeGreaterThan(0);
+    });
+
     it('should accept config with optional name field', () => {
       const config = {
         automations: {

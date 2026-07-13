@@ -157,12 +157,17 @@ function compactEntries(
   const lines = content.trim().split('\n').filter(Boolean);
   if (lines.length === 0) return null;
 
-  // Parse all lines, dropping malformed ones
-  const entries: Array<{ raw: string; id: string }> = [];
+  // Parse all lines, dropping malformed ones.
+  // fork(PLAN-017): retention is keyed on `id + kind` (kind defaults to
+  // 'dispatch' for records with no `kind` field) so per-kind caps are
+  // independent — outcome/missed records can never evict dispatch records.
+  const entries: Array<{ raw: string; key: string }> = [];
   for (const line of lines) {
     try {
       const parsed = JSON.parse(line);
-      entries.push({ raw: line, id: parsed.id ?? '' });
+      const id = parsed.id ?? '';
+      const kind = parsed.kind ?? 'dispatch';
+      entries.push({ raw: line, key: `${id}\u0000${kind}` });
     } catch {
       // Drop malformed lines
     }
@@ -171,14 +176,14 @@ function compactEntries(
   // Track original line count (including malformed) for dirty-check
   const originalLineCount = lines.length;
 
-  // 1) Per-automation cap: keep only last N per ID
+  // 1) Per-automation cap: keep only last N per (id, kind)
   const byId = new Map<string, number[]>();
   for (let i = 0; i < entries.length; i++) {
-    const id = entries[i]!.id;
-    let group = byId.get(id);
+    const key = entries[i]!.key;
+    let group = byId.get(key);
     if (!group) {
       group = [];
-      byId.set(id, group);
+      byId.set(key, group);
     }
     group.push(i);
   }

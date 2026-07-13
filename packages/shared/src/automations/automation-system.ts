@@ -18,7 +18,10 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveAutomationsConfigPath, generateShortId } from './resolve-config-path.ts';
-import { compactAutomationHistorySync } from './history-store.ts';
+import { compactAutomationHistorySync, appendAutomationHistoryEntry } from './history-store.ts';
+import { detectMissedFires } from './missed-fire.ts';
+import { runOnFailureActions } from './on-failure.ts';
+import { AUTOMATIONS_HISTORY_FILE } from './constants.ts';
 import { createLogger } from '../utils/debug.ts';
 import { WorkspaceEventBus, type EventPayloadMap } from './event-bus.ts';
 import { PromptHandler, EventLogHandler, WebhookHandler, type AutomationsConfigProvider } from './handlers/index.ts';
@@ -29,6 +32,19 @@ import { matcherMatchesSdk } from './utils.ts';
 import { SchedulerService, type SchedulerTickPayload } from '../scheduler/scheduler-service.ts';
 
 const log = createLogger('automation-system');
+
+/**
+ * fork(PLAN-017): workspaces whose missed-fire detection has already run this
+ * process. Guards against re-scanning on every config reload (each reload
+ * restarts nothing, but a defensive guard keeps detection one-shot per process
+ * per workspace regardless of how startScheduler is reached).
+ */
+const missedFireDetectedWorkspaces = new Set<string>();
+
+/** Test-only: reset the per-process missed-fire guard. */
+export function __resetMissedFireGuardForTests(): void {
+  missedFireDetectedWorkspaces.clear();
+}
 
 // Re-export SessionMetadataSnapshot from types (single source of truth)
 export type { SessionMetadataSnapshot } from './types.ts';
@@ -320,6 +336,77 @@ export class AutomationSystem implements AutomationsConfigProvider {
 
     this.scheduler.start();
     log.debug(`[AutomationSystem] Scheduler started`);
+
+    // fork(PLAN-017): detect missed cron fires once per process per workspace.
+    // Fire-and-forget: never block scheduler startup; failures are logged.
+    void this.runMissedFireDetection();
+  }
+
+  /**
+   * fork(PLAN-017): read history, detect missed cron fires, append missed
+   * records, and fire onFailure for each. Runs at most once per process per
+   * workspace. Fully guarded — never throws into the startup path.
+   */
+  private async runMissedFireDetection(): Promise<void> {
+    const workspaceRootPath = this.options.workspaceRootPath;
+    if (missedFireDetectedWorkspaces.has(workspaceRootPath)) return;
+    missedFireDetectedWorkspaces.add(workspaceRootPath);
+
+    try {
+      const historyPath = join(workspaceRootPath, AUTOMATIONS_HISTORY_FILE);
+      let historyLines: string[] = [];
+      if (existsSync(historyPath)) {
+        historyLines = readFileSync(historyPath, 'utf-8').split('\n');
+      }
+
+      const missed = detectMissedFires({
+        config: this.config,
+        historyLines,
+        now: Date.now(),
+      });
+      if (missed.length === 0) return;
+
+      log.debug(`[AutomationSystem] Detected ${missed.length} missed cron fire(s)`);
+
+      for (const entry of missed) {
+        try {
+          await appendAutomationHistoryEntry(workspaceRootPath, entry);
+        } catch (e) {
+          log.debug(`[AutomationSystem] Failed to append missed record: ${e}`);
+          continue;
+        }
+        // Fire onFailure for the matcher whose fire was missed.
+        const matcherId = entry.id as string | undefined;
+        const expectedTs = entry.expectedTs as number | undefined;
+        if (matcherId) {
+          this.fireOnFailureForMatcher(matcherId, { failureKind: 'missed', expectedTs });
+        }
+      }
+    } catch (e) {
+      log.debug(`[AutomationSystem] Missed-fire detection failed: ${e}`);
+    }
+  }
+
+  /**
+   * fork(PLAN-017): resolve a SchedulerTick matcher by id and run its onFailure
+   * actions (prompt via the onPromptsReady callback with no matcherId — the
+   * host's `!pending.matcherId` skip is the recursion guard; webhook via the
+   * shared executor). No history records are written for onFailure runs.
+   */
+  private fireOnFailureForMatcher(
+    matcherId: string,
+    context: { failureKind: 'dispatch' | 'outcome' | 'missed'; expectedTs?: number; sessionId?: string; errorCount?: number; error?: string },
+  ): void {
+    const matcher = this.config?.automations.SchedulerTick?.find((m) => m.id === matcherId);
+    if (!matcher?.onFailure || matcher.onFailure.length === 0) return;
+
+    void runOnFailureActions({
+      onFailure: matcher.onFailure,
+      automationName: matcher.name,
+      workspaceRootPath: this.options.workspaceRootPath,
+      onPromptsReady: this.options.onPromptsReady,
+      context: { automationId: matcherId, ...context },
+    });
   }
 
   /**

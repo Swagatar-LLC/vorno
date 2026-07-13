@@ -77,6 +77,50 @@ export function createPromptHistoryEntry(opts: {
 }
 
 /**
+ * fork(PLAN-017): Create an outcome-reconciliation history entry.
+ *
+ * Written after the dispatch record once an automation-spawned session's turn
+ * completes. `ok` reflects whether the turn produced any error-role messages
+ * (errorCount === 0). Carries `kind: 'outcome'` so read paths (GET_LAST_EXECUTED,
+ * compaction, UI) can distinguish it from a dispatch record.
+ */
+export function createOutcomeHistoryEntry(opts: {
+  matcherId: string;
+  ok: boolean;
+  sessionId?: string;
+  errorCount: number;
+}): Record<string, unknown> {
+  return {
+    id: opts.matcherId,
+    ts: Date.now(),
+    kind: 'outcome',
+    ok: opts.ok,
+    errorCount: opts.errorCount,
+    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+  };
+}
+
+/**
+ * fork(PLAN-017): Create a missed-fire history entry.
+ *
+ * Appended on scheduler startup when an enabled cron matcher's most recent
+ * expected fire (within a 24h lookback) has no corresponding dispatch record.
+ * `expectedTs` is the wall-clock time the fire was expected. Always `ok: false`.
+ */
+export function createMissedHistoryEntry(opts: {
+  matcherId: string;
+  expectedTs: number;
+}): Record<string, unknown> {
+  return {
+    id: opts.matcherId,
+    ts: Date.now(),
+    kind: 'missed',
+    ok: false,
+    expectedTs: opts.expectedTs,
+  };
+}
+
+/**
  * Return a copy of a WebhookAction with all env-expandable string fields resolved.
  * Used before enqueueing for deferred retry so the retry scheduler doesn't need
  * the original event environment.

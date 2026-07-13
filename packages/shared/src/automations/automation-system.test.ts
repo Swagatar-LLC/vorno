@@ -6,8 +6,28 @@ import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { AutomationSystem, type SessionMetadataSnapshot } from './automation-system.ts';
+import { AutomationSystem, __resetMissedFireGuardForTests, type SessionMetadataSnapshot } from './automation-system.ts';
 import { AUTOMATIONS_CONFIG_FILE, AUTOMATIONS_HISTORY_FILE } from './constants.ts';
+import { readFileSync, existsSync } from 'node:fs';
+
+/** Poll the history file until `predicate` holds or the timeout elapses. */
+async function waitForHistory(
+  dir: string,
+  predicate: (entries: Array<Record<string, unknown>>) => boolean,
+  timeoutMs = 2000,
+): Promise<Array<Record<string, unknown>>> {
+  const path = join(dir, AUTOMATIONS_HISTORY_FILE);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let entries: Array<Record<string, unknown>> = [];
+    if (existsSync(path)) {
+      entries = readFileSync(path, 'utf-8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    }
+    if (predicate(entries)) return entries;
+    if (Date.now() > deadline) return entries;
+    await new Promise(r => setTimeout(r, 20));
+  }
+}
 
 describe('AutomationSystem', () => {
   let tempDir: string;
@@ -565,6 +585,92 @@ describe('AutomationSystem', () => {
       await system.dispose();
       await system.dispose(); // Should not throw
       expect(system.isDisposed()).toBe(true);
+    });
+  });
+
+  // fork(PLAN-017): missed-fire detection on scheduler startup
+  describe('missed-fire detection', () => {
+    beforeEach(() => {
+      __resetMissedFireGuardForTests();
+    });
+
+    /** A daily 09:00 UTC matcher whose most recent fire (yesterday/today) is
+     * within the 24h lookback — with no history it is always "missed". */
+    function dailyConfig() {
+      return JSON.stringify({
+        automations: {
+          SchedulerTick: [
+            { id: 'sched1', cron: '0 9 * * *', timezone: 'UTC', actions: [{ type: 'prompt', prompt: 'daily' }] },
+          ],
+        },
+      });
+    }
+
+    it('appends exactly one missed record on scheduler startup', async () => {
+      writeFileSync(join(tempDir, AUTOMATIONS_CONFIG_FILE), dailyConfig());
+
+      const system = new AutomationSystem({
+        workspaceRootPath: tempDir,
+        workspaceId: 'test-workspace',
+        enableScheduler: true,
+      });
+
+      const entries = await waitForHistory(tempDir, es => es.some(e => e.kind === 'missed'));
+      const missed = entries.filter(e => e.kind === 'missed');
+      expect(missed).toHaveLength(1);
+      expect(missed[0]!.id).toBe('sched1');
+      expect(missed[0]!.ok).toBe(false);
+      expect(typeof missed[0]!.expectedTs).toBe('number');
+
+      await system.dispose();
+    });
+
+    it('runs detection at most once per process per workspace (guard)', async () => {
+      writeFileSync(join(tempDir, AUTOMATIONS_CONFIG_FILE), dailyConfig());
+
+      const system1 = new AutomationSystem({
+        workspaceRootPath: tempDir,
+        workspaceId: 'test-workspace',
+        enableScheduler: true,
+      });
+      await waitForHistory(tempDir, es => es.some(e => e.kind === 'missed'));
+      await system1.dispose();
+
+      // A second system for the SAME workspace must NOT append another missed
+      // record (guard is set; also the existing missed record dedups it).
+      const system2 = new AutomationSystem({
+        workspaceRootPath: tempDir,
+        workspaceId: 'test-workspace',
+        enableScheduler: true,
+      });
+      // Give detection a chance to (not) run.
+      await new Promise(r => setTimeout(r, 200));
+
+      const entries = existsSync(join(tempDir, AUTOMATIONS_HISTORY_FILE))
+        ? readFileSync(join(tempDir, AUTOMATIONS_HISTORY_FILE), 'utf-8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+        : [];
+      expect(entries.filter(e => e.kind === 'missed')).toHaveLength(1);
+
+      await system2.dispose();
+    });
+
+    it('does not append missed records when the scheduler is disabled', async () => {
+      writeFileSync(join(tempDir, AUTOMATIONS_CONFIG_FILE), dailyConfig());
+
+      const system = new AutomationSystem({
+        workspaceRootPath: tempDir,
+        workspaceId: 'test-workspace',
+        // enableScheduler omitted → detection never runs
+      });
+      await new Promise(r => setTimeout(r, 150));
+
+      const path = join(tempDir, AUTOMATIONS_HISTORY_FILE);
+      const entries = existsSync(path)
+        ? readFileSync(path, 'utf-8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+        : [];
+      expect(entries.filter(e => e.kind === 'missed')).toHaveLength(0);
+
+      await system.dispose();
     });
   });
 });

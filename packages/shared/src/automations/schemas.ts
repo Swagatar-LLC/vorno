@@ -244,6 +244,14 @@ export const AutomationMatcherSchema = z.object({
   // Telegram forum-topic name (1–128 chars). Silently ignored at runtime when
   // no supergroup is paired or the Telegram adapter is not connected.
   telegramTopic: z.string().min(1).max(128).optional(),
+  // fork(PLAN-017): actions run when a not-ok record is appended for this
+  // matcher. Strict union — only prompt and webhook actions are allowed and
+  // both get full nested-field validation. Other action types (set-status,
+  // send-message, unknown) fail the union here; validateOnFailureActions adds a
+  // path-scoped semantic message naming the offending type when the schema
+  // otherwise passes (e.g. when a raw object slips through content validation).
+  onFailure: z.array(z.union([PromptActionSchema, WebhookActionSchema]))
+    .min(1, 'onFailure requires at least one action').optional(),
   actions: z.array(ActionDefinitionSchema).min(1, 'At least one action required'),
 });
 

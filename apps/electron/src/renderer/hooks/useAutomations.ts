@@ -163,7 +163,13 @@ export function useAutomations(
     try {
       const entries = await window.electronAPI.getAutomationHistory(activeWorkspaceId, automationId, 20)
       const automation = findAutomation(automationId)
-      return entries.map(e => ({
+      return entries
+        // fork(PLAN-017): the run list shows actual fires only. Outcome/missed
+        // reconciliation records carry a `kind` field and are filtered out here
+        // so they don't inflate the run count or misrender (they have no
+        // prompt/webhook summary). GET_LAST_EXECUTED already ignores them too.
+        .filter(e => e.kind === undefined)
+        .map(e => ({
         id: `${e.id}-${e.ts}`,
         automationId: e.id,
         event: automation?.event ?? 'LabelAdd',

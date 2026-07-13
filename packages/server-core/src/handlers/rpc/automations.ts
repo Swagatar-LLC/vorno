@@ -9,7 +9,8 @@ import type { HandlerDeps } from '../handler-deps'
 
 // History file name — matches AUTOMATIONS_HISTORY_FILE from @craft-agent/shared/automations/constants
 const HISTORY_FILE = 'automations-history.jsonl'
-interface HistoryEntry { id: string; ts: number; ok: boolean; sessionId?: string; prompt?: string; error?: string; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }
+// fork(PLAN-017): `kind` distinguishes reconciliation records. Absent = dispatch/webhook.
+interface HistoryEntry { id: string; ts: number; ok: boolean; kind?: 'outcome' | 'missed'; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }
 
 // Per-workspace config mutex: serializes read-modify-write cycles on automations.json
 // to prevent concurrent IPC calls from clobbering each other's changes.
@@ -308,6 +309,10 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
       for (const line of content.trim().split('\n')) {
         try {
           const entry = JSON.parse(line)
+          // fork(PLAN-017): only true executions (dispatch/webhook — no `kind`
+          // field) count as "last executed". Outcome/missed reconciliation
+          // records must not advance the last-executed timestamp.
+          if (entry.kind !== undefined) continue
           if (entry.id && entry.ts) result[entry.id] = entry.ts
         } catch { /* skip malformed lines */ }
       }

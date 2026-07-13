@@ -271,7 +271,13 @@ export interface ISessionManager {
    */
   refreshConnectionRuntime(connectionSlug: string): Promise<void>
   completeAuthRequest(sessionId: string, result: AuthResult): Promise<void>
-  executePromptAutomation(input: ExecutePromptAutomationInput): Promise<{ sessionId: string }>
+  /**
+   * fork(PLAN-017): awaited runs (waitForCompletion !== false) additionally
+   * return `errorCount` — the number of error-role messages produced in the
+   * spawned session's turn — so the caller can write an outcome record. The
+   * test-run early-return path (waitForCompletion:false) omits it.
+   */
+  executePromptAutomation(input: ExecutePromptAutomationInput): Promise<{ sessionId: string; errorCount?: number }>
 
   /**
    * Install a callback invoked from `executePromptAutomation` after a session

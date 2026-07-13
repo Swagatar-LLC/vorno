@@ -24,6 +24,9 @@ import { isValidJsonPathLite } from './webhook-ingest/jsonpath-lite.ts';
 /** fork(PLAN-014): action types that are only valid on WebhookReceived matchers (v1). */
 const WEBHOOK_ONLY_ACTION_TYPES = new Set(['set-status', 'set-labels', 'send-message']);
 
+/** fork(PLAN-017): action types permitted inside a matcher's `onFailure` list. */
+const ONFAILURE_ALLOWED_ACTION_TYPES = new Set(['prompt', 'webhook']);
+
 /**
  * Validate automations config (internal - returns parsed config)
  */
@@ -35,7 +38,12 @@ export function validateAutomationsConfig(content: unknown): AutomationsValidati
       const path = issue.path.join('.');
       return path ? `${path}: ${issue.message}` : issue.message;
     });
-    return { valid: false, errors, config: null };
+    // fork(PLAN-017): the strict onFailure union rejects disallowed action types
+    // with an opaque "Invalid input". Scan the raw content for those and prepend
+    // a clear, type-naming message so users know onFailure is the problem.
+    const rawIssues = scanOnFailureActionTypes(content, AUTOMATIONS_CONFIG_FILE);
+    const rawMessages = rawIssues.map((issue) => issue.path ? `${issue.path}: ${issue.message}` : issue.message);
+    return { valid: false, errors: [...rawMessages, ...errors], config: null };
   }
 
   const schemaConfig = result.data as AutomationsConfig;
@@ -74,6 +82,9 @@ function runMatcherSemanticValidations(
       // and action-type scoping.
       // ----------------------------------------------------------------------
       validateWebhookMatcher(matcher, event, i, seenHookSlugs, file, errors);
+
+      // fork(PLAN-017): onFailure action-type scoping (prompt/webhook only).
+      validateOnFailureActions(matcher, event, i, file, errors);
 
       // Warn about allow-all permission mode
       if (matcher.permissionMode === 'allow-all') {
@@ -282,6 +293,72 @@ function validateWebhookMatcher(
 }
 
 /**
+ * fork(PLAN-017): scan raw (pre-schema) config content for onFailure actions
+ * whose `type` is not prompt/webhook, returning clear type-naming errors. Used
+ * when the strict schema union has already rejected the config with an opaque
+ * message. Best-effort and defensive — malformed shapes are simply ignored.
+ */
+function scanOnFailureActionTypes(content: unknown, file: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const automations = (content as { automations?: Record<string, unknown> } | null)?.automations;
+  if (!automations || typeof automations !== 'object') return issues;
+
+  for (const [event, matchers] of Object.entries(automations)) {
+    if (!Array.isArray(matchers)) continue;
+    for (let i = 0; i < matchers.length; i++) {
+      const onFailure = (matchers[i] as { onFailure?: unknown })?.onFailure;
+      if (!Array.isArray(onFailure)) continue;
+      for (let j = 0; j < onFailure.length; j++) {
+        const action = onFailure[j] as { type?: unknown } | undefined;
+        const type = action && typeof action === 'object' ? action.type : undefined;
+        if (typeof type !== 'string' || !ONFAILURE_ALLOWED_ACTION_TYPES.has(type)) {
+          issues.push({
+            file,
+            path: `automations.${event}[${i}].onFailure[${j}]`,
+            message: `onFailure action "${typeof type === 'string' ? type : 'unknown'}" is not allowed — only "prompt" and "webhook" actions may run on failure`,
+            severity: 'error',
+            suggestion: 'Use a prompt or webhook action in onFailure',
+          });
+        }
+      }
+    }
+  }
+  return issues;
+}
+
+/**
+ * fork(PLAN-017): semantic validation of a matcher's `onFailure` list.
+ * - Only `prompt` and `webhook` action types are permitted; anything else
+ *   (set-status, set-labels, send-message, unknown) is rejected with a clear
+ *   message. The Zod schema also rejects these, but its union error is opaque —
+ *   this surfaces the offending index + type.
+ */
+function validateOnFailureActions(
+  matcher: import('./types.ts').AutomationMatcher,
+  event: string,
+  i: number,
+  file: string,
+  errors: ValidationIssue[],
+): void {
+  const onFailure = (matcher as { onFailure?: unknown }).onFailure;
+  if (!Array.isArray(onFailure)) return;
+
+  for (let j = 0; j < onFailure.length; j++) {
+    const action = onFailure[j] as { type?: unknown } | undefined;
+    const type = action && typeof action === 'object' ? action.type : undefined;
+    if (typeof type !== 'string' || !ONFAILURE_ALLOWED_ACTION_TYPES.has(type)) {
+      errors.push({
+        file,
+        path: `automations.${event}[${i}].onFailure[${j}]`,
+        message: `onFailure action "${typeof type === 'string' ? type : 'unknown'}" is not allowed — only "prompt" and "webhook" actions may run on failure`,
+        severity: 'error',
+        suggestion: 'Use a prompt or webhook action in onFailure',
+      });
+    }
+  }
+}
+
+/**
  * Validate automations config from a JSON string (no disk reads).
  * Used by PreToolUse automation to validate before writing to disk.
  * Follows the same pattern as other config validators in validators.ts.
@@ -311,6 +388,10 @@ export function validateAutomationsContent(jsonString: string, fileName?: string
   // Validate schema
   const result = AutomationsConfigSchema.safeParse(content);
   if (!result.success) {
+    // fork(PLAN-017): the strict onFailure union rejects disallowed action
+    // types with an opaque "Invalid input" — prepend the clear, type-naming
+    // messages here too (this path gates live config edits via PreToolUse).
+    errors.push(...scanOnFailureActionTypes(content, file));
     errors.push(...zodErrorToIssues(result.error, file));
     return { valid: false, errors, warnings };
   }
