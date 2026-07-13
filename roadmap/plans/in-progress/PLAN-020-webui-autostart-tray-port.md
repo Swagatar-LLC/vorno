@@ -452,3 +452,12 @@ assumptions to reconcile on receipt:
   `main/webui/host.ts` with the `EmbeddedHost.listen() → Promise<number>` signature;
   packaged fresh-profile smoke per LEARNING-011 (browser login → session list); then
   move to `done/`.
+- `2026-07-13` — opened PR #71 (`Swagatar-LLC/craft-agents-oss`). Merge sequencing
+  agreed with 260713-quiet-orchid: **#69 (PLAN-018) → #71 (this) → #70 (PLAN-019
+  rebrand)**. Rebase-on-#69 is additive keep-both in three shared files (confirmed by
+  quiet-orchid's review): `apps/electron/src/main/index.ts` (updater-config init near
+  the auto-update setup), `packages/shared/src/protocol/channels.ts` (new
+  `craft-fork:updates:getFeedConfig/setFeedConfig`), and
+  `apps/electron/src/shared/__tests__/ipc-channels.test.ts` (EXPECTED_CHANNELS entries)
+  — plus the `host.listen()` alignment above. Branding scan of the PR diff came back
+  clean (no hardcoded product strings); PLAN-019 needs no renames on our side.
