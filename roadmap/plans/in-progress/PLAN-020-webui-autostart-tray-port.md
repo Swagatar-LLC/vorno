@@ -434,3 +434,21 @@ assumptions to reconcile on receipt:
 
 - `2026-07-13` — created in `planned/` (architect session 260713-swift-shoal; renumbered
   from provisional PLAN-018 → PLAN-020, 018/019 claimed by rebrand/updater tracks)
+- `2026-07-13` — implemented on branch `jh/2026-07-13_PLAN-020_webui-autostart`
+  (orchestrator session 260713-fit-moor) via 5 fan-out workstreams:
+  - WS-1 protocol/types + WS-2 config/supervisor/handler/host (commit `5fb57a1a`)
+  - WS-3 main wiring/tray + WS-4 settings UI/i18n (commit `9705cdf7`)
+  - WS-5 packaging/build chain (commit `07ad0aa9`)
+  Auth crux verified against source before build: `validateSessionCookie` bootstrap
+  passthrough (`transport/server.ts:439`) + tokenless WS upgrade in the webui adapter.
+  Coordinated with 260713-quiet-orchid (PLAN-018/019): port 3848 reserved, CRAFT_* env
+  + `server-config.json` names retained, no `electron-builder.yml` edit (root
+  `package.json` webui:build add is conflict-free), new strings routed through i18n +
+  branding module. PR sequencing agreed: PLAN-018 first, then this.
+  Validation green: `apps/server` tsc + config tests (16), webui unit tests (27),
+  ipc-channels (5) + routing (8), i18n parity/sorted/coverage, electron main bundle,
+  and `webui:build → copy-assets → validate-assets` producing `dist/resources/webui/`.
+  **Deferred to WS-6 follow-up:** after PLAN-018 merges to `main`, align
+  `main/webui/host.ts` with the `EmbeddedHost.listen() → Promise<number>` signature;
+  packaged fresh-profile smoke per LEARNING-011 (browser login → session list); then
+  move to `done/`.
