@@ -71,6 +71,8 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [017](LEARNING-017-electron-build-never-staged-pi-agent-server.md) | `electron:build` never staged pi-agent-server; dead staging helpers + config-dir-masked repro hid it | build | active |
 | [018](LEARNING-018-embedded-host-does-not-serve-webhooks.md) | The packaged (embedded) trigger server does not serve `/hooks` — POST returns 401, not 202 (webhooks are standalone-only) | electron | active |
 | [019](LEARNING-019-raw-nul-byte-makes-source-file-binary-to-git.md) | A raw NUL byte in agent-written source makes git treat the file as binary — tsc/tests stay green, only the diff goes `Bin` | agent | active |
+| [020](LEARNING-020-adhoc-fork-upstream-feed-squirrel-code-requirement.md) | Ad-hoc-signed fork on the upstream update feed fails Squirrel.Mac code-requirement validation ("code failed to satisfy specified code requirement(s)") | electron | active |
+| [021](LEARNING-021-trigger-server-port0-health-check-configured-port.md) | Embedded trigger-server health-checks the configured port, so `port: 0` always fails despite a successful bind | electron | active |
 
 ## Related skills
 
