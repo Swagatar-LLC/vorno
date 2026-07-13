@@ -41,9 +41,10 @@ function readConfig() {
 function makeFakeHost(listenError?: unknown) {
   const calls = { listen: [] as Array<[string, number]>, closed: 0 };
   const host = {
-    async listen(h: string, p: number) {
+    async listen(h: string, p: number): Promise<number> {
       calls.listen.push([h, p]);
       if (listenError) throw listenError;
+      return p; // fork(PLAN-020): listen() resolves the bound port (PLAN-018 signature)
     },
     async close() { calls.closed++; },
   };

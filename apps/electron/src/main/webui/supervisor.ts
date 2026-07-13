@@ -246,6 +246,7 @@ export class WebUiSupervisor {
 
     let handler: WebUiHandler;
     let hostServer: WebUiHost;
+    let boundPort: number;
     try {
       handler = createWebUiHandler({
         webuiDir: this.webuiDir,
@@ -258,7 +259,8 @@ export class WebUiSupervisor {
       hostServer = this.hostFactory(handler, {
         onError: (err) => this.onHostError(err),
       });
-      await hostServer.listen(host, port);
+      // fork(PLAN-020): listen() resolves the actually-bound port (PLAN-018 signature).
+      boundPort = await hostServer.listen(host, port);
     } catch (err) {
       try { handler!?.dispose(); } catch { /* ignore */ }
       return this.failStart(err, config);
@@ -266,7 +268,7 @@ export class WebUiSupervisor {
 
     // Self health check on the bound listener.
     const healthHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
-    const healthy = await this.selfHealthCheck(healthHost, port);
+    const healthy = await this.selfHealthCheck(healthHost, boundPort);
     if (!healthy) {
       try { await hostServer.close(); } catch { /* ignore */ }
       try { handler.dispose(); } catch { /* ignore */ }
@@ -279,12 +281,12 @@ export class WebUiSupervisor {
     this.host = hostServer;
     this.startedAt = Date.now();
     this.boundHost = host;
-    this.boundPort = port;
+    this.boundPort = boundPort;
     this.lastError = undefined;
     this.configStale = false;
     this.restartAttempted = false;
     this.setState('running');
-    this.log.info(`[webui] running on ${host}:${port}`);
+    this.log.info(`[webui] running on ${host}:${boundPort}`);
     void password; // referenced above for generation; not logged.
     return { success: true };
   }

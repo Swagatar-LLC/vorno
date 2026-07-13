@@ -23,8 +23,12 @@ export interface WebUiHostOptions {
 }
 
 export interface WebUiHost {
-  /** Bind the listener. Rejects on EADDRINUSE / bind failure (surfaced synchronously). */
-  listen(host: string, port: number): Promise<void>;
+  /**
+   * Bind the listener and resolve with the actually-bound port (matches the
+   * trigger-server `EmbeddedHost.listen()` signature, PLAN-018). Rejects on
+   * EADDRINUSE / bind failure (surfaced synchronously).
+   */
+  listen(host: string, port: number): Promise<number>;
   /** Close the listener. */
   close(): Promise<void>;
 }
@@ -40,8 +44,8 @@ export function createWebUiHost(
   const httpServer: Server = createServer(nodeHttpAdapter(handler));
 
   return {
-    listen(host: string, port: number): Promise<void> {
-      return new Promise<void>((resolve, reject) => {
+    listen(host: string, port: number): Promise<number> {
+      return new Promise<number>((resolve, reject) => {
         const onError = (err: Error) => {
           httpServer.off('listening', onListening);
           reject(err);
@@ -50,7 +54,9 @@ export function createWebUiHost(
           httpServer.off('error', onError);
           // Post-listen errors are fatal host faults, not bind failures.
           httpServer.on('error', (err) => options.onError?.(err));
-          resolve();
+          const addr = httpServer.address();
+          const boundPort = addr && typeof addr === 'object' ? addr.port : port;
+          resolve(boundPort);
         };
         httpServer.once('error', onError);
         httpServer.once('listening', onListening);
