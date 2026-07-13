@@ -1,7 +1,7 @@
 ---
 id: PLAN-018
 title: Runtime-configurable auto-update feed + Updates settings UI + trigger-server port-0 health-check fix
-status: planned
+status: in-progress
 direction: none
 owner: jh
 created: 2026-07-13
@@ -72,3 +72,4 @@ Sequencing note: until PLAN-019 flips `publish:` in `electron-builder.yml`, pack
 ## Status log
 
 - `2026-07-13` — created in `planned/`
+- `2026-07-13` — moved from planned to in-progress: Opus implementation session spawned same day (branch `jh/2026-07-13_updater-feed-config-port0`)

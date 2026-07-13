@@ -1,7 +1,7 @@
 ---
 id: PLAN-019
 title: Vorno rebrand + tag-triggered signed release pipeline publishing to vorno-releases
-status: planned
+status: in-progress
 direction: none
 owner: jh
 created: 2026-07-13
@@ -83,3 +83,4 @@ Human steps (before first publish, flagged in the PR):
 ## Status log
 
 - `2026-07-13` — created in `planned/`
+- `2026-07-13` — moved from planned to in-progress: Opus implementation session spawned same day (branch `jh/2026-07-13_vorno-rebrand-release-pipeline`)
