@@ -1,7 +1,7 @@
 ---
 id: ADR-0009
 title: Vorno rebrand — appId co.swagatar.vorno, public vorno-releases update feed, parameterized signing
-status: proposed
+status: accepted
 date: 2026-07-13
 supersedes: []
 superseded-by: []
@@ -57,18 +57,20 @@ Constraints that shape the decision:
    rule); the fork-vs-upstream distinction still matters while both run
    side-by-side.
 
-2. **appId: `co.swagatar.vorno` — permanent.** Proposed, **pending Jeff's
-   explicit confirmation at PR review**; once a build is published under it,
-   it never changes (Squirrel continuity). The appId is independent of the
-   Apple Team ID — the Team ID arrives with the cert and lives only in signing
-   metadata, not the bundle identifier.
+2. **appId: `co.swagatar.vorno` — permanent.** Confirmed by Jeff
+   2026-07-13; once a build is published under it, it never changes (Squirrel
+   continuity). The appId is independent of the Apple Team ID — the Team ID
+   arrives with the cert and lives only in signing metadata, not the bundle
+   identifier.
 
 3. **Update feed: dedicated public repo `Swagatar-LLC/vorno-releases`** via
    electron-updater's `github` provider (`owner: Swagatar-LLC`, `repo:
    vorno-releases`). Source stays private; release CI in the private repo
    publishes DMG + ZIP + `latest-mac.yml` to the public releases repo using a
-   repo-scoped token that exists only as a CI secret. **No token in the app.**
-   Creating the `vorno-releases` repo is a human step (flagged in PLAN-019).
+   repo-scoped token that exists only as a CI secret (a fine-grained PAT or
+   GitHub App token — the Actions-provided `GITHUB_TOKEN` is scoped to the
+   repo the workflow runs in and cannot write cross-repo). **No token in the
+   app.** The `vorno-releases` repo was created 2026-07-13 (confirmed).
    `UPDATE_MANIFEST_BASE_URL` decouples from `SERVICE_BASE_URL` and points at
    the releases repo.
 
