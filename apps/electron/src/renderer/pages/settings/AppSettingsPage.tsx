@@ -30,8 +30,10 @@ import {
   SettingsRow,
   SettingsToggle,
   SettingsInput,
+  SettingsSelect,
 } from '@/components/settings'
 import { useUpdateChecker } from '@/hooks/useUpdateChecker'
+import type { UpdaterConfig } from '../../../shared/types'
 
 export const meta: DetailsPageMeta = {
   navigator: 'settings',
@@ -89,6 +91,65 @@ function validateProxyUrl(url: string): string | undefined {
 }
 
 // ============================================
+// Update feed form helpers (fork PLAN-018 / ADR-0009)
+// ============================================
+
+interface FeedFormState {
+  provider: 'github' | 'generic'
+  owner: string
+  repo: string
+  url: string
+  channel: string
+  autoCheck: boolean
+}
+
+const DEFAULT_FEED_FORM: FeedFormState = {
+  provider: 'github',
+  owner: 'Swagatar-LLC',
+  repo: 'vorno-releases',
+  url: '',
+  channel: 'latest',
+  autoCheck: true,
+}
+
+function toFeedFormState(config?: UpdaterConfig): FeedFormState {
+  if (!config) return DEFAULT_FEED_FORM
+  return {
+    provider: config.provider,
+    owner: config.owner ?? '',
+    repo: config.repo ?? '',
+    url: config.url ?? '',
+    channel: config.channel || 'latest',
+    autoCheck: config.autoCheck,
+  }
+}
+
+function toUpdaterConfig(form: FeedFormState): UpdaterConfig {
+  const channel = form.channel.trim() || 'latest'
+  if (form.provider === 'github') {
+    return { provider: 'github', owner: form.owner.trim(), repo: form.repo.trim(), channel, autoCheck: form.autoCheck }
+  }
+  return { provider: 'generic', url: form.url.trim(), channel, autoCheck: form.autoCheck }
+}
+
+/** Client-side validation mirroring validateUpdaterConfig; returns an i18n key or undefined. */
+function validateFeedForm(form: FeedFormState): string | undefined {
+  if (form.provider === 'github') {
+    if (!form.owner.trim() || !form.repo.trim()) return 'feedErrorGithubRequired'
+    return undefined
+  }
+  const url = form.url.trim()
+  if (!url) return 'feedErrorUrlRequired'
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== 'https:') return 'feedErrorUrlHttps'
+  } catch {
+    return 'feedErrorUrlFormat'
+  }
+  return undefined
+}
+
+// ============================================
 // Main Component
 // ============================================
 
@@ -124,6 +185,41 @@ export default function AppSettingsPage() {
     }
   }, [updateChecker])
 
+  // Update feed config state (fork PLAN-018 / ADR-0009) — Electron-only.
+  const [feedForm, setFeedForm] = useState<FeedFormState>(DEFAULT_FEED_FORM)
+  const [savedFeedForm, setSavedFeedForm] = useState<FeedFormState>(DEFAULT_FEED_FORM)
+  const [feedError, setFeedError] = useState<string | undefined>()
+  const [isSavingFeed, setIsSavingFeed] = useState(false)
+
+  const isFeedDirty = useMemo(() => {
+    return JSON.stringify(feedForm) !== JSON.stringify(savedFeedForm)
+  }, [feedForm, savedFeedForm])
+
+  const handleSaveFeed = useCallback(async () => {
+    const err = validateFeedForm(feedForm)
+    if (err) {
+      setFeedError(err)
+      return
+    }
+    setFeedError(undefined)
+    setIsSavingFeed(true)
+    try {
+      const saved = await window.electronAPI.setUpdateFeedConfig(toUpdaterConfig(feedForm))
+      const form = toFeedFormState(saved)
+      setFeedForm(form)
+      setSavedFeedForm(form)
+    } catch (error) {
+      setFeedError(error instanceof Error ? error.message : 'Failed to save')
+    } finally {
+      setIsSavingFeed(false)
+    }
+  }, [feedForm])
+
+  const handleResetFeed = useCallback(() => {
+    setFeedForm(savedFeedForm)
+    setFeedError(undefined)
+  }, [savedFeedForm])
+
   // Load settings on mount
   const loadSettings = useCallback(async () => {
     if (!window.electronAPI) return
@@ -140,6 +236,18 @@ export default function AppSettingsPage() {
       const form = toProxyFormState(proxySettings)
       setProxyForm(form)
       setSavedProxyForm(form)
+
+      // Update feed config is Electron-only (LOCAL_ONLY RPC).
+      if (window.electronAPI.getRuntimeEnvironment() === 'electron') {
+        try {
+          const feedConfig = await window.electronAPI.getUpdateFeedConfig()
+          const feed = toFeedFormState(feedConfig)
+          setFeedForm(feed)
+          setSavedFeedForm(feed)
+        } catch (feedErr) {
+          console.error('Failed to load update feed config:', feedErr)
+        }
+      }
     } catch (error) {
       console.error('Failed to load settings:', error)
     }
@@ -355,6 +463,99 @@ export default function AppSettingsPage() {
                   )}
                 </SettingsCard>
               </SettingsSection>
+
+              {/* Updates — runtime-configurable feed (fork PLAN-018 / ADR-0009) */}
+              {isElectron && (
+                <SettingsSection title={t("settings.updates.title")} description={t("settings.updates.description")}>
+                  <SettingsCard>
+                    <SettingsToggle
+                      label={t("settings.updates.autoCheck")}
+                      description={t("settings.updates.autoCheckDesc")}
+                      checked={feedForm.autoCheck}
+                      onCheckedChange={(autoCheck) => setFeedForm(prev => ({ ...prev, autoCheck }))}
+                    />
+                    <SettingsSelect
+                      label={t("settings.updates.provider")}
+                      description={t("settings.updates.providerDesc")}
+                      value={feedForm.provider}
+                      onValueChange={(value) => setFeedForm(prev => ({ ...prev, provider: value as FeedFormState['provider'] }))}
+                      options={[
+                        { value: 'github', label: t("settings.updates.providerGithub") },
+                        { value: 'generic', label: t("settings.updates.providerGeneric") },
+                      ]}
+                    />
+                    {feedForm.provider === 'github' ? (
+                      <>
+                        <SettingsInput
+                          label={t("settings.updates.owner")}
+                          value={feedForm.owner}
+                          onChange={(value) => setFeedForm(prev => ({ ...prev, owner: value }))}
+                          placeholder={t("settings.updates.ownerPlaceholder")}
+                          inCard
+                        />
+                        <SettingsInput
+                          label={t("settings.updates.repo")}
+                          value={feedForm.repo}
+                          onChange={(value) => setFeedForm(prev => ({ ...prev, repo: value }))}
+                          placeholder={t("settings.updates.repoPlaceholder")}
+                          inCard
+                        />
+                      </>
+                    ) : (
+                      <SettingsInput
+                        label={t("settings.updates.url")}
+                        type="url"
+                        value={feedForm.url}
+                        onChange={(value) => setFeedForm(prev => ({ ...prev, url: value }))}
+                        placeholder={t("settings.updates.urlPlaceholder")}
+                        inCard
+                      />
+                    )}
+                    <SettingsInput
+                      label={t("settings.updates.channel")}
+                      value={feedForm.channel}
+                      onChange={(value) => setFeedForm(prev => ({ ...prev, channel: value }))}
+                      placeholder={t("settings.updates.channelPlaceholder")}
+                      inCard
+                    />
+                    {(isFeedDirty || feedError) && (
+                      <SettingsCardFooter>
+                        {feedError && (
+                          <span className="text-destructive text-sm mr-auto">
+                            {feedError === 'feedErrorGithubRequired' ? t("settings.updates.feedErrorGithubRequired")
+                              : feedError === 'feedErrorUrlRequired' ? t("settings.updates.feedErrorUrlRequired")
+                              : feedError === 'feedErrorUrlHttps' ? t("settings.updates.feedErrorUrlHttps")
+                              : feedError === 'feedErrorUrlFormat' ? t("settings.updates.feedErrorUrlFormat")
+                              : feedError}
+                          </span>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleResetFeed}
+                          disabled={!isFeedDirty || isSavingFeed}
+                        >
+                          {t("common.reset")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={handleSaveFeed}
+                          disabled={!isFeedDirty || isSavingFeed}
+                        >
+                          {isSavingFeed ? (
+                            <>
+                              <Spinner className="mr-1.5" />
+                              {t("common.saving")}
+                            </>
+                          ) : (
+                            t("common.save")
+                          )}
+                        </Button>
+                      </SettingsCardFooter>
+                    )}
+                  </SettingsCard>
+                </SettingsSection>
+              )}
             </div>
           </div>
         </ScrollArea>
