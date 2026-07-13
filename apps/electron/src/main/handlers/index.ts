@@ -10,6 +10,8 @@ import { registerBrowserHandlers } from './browser'
 import { registerSettingsGuiHandlers } from './settings'
 // fork(PLAN-015): production logging control
 import { registerLoggingHandlers } from './logging'
+// fork(PLAN-018): runtime-configurable auto-update feed
+import { registerUpdaterHandlers } from './updater'
 
 export function registerGuiRpcHandlers(server: RpcServer, deps: HandlerDeps): void {
   registerSystemGuiHandlers(server, deps)
@@ -17,6 +19,7 @@ export function registerGuiRpcHandlers(server: RpcServer, deps: HandlerDeps): vo
   registerBrowserHandlers(server, deps)
   registerSettingsGuiHandlers(server, deps)
   registerLoggingHandlers(server) // fork(PLAN-015)
+  registerUpdaterHandlers(server) // fork(PLAN-018)
 }
 
 export function registerAllRpcHandlers(server: RpcServer, deps: HandlerDeps, serverCtx?: ServerHandlerContext): void {
