@@ -1,7 +1,7 @@
 ---
 id: PLAN-019
 title: Vorno rebrand + tag-triggered signed release pipeline publishing to vorno-releases
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-13
@@ -84,3 +84,4 @@ Human steps (before first publish, flagged in the PR):
 
 - `2026-07-13` — created in `planned/`
 - `2026-07-13` — moved from planned to in-progress: Opus implementation session spawned same day (branch `jh/2026-07-13_vorno-rebrand-release-pipeline`)
+- `2026-07-13` — moved from in-progress to done: merged to main as PR #70, all seven CI gates green. ADR-0009 accepted (appId co.swagatar.vorno confirmed; vorno-releases repo created). Residual human steps tracked outside this plan: VORNO_RELEASES_TOKEN secret, five signing secrets when the Apple cert lands, Vorno icon art, first v* tag to exercise release.yml.
