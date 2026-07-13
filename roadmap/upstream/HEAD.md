@@ -6,13 +6,17 @@ Snapshot of our most recent upstream sync.
 
 | Field | Value |
 |-------|-------|
-| Last merged upstream tag | `v0.11.0` |
-| Last merged upstream commit | `f4e172bf` |
-| Merge PR | [#47](https://github.com/Swagatar-LLC/craft-agents-oss/pull/47) |
-| Merge commit on branch | `58e51a7b` |
-| Date synced | 2026-07-08 |
+| Last merged upstream tag | `v0.11.1` |
+| Last merged upstream commit | `4289b160` |
+| Merge PR | [#67](https://github.com/Swagatar-LLC/craft-agents-oss/pull/67) |
+| Merge commit on branch | `9eb650d7` |
+| Date synced | 2026-07-13 |
 
 ## Versions covered in last merge
+
+- `v0.11.1` — **OpenAI GPT-5.6 (Luna / Terra / Sol) + native Max thinking level + Pi SDK 0.80.6.** Adds GPT-5.6 support via OpenAI API key, ChatGPT account, and Azure OpenAI connections; new OpenAI connections default to **GPT-5.6 Sol**. The **Max thinking level is now sent natively** to models that support it (GPT-5.6, adaptive Claude) instead of capping at XHigh: `THINKING_TO_PI.max` changes `'xhigh'` → `'max'` and passes through 1:1, with Pi's `clampThinkingLevel` degrading per-model on models without native max support (older GPT-5.x fall back to xhigh internally). **Pi SDK 0.80.6** adds request-wide input-token pricing tiers for accurate long-context cost accounting on GPT-5.4/5.5/5.6. **Conflicts:** `bun.lock` only (mechanical `--theirs` + `bun install`); `package.json` version-bump cluster auto-merged. **Roadmap-relevant surface:** touches `packages/shared/src/agent/thinking-levels.ts` and `packages/shared/src/agent/backend/pi/constants.ts` (+ test) — we track both **1:1 with upstream (no fork divergence)**, no `packages/shared/src/protocol/` wire changes. `@anthropic-ai/claude-agent-sdk` **unchanged (0.3.197)** so the LEARNING-008 subagent-launch/blocking-semantics audit was not triggered; `buildClaudeSubprocessEnv()` invariants (`delete env.CLAUDECODE`, `DISABLE_GROWTHBOOK=1`) intact. Validations: packages/shared + apps/server typecheck clean, apps/server 182 pass / 0 fail, bundle + pi-agent-server builds clean (no stale `@earendil-works` deps).
+
+## Versions covered in prior merge (PR #47, 2026-07-08)
 
 - `v0.11.0` — **Projects + Kanban/Tasks board with a beta Conductor, background-agent keep-alive, Pi SDK 0.80.3.** Introduces workspace-scoped **Projects** (config + assets; sessions bind via `projectId`), a **Kanban/Tasks** board UI, and a beta **Conductor** that runs task specs as in-process orchestrations (new `packages/shared/src/tasks/` module + `packages/server-core/src/tasks/TaskRunner.ts` + `handlers/rpc/{projects,tasks}.ts` + new `SessionManager` Conductor seams `onSessionComplete` / `getSessionFinalText`). Background sub-agents can be kept alive across turns via `CRAFT_KEEP_BG_AGENTS_ALIVE`. **Pi SDK 0.80.3** moves model/provider discovery to the `@earendil-works/pi-ai/compat` entrypoint. **Conflicts (9 files + `bun.lock`):** `bun.lock` (mechanical `--theirs` + `bun install`); `models-pi.ts` (keep our `BACKEND_DISPLAY_NAME`, take upstream `/compat`); `claude-agent.ts` (keep branding + `logSdkCliVersion` + `getModelSupportsFastMode`, take upstream `SDKMessage` + projects/storage imports); `pi-agent.ts` (keep `BACKEND_DISPLAY_NAME`, take upstream `projectContext` arg); `SessionManager.ts` (keep `AnnotationMutationResult` + take upstream `TokenUsage`); `session-manager-interface.ts` (take upstream Conductor seams, keep our `AnnotationMutationResult` return types); `App.tsx` / `atoms/sessions.ts` / `ActiveTasksBar.tsx` / `FreeFormInput.tsx` (take upstream — fork Activity pane dropped). **Fork decision ([ADR-0006](../decisions/0006-pause-vorno-align-0.11-drop-activity-pane.md)):** VORNO paused; fork Activity/orchestration pane (PLAN-007/008/009) removed in favor of upstream's background-task/Conductor system; PLAN-010 paused. **Retained fork features:** token-usage indicator (PLAN-002/003) re-applied onto upstream's refactored `FreeFormInput`; subprocess-env security contract (`DISABLE_GROWTHBOOK=1`, LEARNING-008) intact; config-dir isolation (ADR-0005); branding gate (VOR-3); fast mode (PLAN-006). `CRAFT_KEEP_BG_AGENTS_ALIVE` left default-ON; a user-facing settings toggle follows in a separate PR.
 
