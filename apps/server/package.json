@@ -2,7 +2,7 @@
   "name": "@craft-agent/http-trigger",
   "version": "0.3.4",
   "license": "Apache-2.0",
-  "description": "HTTP trigger server for Craft Agents - REST + SSE API for external triggers",
+  "description": "HTTP trigger server for Vorno - REST + SSE API for external triggers",
   "type": "module",
   "main": "src/index.ts",
   "exports": {

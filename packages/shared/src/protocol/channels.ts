@@ -387,6 +387,13 @@ export const RPC_CHANNELS = {
     START: 'craft-fork:webui:start',
     STOP: 'craft-fork:webui:stop',
     REGENERATE_PASSWORD: 'craft-fork:webui:regeneratePassword',
+  // fork(PLAN-018 / ADR-0009): runtime-configurable auto-update feed. LOCAL_ONLY
+  // — the feed override lives in the local machine's main process and is applied
+  // to electron-updater before any check. Namespaced under craft-fork:* per
+  // roadmap/upstream/compatibility.md so upstream's `update:*` group is untouched.
+  updater: {
+    GET_FEED_CONFIG: 'craft-fork:updates:getFeedConfig',
+    SET_FEED_CONFIG: 'craft-fork:updates:setFeedConfig',
   },
   badge: {
     REFRESH: 'badge:refresh',

@@ -80,7 +80,7 @@ done
 # Configuration
 BUN_VERSION="bun-v1.3.9"  # Pinned version for reproducible builds
 
-echo "=== Building Craft Agents DMG (${ARCH}) using electron-builder ==="
+echo "=== Building Vorno DMG (${ARCH}) using electron-builder ==="
 if [ "$UPLOAD" = true ]; then
     echo "Will upload to S3 after build"
 fi
@@ -241,12 +241,18 @@ if [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PA
     export NOTARIZE=true
 fi
 
-# Run electron-builder
-npx electron-builder $BUILDER_ARGS
+# Run electron-builder.
+# EB_PUBLISH controls electron-builder's own publish step (default: never — local
+# builds and the CI verification/ad-hoc path must never upload). The release
+# workflow (.github/workflows/release.yml) sets EB_PUBLISH=always ONLY when the
+# signing secrets are present, so the signed+notarized artifacts (Vorno-arm64.zip,
+# latest-mac.yml, .dmg + blockmaps) are generated and uploaded to the
+# Swagatar-LLC/vorno-releases feed in one atomic, canonical electron-updater flow.
+npx electron-builder $BUILDER_ARGS --publish "${EB_PUBLISH:-never}"
 
 # 8. Verify the DMG was built
-# electron-builder.yml uses artifactName to output: Craft-Agents-${arch}.dmg
-DMG_NAME="Craft-Agents-${ARCH}.dmg"
+# electron-builder.yml uses artifactName to output: Vorno-${arch}.dmg
+DMG_NAME="Vorno-${ARCH}.dmg"
 DMG_PATH="$ELECTRON_DIR/release/$DMG_NAME"
 
 if [ ! -f "$DMG_PATH" ]; then

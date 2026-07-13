@@ -142,8 +142,13 @@ export interface EmbeddedHostOptions {
 }
 
 export interface EmbeddedHost {
-  /** Bind the listener. Rejects on EADDRINUSE / bind failure (surfaced synchronously). */
-  listen(host: string, port: number): Promise<void>;
+  /**
+   * Bind the listener. Rejects on EADDRINUSE / bind failure (surfaced
+   * synchronously). Resolves with the ACTUAL bound port — this matters when the
+   * caller requested port 0 (OS-assigned ephemeral port); the resolved value is
+   * the port the health check and status must use, NOT the requested 0.
+   */
+  listen(host: string, port: number): Promise<number>;
   /** Stop accepting, close WS clients, and close the listener. */
   close(): Promise<void>;
 }
@@ -185,8 +190,8 @@ export function createEmbeddedHost(
   });
 
   return {
-    listen(host: string, port: number): Promise<void> {
-      return new Promise<void>((resolve, reject) => {
+    listen(host: string, port: number): Promise<number> {
+      return new Promise<number>((resolve, reject) => {
         const onError = (err: Error) => {
           httpServer.off('listening', onListening);
           reject(err);
@@ -195,7 +200,13 @@ export function createEmbeddedHost(
           httpServer.off('error', onError);
           // Post-listen errors are fatal host faults, not bind failures.
           httpServer.on('error', (err) => options.onError?.(err));
-          resolve();
+          // Read back the OS-assigned port (mirrors WsRpcServer in
+          // packages/server-core/src/transport/server.ts). When port 0 was
+          // requested, address() carries the real ephemeral port; fall back to
+          // the requested port if address() isn't an AddressInfo object.
+          const addr = httpServer.address();
+          const boundPort = addr && typeof addr === 'object' ? addr.port : port;
+          resolve(boundPort);
         };
         httpServer.once('error', onError);
         httpServer.once('listening', onListening);

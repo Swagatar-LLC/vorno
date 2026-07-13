@@ -4,7 +4,7 @@
  * in both the callback server and the playground preview.
  */
 
-import { BRAND_NAME, CRAFT_LOGO_HTML, PRODUCT_NAME } from '../branding.ts';
+import { BRAND_NAME, VORNO_LOGO_HTML, PRODUCT_NAME } from '../branding.ts';
 
 export type AppType = 'terminal' | 'electron';
 
@@ -170,7 +170,7 @@ export function generateCallbackPage(options: {
 </head>
 <body>
   <div class="content">
-    <pre class="logo">${CRAFT_LOGO_HTML}</pre>
+    <pre class="logo">${VORNO_LOGO_HTML}</pre>
     <div class="card">
       <div class="status">${statusMessage}</div>
     </div>

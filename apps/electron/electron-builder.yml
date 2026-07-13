@@ -1,6 +1,6 @@
-appId: com.lukilabs.craft-agent
-productName: Craft Agents
-copyright: Copyright © 2026 Craft Docs Ltd.
+appId: co.swagatar.vorno
+productName: Vorno
+copyright: Copyright © 2026 Swagatar LLC
 
 electronVersion: "39.2.7"
 
@@ -73,10 +73,17 @@ files:
 extraMetadata:
   main: dist/main.cjs
 
-# Auto-update: electron-updater fetches from this URL for update manifests (.yml files)
+# Auto-update: electron-updater fetches update metadata (latest-mac.yml) from the
+# public GitHub releases feed. Source stays private (Swagatar-LLC/craft-agents-oss);
+# signed release artifacts are published to Swagatar-LLC/vorno-releases (ADR-0009).
+# No token ships in the app — the github provider reads public release assets.
+# releaseType: release publishes immediately (a pushed v* tag IS the release action)
+# so electron-updater — which cannot see draft releases — can serve the update.
 publish:
-  provider: generic
-  url: https://agents.craft.do/electron/latest
+  provider: github
+  owner: Swagatar-LLC
+  repo: vorno-releases
+  releaseType: release
 
 # Disable ASAR to avoid decompression overhead and click delays
 asar: false
@@ -91,16 +98,15 @@ mac:
     # Required for macOS to list the app under Privacy & Security > Local Network
     # and prompt for permission. Without it the app is silently denied LAN access
     # and never appears in the privacy pane (craft-agents-oss#938).
-    NSLocalNetworkUsageDescription: "Craft Agents uses your local network to reach LAN addresses and devices you ask an agent to access, such as local servers or APIs."
+    NSLocalNetworkUsageDescription: "Vorno uses your local network to reach LAN addresses and devices you ask an agent to access, such as local servers or APIs."
   target:
+    # macOS arm64 only — upstream discontinued Intel at v0.10.1 (ADR-0009).
     - target: dmg
       arch:
         - arm64
-        - x64
     - target: zip
       arch:
         - arm64
-        - x64
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
@@ -126,21 +132,21 @@ mac:
     - "!**/resources/bin/win32-*/**"
     - "!**/resources/bin/linux-*/**"
   # Use predictable naming for macOS packages (applies to zip; dmg uses its own config below)
-  artifactName: "Craft-Agents-${arch}.${ext}"
+  artifactName: "Vorno-${arch}.${ext}"
   # Code signing & notarization (disabled by default for local builds)
   # To enable: set CSC_LINK, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
   # notarize:
   #   teamId: ${APPLE_TEAM_ID}
 
 dmg:
-  # Use predictable naming: Craft-Agents-arm64.dmg, Craft-Agents-x64.dmg
-  artifactName: "Craft-Agents-${arch}.dmg"
+  # Use predictable naming: Vorno-arm64.dmg
+  artifactName: "Vorno-${arch}.dmg"
   # Custom background (multi-resolution TIFF with 1x+2x for retina support)
   background: resources/dmg-background.tiff
   # Use app icon as the mounted volume icon in Finder
   icon: resources/icon.icns
   iconSize: 80
-  title: "Craft Agents"
+  title: "Vorno"
   contents:
     - x: 130
       y: 200
@@ -158,8 +164,8 @@ win:
     - target: nsis
       arch:
         - x64
-  # Use predictable naming: Craft-Agents-x64.exe
-  artifactName: "Craft-Agents-${arch}.${ext}"
+  # Use predictable naming: Vorno-x64.exe
+  artifactName: "Vorno-${arch}.${ext}"
   files:
     # Exclude binaries for other platforms
     - "!**/resources/bin/darwin-*/**"
@@ -197,12 +203,12 @@ nsis:
 linux:
   icon: resources/icon.png
   category: Utility
-  maintainer: "Craft Docs Ltd. <support@craft.do>"
+  maintainer: "Swagatar LLC <support@swagatar.co>"
   target:
     - target: AppImage
       arch:
         - x64
-  artifactName: "Craft-Agents-${arch}.${ext}"
+  artifactName: "Vorno-${arch}.${ext}"
   extraResources:
     - from: node_modules/@anthropic-ai/claude-agent-sdk
       to: app/node_modules/@anthropic-ai/claude-agent-sdk
