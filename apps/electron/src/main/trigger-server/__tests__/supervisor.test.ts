@@ -26,13 +26,18 @@ function writeConfig(enabled: boolean, port = 3999) {
   );
 }
 
-/** In-memory fake embedded host. */
-function makeFakeHost(listenError?: unknown) {
+/**
+ * In-memory fake embedded host. `listen` resolves with the bound port, mirroring
+ * the real host: a requested port of 0 resolves to a simulated OS-assigned port
+ * (54321) so the supervisor's port-0 handling is exercised without a real socket.
+ */
+function makeFakeHost(listenError?: unknown, ephemeralPort = 54321) {
   const calls = { listen: [] as Array<[string, number]>, closed: 0 };
   const host = {
-    async listen(h: string, p: number) {
+    async listen(h: string, p: number): Promise<number> {
       calls.listen.push([h, p]);
       if (listenError) throw listenError;
+      return p === 0 ? ephemeralPort : p;
     },
     async close() { calls.closed++; },
   };
@@ -126,6 +131,56 @@ describe('TriggerServerSupervisor state machine', () => {
     await sup.reconcile();
     expect(sup.getStatus().state).toBe('stopped');
     expect(calls.listen.length).toBe(0);
+  });
+
+  test('port 0 → running, health check + status use the OS-assigned port', async () => {
+    // LEARNING-021: with configured port 0 the OS assigns an ephemeral port; the
+    // supervisor must health-check and report THAT port, not the configured 0.
+    writeConfig(false, 0);
+    const { host, calls } = makeFakeHost(undefined, 54321);
+    const probedPorts: number[] = [];
+    const probe = async (_h: string, p: number) => {
+      probedPorts.push(p);
+      return { status: 'ok', fork: 'trigger-server' };
+    };
+    const sup = new TriggerServerSupervisor({ hostFactory: () => host, healthProbe: probe });
+    active = sup;
+
+    const result = await sup.start();
+    expect(result.success).toBe(true);
+    const status = sup.getStatus();
+    expect(status.state).toBe('running');
+    // Requested port 0 crossed to listen()…
+    expect(calls.listen).toEqual([['127.0.0.1', 0]]);
+    // …but health check + reported status use the real (>0) bound port.
+    expect(probedPorts).toEqual([54321]);
+    expect(status.port).toBe(54321);
+    expect(status.port).toBeGreaterThan(0);
+    // Desired-state on disk stays 0 — bound port is runtime status, not config.
+    expect(loadServerConfig().port).toBe(0);
+  });
+
+  test('fixed configured port is reported unchanged (byte-identical path)', async () => {
+    writeConfig(false, 3999);
+    const { host, calls } = makeFakeHost();
+    const probedPorts: number[] = [];
+    const probe = async (_h: string, p: number) => {
+      probedPorts.push(p);
+      return { status: 'ok', fork: 'trigger-server' };
+    };
+    const sup = new TriggerServerSupervisor({ hostFactory: () => host, healthProbe: probe });
+    active = sup;
+
+    await sup.start();
+    expect(calls.listen).toEqual([['127.0.0.1', 3999]]);
+    expect(probedPorts).toEqual([3999]);
+    expect(sup.getStatus().port).toBe(3999);
+  });
+
+  test('host.listen resolves with the bound port', async () => {
+    const { host } = makeFakeHost(undefined, 40000);
+    expect(await host.listen('127.0.0.1', 0)).toBe(40000);
+    expect(await host.listen('127.0.0.1', 3999)).toBe(3999);
   });
 
   test('createApiKey returns plaintext once + persists metadata', async () => {

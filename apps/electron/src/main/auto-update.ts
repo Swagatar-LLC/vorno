@@ -24,6 +24,7 @@ import { getAppVersion } from '@craft-agent/shared/version'
 import {
   getDismissedUpdateVersion,
   clearDismissedUpdateVersion,
+  loadUpdaterConfig,
 } from '@craft-agent/shared/config'
 import { readJsonFileSync } from '@craft-agent/shared/utils/files'
 import { RPC_CHANNELS, type UpdateInfo } from '../shared/types'
@@ -138,6 +139,40 @@ autoUpdater.logger = {
   debug: (msg: unknown) => mainLog.info('[electron-updater:debug]', msg),
 }
 
+/**
+ * fork(PLAN-018 / ADR-0009): apply the runtime updater feed config to
+ * electron-updater. This overrides the packaged `app-update.yml`, so the next
+ * check uses the fork-owned feed. Idempotent — safe to call at init AND whenever
+ * the config changes via RPC (no restart needed). Failures are logged, never
+ * thrown: a bad feed must not break launch or leave the app in an error state.
+ *
+ * Unpackaged/dev builds: electron-updater is effectively inert (checks are gated
+ * on app.isPackaged), so setFeedURL here is harmless — we don't force a check.
+ */
+export function applyUpdaterFeedConfig(): void {
+  try {
+    const cfg = loadUpdaterConfig()
+    if (cfg.provider === 'github') {
+      autoUpdater.setFeedURL({
+        provider: 'github',
+        owner: cfg.owner!,
+        repo: cfg.repo!,
+        channel: cfg.channel,
+      })
+      autoUpdateLog.info(`Update feed set: github ${cfg.owner}/${cfg.repo} (channel ${cfg.channel})`)
+    } else {
+      autoUpdater.setFeedURL({
+        provider: 'generic',
+        url: cfg.url!,
+        channel: cfg.channel,
+      })
+      autoUpdateLog.info(`Update feed set: generic ${cfg.url} (channel ${cfg.channel})`)
+    }
+  } catch (err) {
+    autoUpdateLog.warn('Failed to apply updater feed config (keeping packaged feed):', err)
+  }
+}
+
 // ─── Event handlers ───────────────────────────────────────────────────────────
 
 autoUpdater.on('checking-for-update', () => {
@@ -222,7 +257,43 @@ autoUpdater.on('update-downloaded', async (info) => {
   rebuildMenu()
 })
 
+/**
+ * Whether an electron-updater error just means "the feed has no release yet"
+ * (or does not exist yet) rather than a real failure. The fork's default feed
+ * (Swagatar-LLC/vorno-releases) does not exist until the first publish, and a
+ * missing latest.yml / 404 must degrade to a logged no-update — NOT a UI error
+ * state (ADR-0009 graceful degradation).
+ */
+function isBenignFeedAbsence(error: Error): boolean {
+  const msg = `${error.message ?? ''}`.toLowerCase()
+  return (
+    msg.includes('404') ||
+    msg.includes('latest.yml') ||
+    msg.includes('latest-mac.yml') ||
+    msg.includes('latest-linux.yml') ||
+    msg.includes('no published versions') ||
+    msg.includes('cannot find') ||
+    msg.includes('unable to find latest version') ||
+    msg.includes('err_name_not_resolved') ||
+    msg.includes('getaddrinfo')
+  )
+}
+
 autoUpdater.on('error', (error) => {
+  // A feed that doesn't exist yet (fork default before first publish) or has no
+  // release manifest is expected — treat it as "up to date", not an error.
+  if (isBenignFeedAbsence(error)) {
+    autoUpdateLog.info(`Update feed has no release yet (treating as no-update): ${error.message}`)
+    updateInfo = {
+      ...updateInfo,
+      available: false,
+      downloadState: 'idle',
+      error: undefined,
+    }
+    broadcastUpdateInfo()
+    return
+  }
+
   autoUpdateLog.error('electron-updater error', error)
 
   updateInfo = {
@@ -444,6 +515,14 @@ export interface UpdateOnLaunchResult {
  * - Auto-downloads if update available
  */
 export async function checkForUpdatesOnLaunch(): Promise<UpdateOnLaunchResult> {
+  // fork(PLAN-018): honour the runtime auto-check toggle. Manual "Check Now" from
+  // Settings still works — it calls checkForUpdates() directly, bypassing this gate.
+  const cfg = loadUpdaterConfig()
+  if (!cfg.autoCheck) {
+    autoUpdateLog.info('Auto-check disabled in updater config, skipping launch check')
+    return { action: 'skipped', reason: 'autoCheckDisabled' }
+  }
+
   autoUpdateLog.info('Checking for updates on launch...')
 
   const info = await checkForUpdates({ autoDownload: true })

@@ -87,6 +87,8 @@ const EXPECTED_CHANNELS: string[] = [
   'craft-fork:triggerServer:start',
   'craft-fork:triggerServer:stop',
   'craft-fork:triggerServer:updateConfig',
+  'craft-fork:updates:getFeedConfig',
+  'craft-fork:updates:setFeedConfig',
   'craft-fork:webhooks:deliveries',
   'craft-fork:webhooks:list',
   'craft-fork:webhooks:revoke',
