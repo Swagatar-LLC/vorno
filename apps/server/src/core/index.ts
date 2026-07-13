@@ -34,4 +34,5 @@ export {
   type StoredApiKey,
   type ApiKeyPermissions,
   type RateLimits,
+  type WebUiConfig, // fork(PLAN-020)
 } from '../config.ts';

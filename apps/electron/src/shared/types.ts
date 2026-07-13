@@ -283,6 +283,28 @@ export interface RemoteAccessCreatedKey {
   info: RemoteAccessApiKeyInfo
 }
 
+// fork(PLAN-020): desktop WebUI listener supervision DTOs.
+// The renderer-facing shape of the embedded WebUI HTTP listener's config and
+// status. Reuses the PLAN-012 RemoteAccessState union / RemoteAccessStartResult.
+// The generated password crosses local IPC only (displayable in settings/tray).
+export interface WebUiRemoteConfig {
+  enabled: boolean
+  port: number
+  password: string | null
+}
+
+export interface WebUiStatus {
+  running: boolean
+  state: RemoteAccessState
+  port?: number
+  /** http://127.0.0.1:<port> when running. */
+  url?: string
+  startedAt?: number
+  /** Port change persisted but pending a restart to apply. */
+  configStale?: boolean
+  lastError?: string
+}
+
 // fork(PLAN-015): production logging control (craft-fork:logging:*).
 // Structural mirror of LoggingState in apps/electron/src/main/logger.ts.
 export type ProductionLogLevel = 'error' | 'warn' | 'info' | 'debug'
@@ -708,6 +730,14 @@ export interface ElectronAPI {
   stopRemoteAccessServer(): Promise<void>
   createRemoteAccessApiKey(name: string, permissions: RemoteAccessApiKeyPermissions): Promise<RemoteAccessCreatedKey>
   revokeRemoteAccessApiKey(keyId: string): Promise<void>
+
+  // fork(PLAN-020): desktop WebUI listener supervision
+  getWebUiConfig(): Promise<WebUiRemoteConfig>
+  updateWebUiConfig(updates: Partial<WebUiRemoteConfig>): Promise<WebUiRemoteConfig>
+  getWebUiStatus(): Promise<WebUiStatus>
+  startWebUi(): Promise<RemoteAccessStartResult>
+  stopWebUi(): Promise<void>
+  regenerateWebUiPassword(): Promise<string>
 
   // fork(PLAN-015): production logging control
   getLoggingState(): Promise<LoggingState>

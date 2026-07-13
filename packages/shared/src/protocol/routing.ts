@@ -191,6 +191,16 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.webhooks.REVOKE,
   RPC_CHANNELS.webhooks.DELIVERIES,
 
+  // fork(PLAN-020): desktop WebUI listener supervision — local-only,
+  // main-process supervisor state (own port/lifecycle, never proxied to a
+  // remote workspace server)
+  RPC_CHANNELS.webui.GET_CONFIG,
+  RPC_CHANNELS.webui.UPDATE_CONFIG,
+  RPC_CHANNELS.webui.GET_STATUS,
+  RPC_CHANNELS.webui.START,
+  RPC_CHANNELS.webui.STOP,
+  RPC_CHANNELS.webui.REGENERATE_PASSWORD,
+
   // tools — local tool settings
   RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
   RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
