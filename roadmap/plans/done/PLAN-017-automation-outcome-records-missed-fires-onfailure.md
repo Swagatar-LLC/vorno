@@ -1,11 +1,11 @@
 ---
 id: PLAN-017
 title: Automation outcome records, missed-fire detection, and onFailure actions
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-12
-updated: 2026-07-12
+updated: 2026-07-13
 related: []
 blocked-by: []
 ---
@@ -68,7 +68,7 @@ graph LR
 - [x] Compaction never lets outcome/missed records evict dispatch records (per-kind retention).
 - [x] `GET_LAST_EXECUTED` ignores `missed` records. (Code-verified: records with any `kind` field are skipped; no dedicated RPC-harness test added — the change is a one-line filter guarded by the same reader loop.)
 - [x] Tests added/updated for every new code path (bun:test, shared + server-core).
-- [ ] CI fully green (all seven validate-pr gates). (Local: typecheck set, shared automation tests (297), apps/server tests (182), branding gate, i18n gates, and server build all pass. Pre-existing, unrelated `apps/electron`/`apps/server` tsc errors reproduce on a clean tree with these changes stashed — flagged for the reviewer, not introduced here.)
+- [x] CI fully green (all seven validate-pr gates). (PR #65: all seven gates passed on GitHub Actions; the pre-existing `apps/electron`/`apps/server` tsc errors flagged during implementation are outside the CI typecheck set and reproduce on a clean tree.)
 - [x] Updated `apps/electron/resources/docs/automations.md`.
 
 ## Status log
@@ -77,3 +77,4 @@ graph LR
 - `2026-07-12` — moved from planned to in-progress: implementation starting same session (agentic-systems Wave H2 follow-up)
 - `2026-07-13` — implemented all three features + supporting changes (additive-only, wire-compatible). New `outcome`/`missed` record kinds via `webhook-utils.ts` helpers; `missed-fire.ts` pure detector + one-shot-per-process AutomationSystem integration; per-matcher `onFailure` (prompt/webhook) executed via new `on-failure.ts` with matcher-less recursion guard. Compaction retention re-keyed to `id + kind`; `GET_LAST_EXECUTED` skips `kind`-bearing records; renderer run list filters out reconciliation kinds (no new i18n strings). 297 shared automation tests + new server-core tests green; docs updated.
 - `2026-07-13` — staff-review fixes: (1) `waitForAutomationSessionSettled` closes the errorCount race with `attemptAuthRetry`'s detached re-dispatch (two consecutive quiet polls @250ms, 15min hard cap); (2) `validateAutomationsContent` now prepends the type-naming onFailure error on schema failure (PreToolUse-path parity with `validateAutomationsConfig`); (3) dedicated `on-failure.test.ts` (8 tests: matcher-less PendingPrompt routing, runPrompt preference, default failure-context webhook body captured via local Bun.serve, explicit-body passthrough, error swallowing). NUL-byte in the history-store retention key replaced with the `\u0000` escape (coordinator fix) — verified zero raw NULs across all touched files. Full shared suite 3135/0, server-core 220/0, apps/server 182/0, six-package tsc clean.
+- `2026-07-13` — moved from in-progress to done: merged to main as PR #65 (all seven CI gates green). LEARNING-019 captured (raw NUL byte → binary-to-git source file).

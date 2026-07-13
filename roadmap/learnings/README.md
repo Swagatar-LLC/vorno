@@ -70,6 +70,7 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [016](LEARNING-016-bun-harness-electron-main-modules-dist-stub.md) | Electron main-process modules run under plain Bun for verification if `ELECTRON_OVERRIDE_DIST_PATH` stubs the missing dist (`require('electron')` throws otherwise) | electron | active |
 | [017](LEARNING-017-electron-build-never-staged-pi-agent-server.md) | `electron:build` never staged pi-agent-server; dead staging helpers + config-dir-masked repro hid it | build | active |
 | [018](LEARNING-018-embedded-host-does-not-serve-webhooks.md) | The packaged (embedded) trigger server does not serve `/hooks` — POST returns 401, not 202 (webhooks are standalone-only) | electron | active |
+| [019](LEARNING-019-raw-nul-byte-makes-source-file-binary-to-git.md) | A raw NUL byte in agent-written source makes git treat the file as binary — tsc/tests stay green, only the diff goes `Bin` | agent | active |
 
 ## Related skills
 
