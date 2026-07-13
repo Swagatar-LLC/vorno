@@ -28,6 +28,11 @@ import type { PermissionMode } from '@craft-agent/shared/agent/modes';
 export type { PermissionMode };
 export { PERMISSION_MODE_CONFIG } from '@craft-agent/shared/agent/modes';
 
+// fork(PLAN-018 / ADR-0009): updater feed config (type-only — erased at runtime,
+// no fs pull-in). Source of truth is packages/shared/src/config/updater.ts.
+import type { UpdaterConfig } from '@craft-agent/shared/config';
+export type { UpdaterConfig };
+
 // Thinking level types
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels';
 export type { ThinkingLevel };
@@ -496,6 +501,9 @@ export interface ElectronAPI {
   getDismissedUpdateVersion(): Promise<string | null>
   onUpdateAvailable(callback: (info: UpdateInfo) => void): () => void
   onUpdateDownloadProgress(callback: (progress: number) => void): () => void
+  // fork(PLAN-018 / ADR-0009): runtime-configurable update feed
+  getUpdateFeedConfig(): Promise<UpdaterConfig>
+  setUpdateFeedConfig(config: UpdaterConfig): Promise<UpdaterConfig>
 
   // Release notes
   getReleaseNotes(): Promise<string>

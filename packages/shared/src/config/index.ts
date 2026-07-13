@@ -7,6 +7,7 @@ export * from './models-openai.ts';
 export * from './model-fetcher.ts';
 export * from './preferences.ts';
 export * from './storage.ts';
+export * from './updater.ts';
 export * from './theme.ts';
 export * from './validators.ts';
 export * from './cli-domains.ts';

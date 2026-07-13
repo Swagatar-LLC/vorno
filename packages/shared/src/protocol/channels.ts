@@ -376,6 +376,14 @@ export const RPC_CHANNELS = {
     REVOKE: 'craft-fork:webhooks:revoke',
     DELIVERIES: 'craft-fork:webhooks:deliveries',
   },
+  // fork(PLAN-018 / ADR-0009): runtime-configurable auto-update feed. LOCAL_ONLY
+  // — the feed override lives in the local machine's main process and is applied
+  // to electron-updater before any check. Namespaced under craft-fork:* per
+  // roadmap/upstream/compatibility.md so upstream's `update:*` group is untouched.
+  updater: {
+    GET_FEED_CONFIG: 'craft-fork:updates:getFeedConfig',
+    SET_FEED_CONFIG: 'craft-fork:updates:setFeedConfig',
+  },
   badge: {
     REFRESH: 'badge:refresh',
     SET_ICON: 'badge:setIcon',

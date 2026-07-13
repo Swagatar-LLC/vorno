@@ -337,6 +337,10 @@ export const CHANNEL_MAP = {
   openLogFolder: invoke(RPC_CHANNELS.logging.OPEN_LOG_FOLDER),
   revealLogFile: invoke(RPC_CHANNELS.logging.REVEAL_LOG_FILE),
 
+  // fork(PLAN-018 / ADR-0009): runtime-configurable auto-update feed
+  getUpdateFeedConfig: invoke(RPC_CHANNELS.updater.GET_FEED_CONFIG),
+  setUpdateFeedConfig: invoke(RPC_CHANNELS.updater.SET_FEED_CONFIG),
+
   // fork(PLAN-014): per-workspace webhook management
   listWebhooks: invoke(RPC_CHANNELS.webhooks.LIST),
   upsertWebhook: invoke(RPC_CHANNELS.webhooks.UPSERT),
