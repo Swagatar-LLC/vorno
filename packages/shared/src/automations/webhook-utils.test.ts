@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { expandWebhookAction } from './webhook-utils.ts';
+import { expandWebhookAction, createOutcomeHistoryEntry, createMissedHistoryEntry } from './webhook-utils.ts';
 import type { WebhookAction } from './types.ts';
 
 const env = {
@@ -86,5 +86,41 @@ describe('expandWebhookAction', () => {
     expect(result.method).toBe('PUT');
     expect(result.bodyFormat).toBe('json');
     expect(result.captureResponse).toBe(true);
+  });
+});
+
+// fork(PLAN-017)
+describe('createOutcomeHistoryEntry', () => {
+  it('produces a kind:outcome record with ok=true when errorCount is 0', () => {
+    const entry = createOutcomeHistoryEntry({ matcherId: 'abc123', ok: true, sessionId: 's1', errorCount: 0 });
+    expect(entry.id).toBe('abc123');
+    expect(entry.kind).toBe('outcome');
+    expect(entry.ok).toBe(true);
+    expect(entry.errorCount).toBe(0);
+    expect(entry.sessionId).toBe('s1');
+    expect(typeof entry.ts).toBe('number');
+  });
+
+  it('produces ok=false with errorCount>0', () => {
+    const entry = createOutcomeHistoryEntry({ matcherId: 'abc123', ok: false, sessionId: 's2', errorCount: 3 });
+    expect(entry.kind).toBe('outcome');
+    expect(entry.ok).toBe(false);
+    expect(entry.errorCount).toBe(3);
+  });
+
+  it('omits sessionId when not provided', () => {
+    const entry = createOutcomeHistoryEntry({ matcherId: 'abc123', ok: true, errorCount: 0 });
+    expect('sessionId' in entry).toBe(false);
+  });
+});
+
+describe('createMissedHistoryEntry', () => {
+  it('produces a kind:missed record that is always not-ok', () => {
+    const entry = createMissedHistoryEntry({ matcherId: 'def456', expectedTs: 1_700_000_000_000 });
+    expect(entry.id).toBe('def456');
+    expect(entry.kind).toBe('missed');
+    expect(entry.ok).toBe(false);
+    expect(entry.expectedTs).toBe(1_700_000_000_000);
+    expect(typeof entry.ts).toBe('number');
   });
 });

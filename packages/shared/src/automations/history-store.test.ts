@@ -168,6 +168,48 @@ describe('history-store', () => {
   });
 
   // ============================================================================
+  // fork(PLAN-017): per-kind retention (id + kind)
+  // ============================================================================
+
+  describe('per-kind compaction retention', () => {
+    it('keeps N dispatch AND N outcome records independently for one id', async () => {
+      const lines: string[] = [];
+      // 30 dispatch (no kind) + 30 outcome records for a1, interleaved by ts.
+      for (let i = 0; i < 30; i++) {
+        lines.push(JSON.stringify({ id: 'a1', ts: i * 2, ok: true }));
+        lines.push(JSON.stringify({ id: 'a1', ts: i * 2 + 1, kind: 'outcome', ok: true, errorCount: 0 }));
+      }
+      writeFileSync(join(tempDir, AUTOMATIONS_HISTORY_FILE), lines.join('\n') + '\n');
+
+      await compactAutomationHistory(tempDir, 20, 1000);
+
+      const entries = readHistory(tempDir);
+      const dispatch = entries.filter(e => e.kind === undefined);
+      const outcome = entries.filter(e => e.kind === 'outcome');
+      // Each kind is capped at 20 independently — neither evicts the other.
+      expect(dispatch).toHaveLength(20);
+      expect(outcome).toHaveLength(20);
+    });
+
+    it('outcome/missed records never evict dispatch records below the cap', async () => {
+      const lines: string[] = [];
+      // 20 dispatch records + 40 outcome + 40 missed for a1.
+      for (let i = 0; i < 20; i++) lines.push(JSON.stringify({ id: 'a1', ts: i, ok: true }));
+      for (let i = 0; i < 40; i++) lines.push(JSON.stringify({ id: 'a1', ts: 100 + i, kind: 'outcome', ok: false, errorCount: 1 }));
+      for (let i = 0; i < 40; i++) lines.push(JSON.stringify({ id: 'a1', ts: 200 + i, kind: 'missed', ok: false, expectedTs: i }));
+      writeFileSync(join(tempDir, AUTOMATIONS_HISTORY_FILE), lines.join('\n') + '\n');
+
+      await compactAutomationHistory(tempDir, 20, 1000);
+
+      const entries = readHistory(tempDir);
+      // All 20 dispatch records survive; outcome/missed trimmed to 20 each.
+      expect(entries.filter(e => e.kind === undefined)).toHaveLength(20);
+      expect(entries.filter(e => e.kind === 'outcome')).toHaveLength(20);
+      expect(entries.filter(e => e.kind === 'missed')).toHaveLength(20);
+    });
+  });
+
+  // ============================================================================
   // Concurrent appends (mutex)
   // ============================================================================
 

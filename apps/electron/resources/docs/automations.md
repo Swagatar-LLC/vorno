@@ -445,6 +445,73 @@ Combine conditions with `and`, `or`, and `not`:
 
 **Nesting depth:** Conditions can be nested up to 8 levels deep. A simplification warning is emitted at depth 4. Unknown condition types fail closed (evaluate to false).
 
+## Failure Handling (onFailure)
+
+Add an optional `onFailure` list to any matcher to run follow-up actions when a
+run for that automation fails. It fires when a **not-ok** history record is
+appended for the matcher (see [Execution History Records](#execution-history-records)):
+
+- a **dispatch failure** (the session couldn't be created), or
+- an **outcome failure** (the spawned session's turn produced error-role
+  messages — e.g. an invalid API key), or
+- a **missed cron fire** (the app was down across a scheduled fire).
+
+Only `prompt` and `webhook` actions are allowed inside `onFailure`. Any other
+action type is rejected at validation time.
+
+```json
+{
+  "name": "Nightly backup",
+  "cron": "0 2 * * *",
+  "actions": [
+    { "type": "prompt", "prompt": "Run the @backup skill and report the result" }
+  ],
+  "onFailure": [
+    {
+      "type": "webhook",
+      "url": "${CRAFT_WH_SLACK_URL}",
+      "method": "POST",
+      "body": { "text": ":rotating_light: Nightly backup automation failed" }
+    },
+    { "type": "prompt", "prompt": "The nightly backup failed. Investigate and summarise why." }
+  ]
+}
+```
+
+**Semantics:**
+
+- `onFailure` runs are **never themselves reconciled** and **never trigger
+  `onFailure`** — there is no recursion. Their sessions are created without a
+  matcher id, so they produce no history records and no fire-count churn.
+- Webhook actions in `onFailure` write **no** history entry. If a webhook action
+  omits its `body`, a JSON body with the failure context is sent automatically:
+  `{ automationId, failureKind: "dispatch" | "outcome" | "missed", ok: false, sessionId?, errorCount?, expectedTs?, error? }`.
+- Failures of the `onFailure` actions themselves are logged and swallowed.
+
+## Execution History Records
+
+Automation runs are recorded in `automations-history.jsonl` at the workspace
+root. Records come in three kinds, distinguished by an optional `kind` field:
+
+| `kind` | Meaning | Example fields |
+|--------|---------|----------------|
+| *(absent)* | **Dispatch** — an automation actually fired (a prompt session was created or a webhook was sent). This is what the "Recent Activity" run list shows and what "last executed" is based on. | `ok`, `sessionId?`, `prompt?`, `webhook?` |
+| `"outcome"` | **Outcome reconciliation** — written right after a prompt dispatch record once the spawned session's turn completes. `ok` is `true` only if the turn produced **no** error-role messages. | `ok`, `sessionId`, `errorCount` |
+| `"missed"` | **Missed fire** — written on scheduler startup when an enabled cron matcher's most recent expected fire (within the last 24h) has no dispatch record. Always `ok: false`. | `ok: false`, `expectedTs` |
+
+**Notes:**
+
+- Outcome and missed records make semantic failures visible: previously a run
+  whose session hit an `invalid_api_key` error still recorded `ok: true` because
+  the session was created and the turn threw no unhandled exception.
+- Only dispatch records (no `kind`) count toward "last executed" and appear in
+  the Recent Activity run list. Outcome/missed records are reconciliation
+  metadata and are filtered out of the run list.
+- Retention is per-kind: outcome and missed records never evict dispatch records
+  (each kind keeps its own last-20-per-automation window).
+- Test runs (the **Test** button) and `onFailure`-spawned sessions produce **no**
+  outcome records.
+
 ## Permission Mode
 
 The `permissionMode` field controls the permission level of sessions created by prompt actions.

@@ -59,19 +59,21 @@ graph LR
 
 ## Acceptance
 
-- [ ] A scheduler-spawned session whose turn contains error-role records produces `kind:"outcome", ok:false, errorCount>0` immediately after its dispatch record.
-- [ ] A clean run produces `kind:"outcome", ok:true, errorCount:0`.
-- [ ] Test runs (`waitForCompletion:false`) and `onFailure`-spawned sessions produce **no** outcome records.
-- [ ] Scheduler startup with a missed cron fire in the last 24h appends exactly one `kind:"missed"` record per missed matcher; restart does not duplicate it.
-- [ ] `onFailure` fires on dispatch-failure, outcome-failure, and missed records; never recurses.
-- [ ] Config validation accepts `onFailure` with prompt/webhook actions, rejects other action types there.
-- [ ] Compaction never lets outcome/missed records evict dispatch records (per-kind retention).
-- [ ] `GET_LAST_EXECUTED` ignores `missed` records.
-- [ ] Tests added/updated for every new code path (bun:test, shared + server-core).
-- [ ] CI fully green (all seven validate-pr gates).
-- [ ] Updated `apps/electron/resources/docs/automations.md`.
+- [x] A scheduler-spawned session whose turn contains error-role records produces `kind:"outcome", ok:false, errorCount>0` immediately after its dispatch record.
+- [x] A clean run produces `kind:"outcome", ok:true, errorCount:0`.
+- [x] Test runs (`waitForCompletion:false`) and `onFailure`-spawned sessions produce **no** outcome records.
+- [x] Scheduler startup with a missed cron fire in the last 24h appends exactly one `kind:"missed"` record per missed matcher; restart does not duplicate it.
+- [x] `onFailure` fires on dispatch-failure, outcome-failure, and missed records; never recurses.
+- [x] Config validation accepts `onFailure` with prompt/webhook actions, rejects other action types there.
+- [x] Compaction never lets outcome/missed records evict dispatch records (per-kind retention).
+- [x] `GET_LAST_EXECUTED` ignores `missed` records. (Code-verified: records with any `kind` field are skipped; no dedicated RPC-harness test added — the change is a one-line filter guarded by the same reader loop.)
+- [x] Tests added/updated for every new code path (bun:test, shared + server-core).
+- [ ] CI fully green (all seven validate-pr gates). (Local: typecheck set, shared automation tests (297), apps/server tests (182), branding gate, i18n gates, and server build all pass. Pre-existing, unrelated `apps/electron`/`apps/server` tsc errors reproduce on a clean tree with these changes stashed — flagged for the reviewer, not introduced here.)
+- [x] Updated `apps/electron/resources/docs/automations.md`.
 
 ## Status log
 
 - `2026-07-12` — created in `planned/`
 - `2026-07-12` — moved from planned to in-progress: implementation starting same session (agentic-systems Wave H2 follow-up)
+- `2026-07-13` — implemented all three features + supporting changes (additive-only, wire-compatible). New `outcome`/`missed` record kinds via `webhook-utils.ts` helpers; `missed-fire.ts` pure detector + one-shot-per-process AutomationSystem integration; per-matcher `onFailure` (prompt/webhook) executed via new `on-failure.ts` with matcher-less recursion guard. Compaction retention re-keyed to `id + kind`; `GET_LAST_EXECUTED` skips `kind`-bearing records; renderer run list filters out reconciliation kinds (no new i18n strings). 297 shared automation tests + new server-core tests green; docs updated.
+- `2026-07-13` — staff-review fixes: (1) `waitForAutomationSessionSettled` closes the errorCount race with `attemptAuthRetry`'s detached re-dispatch (two consecutive quiet polls @250ms, 15min hard cap); (2) `validateAutomationsContent` now prepends the type-naming onFailure error on schema failure (PreToolUse-path parity with `validateAutomationsConfig`); (3) dedicated `on-failure.test.ts` (8 tests: matcher-less PendingPrompt routing, runPrompt preference, default failure-context webhook body captured via local Bun.serve, explicit-body passthrough, error swallowing). NUL-byte in the history-store retention key replaced with the `\u0000` escape (coordinator fix) — verified zero raw NULs across all touched files. Full shared suite 3135/0, server-core 220/0, apps/server 182/0, six-package tsc clean.

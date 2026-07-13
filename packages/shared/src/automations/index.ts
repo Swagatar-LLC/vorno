@@ -98,7 +98,11 @@ export { evaluateConditions, type ConditionContext } from './conditions.ts';
 export { sanitizeForShell } from './security.ts';
 
 // Webhook execution utilities
-export { executeWebhookRequest, executeWithRetry, createWebhookHistoryEntry, createPromptHistoryEntry, type ExecuteWebhookOptions, type RetryConfig } from './webhook-utils.ts';
+export { executeWebhookRequest, executeWithRetry, createWebhookHistoryEntry, createPromptHistoryEntry, createOutcomeHistoryEntry, createMissedHistoryEntry, type ExecuteWebhookOptions, type RetryConfig } from './webhook-utils.ts';
+
+// fork(PLAN-017): missed-fire detection + onFailure execution
+export { detectMissedFires, type DetectMissedFiresInput } from './missed-fire.ts';
+export { runOnFailureActions, type OnFailureContext, type RunOnFailureOptions } from './on-failure.ts';
 
 // Retry scheduler
 export { RetryScheduler, type RetryQueueEntry, type RetrySchedulerOptions } from './retry-scheduler.ts';
