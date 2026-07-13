@@ -124,6 +124,17 @@ The desktop fork build has a visible **"FORK" badge** with a rust accent stripe.
 
 ## Validation
 
+> **WebUI bundling (2026-07-13, PLAN-020).** The prod build now also builds and
+> bundles the desktop WebUI: `electron:build` runs `webui:build`
+> (`vite build --config apps/webui/vite.config.ts`) before the asset copy, and
+> `copy-assets.ts` copies `apps/webui/dist` → `apps/electron/dist/resources/webui/`.
+> The packaged runtime resolves this as `join(process.resourcesPath, 'app', 'resources', 'webui')`
+> (dev uses `apps/webui/dist` directly). Verify after a build with
+> `ls apps/electron/dist/resources/webui/` — you should see `index.html` and
+> `login.html`. `validate-assets` fails loudly if either is missing. In a dev build
+> without `webui:build`, the copy step skips with a warning (no throw) and the
+> WebUiSupervisor surfaces an actionable error at runtime instead of crashing.
+
 A successful `electron:build` ends with `validate-assets` reporting OK. If it fails:
 
 - **Missing `dist/main.cjs`** → the esbuild step blew up; re-run `bun run electron:build:main` alone for a cleaner error.

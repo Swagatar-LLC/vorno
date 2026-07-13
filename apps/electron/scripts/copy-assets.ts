@@ -11,7 +11,7 @@
  * Run: bun scripts/copy-assets.ts
  */
 
-import { cpSync, copyFileSync, mkdirSync } from 'fs';
+import { cpSync, copyFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 
 // Copy all resources (icons, themes, docs, permissions, tool-icons, etc.)
@@ -30,4 +30,23 @@ try {
 } catch (err) {
   // Only warn - PowerShell validation is optional on non-Windows platforms
   console.log('⚠ powershell-parser.ps1 copy skipped (not critical on non-Windows)');
+}
+
+// fork(PLAN-020): Bundle the desktop WebUI SPA into the packaged app.
+// Source: apps/webui/dist (built by `bun run webui:build`).
+// Destination: dist/resources/webui/ — the runtime resolves the packaged
+// WebUI dir as join(process.resourcesPath, 'app', 'resources', 'webui'),
+// which electron-builder populates from dist/resources/**/*.
+const webuiSrc = join('..', '..', 'apps', 'webui', 'dist');
+const webuiDest = join('dist', 'resources', 'webui');
+if (existsSync(webuiSrc)) {
+  mkdirSync(webuiDest, { recursive: true });
+  cpSync(webuiSrc, webuiDest, { recursive: true });
+  console.log('✓ Copied apps/webui/dist → dist/resources/webui/');
+} else {
+  // Graceful degrade: dev builds without `webui:build` have no dist yet.
+  // Do NOT throw — the WebUiSupervisor surfaces an actionable error at runtime.
+  console.log(
+    '⚠ apps/webui/dist not found — skipping WebUI bundle (run `bun run webui:build`)',
+  );
 }
