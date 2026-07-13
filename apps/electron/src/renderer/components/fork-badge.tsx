@@ -1,9 +1,9 @@
 /**
  * ForkBadge — visible indicator that this build is the Swagatar fork, not upstream stable.
  *
- * Renders only a 2px rust-orange accent stripe under the title-bar area. The fork identity
- * also lives in the window title ("Craft Agents (Swagatar Fork)"), so the stripe is enough
- * to distinguish at-a-glance from upstream stable without occluding the top-right window
+ * Renders only a 2px rust-orange accent stripe under the title-bar area. The window title is
+ * now the bare product name ("Vorno"), so this stripe carries the fork distinction — enough
+ * to tell apart at-a-glance from upstream stable without occluding the top-right window
  * controls (the earlier pill badge sat on top of the close button on some layouts).
  *
  * To suppress in dev only: set `VITE_HIDE_FORK_BADGE=1` (intentionally not shipped to prod).

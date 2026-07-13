@@ -11,9 +11,12 @@ mock.module('../../config/preferences.ts', () => ({
 
 import { getSystemPrompt, formatProjectContextForPrompt } from '../system'
 import type { ProjectPromptContext } from '../../projects/types.ts'
+import { GIT_COAUTHOR } from '../../branding.ts'
 
 const GIT_CONVENTIONS_HEADING = '## Git Conventions'
-const CO_AUTHOR_TRAILER = 'Co-Authored-By: Craft Agent <agents-noreply@craft.do>'
+// Derive from branding so the trailer assertion survives rebrands (matches the
+// `Co-Authored-By: ${GIT_COAUTHOR}` line emitted by getSystemPrompt).
+const CO_AUTHOR_TRAILER = `Co-Authored-By: ${GIT_COAUTHOR}`
 
 describe('system prompt guidance', () => {
   it('uses backend-neutral debug log querying guidance (rg/grep via Bash)', () => {
