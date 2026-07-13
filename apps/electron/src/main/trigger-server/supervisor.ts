@@ -88,7 +88,14 @@ export class TriggerServerSupervisor {
   private configStale = false;
   private restartAttempted = false;
   private boundHost: string | undefined;
+  /** ACTUAL bound port (OS-assigned when config.port is 0) — runtime status. */
   private boundPort: number | undefined;
+  /**
+   * The CONFIGURED port that was requested at start (desired state, may be 0).
+   * Used only for the configStale comparison so an OS-assigned ephemeral port
+   * never reads as a config change against itself.
+   */
+  private boundRequestedPort: number | undefined;
 
   private readonly hostBridge: HostBridge;
   private readonly webhooks: WebhooksHandle | undefined;
@@ -153,7 +160,7 @@ export class TriggerServerSupervisor {
     if (this.state === 'running') {
       const runtimeChanged =
         next.host !== this.boundHost ||
-        next.port !== this.boundPort ||
+        next.port !== this.boundRequestedPort ||
         next.rateLimits.requestsPerMinute !== current.rateLimits.requestsPerMinute ||
         next.rateLimits.concurrentSessions !== current.rateLimits.concurrentSessions;
       if (runtimeChanged) {
@@ -231,6 +238,7 @@ export class TriggerServerSupervisor {
 
     let core: TriggerServerCore;
     let host: EmbeddedHost;
+    let actualPort: number;
     try {
       core = createTriggerServer(config, this.hostBridge, {
         log: (msg) => this.log.info(`[trigger-server] ${msg}`),
@@ -239,14 +247,17 @@ export class TriggerServerSupervisor {
       host = this.hostFactory(core, {
         onError: (err) => this.onHostError(err),
       });
-      await host.listen(config.host, config.port);
+      // listen() resolves with the ACTUAL bound port. With config.port === 0 the
+      // OS assigns an ephemeral port; health-checking config.port (0) would fail
+      // (LEARNING-021). Everything downstream uses actualPort instead.
+      actualPort = await host.listen(config.host, config.port);
     } catch (err) {
       return this.failStart(err, config);
     }
 
     // Self health check on the bound listener (127.0.0.1 when bound to 0.0.0.0).
     const healthHost = config.host === '0.0.0.0' || config.host === '::' ? '127.0.0.1' : config.host;
-    const healthy = await this.selfHealthCheck(healthHost, config.port);
+    const healthy = await this.selfHealthCheck(healthHost, actualPort);
     if (!healthy) {
       try { await host.close(); } catch { /* ignore */ }
       try { await core.shutdown(); } catch { /* ignore */ }
@@ -261,12 +272,16 @@ export class TriggerServerSupervisor {
     core.wsProtocol.startHeartbeat();
     this.startedAt = Date.now();
     this.boundHost = config.host;
-    this.boundPort = config.port;
+    // Runtime status = actual bound port (ephemeral when config.port was 0).
+    this.boundPort = actualPort;
+    // Desired-state port for the stale comparison (may be 0 — never overwritten
+    // with the ephemeral value, so port-0 doesn't read as perpetually stale).
+    this.boundRequestedPort = config.port;
     this.lastError = undefined;
     this.configStale = false;
     this.restartAttempted = false;
     this.setState('running');
-    this.log.info(`[trigger-server] running on ${config.host}:${config.port}`);
+    this.log.info(`[trigger-server] running on ${config.host}:${actualPort}`);
     return { success: true };
   }
 
@@ -322,6 +337,7 @@ export class TriggerServerSupervisor {
     this.startedAt = undefined;
     this.boundHost = undefined;
     this.boundPort = undefined;
+    this.boundRequestedPort = undefined;
     this.setState('stopped');
     this.log.info('[trigger-server] stopped');
   }
