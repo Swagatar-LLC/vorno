@@ -66,6 +66,33 @@ jobs:
           fi
 
       # ---------------------------------------------------------------------
+      # Pre-create the release tag in the feed repo (LEARNING-023).
+      # electron-builder publishes a NON-DRAFT release (releaseType: release),
+      # and GitHub's create-release API intermittently rejects non-draft
+      # creation with 422 "Published releases must have a valid tag" when the
+      # tag does not exist yet in the target repo — a race that killed the
+      # first publish attempt of BOTH v0.11.2 and v0.11.3 (the tag/release got
+      # created server-side anyway, and the re-run succeeded because the tag
+      # then existed). Creating the tag ref up front removes the race.
+      # Idempotent: an existing tag is left untouched.
+      # ---------------------------------------------------------------------
+      - name: Ensure release tag exists in feed repo
+        if: steps.gate.outputs.has_signing == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.VORNO_RELEASES_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          FEED="Swagatar-LLC/vorno-releases"
+          if gh api "repos/${FEED}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists in ${FEED}"
+          else
+            HEAD_SHA="$(gh api "repos/${FEED}/commits/HEAD" --jq .sha)"
+            gh api "repos/${FEED}/git/refs" -f ref="refs/tags/${TAG}" -f sha="${HEAD_SHA}"
+            echo "Created tag ${TAG} -> ${HEAD_SHA} in ${FEED}"
+          fi
+
+      # ---------------------------------------------------------------------
       # Build. build-dmg.sh reads APPLE_* / CSC_* from the environment (the
       # 1Password sync path no-ops in CI — `op` is not installed — and there is
       # no .env). EB_PUBLISH gates electron-builder's own publish step: `always`
