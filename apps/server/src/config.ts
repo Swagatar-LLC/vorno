@@ -39,6 +39,25 @@ export interface RateLimits {
 }
 
 /**
+ * fork(PLAN-020): WebUI listener configuration (browser-served SPA + JWT login).
+ *
+ * Persisted alongside the trigger-server config in server-config.json. `enabled`
+ * is DESIRED state (start/stop persist it, mirroring the trigger server). The
+ * password is generated + persisted on first WebUI start and is intentionally
+ * displayable in settings/tray (LOCAL_ONLY IPC), so it is stored plaintext.
+ */
+export interface WebUiConfig {
+  /** default true — desired state, persisted by start/stop */
+  enabled: boolean;
+  /** default 3848 */
+  port: number;
+  /** default '127.0.0.1' (not surfaced in v1 UI) */
+  host: string;
+  /** default null — generated + persisted on first start */
+  password: string | null;
+}
+
+/**
  * Server configuration stored at {CONFIG_DIR}/server-config.json
  */
 export interface ServerConfig {
@@ -47,10 +66,23 @@ export interface ServerConfig {
   host: string;
   apiKeys: StoredApiKey[];
   rateLimits: RateLimits;
+  /** fork(PLAN-020): WebUI listener config block. */
+  webui: WebUiConfig;
 }
 
+// fork(PLAN-020): default WebUI config — zero-config autostart on loopback.
+const DEFAULT_WEBUI_CONFIG: WebUiConfig = {
+  enabled: true,
+  port: 3848,
+  host: '127.0.0.1',
+  password: null,
+};
+
 const DEFAULT_CONFIG: ServerConfig = {
-  enabled: false,
+  // fork(PLAN-020): flipped false → true so the trigger server autostarts
+  // zero-config on a fresh install (safe: no API keys ⇒ every request denied,
+  // loopback bind, /hooks 404s with no hooks configured).
+  enabled: true,
   port: 3847,
   host: '127.0.0.1',
   apiKeys: [],
@@ -58,6 +90,7 @@ const DEFAULT_CONFIG: ServerConfig = {
     requestsPerMinute: 30,
     concurrentSessions: 5,
   },
+  webui: { ...DEFAULT_WEBUI_CONFIG },
 };
 
 const CONFIG_PATH = join(CONFIG_DIR, 'server-config.json');
@@ -109,6 +142,36 @@ export function applyEnvOverrides(config: ServerConfig): ServerConfig {
     }
   }
 
+  // fork(PLAN-020): WebUI env overrides mirror the CRAFT_TRIGGER_* pattern for
+  // containers/CI. Non-secret (enable flag + bind port); the password is never
+  // env-driven.
+  const webuiEnabledRaw = process.env.CRAFT_WEBUI_ENABLED?.trim().toLowerCase();
+  if (webuiEnabledRaw !== undefined && webuiEnabledRaw !== '') {
+    if (['1', 'true', 'yes', 'on'].includes(webuiEnabledRaw)) {
+      config.webui.enabled = true;
+    } else if (['0', 'false', 'no', 'off'].includes(webuiEnabledRaw)) {
+      config.webui.enabled = false;
+    } else {
+      console.warn(
+        `[config] Ignoring unrecognized CRAFT_WEBUI_ENABLED=${webuiEnabledRaw} ` +
+        `(use 1/0, true/false, yes/no, on/off); using ${config.webui.enabled}.`
+      );
+    }
+  }
+
+  const webuiPortRaw = process.env.CRAFT_WEBUI_PORT?.trim();
+  if (webuiPortRaw) {
+    const port = Number.parseInt(webuiPortRaw, 10);
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) {
+      config.webui.port = port;
+    } else {
+      console.warn(
+        `[config] Ignoring invalid CRAFT_WEBUI_PORT=${webuiPortRaw} (must be an integer 1-65535); ` +
+        `using ${config.webui.port}.`
+      );
+    }
+  }
+
   return config;
 }
 
@@ -124,6 +187,9 @@ export function loadServerConfig(): ServerConfig {
       const raw = readFileSync(CONFIG_PATH, 'utf-8');
       const parsed = JSON.parse(raw);
       config = { ...DEFAULT_CONFIG, ...parsed };
+      // fork(PLAN-020): nested merge so files predating the `webui` block pick up
+      // new sub-fields (and defaults) instead of inheriting `undefined`.
+      config.webui = { ...DEFAULT_WEBUI_CONFIG, ...(parsed.webui ?? {}) };
     }
   } catch {
     // Fall through to defaults

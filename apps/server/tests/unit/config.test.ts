@@ -1,8 +1,20 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, afterEach } from 'bun:test';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+// fork(PLAN-020): CONFIG_DIR freezes at module eval, so set a temp override
+// before importing the config module (whose CONFIG_PATH is derived from it).
+const CONFIG_DIR = mkdtempSync(join(tmpdir(), 'server-cfg-'));
+process.env.CRAFT_CONFIG_DIR = CONFIG_DIR;
+
 import {
   generateApiKey,
   hashApiKey,
   validateApiKey,
+  loadServerConfig,
+  saveServerConfig,
+  getConfigPath,
   type ServerConfig,
   type ApiKeyPermissions,
 } from '../../src/config';
@@ -12,6 +24,19 @@ const defaultPermissions: ApiKeyPermissions = {
   permissionPolicy: 'allow-safe',
   maxConcurrentSessions: 3,
 };
+
+const CONFIG_PATH = getConfigPath();
+
+function clearWebuiEnv() {
+  delete process.env.CRAFT_WEBUI_ENABLED;
+  delete process.env.CRAFT_WEBUI_PORT;
+  delete process.env.CRAFT_TRIGGER_ENABLED;
+}
+
+afterEach(() => {
+  clearWebuiEnv();
+  try { rmSync(CONFIG_PATH); } catch { /* ignore */ }
+});
 
 describe('Server Config', () => {
   describe('generateApiKey', () => {
@@ -82,6 +107,69 @@ describe('Server Config', () => {
       const { stored } = generateApiKey('Test', defaultPermissions);
       const wrongHash = hashApiKey('craft_sk_wrongkey');
       expect(wrongHash).not.toBe(stored.keyHash);
+    });
+  });
+
+  // fork(PLAN-020): WebUI config + default flips + nested merge + env overrides.
+  describe('WebUI config (PLAN-020)', () => {
+    test('defaults flip: enabled=true, webui.enabled=true, webui.port=3848', () => {
+      clearWebuiEnv();
+      const cfg = loadServerConfig(); // no file on disk → defaults
+      expect(cfg.enabled).toBe(true);
+      expect(cfg.webui.enabled).toBe(true);
+      expect(cfg.webui.port).toBe(3848);
+      expect(cfg.webui.host).toBe('127.0.0.1');
+      expect(cfg.webui.password).toBeNull();
+    });
+
+    test('nested merge: file predating webui block gets webui defaults', () => {
+      writeFileSync(
+        CONFIG_PATH,
+        JSON.stringify({ enabled: false, port: 3847, host: '127.0.0.1', apiKeys: [], rateLimits: { requestsPerMinute: 30, concurrentSessions: 5 } }),
+      );
+      const cfg = loadServerConfig();
+      expect(cfg.enabled).toBe(false); // file value respected
+      expect(cfg.webui).toEqual({ enabled: true, port: 3848, host: '127.0.0.1', password: null });
+    });
+
+    test('nested merge: partial webui block fills missing sub-fields', () => {
+      writeFileSync(
+        CONFIG_PATH,
+        JSON.stringify({ enabled: true, port: 3847, host: '127.0.0.1', apiKeys: [], rateLimits: { requestsPerMinute: 30, concurrentSessions: 5 }, webui: { enabled: false, password: 'kept' } }),
+      );
+      const cfg = loadServerConfig();
+      expect(cfg.webui.enabled).toBe(false);
+      expect(cfg.webui.password).toBe('kept');
+      expect(cfg.webui.port).toBe(3848); // default filled in
+      expect(cfg.webui.host).toBe('127.0.0.1');
+    });
+
+    test('round-trip persists the webui block', () => {
+      const base = loadServerConfig();
+      const next: ServerConfig = { ...base, webui: { ...base.webui, port: 4200, password: 'secret20charspwxxxxx' } };
+      saveServerConfig(next);
+      const reloaded = loadServerConfig();
+      expect(reloaded.webui.port).toBe(4200);
+      expect(reloaded.webui.password).toBe('secret20charspwxxxxx');
+    });
+
+    test('CRAFT_WEBUI_ENABLED / CRAFT_WEBUI_PORT env overrides win', () => {
+      process.env.CRAFT_WEBUI_ENABLED = 'false';
+      process.env.CRAFT_WEBUI_PORT = '4999';
+      const cfg = loadServerConfig();
+      expect(cfg.webui.enabled).toBe(false);
+      expect(cfg.webui.port).toBe(4999);
+    });
+
+    test('invalid CRAFT_WEBUI_PORT is ignored (falls back to persisted)', () => {
+      clearWebuiEnv();
+      writeFileSync(
+        CONFIG_PATH,
+        JSON.stringify({ enabled: true, port: 3847, host: '127.0.0.1', apiKeys: [], rateLimits: { requestsPerMinute: 30, concurrentSessions: 5 }, webui: { enabled: true, port: 3850, host: '127.0.0.1', password: null } }),
+      );
+      process.env.CRAFT_WEBUI_PORT = 'not-a-number';
+      const cfg = loadServerConfig();
+      expect(cfg.webui.port).toBe(3850);
     });
   });
 });

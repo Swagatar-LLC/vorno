@@ -191,6 +191,15 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.webhooks.REVOKE,
   RPC_CHANNELS.webhooks.DELIVERIES,
 
+  // fork(PLAN-020): desktop WebUI listener supervision — local-only,
+  // main-process supervisor state (own port/lifecycle, never proxied to a
+  // remote workspace server)
+  RPC_CHANNELS.webui.GET_CONFIG,
+  RPC_CHANNELS.webui.UPDATE_CONFIG,
+  RPC_CHANNELS.webui.GET_STATUS,
+  RPC_CHANNELS.webui.START,
+  RPC_CHANNELS.webui.STOP,
+  RPC_CHANNELS.webui.REGENERATE_PASSWORD,
   // fork(PLAN-018 / ADR-0009): runtime-configurable auto-update feed — local-only,
   // the feed override drives electron-updater in the local main process. Never
   // proxied to a remote workspace server.

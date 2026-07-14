@@ -31,6 +31,7 @@ import {
   SettingsRow,
   SettingsInput,
 } from '@/components/settings'
+import WebUiSection from './remote-access/WebUiSection' // fork(PLAN-020)
 
 export const meta: DetailsPageMeta = {
   navigator: 'settings',
@@ -291,6 +292,9 @@ export default function RemoteAccessSettingsPage() {
                   )}
                 </SettingsCard>
               </SettingsSection>
+
+              {/* WebUI (fork(PLAN-020)) */}
+              <WebUiSection />
 
               {/* API Keys */}
               <SettingsSection title="API Keys" description="Keys for authenticating remote clients">

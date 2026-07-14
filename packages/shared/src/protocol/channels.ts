@@ -376,6 +376,18 @@ export const RPC_CHANNELS = {
     REVOKE: 'craft-fork:webhooks:revoke',
     DELIVERIES: 'craft-fork:webhooks:deliveries',
   },
+  // fork(PLAN-020): desktop WebUI listener supervision. LOCAL_ONLY — the
+  // supervisor is main-process state (own port, own lifecycle, independent of
+  // the trigger-server). Namespaced under craft-fork:* per
+  // roadmap/upstream/compatibility.md.
+  webui: {
+    GET_CONFIG: 'craft-fork:webui:getConfig',
+    UPDATE_CONFIG: 'craft-fork:webui:updateConfig',
+    GET_STATUS: 'craft-fork:webui:getStatus',
+    START: 'craft-fork:webui:start',
+    STOP: 'craft-fork:webui:stop',
+    REGENERATE_PASSWORD: 'craft-fork:webui:regeneratePassword',
+  },
   // fork(PLAN-018 / ADR-0009): runtime-configurable auto-update feed. LOCAL_ONLY
   // — the feed override lives in the local machine's main process and is applied
   // to electron-updater before any check. Namespaced under craft-fork:* per

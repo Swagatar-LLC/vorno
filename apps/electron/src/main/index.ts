@@ -88,6 +88,9 @@ import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { SessionManager, setSessionPlatform, setSessionRuntimeHooks } from '@craft-agent/server-core/sessions'
 import { registerAllRpcHandlers } from './handlers/index'
 import { registerTriggerServerHandlers } from './handlers/trigger-server'
+// fork(PLAN-020): browser WebUI supervisor + IPC handlers.
+import { WebUiSupervisor } from './webui/supervisor'
+import { registerWebUiHandlers } from './handlers/webui'
 import { registerWebhooksHandlers } from './handlers/webhooks' // fork(PLAN-014)
 import { TriggerServerSupervisor } from './trigger-server/supervisor'
 import { TriggerServerTray } from './trigger-server/tray'
@@ -241,6 +244,9 @@ let messagingHandle: MessagingBootstrapHandle | null = null
 // after bootstrapServer resolves; single source of runtime truth for the server.
 let triggerServerSupervisor: TriggerServerSupervisor | null = null
 let triggerServerTray: TriggerServerTray | null = null
+// fork(PLAN-020): module-level ref so the before-quit hook can dispose the
+// WebUI supervisor (constructed block-locally inside the bootstrap scope).
+let webUiSupervisorRef: WebUiSupervisor | null = null
 // fork(PLAN-014): embedded webhook receiver + dispatcher, disposed on teardown.
 let embeddedWebhooks: EmbeddedWebhooks | null = null
 
@@ -664,12 +670,19 @@ app.whenReady().then(async () => {
         mainLog.info(`[server-mode] Enabled — binding ${rpcHost}:${rpcPort}${tls ? ' (TLS)' : ''}`)
       }
 
+      // fork(PLAN-020): late-bound ref — the WebUI supervisor is constructed
+      // after bootstrap (it needs the live RPC endpoint), but the WS-upgrade
+      // cookie validator is wired below.
+      let webUiSupervisor: WebUiSupervisor | undefined
+
       // Bootstrap the WS RPC server via shared bootstrap function.
       const instance = await bootstrapServer<SessionManager, HandlerDeps>({
         serverToken,
         rpcHost,
         rpcPort,
         tls,
+        // fork(PLAN-020): browser WebUI authenticates its WS-RPC upgrade via the session cookie
+        validateSessionCookie: (cookie) => webUiSupervisor?.validateSessionCookie(cookie) ?? Promise.resolve(false),
         bundledAssetsRoot: __dirname,
         serverId: 'local',
         serverVersion: app.getVersion(),
@@ -1119,10 +1132,32 @@ app.whenReady().then(async () => {
           },
         })
 
+        // fork(PLAN-020): browser WebUI supervisor. Resolves its dist dir with
+        // the same packaged-vs-dev pattern as the bundled-assets block above
+        // (packaged → resources/webui; dev → apps/webui/dist). getWsEndpoint
+        // returns the LIVE in-process RPC endpoint so /api/config points the
+        // browser at the ephemeral wsServer port.
+        const webuiDir = app.isPackaged
+          ? join(process.resourcesPath, 'app', 'resources', 'webui')
+          : join(__dirname, '../../..', 'apps/webui/dist')
+        webUiSupervisor = new WebUiSupervisor({
+          webuiDir,
+          getWsEndpoint: () => ({ port: instance.port, protocol: instance.protocol }),
+          log: {
+            info: (m) => mainLog.info(m),
+            warn: (m) => mainLog.warn(m),
+            error: (m, err) => { err === undefined ? mainLog.error(m) : mainLog.error(m, err) },
+          },
+          onStateChange: () => { triggerServerTray?.refresh() },
+        })
+        webUiSupervisorRef = webUiSupervisor
+        registerWebUiHandlers(instance.wsServer, webUiSupervisor)
+
         // Tray: macOS menu bar, GUI only. VOR-11 (quit/login-item) out of scope.
         if (!isHeadless && process.platform === 'darwin') {
           triggerServerTray = new TriggerServerTray({
             supervisor,
+            webUiSupervisor, // fork(PLAN-020): independent WebUI Start/Stop
             onOpenSettings: () => {
               showMainWindowForTray()
               moduleSink?.(RPC_CHANNELS.menu.OPEN_SETTINGS, { to: 'all' })
@@ -1134,6 +1169,8 @@ app.whenReady().then(async () => {
 
         // Autostart reconciliation — starts iff server-config.json enabled=true.
         void supervisor.reconcile().catch((err) => mainLog.error('[trigger-server] reconcile failed', err))
+        // fork(PLAN-020): WebUI autostart — starts iff webui.enabled=true.
+        void webUiSupervisor.reconcile().catch((err) => mainLog.error('[webui] reconcile failed', err))
       }
     }
 
@@ -1353,6 +1390,14 @@ app.on('before-quit', async (event) => {
         await triggerServerSupervisor.dispose()
       } catch (err) {
         mainLog.error('[trigger-server] dispose failed:', err)
+      }
+    }
+    // fork(PLAN-020): tear down the WebUI listener without touching desired-state.
+    if (webUiSupervisorRef) {
+      try {
+        await webUiSupervisorRef.dispose()
+      } catch (err) {
+        mainLog.error('[webui] dispose failed:', err)
       }
     }
     // fork(PLAN-014): tear down the webhook receiver (retry timer) + per-workspace
