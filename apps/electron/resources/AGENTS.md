@@ -57,3 +57,5 @@ There is no TypeScript fallback - if the bundled JSON file is missing, the app w
 For PRs that add user-visible behavior, append a bullet to the relevant section in [`release-notes/next.md`](release-notes/next.md). Match the tone and depth of recent versioned files (e.g. `0.9.0.md`): bold short title — detailed paragraph — issue reference — commit hash.
 
 **Why this exists:** during v0.9.0 prep, two feature commits had pre-emptively written `0.8.14.md` and `0.8.15.md` (guessing patch releases), but the changes ended up rolled into a minor. Both files had to be deleted and folded back in — without that cleanup, they would have surfaced as ghost versions in the in-app release-notes panel.
+
+**Versioning (ADR-0010):** from `0.11.2` onward, versioned files are **Vorno-owned** — they describe Vorno releases, not upstream's. Upstream's `{version}.md` files are not adopted during upstream syncs; notable upstream features get summarized into `next.md` instead. Files ≤ `0.11.1` are shared history with upstream and stay as-is.

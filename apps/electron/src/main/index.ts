@@ -127,7 +127,7 @@ import { setPerfEnabled, enableDebug } from '@craft-agent/shared/utils'
 import { registerPiModelResolver } from '@craft-agent/shared/config'
 import { getPiModelsForAuthProvider, getAllPiModels } from '@craft-agent/shared/config'
 import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeCount } from './notifications'
-import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, applyUpdaterFeedConfig } from './auto-update'
+import { checkForUpdatesOnLaunch, startPeriodicUpdateChecks, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, applyUpdaterFeedConfig } from './auto-update'
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
 
@@ -1238,6 +1238,8 @@ app.whenReady().then(async () => {
       checkForUpdatesOnLaunch().catch(err => {
         mainLog.error('[auto-update] Launch check failed:', err)
       })
+      // fork: re-check on a randomized 2–7h interval for long-lived instances
+      startPeriodicUpdateChecks()
     } else {
       mainLog.info('[auto-update] Skipping auto-update in dev mode')
     }
