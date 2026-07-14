@@ -134,6 +134,23 @@ Gotchas hit while running it: `set -e` + a stale `release/mac-arm64` made the in
 - The `electron-prod-build` skill's flavor table was corrected: **`electron:dist:dev:mac` does NOT yield a shareable/runnable artifact** — use `dist:mac` (build-dmg.sh) for anything you launch or hand to a user.
 - If a one-command dev-runtime packaging flow is ever wanted, it must first stage the SDK/ripgrep into `apps/electron/node_modules` (the build-dmg.sh steps) — a bare electron-builder invocation will always ship an SDK-less bundle under the hoisted linker.
 
+## Recurrence (2026-07-13) — the fix was never committed
+
+During the VOR-7 signed-build work, `build-dmg.sh arm64` OOM'd again with the exact
+signature above (`utilizing NPM node module collector` → Mark-Compact at ~16 GB →
+`Abort trap: 6`). Cause: the 2026-07-08 fix was applied as `bun update
+electron-builder` in a working tree but the resulting `bun.lock` **was never
+committed** (or was reverted by a subsequent upstream-merge lockfile
+regeneration), so the repo silently resolved back to 26.4.0's broken collector.
+
+Resolution on PR #73 (`jh/2026-07-13_notarize-flip`): re-ran the bump **and
+committed it**, this time also raising the `package.json` floor to
+`^26.15.3` (still inside upstream's `^26` contract) so a fresh
+`bun install` can never resolve below the fixed `file traversal collector`
+again. Lesson: a lockfile-only fix to a broken-by-default dependency range is
+one `bun install`/merge away from regressing — raise the range floor, don't
+rely on the lockfile alone.
+
 ## References
 
 - electron-builder collector cycle-guard fixes: 26.3.4 / 26.9.1 / 26.11.0 line; stricter-collector follow-ups tracked in electron-builder issues #9654 and #9445.
