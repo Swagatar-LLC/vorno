@@ -47,6 +47,8 @@ git diff --stat main..upstream/main | tail -20
 
 Summarize the new versions/commits to the user before proceeding. If 0 commits behind → report and exit.
 
+> **Versioning (ADR-0010):** upstream tags are *their* releases, not ours. A sync brings features in; it never drives a Vorno version bump, and upstream `v*` tags are never pushed to `origin` (nor ours to `upstream`). Record the Vorno-version ⇄ upstream-tag mapping in `roadmap/upstream/HEAD.md`.
+
 ### Step 3 — Branch and merge
 
 ```bash
@@ -60,6 +62,8 @@ Expected conflicts and resolutions:
 |------|------------|
 | `bun.lock` | `git checkout --theirs bun.lock && bun install` |
 | `packages/shared/src/agent/options.ts` | Take upstream's `buildClaudeSubprocessEnv()` and ensure our `delete env.CLAUDECODE` line is preserved inside it |
+| `apps/electron/package.json` (`version` field) | **Keep OURS.** Per [ADR-0010](../../../roadmap/decisions/0010-independent-vorno-versioning.md), Vorno versions independently from 0.11.2 onward — an upstream merge never changes our version stamp. |
+| `apps/electron/resources/release-notes/*.md` | **Do not adopt upstream's versioned files** (ADR-0010). Delete any incoming `{version}.md` the merge adds (ours ≥ 0.11.2 are Vorno-owned; upstream numbers ≥ 0.11.2 are not our releases). Instead, summarize notable upstream features as bullets in `next.md` attributed "from upstream" — they ship under the next Vorno version. Files ≤ 0.11.1 are shared history; leave them alone. |
 | Anything else | **Stop and surface to user.** Don't auto-resolve novel conflicts. |
 
 After resolving:

@@ -499,6 +499,54 @@ export async function installUpdate(): Promise<void> {
   }
 }
 
+// ─── fork: periodic update checks ─────────────────────────────────────────────
+// Long-lived instances otherwise only check at launch; re-check on a randomized
+// interval (2–7 h) so updates surface without a relaunch. Randomization avoids
+// synchronized checks across instances. Dismissal semantics are unchanged: the
+// renderer's update toast is per-version dismissible and persisted, so a
+// dismissed version never re-toasts on periodic checks.
+
+const PERIODIC_CHECK_MIN_MS = 2 * 60 * 60 * 1000 // 2h
+const PERIODIC_CHECK_MAX_MS = 7 * 60 * 60 * 1000 // 7h
+let periodicCheckTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Start the recurring background update check loop. Idempotent.
+ * Call once at startup (packaged builds only — dev checks are inert anyway).
+ */
+export function startPeriodicUpdateChecks(): void {
+  if (periodicCheckTimer) return
+  scheduleNextPeriodicCheck()
+}
+
+function scheduleNextPeriodicCheck(): void {
+  const delayMs = PERIODIC_CHECK_MIN_MS + Math.random() * (PERIODIC_CHECK_MAX_MS - PERIODIC_CHECK_MIN_MS)
+  autoUpdateLog.info(`Next periodic update check in ${(delayMs / 3_600_000).toFixed(1)}h`)
+  periodicCheckTimer = setTimeout(() => {
+    void runPeriodicCheck()
+  }, delayMs)
+  // Don't let the timer keep the process alive during quit
+  periodicCheckTimer.unref?.()
+}
+
+async function runPeriodicCheck(): Promise<void> {
+  try {
+    const cfg = loadUpdaterConfig()
+    if (!cfg.autoCheck) {
+      autoUpdateLog.info('Periodic check skipped (autoCheck disabled)')
+    } else if (__isUpdating || updateInfo.downloadState === 'ready' || updateInfo.downloadState === 'installing') {
+      autoUpdateLog.info(`Periodic check skipped (downloadState=${updateInfo.downloadState})`)
+    } else {
+      autoUpdateLog.info('Running periodic update check...')
+      await checkForUpdates({ autoDownload: true })
+    }
+  } catch (err) {
+    autoUpdateLog.warn('Periodic update check failed', err)
+  } finally {
+    scheduleNextPeriodicCheck()
+  }
+}
+
 /**
  * Result of update check on launch
  */

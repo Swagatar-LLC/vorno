@@ -8,6 +8,7 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Improvements
 
+- **Periodic update checks** — Long-running Vorno instances now re-check for updates on a randomized 2–7 hour interval instead of only at launch. The update toast remains dismissible per version; a dismissed version won't re-notify. Automatic checks can still be disabled entirely in Settings → Updates.
 - **In-app Vorno branding** — The splash/loading screen, app menu, and onboarding/reauth screens now show the Vorno vortex-"V" mark instead of the old Craft "C" symbol, and the bundled logo assets (`craft-logos/`, `craft_logo_c.svg`) carry the new identity.
 - **"What's New" now carries the Vorno changelog** — Fork releases get their own release-notes entries (starting with the backfilled 0.11.2 notes), so the in-app What's New panel reflects what actually shipped in Vorno rather than only upstream history.
 
