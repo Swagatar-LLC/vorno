@@ -25,10 +25,9 @@ import {
   SettingsCard,
   SettingsToggle,
   SettingsRow,
+  SettingsNumberInput,
 } from '@/components/settings'
 import type { WebUiRemoteConfig, WebUiStatus } from '../../../../shared/types'
-
-const DEFAULT_WEBUI_PORT = 3848
 
 export default function WebUiSection() {
   const { t } = useTranslation()
@@ -207,11 +206,10 @@ export default function WebUiSection() {
           label={t('settings.remoteAccess.webui.portLabel')}
           description={t('settings.remoteAccess.webui.portDescription')}
         >
-          <input
-            type="number"
+          <SettingsNumberInput
+            aria-label={t('settings.remoteAccess.webui.portLabel')}
             value={config.port}
-            onChange={e => handleUpdatePort(parseInt(e.target.value) || DEFAULT_WEBUI_PORT)}
-            className="bg-muted rounded-md px-2 py-1 text-sm w-20 text-right"
+            onCommit={handleUpdatePort}
             min={1024}
             max={65535}
           />

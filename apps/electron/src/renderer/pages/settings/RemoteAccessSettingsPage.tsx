@@ -30,6 +30,7 @@ import {
   SettingsToggle,
   SettingsRow,
   SettingsInput,
+  SettingsNumberInput,
 } from '@/components/settings'
 import WebUiSection from './remote-access/WebUiSection' // fork(PLAN-020)
 
@@ -276,11 +277,10 @@ export default function RemoteAccessSettingsPage() {
                     </select>
                   </SettingsRow>
                   <SettingsRow label="Port" description="HTTP port for the server">
-                    <input
-                      type="number"
+                    <SettingsNumberInput
+                      aria-label="Server port"
                       value={config.port}
-                      onChange={e => handleUpdateConfig({ port: parseInt(e.target.value) || 3847 })}
-                      className="bg-muted rounded-md px-2 py-1 text-sm w-20 text-right"
+                      onCommit={port => handleUpdateConfig({ port })}
                       min={1024}
                       max={65535}
                     />
@@ -357,25 +357,23 @@ export default function RemoteAccessSettingsPage() {
               <SettingsSection title="Rate Limits">
                 <SettingsCard>
                   <SettingsRow label="Requests per minute" description="Max API requests per key per minute">
-                    <input
-                      type="number"
+                    <SettingsNumberInput
+                      aria-label="Requests per minute"
                       value={config.rateLimits.requestsPerMinute}
-                      onChange={e => handleUpdateConfig({
-                        rateLimits: { ...config.rateLimits, requestsPerMinute: parseInt(e.target.value) || 30 }
+                      onCommit={requestsPerMinute => handleUpdateConfig({
+                        rateLimits: { ...config.rateLimits, requestsPerMinute }
                       })}
-                      className="bg-muted rounded-md px-2 py-1 text-sm w-20 text-right"
                       min={1}
                       max={1000}
                     />
                   </SettingsRow>
                   <SettingsRow label="Max concurrent sessions" description="Maximum simultaneous sessions across all keys">
-                    <input
-                      type="number"
+                    <SettingsNumberInput
+                      aria-label="Max concurrent sessions"
                       value={config.rateLimits.concurrentSessions}
-                      onChange={e => handleUpdateConfig({
-                        rateLimits: { ...config.rateLimits, concurrentSessions: parseInt(e.target.value) || 5 }
+                      onCommit={concurrentSessions => handleUpdateConfig({
+                        rateLimits: { ...config.rateLimits, concurrentSessions }
                       })}
-                      className="bg-muted rounded-md px-2 py-1 text-sm w-20 text-right"
                       min={1}
                       max={50}
                     />
