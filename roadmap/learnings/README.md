@@ -80,6 +80,7 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [024](LEARNING-024-actool-app-icon-flag-silent-noop.md) | actool with `--app-icon` exits 0 but writes no Assets.car; the `.icon` filename must match `CFBundleIconName` | electron | active |
 | [025](LEARNING-025-app-version-display-reads-shared-package-json.md) | Displayed app version comes from `packages/shared/package.json` — releases must bump the whole workspace version cluster | release | active |
 | [026](LEARNING-026-webui-500-node-relative-redirect-and-wrong-packaged-assets-path.md) | Packaged WebUI 500 — `Response.redirect(relative)` throws in Node (Bun-run tests pass) + `webuiDir` pointed at the source `resources/` dir, and both failed silently | webui | active |
+| [027](LEARNING-027-persistent-bug-report-check-running-binary-version-first.md) | "Fix didn't take" reports: check the running binary's version + auto-update state before re-debugging — updates install only on relaunch | release | active |
 
 ## Related skills
 
