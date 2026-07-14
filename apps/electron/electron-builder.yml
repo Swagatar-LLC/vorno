@@ -92,7 +92,8 @@ mac:
   category: public.app-category.productivity
   icon: resources/icon.icns
   # macOS 26+ Liquid Glass: Tell macOS to look for icon in Assets.car
-  # The value must match --app-icon used in actool (see afterPack.js)
+  # The value must match the .icon bundle filename compiled by actool
+  # (resources/AppIcon.icon -> asset "AppIcon"; see scripts/afterPack.cjs)
   extendInfo:
     CFBundleIconName: AppIcon
     # Required for macOS to list the app under Privacy & Security > Local Network

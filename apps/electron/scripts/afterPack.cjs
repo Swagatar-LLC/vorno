@@ -5,11 +5,17 @@
  * app bundle. The Assets.car file is compiled locally using actool with the
  * macOS 26 SDK (not available in CI), then committed to the repo.
  *
- * To regenerate Assets.car after icon changes:
+ * To regenerate Assets.car after icon changes (see apps/electron/README.md
+ * "macOS Liquid Glass Icon" for details and verification):
  *   cd apps/electron
- *   xcrun actool "resources/icon.icon" --compile "resources" \
- *     --app-icon AppIcon --minimum-deployment-target 26.0 \
- *     --platform macosx --output-partial-info-plist /dev/null
+ *   xcrun actool resources/AppIcon.icon --compile resources \
+ *     --include-all-app-icons \
+ *     --enable-on-demand-resources NO --enable-icon-stack-fallback-generation NO \
+ *     --development-region en --target-device mac --platform macosx \
+ *     --minimum-deployment-target 26.0
+ *
+ * The .icon bundle filename defines the compiled asset name and must match
+ * CFBundleIconName (AppIcon) in electron-builder.yml.
  *
  * For older macOS versions, the app falls back to icon.icns which is
  * included separately by electron-builder.
