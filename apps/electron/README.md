@@ -175,14 +175,19 @@ The app includes a pre-compiled `Assets.car` for macOS 26+ Liquid Glass icons. T
 
 **Regenerating after icon changes:**
 
-If you modify `resources/icon.icon`, regenerate the Assets.car:
+If you modify `resources/AppIcon.icon`, regenerate the Assets.car:
 
 ```bash
 cd apps/electron
-xcrun actool "resources/icon.icon" --compile "resources" \
-  --app-icon AppIcon --minimum-deployment-target 26.0 \
-  --platform macosx --output-partial-info-plist /dev/null
+xcrun actool resources/AppIcon.icon --compile resources \
+  --include-all-app-icons \
+  --enable-on-demand-resources NO --enable-icon-stack-fallback-generation NO \
+  --development-region en --target-device mac --platform macosx \
+  --minimum-deployment-target 26.0 \
+  --warnings --errors --notices --output-format human-readable-text
 ```
+
+> **Important:** the icon asset name comes from the `.icon` bundle's filename and must match `CFBundleIconName` in `electron-builder.yml` (`AppIcon` → `AppIcon.icon`). The older `--app-icon AppIcon --output-partial-info-plist /dev/null` invocation exits 0 but silently writes **no** Assets.car with Xcode 26.2's actool — verify with `xcrun assetutil --info resources/Assets.car` (expect `"Name" : "AppIcon"` IconGroup entries).
 
 > **Note:** This requires macOS 26 with Xcode 26 (macOS 26 SDK). The pre-compiled Assets.car is committed to the repo so CI builds work without the SDK.
 
