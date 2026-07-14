@@ -78,6 +78,7 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [022](LEARNING-022-ci-webui-vite-build-heap-oom.md) | WebUI Vite build OOMs on CI runners without a NODE_OPTIONS heap default in `build-dmg.sh` | build | active |
 | [023](LEARNING-023-empty-release-feed-repo-422-publish.md) | electron-builder publish to an empty (zero-commit) feed repo fails with 422 "Published releases must have a valid tag" | release | active |
 | [024](LEARNING-024-actool-app-icon-flag-silent-noop.md) | actool with `--app-icon` exits 0 but writes no Assets.car; the `.icon` filename must match `CFBundleIconName` | electron | active |
+| [025](LEARNING-025-app-version-display-reads-shared-package-json.md) | Displayed app version comes from `packages/shared/package.json` — releases must bump the whole workspace version cluster | release | active |
 
 ## Related skills
 
