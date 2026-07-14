@@ -89,6 +89,11 @@ export {
 } from './SettingsInput'
 
 export {
+  SettingsNumberInput,
+  type SettingsNumberInputProps,
+} from './SettingsNumberInput'
+
+export {
   SettingsTextarea,
   type SettingsTextareaProps,
 } from './SettingsTextarea'
