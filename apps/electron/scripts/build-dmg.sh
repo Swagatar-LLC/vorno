@@ -36,6 +36,11 @@ if [ -f "$ROOT_DIR/.env" ]; then
     set +a
 fi
 
+# Node child processes (Vite renderer/webui builds, electron-builder) need more
+# than the default ~2 GB heap — the webui Vite build OOMs on GitHub's macos-14
+# runners without this. Respect a caller-provided NODE_OPTIONS override.
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}"
+
 # Parse arguments
 ARCH="arm64"
 UPLOAD=false
