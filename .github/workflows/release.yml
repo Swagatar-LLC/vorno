@@ -56,6 +56,15 @@ jobs:
             echo "::error::Tag ${TAG} does not match electron app version v${APP_VERSION}. Bump apps/electron/package.json and re-tag."
             exit 1
           fi
+          # LEARNING-025: the DISPLAYED version (Settings About, update toasts,
+          # Sentry release) compiles in packages/shared/package.json — a partial
+          # bump ships a build that lies about its own version. Enforce the
+          # cluster bump (scripts/bump-version.ts) here.
+          SHARED_VERSION="$(node -p "require('./packages/shared/package.json').version")"
+          if [ "${SHARED_VERSION}" != "${APP_VERSION}" ]; then
+            echo "::error::packages/shared version ${SHARED_VERSION} != electron version ${APP_VERSION}. Run: bun scripts/bump-version.ts ${APP_VERSION}"
+            exit 1
+          fi
           if [ -n "${CSC_LINK}" ] && [ -n "${CSC_KEY_PASSWORD}" ] && [ -n "${APPLE_ID}" ] \
              && [ -n "${APPLE_APP_SPECIFIC_PASSWORD}" ] && [ -n "${APPLE_TEAM_ID}" ]; then
             echo "has_signing=true" >> "$GITHUB_OUTPUT"
