@@ -30,22 +30,16 @@ Upstream never hits this because their `vX.Y.Z` release commits bump the **entir
 
 ## Fix
 
-Bump the `version` field in **all** workspace package.json files at release-prep time — root, `apps/{cli,electron,viewer,webui}`, and all `packages/*` — **except `apps/server`** (fork-owned, independent versioning, currently 0.3.x):
+Bump the `version` field in **all** workspace package.json files at release-prep time — root, `apps/{cli,electron,viewer,webui}`, and all `packages/*` — **except `apps/server`** (fork-owned, independent versioning, currently 0.3.x). There is a single command for this:
 
 ```bash
-# from repo root, VERSION=new version, e.g. 0.11.4
-for f in package.json apps/{cli,electron,viewer,webui}/package.json packages/*/package.json; do
-  python3 - "$f" "$VERSION" <<'EOF'
-import re, sys
-p, v = sys.argv[1], sys.argv[2]
-s = open(p).read()
-open(p, "w").write(re.sub(r'("version":\s*)"[0-9.]+"', rf'\g<1>"{v}"', s, count=1))
-EOF
-done
-git checkout apps/server/package.json   # keep its independent version
+bun scripts/bump-version.ts 0.11.4   # bumps the whole cluster + post-checks shared==electron
+bun install                          # bun.lock records workspace versions — regenerate it
 ```
 
-Sanity check afterwards: `node -p "require('./packages/shared/package.json').version"` must equal the release version.
+Two enforcement points added with this learning:
+- `scripts/bump-version.ts` post-checks that `packages/shared` and `apps/electron` agree.
+- The release gate in `.github/workflows/release.yml` fails the run if `packages/shared` ≠ `apps/electron` version, so a partial bump can never ship again.
 
 ## Recurrence
 
