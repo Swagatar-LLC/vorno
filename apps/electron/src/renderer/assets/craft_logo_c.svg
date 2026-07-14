@@ -1,12 +1,66 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg width="299px" height="300px" viewBox="0 0 299 300" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
-    <title>craft_logo_c</title>
-    <g id="craft_logo_c" stroke="none" fill="none" fill-rule="evenodd" stroke-width="1">
-        <g id="Group">
-            <path d="M137.879,300.001 L137.875,300.001 C62.3239,300.001 0.966154,239.232 0.0117188,163.908 L2.56478e-10,162.126 L137.879,162.126 L137.879,300.001 Z" id="Path" fill="#06367A"></path>
-            <path d="M137.879,0 L137.875,0 C61.729,0 0,61.729 0,137.875 L0,137.878 L137.879,137.878 L137.879,0 Z" id="Path" fill="#FF51FF"></path>
-            <path d="M160.558,137.883 L160.561,137.883 C236.707,137.883 298.436,76.1537 298.436,0.00758561 L298.436,0.00562043 L160.558,0.00562043 L160.558,137.883 Z" id="Path" fill="#007CFF"></path>
-            <path d="M160.558,162.123 L160.561,162.123 C236.112,162.123 297.471,222.891 298.426,298.216 L298.436,299.998 L160.558,299.998 L160.558,162.123 Z" id="Path" fill="#0A377B"></path>
-        </g>
-    </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+
+<defs>
+  <linearGradient id="vornoGradient" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0%" stop-color="#FF922E"/>
+    <stop offset="27%" stop-color="#FF6A55"/>
+    <stop offset="52%" stop-color="#C04FD2"/>
+    <stop offset="74%" stop-color="#6947F5"/>
+    <stop offset="100%" stop-color="#00C8FF"/>
+  </linearGradient>
+  <radialGradient id="backgroundGradient" cx="50%" cy="42%" r="72%">
+    <stop offset="0%" stop-color="#0B1739"/>
+    <stop offset="58%" stop-color="#050C25"/>
+    <stop offset="100%" stop-color="#020617"/>
+  </radialGradient>
+</defs>
+<rect width="1024" height="1024" fill="url(#backgroundGradient)"/>
+<g id="vortex">
+  <!-- Top vortex ring -->
+  <path fill="url(#vornoGradient)" fill-rule="evenodd" d="
+    M 126 292
+    C 126 196 299 130 512 130
+    C 725 130 898 196 898 292
+    C 898 352 831 402 730 430
+    C 755 409 772 386 778 363
+    C 812 341 832 317 832 292
+    C 832 235 689 188 512 188
+    C 335 188 192 235 192 292
+    C 192 338 281 378 408 390
+    C 362 405 318 417 280 419
+    C 186 390 126 345 126 292 Z
+
+    M 204 292
+    C 204 246 342 210 512 210
+    C 682 210 820 246 820 292
+    C 820 312 794 333 751 350
+    C 721 361 685 372 646 379
+    C 679 359 698 337 698 315
+    C 698 274 615 246 512 246
+    C 409 246 326 274 326 315
+    C 326 337 345 359 378 379
+    C 339 372 303 361 273 350
+    C 230 333 204 312 204 292 Z"/>
+
+  <!-- Descending tornado ribbons -->
+  <path fill="url(#vornoGradient)" d="M 148 365 C 205 428 338 470 512 470 C 686 470 819 428 876 365 L 868 433 C 793 497 662 529 512 529 C 362 529 231 497 156 433 Z"/>
+  <path fill="url(#vornoGradient)" d="M 198 482 C 264 540 374 570 512 570 C 650 570 760 540 826 482 L 816 544 C 740 603 634 632 512 632 C 390 632 284 603 208 544 Z"/>
+  <path fill="url(#vornoGradient)" d="M 257 590 C 319 641 401 667 512 667 C 623 667 705 641 767 590 L 753 647 C 691 699 611 725 512 725 C 413 725 333 699 271 647 Z"/>
+  <path fill="url(#vornoGradient)" d="M 327 691 C 374 728 432 748 512 748 C 592 748 650 728 697 691 L 681 743 C 636 779 581 798 512 798 C 443 798 388 779 343 743 Z"/>
+  <path fill="url(#vornoGradient)" d="M 397 782 C 431 807 468 820 512 820 C 556 820 593 807 627 782 L 608 829 C 581 851 549 862 512 862 C 475 862 443 851 416 829 Z"/>
+  <path fill="url(#vornoGradient)" d="M 455 852 C 473 866 491 873 512 873 C 533 873 551 866 569 852 L 550 893 C 539 902 526 908 512 912 C 498 908 485 902 474 893 Z"/>
+</g>
+<g id="v-mark">
+  <path fill="#FFFFFF" d="
+    M 270 270
+    Q 266 270 268 277
+    L 486 793
+    Q 496 817 512 832
+    Q 528 817 538 793
+    L 756 277
+    Q 758 270 754 270
+    L 670 270
+    L 512 651
+    L 354 270 Z"/>
+</g>
 </svg>
