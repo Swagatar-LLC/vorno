@@ -21,6 +21,8 @@
  */
 
 import { randomUUID, randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   loadServerConfig,
   saveServerConfig,
@@ -230,6 +232,17 @@ export class WebUiSupervisor {
     }
 
     this.setState('starting');
+
+    // copy-assets.ts promises "the WebUiSupervisor surfaces an actionable error
+    // at runtime" when the bundle is missing — this is that surface. Warn (don't
+    // fail: /health and the API routes still work) so a bad webuiDir shows up in
+    // the main log instead of as bare 404s (LEARNING-026).
+    if (!existsSync(join(this.webuiDir, 'index.html'))) {
+      this.log.warn(
+        `[webui] no index.html under ${this.webuiDir} — WebUI assets missing/mis-staged ` +
+        '(dev: run `bun run webui:build`; packaged: staging bug)',
+      );
+    }
 
     // Ensure a password exists (generate + persist on first start).
     let config = loadServerConfig();

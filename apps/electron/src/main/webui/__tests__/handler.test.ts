@@ -195,7 +195,18 @@ describe('WebUI handler — static serving, traversal guard, SPA fallback', () =
     const h = makeHandler();
     const res = await h.fetch(req('/', { headers: { accept: 'text/html' } }));
     expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toContain('/login');
+    expect(res.headers.get('location')).toBe('/login');
+    h.dispose();
+  });
+
+  test('unauthenticated GET / without an Accept header also 302s (curl-style)', async () => {
+    // Regression (LEARNING-026): this branch used Response.redirect('/login'),
+    // which Bun accepts but Node/undici throws on — the packaged app returned
+    // 500 for every unauthenticated /. The redirect must be a plain Response.
+    const h = makeHandler();
+    const res = await h.fetch(req('/'));
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/login');
     h.dispose();
   });
 

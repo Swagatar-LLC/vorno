@@ -156,7 +156,19 @@ export function createWebUiHandler(options: WebUiHandlerOptions): WebUiHandler {
   // Do not keep the process alive just for the cleanup timer (parity with app lifecycle).
   (cleanupTimer as unknown as { unref?: () => void }).unref?.();
 
+  // Last-resort guard: a throw from the route logic would otherwise surface
+  // only via the node-adapter's console.error, which packaged builds discard
+  // (LEARNING-026) — catch here so faults reach the supervisor's mainLog.
   async function fetch(req: Request): Promise<Response> {
+    try {
+      return await route(req);
+    } catch (err) {
+      logger.error(`[webui] request handler error (${req.method} ${new URL(req.url).pathname})`, err);
+      return new Response('Internal Server Error', { status: 500 });
+    }
+  }
+
+  async function route(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
 
@@ -254,7 +266,11 @@ export function createWebUiHandler(options: WebUiHandlerOptions): WebUiHandler {
     if (!session) {
       const accept = req.headers.get('accept') ?? '';
       if (accept.includes('text/html') || path === '/' || path === '') {
-        return Response.redirect('/login', 302);
+        // NOT Response.redirect('/login'): undici (Electron main = Node) throws
+        // on relative URLs — only Bun accepts them, so `bun test` can't catch a
+        // regression here and every unauthenticated GET / became a 500 in the
+        // packaged app (LEARNING-026). Build the 302 explicitly.
+        return new Response(null, { status: 302, headers: { Location: '/login' } });
       }
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
