@@ -73,11 +73,23 @@ The identical 422 killed v0.11.3's first publish attempt ([run 29303883796](http
 
 A partially-published release may be left behind (v0.11.3 attempt 1 left a published release containing only a `.dmg.blockmap`). This is safe for installed apps — a missing `latest-mac.yml` degrades to "no update" via `isBenignFeedAbsence` — and the re-run uploads the remaining assets onto the same release.
 
+## Recurrence (2026-07-14, v0.11.4) — tag pre-creation alone is not enough
+
+With the tag pre-created by the workflow step, v0.11.4 attempt 1 ([run 29305787976](https://github.com/Swagatar-LLC/craft-agents-oss/actions/runs/29305787976)) got further — release created, 3 of 5 assets uploaded — then failed with the sibling variant:
+
+```
+HttpError: 422 Unprocessable Entity
+"method: post url: https://api.github.com/repos/Swagatar-LLC/vorno-releases/releases
+  "errors": [ { "resource": "Release", "code": "already_exists", "field": "tag_name" } ]
+```
+
+**Complete root cause:** electron-builder's GitHub publisher runs one task per artifact, and each task lazily does find-or-create on the release. The parallel creates race each other: with no tag, they all fail "must have a valid tag" (one still creates server-side); with the tag present, one create wins and a sibling later 422s "already_exists" — either way `failedTask=build`. Every attempt-2 succeeded for one reason: **the release already existed, so no task tried to create it**.
+
 ## Prevention
 
 - When creating a release-feed repo, always initialize it with a README (check "Add a README" at creation, or push one immediately).
 - Feed-repo setup docs/skills should list "repo has ≥1 commit" as a release-pipeline precondition alongside token scopes.
-- **Durable fix (2026-07-13):** `release.yml` now has an "Ensure release tag exists in feed repo" step that pre-creates `refs/tags/${TAG}` in `vorno-releases` (pointing at its HEAD) before electron-builder runs, eliminating the race entirely. Idempotent; runs only on the signing path.
+- **Durable fix (2026-07-14, supersedes the tag-only step):** `release.yml`'s "Ensure release tag + release exist in feed repo" step pre-creates `refs/tags/${TAG}` **and a published release** (title = version without "v", matching electron-builder's naming) in `vorno-releases` before the build. electron-builder then only ever finds-and-uploads — nothing left to race. Idempotent; runs only on the signing path.
 
 ## References
 
