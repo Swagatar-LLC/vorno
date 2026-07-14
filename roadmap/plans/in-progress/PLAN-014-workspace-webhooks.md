@@ -260,6 +260,26 @@ Sequencing: the two PRs are independent; if PLAN-013 lands a supervisor/daemon f
 - **Branding gate** (`scripts/check-branding.ts`: `/Craft Agents?/`, `/craft\.do/i`, `/lukilabs/i`) — `craft_whk_`, `CRAFT_WH_*`, `craft-fork:webhooks:*` don't match; keep product names out of any new UI strings.
 - **Token-usage indicator, fast mode, keep-alive toggle** — untouched code paths; `PromptAction.fastMode`/`thinkingLevel` plumb through `PendingPrompt` unchanged (`types.ts:240–268`).
 
+### 12. Security model — trust boundary & prompt-injection posture
+
+The ingest path is **unauthenticated by provider necessity** (§2–3): the capability URL is the only credential a provider can present, and the request body is fully attacker-controlled. Two distinct trust boundaries therefore matter, and they are defended differently.
+
+**Boundary A — the network edge (data integrity / abuse).** Handled by the receiver gauntlet in fixed order (`webhook-ingest/receiver.ts`), each layer failing closed:
+
+1. Workspace resolve, hook-by-slug, and constant-time token compare (`tokens.ts:tokensMatch` over `timingSafeEqual`) — **any** miss returns a uniform `404` (no existence disclosure); a hook with no stored `tokenHash` (un-minted or `REVOKE`-cleared) is uninvokable (`verify.ts:verifyToken`).
+2. Body cap → `413` **before** JSON parse (`verify.ts:withinBodyCap`) — memory-exhaustion guard.
+3. Idempotency dedup → `200 {duplicate:true}` (`dedup.ts`) and per-hook rate limit → `429` (`rate-gate.ts`) — replay/storm guards.
+
+**Boundary B — untrusted body → agent prompt (prompt injection).** This is the load-bearing one, and the defense is **architectural: the raw body is never placed in the instruction channel.** Enforced at three points:
+
+- **Body is excluded from env expansion.** `buildEnvFromPayload` (`utils.ts`) skips `WEBHOOK_PAYLOAD_KEYS` (`body`, `headers`, …) when minting `CRAFT_*` vars — the code comment is explicit that inlining body content is *"undesirable."* The prompt receives only references it controls: `$CRAFT_WEBHOOK_PAYLOAD_PATH` (a file path), `$CRAFT_WEBHOOK_HOOK` (the slug the operator named), `$CRAFT_WEBHOOK_EVENT_ID`, `$CRAFT_WEBHOOK_COUNT`. Reaffirms §1 (`event-bus.ts` payload note) and §5 ("Payloads are never inlined into prompts").
+- **Body reaches the model only as data, only on demand.** The raw payload is staged to a file under the session's `data/` dir (`receiver.ts:stagePayloadFile`). It enters the model **only if** an automation's prompt explicitly reads that path — at which point it arrives through the tool-result (data) channel, never the system/user (instruction) channel. The framework guarantees no *automatic* inlining; it cannot stop an operator who deliberately writes a prompt that treats payload contents as instructions.
+- **Match/extraction language is deliberately non-expressive.** `matchField`, `idempotencyKey.source:"body"`, and action `$.` selectors all resolve through JSONPath-lite (`jsonpath-lite.ts`), which supports only root/dot/index/bracket access — **no wildcards, filters, recursion, or slices** ("a security and complexity liability we don't want on an unauthenticated ingest path"); it returns `undefined` on any miss and never throws.
+
+**Adjacent hardening (not prompt injection, same untrusted-body origin):** any payload value that *does* become an env var passes through `sanitizeForShell` (`automations/security.ts`), escaping shell metacharacters (`` ` ``, `$`, quotes, newlines) so a prompt that shells out with those vars is not exposed to command injection.
+
+**Residual risk (documented, not eliminated).** Boundary B relies on the automation author. Guidance we surface to operators (and mirror in the public docs and the colocated `webhook-ingest/SECURITY.md`): treat payload contents as untrusted; never instruct an agent to execute or obey them; prefer extracting specific fields (`matchField`, `$.`-selectors) over dumping the whole body into a prompt. HMAC verification (§3, VOR-34) authenticates the *sender* but does not change Boundary B — a signed payload is still untrusted content.
+
 ## End-to-end local test plan
 
 Setup: workspace `my-workspace` exists; `apps/server` enabled (`{CONFIG_DIR}/server-config.json`, i.e. `~/.vorno-agent/server-config.json`) and running on `127.0.0.1:3847`; a hook registered:
