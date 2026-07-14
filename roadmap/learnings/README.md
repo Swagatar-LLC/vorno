@@ -64,6 +64,8 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [008](LEARNING-008-node-modules-sdk-drift-forces-async-subagents.md) | node_modules SDK drift past the lockfile silently changes live-spawned Claude Code behavior | agent | active |
 | [009](LEARNING-009-per-app-tsconfig-paths-break-cross-package-reexports.md) | Per-app tsconfig paths silently break cross-package re-exports (TS2305 at consumers) | build/typecheck | active |
 | [010](LEARNING-010-missing-nested-jiti-blocks-pi-agent-server-build.md) | Missing nested `jiti@2.7.0` breaks the pi-agent-server bundle after a Pi SDK bump (`Could not resolve: "jiti/static"`) | build | active |
+| [011](LEARNING-011-electron-builder-bun-collector-oom.md) | electron-builder 26.4.0 node-module collector OOMs on bun symlink store (fix: ≥26.15.x; plus `build-dmg.sh` staging required for a runnable app) | build | active |
+| [012](LEARNING-012-vscode-ripgrep-ci-403.md) | `@vscode/ripgrep` postinstall 403s in CI without `GITHUB_TOKEN` | ci | active |
 | [013](LEARNING-013-ipc-channels-inventory-hand-maintained.md) | `ipc-channels` EXPECTED_CHANNELS is hand-maintained despite the "auto-generated" banner (referenced generator script doesn't exist) | tests | active |
 | [014](LEARNING-014-shared-subpath-missing-from-package-exports.md) | A `@craft-agent/shared` subpath tsc resolves can still break `bun build` if it's missing from package.json `exports` | build | active |
 | [015](LEARNING-015-packaged-smoke-verify-no-logs-single-instance.md) | Smoke-verifying the packaged app needs `--user-data-dir` isolation and can't rely on logs (production transports disabled) | electron | active |
@@ -73,6 +75,8 @@ Status changes belong in the frontmatter. Don't delete entries — historical co
 | [019](LEARNING-019-raw-nul-byte-makes-source-file-binary-to-git.md) | A raw NUL byte in agent-written source makes git treat the file as binary — tsc/tests stay green, only the diff goes `Bin` | agent | active |
 | [020](LEARNING-020-adhoc-fork-upstream-feed-squirrel-code-requirement.md) | Ad-hoc-signed fork on the upstream update feed fails Squirrel.Mac code-requirement validation ("code failed to satisfy specified code requirement(s)") | electron | active |
 | [021](LEARNING-021-trigger-server-port0-health-check-configured-port.md) | Embedded trigger-server health-checks the configured port, so `port: 0` always fails despite a successful bind | electron | active |
+| [022](LEARNING-022-ci-webui-vite-build-heap-oom.md) | WebUI Vite build OOMs on CI runners without a NODE_OPTIONS heap default in `build-dmg.sh` | build | active |
+| [023](LEARNING-023-empty-release-feed-repo-422-publish.md) | electron-builder publish to an empty (zero-commit) feed repo fails with 422 "Published releases must have a valid tag" | release | active |
 
 ## Related skills
 
