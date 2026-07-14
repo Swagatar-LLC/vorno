@@ -34,9 +34,9 @@ try {
 
 // fork(PLAN-020): Bundle the desktop WebUI SPA into the packaged app.
 // Source: apps/webui/dist (built by `bun run webui:build`).
-// Destination: dist/resources/webui/ — the runtime resolves the packaged
-// WebUI dir as join(process.resourcesPath, 'app', 'resources', 'webui'),
-// which electron-builder populates from dist/resources/**/*.
+// Destination: dist/resources/webui/ — packaged as Resources/app/dist/resources/
+// webui, which the runtime resolves as join(__dirname, 'resources', 'webui')
+// (__dirname = the dist/ dir holding main.cjs; same root as setBundledAssetsRoot).
 const webuiSrc = join('..', '..', 'apps', 'webui', 'dist');
 const webuiDest = join('dist', 'resources', 'webui');
 if (existsSync(webuiSrc)) {

@@ -19,7 +19,8 @@ const REQUIRED_ASSETS: string[] = [
   join('dist', 'interceptor.cjs'),
   join('dist', 'renderer', 'index.html'),
   // fork(PLAN-020): the desktop WebUI SPA bundled by copy-assets.ts.
-  // Packaged runtime resolves join(process.resourcesPath, 'app', 'resources', 'webui').
+  // Packaged runtime resolves join(__dirname, 'resources', 'webui') — i.e.
+  // Resources/app/dist/resources/webui, exactly what this staging check covers.
   join('dist', 'resources', 'webui', 'index.html'),
   join('dist', 'resources', 'webui', 'login.html'),
 ];

@@ -1132,13 +1132,16 @@ app.whenReady().then(async () => {
           },
         })
 
-        // fork(PLAN-020): browser WebUI supervisor. Resolves its dist dir with
-        // the same packaged-vs-dev pattern as the bundled-assets block above
-        // (packaged → resources/webui; dev → apps/webui/dist). getWsEndpoint
-        // returns the LIVE in-process RPC endpoint so /api/config points the
-        // browser at the ephemeral wsServer port.
+        // fork(PLAN-020): browser WebUI supervisor. Packaged assets live where
+        // copy-assets stages them: dist/resources/webui, i.e. <__dirname>/
+        // resources/webui next to main.cjs — the same root setBundledAssetsRoot
+        // uses for docs/themes. NOT process.resourcesPath/app/resources/ (that
+        // is the SOURCE resources/ dir, which never contains webui —
+        // LEARNING-026). Dev runs the un-staged apps/webui/dist directly.
+        // getWsEndpoint returns the LIVE in-process RPC endpoint so /api/config
+        // points the browser at the ephemeral wsServer port.
         const webuiDir = app.isPackaged
-          ? join(process.resourcesPath, 'app', 'resources', 'webui')
+          ? join(__dirname, 'resources', 'webui')
           : join(__dirname, '../../..', 'apps/webui/dist')
         webUiSupervisor = new WebUiSupervisor({
           webuiDir,
