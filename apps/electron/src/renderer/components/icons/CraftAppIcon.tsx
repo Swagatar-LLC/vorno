@@ -6,13 +6,13 @@ interface CraftAppIconProps {
 }
 
 /**
- * CraftAppIcon - Displays the Craft logo (colorful "C" icon)
+ * CraftAppIcon - Displays the Vorno logo (colorful vortex-"V" icon)
  */
 export function CraftAppIcon({ className, size = 64 }: CraftAppIconProps) {
   return (
     <img
       src={craftLogo}
-      alt="Craft"
+      alt="Vorno"
       width={size}
       height={size}
       className={className}
