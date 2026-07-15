@@ -6,6 +6,8 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Improvements
 
+- **Removed the fork indicator stripe** — the thin orange line under the title bar is gone. Vorno's own name and icon now carry the "which build is this" distinction.
+
 ## Bug Fixes
 
 ## Breaking Changes

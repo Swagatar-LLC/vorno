@@ -17,7 +17,6 @@ import { WorkspacePicker } from '@/components/workspace'
 import { ResetConfirmationDialog } from '@/components/ResetConfirmationDialog'
 import { SplashScreen } from '@/components/SplashScreen'
 import { TooltipProvider } from '@craft-agent/ui'
-import { ForkBadge } from '@/components/fork-badge'
 import { FocusProvider } from '@/context/FocusContext'
 import { ModalProvider } from '@/context/ModalContext'
 import { DismissibleLayerProvider } from '@/context/DismissibleLayerContext'
@@ -2055,7 +2054,6 @@ export default function App() {
         <DismissibleLayerProvider>
         <ModalProvider>
         <TooltipProvider delayDuration={0}>
-        <ForkBadge />
         <NavigationProvider
           workspaceId={windowWorkspaceId}
           workspaceSlug={windowWorkspaceSlug}
