@@ -131,6 +131,12 @@ export class WebUiSupervisor {
       running: this.state === 'running',
       state: this.state,
       port: this.boundPort,
+      // fork(PLAN-022): surface the actually-bound host so the UI can render
+      // truthfully what's listening (loopback / all-interfaces / custom IP).
+      host: this.boundHost,
+      // The open-in-browser URL stays loopback: even when bound to 0.0.0.0 the
+      // local machine reaches it on 127.0.0.1, which avoids leaking an interface
+      // IP into a clickable link.
       url: this.state === 'running' && this.boundPort !== undefined
         ? `http://127.0.0.1:${this.boundPort}`
         : undefined,
@@ -149,17 +155,23 @@ export class WebUiSupervisor {
    * Persist config changes. A live port change surfaces `configStale`
    * ("restart to apply") without tearing down the running listener.
    */
-  updateConfig(updates: Partial<Pick<WebUiConfig, 'enabled' | 'port'>>): WebUiRemoteConfig {
+  updateConfig(updates: Partial<Pick<WebUiConfig, 'enabled' | 'port' | 'host'>>): WebUiRemoteConfig {
     const current = loadServerConfig();
     const nextWebui: WebUiConfig = { ...current.webui };
 
     if (typeof updates.enabled === 'boolean') nextWebui.enabled = updates.enabled;
     if (typeof updates.port === 'number') nextWebui.port = updates.port;
+    // fork(PLAN-022): host is a persisted bind address; a live change needs a
+    // restart to rebind, so it surfaces configStale exactly like a port change.
+    if (typeof updates.host === 'string') nextWebui.host = updates.host;
 
     const next: ServerConfig = { ...current, webui: nextWebui };
     saveServerConfig(next);
 
-    if (this.state === 'running' && nextWebui.port !== this.boundPort) {
+    if (
+      this.state === 'running' &&
+      (nextWebui.port !== this.boundPort || nextWebui.host !== this.boundHost)
+    ) {
       this.configStale = true;
       this.emit();
     }
@@ -418,6 +430,8 @@ function toWebUiRemoteConfig(config: ServerConfig): WebUiRemoteConfig {
   return {
     enabled: config.webui.enabled,
     port: config.webui.port,
+    // fork(PLAN-022): bind address, surfaced in the Remote Access host dropdown.
+    host: config.webui.host,
     // The password IS intentionally exposed over LOCAL_ONLY IPC (settings/tray).
     password: config.webui.password,
   };

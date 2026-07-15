@@ -215,6 +215,53 @@ describe('WebUiSupervisor state machine', () => {
     expect(readConfig().webui.port).toBe(4001);
   });
 
+  // fork(PLAN-022): host bind-address is now surfaced + editable in settings.
+  test('updateConfig persists host to disk and surfaces it in config', async () => {
+    writeConfig(true, 3999, 'seed-password');
+    const { host } = makeFakeHost();
+    const sup = new WebUiSupervisor(baseOpts({ hostFactory: () => host }));
+    active = sup;
+
+    const returned = sup.updateConfig({ host: '0.0.0.0' });
+    expect(returned.host).toBe('0.0.0.0');
+    expect(readConfig().webui.host).toBe('0.0.0.0');
+  });
+
+  test('updateConfig live host change sets configStale', async () => {
+    writeConfig(true, 3999, 'seed-password'); // seeds host '127.0.0.1'
+    const { host } = makeFakeHost();
+    const sup = new WebUiSupervisor(baseOpts({ hostFactory: () => host }));
+    active = sup;
+
+    await sup.start();
+    expect(sup.getStatus().configStale).toBeUndefined();
+    // Bound host is 127.0.0.1; changing to 0.0.0.0 needs a restart to rebind.
+    sup.updateConfig({ host: '0.0.0.0' });
+    expect(sup.getStatus().configStale).toBe(true);
+    expect(readConfig().webui.host).toBe('0.0.0.0');
+  });
+
+  test('updateConfig host unchanged from bound value does NOT set configStale', async () => {
+    writeConfig(true, 3999, 'seed-password'); // host '127.0.0.1'
+    const { host } = makeFakeHost();
+    const sup = new WebUiSupervisor(baseOpts({ hostFactory: () => host }));
+    active = sup;
+
+    await sup.start();
+    sup.updateConfig({ host: '127.0.0.1' });
+    expect(sup.getStatus().configStale).toBeUndefined();
+  });
+
+  test('getStatus surfaces the bound host while running', async () => {
+    writeConfig(true, 3999, 'seed-password');
+    const { host } = makeFakeHost();
+    const sup = new WebUiSupervisor(baseOpts({ hostFactory: () => host }));
+    active = sup;
+
+    await sup.start();
+    expect(sup.getStatus().host).toBe('127.0.0.1');
+  });
+
   test('startInternal wires the WS-proxy seams into the host (PLAN-022)', async () => {
     writeConfig(true, 3999, 'seed-password');
     const { host } = makeFakeHost();

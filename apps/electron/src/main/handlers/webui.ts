@@ -32,7 +32,7 @@ export function registerWebUiHandlers(
 
   server.handle(
     RPC_CHANNELS.webui.UPDATE_CONFIG,
-    async (_ctx, updates: Partial<Pick<WebUiRemoteConfig, 'enabled' | 'port'>>) => {
+    async (_ctx, updates: Partial<Pick<WebUiRemoteConfig, 'enabled' | 'port' | 'host'>>) => {
       if (typeof updates?.port === 'number') {
         const port = updates.port;
         if (!Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -44,6 +44,12 @@ export function registerWebUiHandlers(
         if (port === triggerPort) {
           throw new Error(`Port ${port} is already used by the trigger server`);
         }
+      }
+      // fork(PLAN-022): validate host is a non-empty string — the UI only sends
+      // known values (127.0.0.1 / 0.0.0.0 / a preserved custom IP), but guard the
+      // IPC boundary against empties that would break bind.
+      if (updates?.host !== undefined && (typeof updates.host !== 'string' || updates.host.trim() === '')) {
+        throw new Error('Host must be a non-empty string');
       }
       return supervisor.updateConfig(updates ?? {});
     },
