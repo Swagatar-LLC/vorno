@@ -151,7 +151,10 @@ describe('WebUI handler — config endpoints (cookie-gated)', () => {
     return extractCookie(res)!;
   }
 
-  test('GET /api/config requires cookie → 401 without, wsUrl with', async () => {
+  // fork(PLAN-022): /api/config returns the WebUI's OWN origin + /ws proxy path,
+  // NOT the loopback RPC port (5555). The single-port proxy splices /ws upgrades
+  // to the RPC listener, so remote clients only ever see this one port.
+  test('GET /api/config requires cookie → 401 without, proxied /ws url with', async () => {
     const h = makeHandler();
     const unauth = await h.fetch(req('/api/config'));
     expect(unauth.status).toBe(401);
@@ -160,7 +163,38 @@ describe('WebUI handler — config endpoints (cookie-gated)', () => {
     const res = await h.fetch(req('/api/config', { headers: { cookie } }));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.wsUrl).toContain('5555');
+    // Own origin (request host:port) + /ws — never the RPC port.
+    expect(body.wsUrl).toBe('ws://127.0.0.1:3848/ws');
+    expect(body.wsUrl).not.toContain('5555');
+    h.dispose();
+  });
+
+  test('GET /api/config uses the request Host header verbatim (remote LAN IP)', async () => {
+    const h = makeHandler();
+    const cookie = await authedCookie(h);
+    // A phone hitting the LAN IP sends Host: 192.168.1.20:3848 — the proxy URL
+    // must carry that exact authority so the browser reconnects to the same port.
+    const res = await h.fetch(req('/api/config', {
+      headers: { cookie, host: '192.168.1.20:3848' },
+    }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).wsUrl).toBe('ws://192.168.1.20:3848/ws');
+    h.dispose();
+  });
+
+  test('GET /api/config upgrades ws→wss behind an https proxy (x-forwarded-proto)', async () => {
+    const h = makeHandler();
+    const cookie = await authedCookie(h);
+    // tailscale serve / nginx terminates TLS and forwards these headers.
+    const res = await h.fetch(req('/api/config', {
+      headers: {
+        cookie,
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'box.tail1234.ts.net',
+      },
+    }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).wsUrl).toBe('wss://box.tail1234.ts.net/ws');
     h.dispose();
   });
 
