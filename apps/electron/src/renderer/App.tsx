@@ -14,6 +14,7 @@ import { AppShell } from '@/components/app-shell/AppShell'
 import type { AppShellContextType } from '@/context/AppShellContext'
 import { OnboardingWizard, ReauthScreen } from '@/components/onboarding'
 import { WorkspacePicker } from '@/components/workspace'
+import { ConnectionErrorScreen } from '@/components/ConnectionErrorScreen'
 import { ResetConfirmationDialog } from '@/components/ResetConfirmationDialog'
 import { SplashScreen } from '@/components/SplashScreen'
 import { TooltipProvider } from '@craft-agent/ui'
@@ -81,7 +82,7 @@ import { rendererLog } from '@/lib/logger'
 import { ActionRegistryProvider } from '@/actions'
 import { toast } from 'sonner'
 
-type AppState = 'loading' | 'onboarding' | 'reauth' | 'workspace-picker' | 'ready'
+type AppState = 'loading' | 'onboarding' | 'reauth' | 'workspace-picker' | 'connection-error' | 'ready'
 
 /** Type for the Jotai store returned by useStore() */
 type JotaiStore = ReturnType<typeof getDefaultStore>
@@ -709,38 +710,57 @@ export default function App() {
     setShowResetDialog(true)
   }, [])
 
-  // Check auth state and get window's workspace ID on mount
-  useEffect(() => {
-    const initialize = async () => {
-      try {
-        // Get this window's workspace ID (passed via URL query param from main process)
-        const wsId = await window.electronAPI.getWindowWorkspace()
-        setWindowWorkspaceId(wsId)
+  // Check auth state and get window's workspace ID. Extracted from the mount
+  // effect so the connection-error screen's Retry button can re-run it.
+  //
+  // fork(PLAN-022): a getSetupNeeds() throw used to fall through to onboarding
+  // "to be safe" — but for the browser WebUI that catch fires when the RPC
+  // transport can't connect, so a remote-access failure masqueraded as a
+  // first-run walkthrough (LEARNING-028). We now distinguish "transport
+  // unreachable" (→ connection-error screen with Retry) from a genuine setup
+  // check that returned "not configured" (→ onboarding).
+  const initialize = useCallback(async () => {
+    try {
+      // Get this window's workspace ID (passed via URL query param from main process)
+      const wsId = await window.electronAPI.getWindowWorkspace()
+      setWindowWorkspaceId(wsId)
 
-        const needs = await window.electronAPI.getSetupNeeds()
-        setSetupNeeds(needs)
+      const needs = await window.electronAPI.getSetupNeeds()
+      setSetupNeeds(needs)
 
-        if (needs.isFullyConfigured) {
-          // If no workspace is selected (thin client without CRAFT_WORKSPACE_ID),
-          // show workspace picker before entering the main app
-          if (!wsId) {
-            setAppState('workspace-picker')
-          } else {
-            setAppState('ready')
-          }
+      if (needs.isFullyConfigured) {
+        // If no workspace is selected (thin client without CRAFT_WORKSPACE_ID),
+        // show workspace picker before entering the main app
+        if (!wsId) {
+          setAppState('workspace-picker')
         } else {
-          // New user or needs setup - show onboarding
-          setAppState('onboarding')
+          setAppState('ready')
         }
-      } catch (error) {
-        console.error('Failed to check auth state:', error)
-        // If check fails, show onboarding to be safe
+      } else {
+        // New user or needs setup - show onboarding
         setAppState('onboarding')
       }
+    } catch (error) {
+      console.error('Failed to check auth state:', error)
+      // Distinguish a transport failure from a genuine unconfigured state. When
+      // the RPC transport isn't connected, the throw is infrastructure — never
+      // show onboarding (a misleading dead end); show the connection-error
+      // screen with Retry instead. Only a live-but-unconfigured backend falls
+      // through to onboarding.
+      let transportReachable = true
+      try {
+        const state = await window.electronAPI.getTransportConnectionState()
+        transportReachable = state?.status === 'connected'
+      } catch {
+        transportReachable = false
+      }
+      setAppState(transportReachable ? 'onboarding' : 'connection-error')
     }
-
-    initialize()
   }, [])
+
+  useEffect(() => {
+    void initialize()
+  }, [initialize])
 
   // Session selection state
   const [sessionSelection, setSession] = useSession()
@@ -1985,6 +2005,25 @@ export default function App() {
             open={showResetDialog}
             onConfirm={executeReset}
             onCancel={() => setShowResetDialog(false)}
+          />
+        </ModalProvider>
+      </DismissibleLayerProvider>
+    )
+  }
+
+  // fork(PLAN-022): connection-error state — the RPC transport was unreachable
+  // at startup. NEVER onboarding (that dead-ends a remote-access failure as a
+  // first-run walkthrough). Retry re-runs the init flow.
+  if (appState === 'connection-error') {
+    return (
+      <DismissibleLayerProvider>
+        <ModalProvider>
+          <WindowCloseHandler />
+          <ConnectionErrorScreen
+            onRetry={async () => {
+              setAppState('loading')
+              await initialize()
+            }}
           />
         </ModalProvider>
       </DismissibleLayerProvider>

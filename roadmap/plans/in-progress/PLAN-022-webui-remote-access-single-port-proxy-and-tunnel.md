@@ -1,0 +1,77 @@
+---
+id: PLAN-022
+title: WebUI remote access — single-port WS proxy, connection-error screen, bind settings, tailscale tunnel
+status: in-progress
+direction: none
+owner: jh
+created: 2026-07-15
+updated: 2026-07-15
+related: [PLAN-005, PLAN-018, PLAN-020]
+blocked-by: []
+---
+
+# PLAN-022 — WebUI remote access: single-port WS proxy, connection-error screen, bind settings, tailscale tunnel
+
+## Goal
+
+The packaged WebUI (PLAN-020) is reachable from another device through **one port**, fails loud (not into the onboarding walkthrough) when RPC is unreachable, exposes its bind address in Remote Access settings, and can be fronted by `tailscale serve` for HTTPS — shipped as v0.12.0.
+
+## Context (diagnosed 260714-copper-jasmine)
+
+Remote access today half-works: `webui.host=0.0.0.0` lets a phone load the SPA and log in, but `/api/config` hands back `ws://<request-host>:<rpcPort>` while the in-process RPC WsRpcServer binds `127.0.0.1` only (`headless-start.ts` — `options.rpcHost ?? CRAFT_RPC_HOST ?? '127.0.0.1'`). Every RPC call fails, including `getSetupNeeds()`, and `App.tsx`'s catch ("if check fails, show onboarding to be safe") renders the onboarding walkthrough — a misleading dead end. Deliberately NOT fixed by binding the RPC server outward: the fix is to proxy WS through the already-exposed WebUI port.
+
+## Scope
+
+Four legs, three PRs:
+
+1. **Single-port WS proxy (PR A).** `apps/electron/src/main/webui/host.ts` gains an `upgrade` handler (trigger-server `host.ts` pattern): authenticate the `craft_session` cookie (`validateSession` against the supervisor's per-run JWT secret), then splice the upgrade through to the loopback RPC listener (raw `net.connect` to `127.0.0.1:<rpcPort>`, replay the upgrade request + head, pipe both directions). `WsRpcServer` accepts any upgrade path and re-validates the forwarded cookie itself (`validateSessionCookie`), so auth holds at both hops. `/api/config` (desktop `handler.ts`) returns the WebUI's **own** origin (`ws(s)://<request-host>/ws` — same port the page loaded from) instead of the raw RPC port. `resolveWebSocketUrl` already upgrades ws→wss behind an https proxy. RPC protocol unchanged (wire-compat contract untouched; this is fork-owned surface).
+2. **Connection-error screen (PR A).** RPC-unreachable must never render onboarding. The webui adapter surfaces `TransportConnectionState`; `App.tsx` init distinguishes "transport can't connect / getSetupNeeds threw" from "genuinely unconfigured" and renders a "can't reach your Vorno instance" screen with Retry. i18n keys in all 7 locales.
+3. **WebUI bind settings (PR B).** Host dropdown in `WebUiSection.tsx` (127.0.0.1 / 0.0.0.0 + the trigger-server amber warning), wired through `WebUiRemoteConfig`/`updateConfig` with `configStale` restart semantics. A hand-edited specific-interface IP in `server-config.json` is surfaced truthfully (shown as a custom option, not clobbered). Per-interface binding stays a docs-only advanced pattern (`docs/webui-remote-access.md`).
+4. **Tailscale serve tunnel (PR C).** `webui.tunnel: { provider: 'none' | 'tailscale' }` — an extensible secure-tunnel-provider shape (cloudflared et al. later; only tailscale implemented). Main process detects the `tailscale` CLI (PATH + `/Applications/Tailscale.app/...`), runs `tailscale serve` fronting the WebUI port on start, clears it on stop, surfaces the `https://<machine>.<tailnet>.ts.net` URL in settings; degrades with guidance when the CLI is absent. Single-port proxy (leg 1) means one serve rule covers HTTP+WS.
+5. **Release v0.12.0** (features ⇒ MINOR; pre-authorized by Jeff): consolidate release notes, full-cluster bump, tag on merge commit, verify feed assets.
+
+## Non-goals
+
+- Binding the RPC WsRpcServer to non-loopback interfaces (the proxy removes the need; smaller exposed surface).
+- Per-interface bind UI (docs-only).
+- Non-tailscale tunnel providers (config shape only).
+- TLS termination inside the app (delegated to tailscale serve / user's reverse proxy).
+- Any RPC wire-protocol change (compatibility.md contract).
+
+## Approach
+
+```mermaid
+graph LR
+  Phone[Remote browser] -- "http(s)/ws(s) :3848" --> Host[WebUI host<br/>node:http + upgrade]
+  Host -- "cookie auth → net splice" --> RPC[WsRpcServer<br/>127.0.0.1:ephemeral]
+  Host -- "/api/config → ws://host:3848/ws" --> Phone
+  TS[tailscale serve<br/>HTTPS] -.-> Host
+```
+
+Key wiring facts (verified):
+- Supervisor already owns the JWT secret and `validateSessionCookie`; `getWsEndpoint()` provides the loopback RPC port.
+- `WsRpcClient` uses the `/api/config` `wsUrl` verbatim, and `WsRpcServer` (`WebSocketServer({ server })` / plain mode) does not restrict upgrade paths — cookie fallback auth at `server.ts:438` validates the forwarded Cookie header.
+- Settings number inputs commit on blur/Enter (PR #88); WebUiSection copy is fully i18n'd (unlike the legacy trigger section) — keep it that way.
+
+## Acceptance
+
+- [ ] From a non-loopback client (phone or curl via LAN IP): login → `/api/config` returns the WebUI origin → WS connects through the proxy → app state loads (no onboarding).
+- [ ] Same-host WebUI flow unchanged.
+- [ ] Unauthenticated WS upgrade to the WebUI port is rejected (no cookie ⇒ socket destroyed/401).
+- [ ] Killing the RPC endpoint (or blocking WS) renders the connection-error screen with working Retry — never onboarding.
+- [ ] Host dropdown persists `webui.host`, shows the amber all-interfaces warning, honors `configStale`, and surfaces hand-edited custom IPs truthfully.
+- [ ] Tailscale provider: with CLI present, enabling yields a working `https://…ts.net` URL (wss upgrades through one serve rule); without CLI, actionable guidance, no crash.
+- [ ] i18n keys present in all 7 locales (CI gate).
+- [ ] Unit tests for cookie-gated upgrade auth + `/api/config` origin; supervisor/tunnel tests per existing patterns.
+- [ ] Release notes bullets appended per feature PR; v0.12.0 cut, feed assets verified.
+- [ ] LEARNING captured for the loopback-RPC/onboarding-fallback trap (next free: LEARNING-028).
+
+## PLAN-005 disposition
+
+PLAN-005 (done, 2026-05) was the **dev-tooling** answer: `webui:serve`/`daily-driver` scripts binding a headless server to the Tailscale IP. Leg 4 productizes the same intent inside the packaged app (managed `tailscale serve` + loopback bind + single-port proxy) and supersedes PLAN-005's approach for end users; the scripts remain for development.
+
+## Status log
+
+- `2026-07-15` — created in `planned/`
+- `2026-07-15` — moved from planned to in-progress: session 260715-slim-swan picking up the 260714-copper-jasmine diagnosis; legs 1+2 → PR A, leg 3 → PR B, leg 4 → PR C, then v0.12.0
+- `2026-07-15` — legs 1+2 implemented (PR A). Single-port WS proxy: `host.ts` gained a `/ws` upgrade handler (cookie-auth → raw-TCP splice to loopback RPC), `handler.ts` `/api/config` now returns the WebUI's own origin `ws(s)://<host>/ws` (verbatim request Host, https⇒wss), supervisor wires `validateCookie`/`getWsTarget` seams. Connection-error screen: `App.tsx` `initialize()` distinguishes transport-unreachable (→ new `connection-error` state + `ConnectionErrorScreen` with Retry) from unconfigured (→ onboarding); catch never dead-ends into onboarding. Tests: new `host.test.ts` (upgrade auth + bidirectional splice), extended `handler.test.ts` (proxied `/ws` url, verbatim Host, `x-forwarded-proto` wss) + `supervisor.test.ts` (seam wiring). i18n `connectionError.*` in all 7 locales. LEARNING-028 captured. tsc: 7 baseline → 7 (zero new). RPC wire protocol unchanged.

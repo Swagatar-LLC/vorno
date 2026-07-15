@@ -271,6 +271,14 @@ export class WebUiSupervisor {
       });
       hostServer = this.hostFactory(handler, {
         onError: (err) => this.onHostError(err),
+        // fork(PLAN-022): single-port WS proxy seams. The host authenticates the
+        // login cookie on `/ws` upgrades and splices them to the loopback RPC
+        // endpoint, so remote access needs only this one port.
+        validateCookie: (cookieHeader) => this.validateSessionCookie(cookieHeader),
+        getWsTarget: () => {
+          const endpoint = this.getWsEndpoint();
+          return endpoint ? { port: endpoint.port } : undefined;
+        },
       });
       // fork(PLAN-020): listen() resolves the actually-bound port (PLAN-018 signature).
       boundPort = await hostServer.listen(host, port);

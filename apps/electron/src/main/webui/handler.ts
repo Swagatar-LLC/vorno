@@ -35,7 +35,6 @@ import {
   buildSessionCookie,
   buildLogoutCookie,
   validateSession,
-  resolveWebSocketUrl,
   RateLimiter,
 } from '@craft-agent/server-core/webui';
 
@@ -64,6 +63,44 @@ const MIME_TYPES: Record<string, string> = {
 
 function getMimeType(path: string): string {
   return MIME_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream';
+}
+
+// ---------------------------------------------------------------------------
+// fork(PLAN-022): single-port WS URL resolution
+// ---------------------------------------------------------------------------
+
+/** First value of a possibly comma-joined forwarded header. */
+function firstForwarded(value: string | null): string | null {
+  return value?.split(',')[0]?.trim() || null;
+}
+
+/**
+ * fork(PLAN-022): build the browser-facing WS URL for the single-port proxy.
+ *
+ * Unlike upstream `resolveWebSocketUrl` (which substitutes the RPC port), this
+ * returns the WebUI's OWN origin with the `/ws` proxy path — the same host:port
+ * the page was loaded from. The `Host` (or `x-forwarded-host`) header already
+ * carries the exact authority the browser used, so it is reused verbatim; the
+ * host's `/ws` upgrade handler splices to the loopback RPC listener.
+ *
+ * Protocol mirrors the request: an https page (direct or behind a
+ * TLS-terminating proxy like `tailscale serve`) ⇒ `wss` so the browser never
+ * rejects `ws://` from an `https://` page as mixed content.
+ */
+function resolveProxiedWsUrl(req: Request): string | null {
+  const proto = firstForwarded(req.headers.get('x-forwarded-proto'))
+    ?? new URL(req.url).protocol.replace(/:$/, '');
+  const wsProto = proto === 'https' ? 'wss' : 'ws';
+
+  const host = firstForwarded(req.headers.get('x-forwarded-host'))
+    ?? req.headers.get('host')
+    // Fall back to the request URL authority. In the packaged app the browser
+    // always sends a Host header; this covers synthetic Requests (tests) and
+    // any client that omits it.
+    ?? new URL(req.url).host;
+  if (!host) return null;
+
+  return `${wsProto}://${host}/ws`;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +277,12 @@ export function createWebUiHandler(options: WebUiHandlerOptions): WebUiHandler {
       });
     }
 
-    // ── Config (cookie-gated) → wsUrl for the live in-process RPC server ──
+    // ── Config (cookie-gated) → wsUrl through the single-port proxy ──
+    // fork(PLAN-022): return the WebUI's OWN origin (ws(s)://<request-host>/ws)
+    // instead of the loopback RPC port. The host's `/ws` upgrade handler
+    // authenticates + splices to the RPC listener, so remote clients need only
+    // this one port. getWsEndpoint() is still consulted so we keep the honest
+    // 503 when the RPC server isn't live yet.
     if (path === '/api/config' && req.method === 'GET') {
       const session = await validateSession(req.headers.get('cookie'), secret);
       if (!session) return Response.json({ error: 'Unauthorized' }, { status: 401 });
@@ -249,9 +291,11 @@ export function createWebUiHandler(options: WebUiHandlerOptions): WebUiHandler {
       if (!endpoint) {
         return Response.json({ error: 'RPC server unavailable' }, { status: 503 });
       }
-      return Response.json({
-        wsUrl: resolveWebSocketUrl(req, { wsProtocol: endpoint.protocol, wsPort: endpoint.port }),
-      });
+      const wsUrl = resolveProxiedWsUrl(req);
+      if (!wsUrl) {
+        return Response.json({ error: 'Unable to resolve WebSocket URL' }, { status: 503 });
+      }
+      return Response.json({ wsUrl });
     }
 
     // ── Default workspace (cookie-gated) ──
