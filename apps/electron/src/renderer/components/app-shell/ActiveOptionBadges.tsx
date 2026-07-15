@@ -1,9 +1,14 @@
 import * as React from 'react'
 import { useTranslation } from "react-i18next"
+import { useAtomValue } from 'jotai'
+import { Command as CommandPrimitive } from 'cmdk'
 import { cn } from '@/lib/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { SlashCommandMenu, DEFAULT_SLASH_COMMAND_GROUPS, type SlashCommandId } from '@/components/ui/slash-command-menu'
-import { ChevronDown, Info } from 'lucide-react'
+import { ChevronDown, Info, FolderKanban, Ban } from 'lucide-react'
+import { projectsAtom } from '@/atoms/projects'
+import { sessionMetaMapAtom, activeSessionIdAtom } from '@/atoms/sessions'
+import { useAction } from '@/actions/useAction'
 import { PERMISSION_MODE_CONFIG, type PermissionMode } from '@craft-agent/shared/agent/modes'
 import { ActiveTasksBar, type BackgroundTask } from './ActiveTasksBar'
 import type { TerminalOverlayData } from './TaskActionMenu'
@@ -188,6 +193,13 @@ export function ActiveOptionBadges({
               onSessionStatusChange={onSessionStatusChange}
               sessionId={sessionId}
             />
+          </div>
+        )}
+
+        {/* Project Badge (PLAN-021) — add/move/remove the session's project, after State */}
+        {sessionId && (
+          <div className="shrink-0">
+            <ProjectBadge sessionId={sessionId} />
           </div>
         )}
 
@@ -396,6 +408,173 @@ function StateBadge({
         />
       </PopoverContent>
     </Popover>
+  )
+}
+
+// ============================================================================
+// Project Badge Component (PLAN-021)
+// ============================================================================
+
+const PROJECT_MENU_CONTAINER = 'min-w-[180px] overflow-hidden rounded-[8px] bg-background text-foreground shadow-modal-small'
+const PROJECT_MENU_LIST = 'max-h-[240px] overflow-y-auto p-1 [&_[cmdk-list-sizer]]:space-y-px'
+const PROJECT_MENU_ITEM = 'flex cursor-pointer select-none items-center gap-3 rounded-[6px] px-3 py-1.5 text-[13px] outline-none'
+
+/**
+ * Renders the session's project as a badge alongside the mode/state badges.
+ * Click (or the `chat.assignProject` action, default mod+shift+p) opens a
+ * filterable menu of workspace projects plus "No project" — add, move, or
+ * remove the session's project binding in one place. Reads `projectsAtom` and
+ * `sessionMetaMapAtom` directly (same pattern as ToolbarStatusSlot) instead of
+ * threading props through ChatDisplay → ChatInputZone.
+ */
+function ProjectBadge({ sessionId }: { sessionId: string }) {
+  const { t } = useTranslation()
+  const { isDark } = useTheme()
+  const [open, setOpen] = React.useState(false)
+  const projects = useAtomValue(projectsAtom)
+  const metaMap = useAtomValue(sessionMetaMapAtom)
+  const activeSessionId = useAtomValue(activeSessionIdAtom)
+
+  const boundProjectId = metaMap.get(sessionId)?.projectId
+  // Optimistic override so the badge updates before the meta refresh lands.
+  const [optimisticId, setOptimisticId] = React.useState<string | null | undefined>(undefined)
+  React.useEffect(() => {
+    setOptimisticId(undefined) // reset optimism whenever backend meta changes
+  }, [boundProjectId])
+  const effectiveId = optimisticId !== undefined ? optimisticId : (boundProjectId ?? null)
+  const currentProject = effectiveId ? projects.find(p => p.config.id === effectiveId) : undefined
+
+  // Keyboard shortcut: only the active session's badge responds.
+  useAction(
+    'chat.assignProject',
+    () => setOpen(true),
+    { enabled: () => activeSessionId === sessionId },
+    [activeSessionId, sessionId],
+  )
+
+  const handleSelect = React.useCallback(async (projectId: string | null) => {
+    setOpen(false)
+    setOptimisticId(projectId)
+    try {
+      await window.electronAPI.sessionCommand(sessionId, { type: 'setProjectId', projectId })
+    } catch (err) {
+      console.error('[ProjectBadge] Failed to update session project:', err)
+      setOptimisticId(undefined)
+    }
+  }, [sessionId])
+
+  // Hide entirely when the workspace has no projects and the session isn't bound
+  // to one (nothing actionable) — keeps the toolbar clean for project-less users.
+  if (projects.length === 0 && !currentProject) return null
+
+  const badgeColor = currentProject?.config.color
+    ? resolveEntityColor(currentProject.config.color, isDark)
+    : 'var(--foreground)'
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <MetadataBadge
+          label={currentProject?.config.name ?? t('sessionMenu.noProject')}
+          badgeColor={badgeColor}
+          interactive
+          isActive={open}
+          showChevron
+          icon={<FolderKanban className="h-3.5 w-3.5" style={currentProject ? { color: badgeColor } : undefined} />}
+          className={cn('pl-2.5', !currentProject && 'opacity-70')}
+        />
+      </PopoverTrigger>
+      <PopoverContent
+        className="w-auto p-0 border-0 shadow-none bg-transparent"
+        side="top"
+        align="end"
+        sideOffset={4}
+        onCloseAutoFocus={(e) => {
+          e.preventDefault()
+          window.dispatchEvent(new CustomEvent('craft:focus-input', { detail: { sessionId } }))
+        }}
+      >
+        <ProjectMenu
+          projects={projects.map(p => ({ id: p.config.id, name: p.config.name, color: p.config.color }))}
+          activeProjectId={effectiveId}
+          onSelect={handleSelect}
+        />
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/**
+ * Filterable project list menu (cmdk) — visual twin of SessionStatusMenu.
+ */
+function ProjectMenu({
+  projects,
+  activeProjectId,
+  onSelect,
+}: {
+  projects: { id: string; name: string; color?: string }[]
+  activeProjectId: string | null
+  onSelect: (projectId: string | null) => void
+}) {
+  const { t } = useTranslation()
+  const { isDark } = useTheme()
+  const [filter, setFilter] = React.useState('')
+  const inputRef = React.useRef<HTMLInputElement>(null)
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => inputRef.current?.focus(), 0)
+    return () => clearTimeout(timer)
+  }, [])
+
+  return (
+    <CommandPrimitive className={PROJECT_MENU_CONTAINER} defaultValue={activeProjectId ?? projects[0]?.id}>
+      <div className="border-b border-border/50 px-3 py-2">
+        <CommandPrimitive.Input
+          ref={inputRef}
+          value={filter}
+          onValueChange={setFilter}
+          placeholder={t('sessionMenu.projects')}
+          className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
+        />
+      </div>
+      <CommandPrimitive.List className={PROJECT_MENU_LIST}>
+        <CommandPrimitive.Empty className="py-3 text-center text-sm text-muted-foreground">
+          {t('projectInfo.notFound')}
+        </CommandPrimitive.Empty>
+        {projects.map((p) => {
+          const isActive = activeProjectId === p.id
+          const color = p.color ? resolveEntityColor(p.color, isDark) : undefined
+          return (
+            <CommandPrimitive.Item
+              key={p.id}
+              value={p.name}
+              onSelect={() => onSelect(p.id)}
+              className={cn(PROJECT_MENU_ITEM, isActive ? 'bg-foreground/7' : 'data-[selected=true]:bg-foreground/3')}
+            >
+              <span className="shrink-0 flex items-center" style={color ? { color } : undefined}>
+                <FolderKanban className="w-3.5 h-3.5" />
+              </span>
+              <div className="flex-1 min-w-0">{p.name}</div>
+            </CommandPrimitive.Item>
+          )
+        })}
+        {!filter && (
+          <>
+            <div className="border-t border-border/50 mx-2 my-1" />
+            <CommandPrimitive.Item
+              value="no-project"
+              onSelect={() => onSelect(null)}
+              className={cn(PROJECT_MENU_ITEM, activeProjectId === null ? 'bg-foreground/7' : 'data-[selected=true]:bg-foreground/3')}
+            >
+              <span className="shrink-0 flex items-center opacity-60">
+                <Ban className="w-3.5 h-3.5" />
+              </span>
+              <div className="flex-1 min-w-0">{t('sessionMenu.noProject')}</div>
+            </CommandPrimitive.Item>
+          </>
+        )}
+      </CommandPrimitive.List>
+    </CommandPrimitive>
   )
 }
 

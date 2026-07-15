@@ -194,6 +194,13 @@ export const actions = {
     defaultHotkey: 'shift+tab',
     category: 'Chat',
   },
+  'chat.assignProject': {
+    id: 'chat.assignProject',
+    label: 'Assign Project',
+    description: 'Add, move, or remove the current session from a project',
+    defaultHotkey: 'mod+shift+p',
+    category: 'Chat',
+  },
   'chat.nextSearchMatch': {
     id: 'chat.nextSearchMatch',
     label: 'Next Search Match',

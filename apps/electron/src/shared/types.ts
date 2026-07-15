@@ -991,6 +991,7 @@ export type SessionFilter =
   | { kind: 'state'; stateId: string }
   | { kind: 'label'; labelId: string }
   | { kind: 'view'; viewId: string }
+  | { kind: 'project'; projectId: string }
   | { kind: 'archived' }
 
 /**
@@ -1158,6 +1159,7 @@ export const getNavigationStateKey = (state: NavigationState): string => {
   if (f.kind === 'state') base = `state:${f.stateId}`
   else if (f.kind === 'label') base = `label:${f.labelId}`
   else if (f.kind === 'view') base = `view:${f.viewId}`
+  else if (f.kind === 'project') base = `project:${f.projectId}`
   else base = f.kind
   if (state.details) {
     return `${base}/chat/${state.details.sessionId}`
@@ -1233,6 +1235,10 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
       const viewId = filterKey.slice(5)
       if (!viewId) return null
       filter = { kind: 'view', viewId }
+    } else if (filterKey.startsWith('project:')) {
+      const projectId = filterKey.slice(8)
+      if (!projectId) return null
+      filter = { kind: 'project', projectId }
     } else {
       return null
     }
