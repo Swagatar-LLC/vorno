@@ -275,6 +275,9 @@ export function sessionMatchesCurrentFilter(
       if (currentFilter.viewId === '__all__') return matched.length > 0
       return matched.some(v => v.id === currentFilter.viewId)
 
+    case 'project':
+      return session.projectId === currentFilter.projectId && session.isArchived !== true
+
     default:
       const _exhaustive: never = currentFilter
       return true

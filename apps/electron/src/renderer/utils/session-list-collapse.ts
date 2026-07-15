@@ -16,6 +16,8 @@ export function serializeSessionFilterForScope(filter?: SessionFilter): string {
       return `label:${encodeURIComponent(filter.labelId)}`
     case 'view':
       return `view:${encodeURIComponent(filter.viewId)}`
+    case 'project':
+      return `project:${encodeURIComponent(filter.projectId)}`
     default:
       return filter.kind
   }

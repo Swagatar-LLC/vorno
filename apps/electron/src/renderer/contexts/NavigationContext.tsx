@@ -560,6 +560,8 @@ export function NavigationProvider({
           case 'view':
             if (session.isArchived === true) return false
             return true
+          case 'project':
+            return session.projectId === filter.projectId && session.isArchived !== true
           default:
             return false
         }
@@ -1227,6 +1229,9 @@ export function NavigationProvider({
         break
       case 'view':
         navigate(routes.view.view(filter.viewId, sessionId))
+        break
+      case 'project':
+        navigate(routes.view.projectSessions(filter.projectId, sessionId))
         break
       default:
         navigate(routes.view.allSessions(sessionId))

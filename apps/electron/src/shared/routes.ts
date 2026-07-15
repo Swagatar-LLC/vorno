@@ -117,6 +117,12 @@ export const routes = {
         ? `label/${encodeURIComponent(labelId)}/session/${sessionId}` as const
         : `label/${encodeURIComponent(labelId)}` as const,
 
+    /** Project session filter view (sessions navigator, project filter — sessions bound to the project) */
+    projectSessions: (projectId: string, sessionId?: string) =>
+      sessionId
+        ? `project/${encodeURIComponent(projectId)}/session/${sessionId}` as const
+        : `project/${encodeURIComponent(projectId)}` as const,
+
     /** View filter (sessions navigator, view filter — evaluated dynamically) */
     view: (viewId: string, sessionId?: string) =>
       sessionId

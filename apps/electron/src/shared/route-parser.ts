@@ -63,7 +63,7 @@ export interface ParsedCompoundRoute {
  * Known prefixes that indicate a compound route
  */
 const COMPOUND_ROUTE_PREFIXES = [
-  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'settings'
+  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'project', 'board', 'sources', 'skills', 'automations', 'projects', 'settings'
 ]
 
 /**
@@ -262,6 +262,13 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
       sessionFilter = { kind: 'view', viewId: decodeURIComponent(segments[1]) }
       detailsStartIndex = 2
       break
+    case 'project':
+      // Singular `project/{projectId}` — a sessions-navigator filter view,
+      // distinct from the plural `projects` navigator (project list/detail).
+      if (!segments[1]) return null
+      sessionFilter = { kind: 'project', projectId: decodeURIComponent(segments[1]) }
+      detailsStartIndex = 2
+      break
     default:
       return null
   }
@@ -351,6 +358,9 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
       break
     case 'view':
       base = `view/${encodeURIComponent(filter.viewId)}`
+      break
+    case 'project':
+      base = `project/${encodeURIComponent(filter.projectId)}`
       break
     default:
       base = 'allSessions'
@@ -472,13 +482,14 @@ function convertCompoundToViewRoute(compound: ParsedCompoundRoute): ParsedRoute 
           ...(filter.kind === 'state' ? { stateId: filter.stateId } : {}),
           ...(filter.kind === 'label' ? { labelId: filter.labelId } : {}),
           ...(filter.kind === 'view' ? { viewId: filter.viewId } : {}),
+          ...(filter.kind === 'project' ? { projectId: filter.projectId } : {}),
         },
       }
     }
     return {
       type: 'view',
       name: filter.kind,
-      id: filter.kind === 'state' ? filter.stateId : (filter.kind === 'label' ? filter.labelId : (filter.kind === 'view' ? filter.viewId : undefined)),
+      id: filter.kind === 'state' ? filter.stateId : (filter.kind === 'label' ? filter.labelId : (filter.kind === 'view' ? filter.viewId : (filter.kind === 'project' ? filter.projectId : undefined))),
       params: {},
     }
   }
@@ -704,6 +715,8 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
           filter = { kind: 'label', labelId: parsed.params.labelId }
         } else if (filterKind === 'view' && parsed.params.viewId) {
           filter = { kind: 'view', viewId: parsed.params.viewId }
+        } else if (filterKind === 'project' && parsed.params.projectId) {
+          filter = { kind: 'project', projectId: parsed.params.projectId }
         } else {
           filter = { kind: filterKind as 'allSessions' | 'flagged' | 'archived' }
         }
@@ -755,6 +768,15 @@ function convertParsedRouteToNavigationState(parsed: ParsedRoute): NavigationSta
         return {
           navigator: 'sessions',
           filter: { kind: 'view', viewId: parsed.id },
+          details: null,
+        }
+      }
+      return { navigator: 'sessions', filter: { kind: 'allSessions' }, details: null }
+    case 'project':
+      if (parsed.id) {
+        return {
+          navigator: 'sessions',
+          filter: { kind: 'project', projectId: parsed.id },
           details: null,
         }
       }

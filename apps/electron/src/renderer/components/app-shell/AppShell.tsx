@@ -656,6 +656,7 @@ function AppShellContent({
       case 'state': return `state:${sessionFilter.stateId}`
       case 'label': return `label:${sessionFilter.labelId}`
       case 'view': return `view:${sessionFilter.viewId}`
+      case 'project': return `project:${sessionFilter.projectId}`
       default: return 'allSessions'
     }
   }, [sessionFilter])
@@ -769,23 +770,12 @@ function AppShellContent({
     })
   }, [sessionFilterKey])
 
-  // Jump to All Sessions filtered by a single project. Used by the Projects list
-  // context menu — sets the allSessions view's project filter (preserving its
-  // other filters), then navigates.
+  // Jump to a project's sessions. PLAN-021: projects are a first-class session
+  // filter route (`project/{id}`) — like label/state views — so leaving via any
+  // other navigation exits the project scope automatically (no sticky
+  // allSessions filter to clear).
   const handleJumpToProjectSessions = useCallback((projectId: string) => {
-    setViewFiltersMap(prev => {
-      const existing = prev['allSessions']
-      return {
-        ...prev,
-        allSessions: {
-          statuses: existing?.statuses ?? {},
-          labels: existing?.labels ?? {},
-          projects: { [projectId]: 'include' },
-          groupingMode: existing?.groupingMode,
-        }
-      }
-    })
-    navigate(routes.view.allSessions())
+    navigate(routes.view.projectSessions(projectId))
   }, [])
 
   // Jump to All Sessions scoped to a task: replace the allSessions view's label filter
@@ -866,7 +856,7 @@ function AppShellContent({
   const navFilterKey = React.useMemo(() => {
     if (isSessionsNavigation(navState)) {
       const filter = navState.filter
-      return `chats:${filter.kind}:${filter.kind === 'state' ? filter.stateId : ''}`
+      return `chats:${filter.kind}:${filter.kind === 'state' ? filter.stateId : filter.kind === 'label' ? filter.labelId : filter.kind === 'project' ? filter.projectId : ''}`
     }
     return navState.navigator
   }, [navState])
@@ -1586,6 +1576,10 @@ function AppShellContent({
         })
         break
       }
+      case 'project':
+        // First-class project view (PLAN-021) — sessions bound to the project
+        result = activeSessionMetas.filter(s => s.projectId === sessionFilter.projectId)
+        break
       default:
         result = activeSessionMetas
     }
@@ -1766,6 +1760,15 @@ function AppShellContent({
   }, [collapsedItems, activeWorkspaceId])
 
   const handleAllSessionsClick = useCallback(() => {
+    // PLAN-021: All Sessions must mean ALL sessions. Clear any lingering
+    // project scope from the allSessions view filters (pre-PLAN-021 project
+    // jumps persisted one here; user-set chips are also reset by an explicit
+    // All Sessions click per Jeff's expectation).
+    setViewFiltersMap(prev => {
+      const existing = prev['allSessions']
+      if (!existing?.projects || Object.keys(existing.projects).length === 0) return prev
+      return { ...prev, allSessions: { ...existing, projects: {} } }
+    })
     navigate(routes.view.allSessions())
   }, [])
 
@@ -2301,10 +2304,12 @@ function AppShellContent({
         return sessionFilter.labelId === '__all__' ? t("sidebar.labels") : getLabelDisplayName(labelConfigs, sessionFilter.labelId)
       case 'view':
         return sessionFilter.viewId === '__all__' ? t("sidebar.views") : viewConfigs.find(v => v.id === sessionFilter.viewId)?.name || t("sidebar.views")
+      case 'project':
+        return projects.find(p => p.config.id === sessionFilter.projectId)?.config.name || t("sidebar.projects")
       default:
         return t("sidebar.allSessions")
     }
-  }, [navState, t, sessionFilter, automationFilter, labelConfigs, viewConfigs, effectiveSessionStatuses])
+  }, [navState, t, sessionFilter, automationFilter, labelConfigs, viewConfigs, effectiveSessionStatuses, projects])
 
   // Build recursive sidebar items from the shared display-sorted label tree.
   // Each node renders with condensed height (compact: true) since many labels expected.
@@ -2632,8 +2637,8 @@ function AppShellContent({
                         id: `nav:projects:${p.config.id}`,
                         title: p.config.name,
                         icon: FolderKanban,
-                        // Highlight when on allSessions view AND filter includes this project (the jump-to state)
-                        variant: (sessionFilter?.kind === 'allSessions' && projectFilter.get(p.config.id) === 'include') ? "default" as const : "ghost" as const,
+                        // PLAN-021: highlight from route state — active when viewing this project's sessions
+                        variant: (sessionFilter?.kind === 'project' && sessionFilter.projectId === p.config.id) ? "default" as const : "ghost" as const,
                         onClick: () => handleJumpToProjectSessions(p.config.id),
                       })),
                     },
