@@ -95,6 +95,15 @@
       -webkit-backdrop-filter: blur(24px) saturate(140%);
     }
 
+    .logo {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 16px;
+      display: block;
+      border-radius: 16px;
+      box-shadow: 0 8px 24px rgba(41, 25, 63, 0.22);
+    }
+
     h1 {
       font-size: 20px;
       font-weight: 600;
@@ -225,16 +234,17 @@
 </head>
 <body>
   <div class="card">
+    <img class="logo" src="./favicon.svg" alt="Vorno" width="64" height="64" />
     <h1>Vorno</h1>
-    <p class="subtitle">Enter your server token to continue</p>
+    <p class="subtitle">Enter your Vorno Web UI password to continue</p>
 
     <form id="login-form">
-      <label for="password">Server Token</label>
+      <label for="password">Password</label>
       <input
         id="password"
         name="password"
         type="password"
-        placeholder="Enter CRAFT_SERVER_TOKEN"
+        placeholder="Web UI password"
         autocomplete="current-password"
         autofocus
         required
