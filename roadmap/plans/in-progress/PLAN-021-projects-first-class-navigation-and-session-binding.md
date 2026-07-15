@@ -104,3 +104,4 @@ Mirror the `label` filter end-to-end:
   (Jeff requested for next point release).
 - `2026-07-14` — moved to `in-progress/`.
 - `2026-07-14` — implemented: `project/{id}` filter route end-to-end (types, routes, parser, session-list filtering, titles, sidebar highlight), All Sessions clears residual project chips, ProjectBadge + `chat.assignProject` (mod+shift+p) in the input badges row, parser round-trip tests (16 pass). PR #90.
+- `2026-07-14` — PR #90 merged to main (all 7 gates green, rebased over #89's release-notes conflict). Remaining: Jeff verifies acceptance in the next point-release build, then move to done/.
