@@ -69,7 +69,7 @@ bun build apps/server/src/index.ts --target=bun --outdir=/tmp/build-check --no-s
 
 ## Visual fork indicator
 
-This fork ships with a visible "FORK" badge in the desktop app (rust accent color) so it's never confused with the upstream stable build. The user runs both side-by-side. See [`roadmap/decisions/`](roadmap/decisions/) for the rationale and `apps/electron/src/renderer/components/fork-badge.tsx` for the implementation.
+The fork is distinguished from upstream stable by its own branding (Vorno name, app icon, tray identity). The user runs both side-by-side. The earlier "FORK" accent stripe (`fork-badge.tsx`) was removed 2026-07-14 at Jeff's request — do not reintroduce it.
 
 ## When in doubt
 

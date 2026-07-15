@@ -34,7 +34,7 @@ When the user references one, read its `SKILL.md` *first* — tool calls are blo
 - Branch + commit + PR. Don't push directly to `main`.
 - Plans for non-trivial work — see `[skill:roadmap-plan-create]`.
 - Update the roadmap as state changes (a status folder move *is* the state change).
-- The user runs upstream stable side-by-side. The desktop fork build has a visible "FORK" badge — leave it on.
+- The user runs upstream stable side-by-side. The fork is distinguished by its own branding (Vorno name, icon, tray identity); the old "FORK" accent stripe was removed 2026-07-14 at Jeff's request — do not reintroduce it.
 - **ALWAYS capture debugging insights** when you fix a non-obvious bug. Use `[skill:capture-learning]` to write a `LEARNING-NNN` markdown in [`roadmap/learnings/`](roadmap/learnings/) before moving on. See the hard rule below.
 
 ## Hard rules
