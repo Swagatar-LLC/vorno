@@ -4,6 +4,8 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Features
 
+- Web UI bind address is now selectable in Remote Access settings — choose `127.0.0.1` (localhost only) or `0.0.0.0` (all interfaces), with the same network-exposure warning as the trigger server. A hand-edited interface IP is preserved and shown as a custom option.
+
 ## Improvements
 
 ## Bug Fixes

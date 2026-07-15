@@ -295,6 +295,10 @@ export interface RemoteAccessCreatedKey {
 export interface WebUiRemoteConfig {
   enabled: boolean
   port: number
+  /** fork(PLAN-022): bind address — '127.0.0.1' (loopback) or '0.0.0.0' (all
+   *  interfaces). A hand-edited interface IP is preserved and surfaced as a
+   *  "custom" dropdown option. */
+  host: string
   password: string | null
 }
 
@@ -302,10 +306,12 @@ export interface WebUiStatus {
   running: boolean
   state: RemoteAccessState
   port?: number
+  /** fork(PLAN-022): the address the running listener is actually bound to. */
+  host?: string
   /** http://127.0.0.1:<port> when running. */
   url?: string
   startedAt?: number
-  /** Port change persisted but pending a restart to apply. */
+  /** Port or host change persisted but pending a restart to apply. */
   configStale?: boolean
   lastError?: string
 }

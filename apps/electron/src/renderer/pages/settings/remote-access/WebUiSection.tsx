@@ -120,6 +120,23 @@ export default function WebUiSection() {
     }
   }, [config])
 
+  // fork(PLAN-022): host bind-address change. Commits on select change; a live
+  // change surfaces the supervisor's configStale note (restart to rebind).
+  const handleUpdateHost = useCallback(async (host: string) => {
+    if (!window.electronAPI || !config) return
+    const prev = config
+    setConfig({ ...config, host })
+    try {
+      const updated = await window.electronAPI.updateWebUiConfig({ host })
+      setConfig(updated)
+      const sts = await window.electronAPI.getWebUiStatus()
+      setStatus(sts)
+    } catch (error) {
+      console.error('Failed to update WebUI host:', error)
+      setConfig(prev) // Revert on error
+    }
+  }, [config])
+
   const handleCopyPassword = useCallback(() => {
     if (config?.password) {
       navigator.clipboard.writeText(config.password)
@@ -150,6 +167,11 @@ export default function WebUiSection() {
 
   const port = status.port ?? config.port
   const url = status.url ?? `http://127.0.0.1:${port}`
+
+  // fork(PLAN-022): the two managed bind addresses. If the on-disk host is
+  // neither (a hand-edited interface IP), surface it as a "custom" option so the
+  // dropdown reflects disk truth and never silently clobbers it.
+  const isCustomHost = config.host !== '127.0.0.1' && config.host !== '0.0.0.0'
 
   const statusDescription =
     status.state === 'running'
@@ -198,6 +220,34 @@ export default function WebUiSection() {
           checked={config.enabled}
           onCheckedChange={handleToggleEnabled}
         />
+      </SettingsCard>
+
+      {/* Host (bind address) — fork(PLAN-022) */}
+      <SettingsCard>
+        <SettingsRow
+          label={t('settings.remoteAccess.webui.hostLabel')}
+          description={t('settings.remoteAccess.webui.hostDescription')}
+        >
+          <select
+            aria-label={t('settings.remoteAccess.webui.hostLabel')}
+            value={config.host}
+            onChange={e => handleUpdateHost(e.target.value)}
+            className="bg-muted rounded-md px-2 py-1 text-sm"
+          >
+            <option value="127.0.0.1">{t('settings.remoteAccess.webui.hostLocalhost')}</option>
+            <option value="0.0.0.0">{t('settings.remoteAccess.webui.hostAllInterfaces')}</option>
+            {isCustomHost && (
+              <option value={config.host}>
+                {t('settings.remoteAccess.webui.hostCustom', { host: config.host })}
+              </option>
+            )}
+          </select>
+        </SettingsRow>
+        {config.host === '0.0.0.0' && (
+          <div className="px-4 py-2 text-xs text-amber-500 bg-amber-500/5 rounded-md mx-3 mb-3">
+            {t('settings.remoteAccess.webui.hostWarning', { product: PRODUCT_NAME })}
+          </div>
+        )}
       </SettingsCard>
 
       {/* Port */}

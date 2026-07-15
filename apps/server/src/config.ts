@@ -51,7 +51,9 @@ export interface WebUiConfig {
   enabled: boolean;
   /** default 3848 */
   port: number;
-  /** default '127.0.0.1' (not surfaced in v1 UI) */
+  /** default '127.0.0.1' — surfaced in Remote Access settings (PLAN-022 leg 3) as a
+   *  127.0.0.1 / 0.0.0.0 dropdown; a hand-edited interface IP is preserved and shown
+   *  as a "custom" option. */
   host: string;
   /** default null — generated + persisted on first start */
   password: string | null;
