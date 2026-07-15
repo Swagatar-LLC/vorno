@@ -35,6 +35,7 @@ export default function WebUiSection() {
   const [status, setStatus] = useState<WebUiStatus>({ running: false, state: 'stopped' })
   const [copiedPassword, setCopiedPassword] = useState(false)
   const [copiedUrl, setCopiedUrl] = useState(false)
+  const [copiedTunnelUrl, setCopiedTunnelUrl] = useState(false)
 
   // Load config + status on mount.
   useEffect(() => {
@@ -163,6 +164,33 @@ export default function WebUiSection() {
     }
   }, [status.url])
 
+  // fork(PLAN-022): secure-tunnel provider change. Applies live when the WebUI is
+  // running — the supervisor tears down the old serve rule and brings up the new
+  // one; status polling surfaces the result.
+  const handleUpdateTunnelProvider = useCallback(async (provider: string) => {
+    if (!window.electronAPI || !config) return
+    const nextProvider = provider === 'tailscale' ? 'tailscale' : 'none'
+    const prev = config
+    setConfig({ ...config, tunnel: { provider: nextProvider } })
+    try {
+      const updated = await window.electronAPI.updateWebUiConfig({ tunnel: { provider: nextProvider } })
+      setConfig(updated)
+      const sts = await window.electronAPI.getWebUiStatus()
+      setStatus(sts)
+    } catch (error) {
+      console.error('Failed to update WebUI tunnel provider:', error)
+      setConfig(prev) // Revert on error
+    }
+  }, [config])
+
+  const handleCopyTunnelUrl = useCallback(() => {
+    if (status.tunnel?.url) {
+      navigator.clipboard.writeText(status.tunnel.url)
+      setCopiedTunnelUrl(true)
+      setTimeout(() => setCopiedTunnelUrl(false), 2000)
+    }
+  }, [status.tunnel?.url])
+
   if (!config) return null
 
   const port = status.port ?? config.port
@@ -172,6 +200,24 @@ export default function WebUiSection() {
   // neither (a hand-edited interface IP), surface it as a "custom" option so the
   // dropdown reflects disk truth and never silently clobbers it.
   const isCustomHost = config.host !== '127.0.0.1' && config.host !== '0.0.0.0'
+
+  // fork(PLAN-022): secure-tunnel provider + live status. The provider is a
+  // persisted choice; the tunnel status (running/error/unavailable) comes from
+  // the supervisor's TunnelManager via polling.
+  const tunnelProvider = config.tunnel?.provider ?? 'none'
+  const tunnel = status.tunnel
+  const tunnelStatusDescription =
+    tunnelProvider === 'none'
+      ? t('settings.remoteAccess.webui.tunnelStatusOff')
+      : tunnel?.state === 'running'
+        ? t('settings.remoteAccess.webui.tunnelStatusRunning')
+        : tunnel?.state === 'starting'
+          ? t('settings.remoteAccess.webui.tunnelStatusStarting')
+          : tunnel?.state === 'unavailable'
+            ? t('settings.remoteAccess.webui.tunnelUnavailable')
+            : tunnel?.state === 'error'
+              ? (tunnel.message ?? t('settings.remoteAccess.webui.tunnelError'))
+              : t('settings.remoteAccess.webui.tunnelStatusStarting')
 
   const statusDescription =
     status.state === 'running'
@@ -316,6 +362,52 @@ export default function WebUiSection() {
           </SettingsRow>
         </SettingsCard>
       )}
+
+      {/* Secure tunnel (tailscale serve) — fork(PLAN-022) */}
+      <SettingsCard>
+        <SettingsRow
+          label={t('settings.remoteAccess.webui.tunnelLabel')}
+          description={t('settings.remoteAccess.webui.tunnelDescription')}
+        >
+          <select
+            aria-label={t('settings.remoteAccess.webui.tunnelLabel')}
+            value={tunnelProvider}
+            onChange={e => handleUpdateTunnelProvider(e.target.value)}
+            className="bg-muted rounded-md px-2 py-1 text-sm"
+          >
+            <option value="none">{t('settings.remoteAccess.webui.tunnelProviderNone')}</option>
+            <option value="tailscale">{t('settings.remoteAccess.webui.tunnelProviderTailscale')}</option>
+          </select>
+        </SettingsRow>
+
+        {/* Status line */}
+        {tunnelProvider !== 'none' && (
+          <div className="px-4 pb-2 text-xs text-muted-foreground">
+            {tunnelStatusDescription}
+          </div>
+        )}
+
+        {/* Guidance when the tailscale CLI is unavailable */}
+        {tunnelProvider === 'tailscale' && tunnel?.state === 'unavailable' && (
+          <div className="px-4 py-2 text-xs text-amber-500 bg-amber-500/5 rounded-md mx-3 mb-3">
+            {t('settings.remoteAccess.webui.tunnelUnavailableGuidance')}
+          </div>
+        )}
+
+        {/* Public HTTPS URL with copy button when running */}
+        {tunnelProvider === 'tailscale' && tunnel?.state === 'running' && tunnel.url && (
+          <SettingsRow label={t('settings.remoteAccess.webui.tunnelUrlLabel')} description={tunnel.url}>
+            <button
+              onClick={handleCopyTunnelUrl}
+              className="px-2 py-1 text-xs rounded bg-muted hover:bg-muted/80"
+            >
+              {copiedTunnelUrl
+                ? t('settings.remoteAccess.webui.copied')
+                : t('settings.remoteAccess.webui.copy')}
+            </button>
+          </SettingsRow>
+        )}
+      </SettingsCard>
     </SettingsSection>
   )
 }

@@ -120,6 +120,8 @@ describe('Server Config', () => {
       expect(cfg.webui.port).toBe(3848);
       expect(cfg.webui.host).toBe('127.0.0.1');
       expect(cfg.webui.password).toBeNull();
+      // fork(PLAN-022): tunnel defaults to { provider: 'none' }.
+      expect(cfg.webui.tunnel).toEqual({ provider: 'none' });
     });
 
     test('nested merge: file predating webui block gets webui defaults', () => {
@@ -129,7 +131,27 @@ describe('Server Config', () => {
       );
       const cfg = loadServerConfig();
       expect(cfg.enabled).toBe(false); // file value respected
-      expect(cfg.webui).toEqual({ enabled: true, port: 3848, host: '127.0.0.1', password: null });
+      expect(cfg.webui).toEqual({ enabled: true, port: 3848, host: '127.0.0.1', password: null, tunnel: { provider: 'none' } });
+    });
+
+    // fork(PLAN-022): second-level merge for the tunnel sub-object.
+    test('nested merge: file predating the tunnel sub-object gets tunnel defaults', () => {
+      writeFileSync(
+        CONFIG_PATH,
+        JSON.stringify({ enabled: true, port: 3847, host: '127.0.0.1', apiKeys: [], rateLimits: { requestsPerMinute: 30, concurrentSessions: 5 }, webui: { enabled: true, port: 3848, host: '127.0.0.1', password: 'kept' } }),
+      );
+      const cfg = loadServerConfig();
+      expect(cfg.webui.password).toBe('kept');
+      expect(cfg.webui.tunnel).toEqual({ provider: 'none' }); // filled in
+    });
+
+    test('nested merge: persisted tunnel provider is respected', () => {
+      writeFileSync(
+        CONFIG_PATH,
+        JSON.stringify({ enabled: true, port: 3847, host: '127.0.0.1', apiKeys: [], rateLimits: { requestsPerMinute: 30, concurrentSessions: 5 }, webui: { enabled: true, port: 3848, host: '127.0.0.1', password: null, tunnel: { provider: 'tailscale' } } }),
+      );
+      const cfg = loadServerConfig();
+      expect(cfg.webui.tunnel.provider).toBe('tailscale');
     });
 
     test('nested merge: partial webui block fills missing sub-fields', () => {

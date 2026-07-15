@@ -33,9 +33,11 @@ import { validateSession } from '@craft-agent/server-core/webui';
 import type { SupervisorLogger } from '../trigger-server/supervisor';
 import { createWebUiHandler, type WebUiHandler } from './handler';
 import { createWebUiHost, type WebUiHost, type WebUiHostOptions } from './host';
+import { TunnelManager } from './tunnel';
 import type {
   RemoteAccessState,
   RemoteAccessStartResult,
+  TunnelProvider,
   WebUiRemoteConfig,
   WebUiStatus,
 } from '../../shared/types';
@@ -78,6 +80,8 @@ export interface WebUiSupervisorOptions {
   hostFactory?: (handler: WebUiHandler, opts: WebUiHostOptions) => WebUiHost;
   /** Test seam: probe /health (defaults to a real fetch). */
   healthProbe?: (host: string, port: number) => Promise<WebUiHealthProbeResult | null>;
+  /** fork(PLAN-022): test seam — the secure-tunnel manager (defaults to a real one). */
+  tunnelManager?: TunnelManager;
 }
 
 /** Generate a random base62 password of the given length. */
@@ -111,6 +115,10 @@ export class WebUiSupervisor {
   private readonly onStateChange: ((status: WebUiStatus) => void) | undefined;
   private readonly hostFactory: (handler: WebUiHandler, opts: WebUiHostOptions) => WebUiHost;
   private readonly healthProbe: (host: string, port: number) => Promise<WebUiHealthProbeResult | null>;
+  /** fork(PLAN-022): manages the `tailscale serve` rule fronting the WebUI port. */
+  private readonly tunnel: TunnelManager;
+  /** The tunnel provider currently brought up (so teardown clears the right rule). */
+  private activeTunnelProvider: TunnelProvider = 'none';
 
   constructor(opts: WebUiSupervisorOptions) {
     this.webuiDir = opts.webuiDir;
@@ -120,6 +128,7 @@ export class WebUiSupervisor {
     this.onStateChange = opts.onStateChange;
     this.hostFactory = opts.hostFactory ?? ((handler, hostOpts) => createWebUiHost(handler.fetch, hostOpts));
     this.healthProbe = opts.healthProbe ?? ((host, port) => this.fetchHealth(host, port));
+    this.tunnel = opts.tunnelManager ?? new TunnelManager({ log: this.log });
   }
 
   // -------------------------------------------------------------------------
@@ -143,6 +152,8 @@ export class WebUiSupervisor {
       startedAt: this.startedAt,
       configStale: this.configStale || undefined,
       lastError: this.lastError,
+      // fork(PLAN-022): the managed secure-tunnel's live state (tailscale serve).
+      tunnel: this.tunnel.getStatus(),
     };
   }
 
@@ -155,15 +166,30 @@ export class WebUiSupervisor {
    * Persist config changes. A live port change surfaces `configStale`
    * ("restart to apply") without tearing down the running listener.
    */
-  updateConfig(updates: Partial<Pick<WebUiConfig, 'enabled' | 'port' | 'host'>>): WebUiRemoteConfig {
+  updateConfig(
+    updates: Partial<Pick<WebUiConfig, 'enabled' | 'port' | 'host'>> & {
+      tunnel?: { provider: TunnelProvider };
+    },
+  ): WebUiRemoteConfig {
     const current = loadServerConfig();
-    const nextWebui: WebUiConfig = { ...current.webui };
+    const nextWebui: WebUiConfig = { ...current.webui, tunnel: { ...current.webui.tunnel } };
 
     if (typeof updates.enabled === 'boolean') nextWebui.enabled = updates.enabled;
     if (typeof updates.port === 'number') nextWebui.port = updates.port;
     // fork(PLAN-022): host is a persisted bind address; a live change needs a
     // restart to rebind, so it surfaces configStale exactly like a port change.
     if (typeof updates.host === 'string') nextWebui.host = updates.host;
+
+    // fork(PLAN-022): tunnel provider changes apply LIVE (no listener restart) —
+    // the tunnel fronts the port from outside the process, so switching provider
+    // just tears down the old serve rule and brings up the new one. That is why a
+    // provider change does NOT set configStale.
+    const prevProvider = current.webui.tunnel.provider;
+    let providerChanged = false;
+    if (updates.tunnel?.provider !== undefined) {
+      nextWebui.tunnel = { provider: updates.tunnel.provider };
+      providerChanged = updates.tunnel.provider !== prevProvider;
+    }
 
     const next: ServerConfig = { ...current, webui: nextWebui };
     saveServerConfig(next);
@@ -176,7 +202,30 @@ export class WebUiSupervisor {
       this.emit();
     }
 
+    // Apply a live tunnel provider change only when the listener is up (the port
+    // must exist to front). Fire-and-forget: the tunnel's own status drives the
+    // UI, and an emit() on completion re-renders it.
+    if (providerChanged && this.state === 'running' && this.boundPort !== undefined) {
+      void this.applyTunnel(prevProvider, nextWebui.tunnel.provider, this.boundPort);
+    }
+
     return toWebUiRemoteConfig(next);
+  }
+
+  /**
+   * fork(PLAN-022): switch the live tunnel from `from` to `to`, fronting `port`.
+   * Tears down the old serve rule (best-effort) then brings the new one up.
+   * Re-emits so the settings UI picks up the new tunnel status.
+   */
+  private async applyTunnel(from: TunnelProvider, to: TunnelProvider, port: number): Promise<void> {
+    try {
+      if (from !== 'none') await this.tunnel.down(from);
+      if (to !== 'none') await this.tunnel.up(to, port);
+      this.activeTunnelProvider = to;
+    } catch (err) {
+      this.log.error('[webui] tunnel apply error', err);
+    }
+    this.emit();
   }
 
   /** Regenerate + persist the login password. Live JWT sessions are unaffected. */
@@ -321,6 +370,17 @@ export class WebUiSupervisor {
     this.setState('running');
     this.log.info(`[webui] running on ${host}:${boundPort}`);
     void password; // referenced above for generation; not logged.
+
+    // fork(PLAN-022): bring the secure tunnel up once the listener is live. Fire-
+    // and-forget (best-effort): a tunnel failure must never fail the WebUI start —
+    // the tunnel's own status surfaces guidance in settings. `applyTunnel` emits
+    // when it settles so the UI re-renders.
+    const provider = config.webui.tunnel.provider;
+    if (provider !== 'none') {
+      void this.applyTunnel('none', provider, boundPort);
+    } else {
+      this.activeTunnelProvider = 'none';
+    }
     return { success: true };
   }
 
@@ -347,6 +407,13 @@ export class WebUiSupervisor {
   private async teardown(): Promise<void> {
     if (this.state === 'stopped') return;
     this.setState('stopping');
+
+    // fork(PLAN-022): tear down the secure tunnel first (best-effort — down()
+    // never throws) so we clear the serve rule before the port goes away.
+    if (this.activeTunnelProvider !== 'none') {
+      await this.tunnel.down(this.activeTunnelProvider);
+      this.activeTunnelProvider = 'none';
+    }
 
     try {
       if (this.host) await this.host.close();
@@ -434,5 +501,7 @@ function toWebUiRemoteConfig(config: ServerConfig): WebUiRemoteConfig {
     host: config.webui.host,
     // The password IS intentionally exposed over LOCAL_ONLY IPC (settings/tray).
     password: config.webui.password,
+    // fork(PLAN-022): secure-tunnel provider selection.
+    tunnel: { provider: config.webui.tunnel.provider },
   };
 }
