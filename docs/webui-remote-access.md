@@ -84,3 +84,50 @@ the custom entry exists only to mirror disk state.
 
 The same security caveat applies: any device that can route to that interface can
 reach the Web UI, subject to the login password and your firewall.
+
+## Secure tunnel (Tailscale serve)
+
+Instead of exposing the Web UI directly on your LAN (`0.0.0.0`) and dealing with
+TLS certificates yourself, you can front the listener with a **secure tunnel**.
+Set **Settings → Remote Access → Web UI → Secure tunnel** to **Tailscale**.
+
+When enabled, the app runs and manages a [`tailscale serve`](https://tailscale.com/kb/1242/tailscale-serve)
+rule that proxies HTTPS on your machine's tailnet name to the loopback Web UI
+port. You then reach the Web UI at `https://<machine>.<tailnet>.ts.net` from any
+device on your tailnet — with a real, automatically-provisioned certificate and
+no ports opened on your LAN.
+
+Because the Web UI uses a **single-port WS proxy** (the WebSocket connection is
+tunnelled through the same port the page loads from, at `/ws`), one `serve` rule
+covers both HTTP and WebSocket traffic. `tailscale serve` terminates TLS and
+proxies to `http://127.0.0.1:<port>`, so the Web UI can stay on its default
+**loopback** bind (`webui.host = 127.0.0.1`) — you do **not** need `0.0.0.0` for
+the tunnel to work. The `/api/config` endpoint reflects the `https` request back
+as `wss`, so the browser upgrades the WebSocket correctly with no mixed-content
+errors.
+
+The exact commands the app runs:
+
+```bash
+# Bring the tunnel up (fronting the loopback Web UI port):
+tailscale serve --bg --https=443 http://127.0.0.1:<port>
+
+# Read back the public URL (Self.DNSName):
+tailscale status --json
+
+# Tear the rule down (on Web UI stop / provider switch):
+tailscale serve --https=443 off
+```
+
+### Requirements and troubleshooting
+
+- **Tailscale must be installed.** The app looks for the `tailscale` CLI on your
+  `PATH` and, on macOS, at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`.
+  If it isn't found, the tunnel status reads **unavailable** with guidance to
+  install it from [tailscale.com/download](https://tailscale.com/download).
+- **HTTPS must be enabled for your tailnet.** `tailscale serve --https` requires
+  HTTPS certificates to be enabled in the tailnet admin console. If it isn't (or
+  you aren't logged in), the tunnel status shows the CLI's own error message so
+  you can act on it.
+- Switching the provider back to **Off** clears the `serve` rule. Stopping the
+  Web UI (or quitting the app) also tears the rule down.

@@ -46,6 +46,20 @@ export interface RateLimits {
  * password is generated + persisted on first WebUI start and is intentionally
  * displayable in settings/tray (LOCAL_ONLY IPC), so it is stored plaintext.
  */
+/**
+ * fork(PLAN-022): secure-tunnel provider selection for the WebUI listener.
+ *
+ * An extensible shape — `provider` is a small closed union so future providers
+ * (cloudflared etc.) slot in without a config migration. Only `'tailscale'` is
+ * implemented in leg 4; `'none'` (the default) disables tunnelling. When set to
+ * `'tailscale'`, the main process manages a `tailscale serve` rule fronting the
+ * WebUI port on start and clears it on stop.
+ */
+export interface WebUiTunnelConfig {
+  /** default 'none' — 'tailscale' fronts the WebUI port with `tailscale serve`. */
+  provider: 'none' | 'tailscale';
+}
+
 export interface WebUiConfig {
   /** default true — desired state, persisted by start/stop */
   enabled: boolean;
@@ -57,6 +71,8 @@ export interface WebUiConfig {
   host: string;
   /** default null — generated + persisted on first start */
   password: string | null;
+  /** fork(PLAN-022): secure-tunnel provider selection (default { provider: 'none' }). */
+  tunnel: WebUiTunnelConfig;
 }
 
 /**
@@ -72,12 +88,18 @@ export interface ServerConfig {
   webui: WebUiConfig;
 }
 
+// fork(PLAN-022): default tunnel config — no tunnel until the user opts in.
+const DEFAULT_WEBUI_TUNNEL_CONFIG: WebUiTunnelConfig = {
+  provider: 'none',
+};
+
 // fork(PLAN-020): default WebUI config — zero-config autostart on loopback.
 const DEFAULT_WEBUI_CONFIG: WebUiConfig = {
   enabled: true,
   port: 3848,
   host: '127.0.0.1',
   password: null,
+  tunnel: { ...DEFAULT_WEBUI_TUNNEL_CONFIG },
 };
 
 const DEFAULT_CONFIG: ServerConfig = {
@@ -192,6 +214,13 @@ export function loadServerConfig(): ServerConfig {
       // fork(PLAN-020): nested merge so files predating the `webui` block pick up
       // new sub-fields (and defaults) instead of inheriting `undefined`.
       config.webui = { ...DEFAULT_WEBUI_CONFIG, ...(parsed.webui ?? {}) };
+      // fork(PLAN-022): second-level merge so files predating the `tunnel`
+      // sub-object (spread above would inherit `undefined` from parsed.webui)
+      // pick up `{ provider: 'none' }` and any future tunnel sub-fields.
+      config.webui.tunnel = {
+        ...DEFAULT_WEBUI_TUNNEL_CONFIG,
+        ...(parsed.webui?.tunnel ?? {}),
+      };
     }
   } catch {
     // Fall through to defaults

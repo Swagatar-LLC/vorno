@@ -25,14 +25,19 @@ let WebUiSupervisor: typeof import('../supervisor').WebUiSupervisor;
 let loadServerConfig: typeof import('@craft-agent/http-trigger/core').loadServerConfig;
 let saveServerConfig: typeof import('@craft-agent/http-trigger/core').saveServerConfig;
 
-function writeConfig(webuiEnabled: boolean, port = 3999, password: string | null = null) {
+function writeConfig(
+  webuiEnabled: boolean,
+  port = 3999,
+  password: string | null = null,
+  tunnelProvider: 'none' | 'tailscale' = 'none',
+) {
   saveServerConfig({
     enabled: true,
     port: 3847,
     host: '127.0.0.1',
     apiKeys: [],
     rateLimits: { requestsPerMinute: 30, concurrentSessions: 5 },
-    webui: { enabled: webuiEnabled, port, host: '127.0.0.1', password },
+    webui: { enabled: webuiEnabled, port, host: '127.0.0.1', password, tunnel: { provider: tunnelProvider } },
   });
 }
 
@@ -56,6 +61,25 @@ function makeFakeHost(listenError?: unknown) {
 
 const okProbe = async () => ({ status: 'ok', fork: 'webui' });
 const getWsEndpoint = () => ({ port: 5555, protocol: 'ws' as const });
+
+/** fork(PLAN-022): a fake TunnelManager recording up/down calls. */
+function makeFakeTunnel() {
+  const calls = { up: [] as Array<[string, number]>, down: [] as string[] };
+  let status = { provider: 'none' as 'none' | 'tailscale', state: 'stopped' as string };
+  const tunnel = {
+    getStatus() { return status; },
+    async up(provider: 'none' | 'tailscale', port: number) {
+      calls.up.push([provider, port]);
+      status = { provider, state: provider === 'none' ? 'stopped' : 'running' };
+      return status;
+    },
+    async down(provider: 'none' | 'tailscale') {
+      calls.down.push(provider);
+      status = { provider, state: 'stopped' };
+    },
+  };
+  return { tunnel, calls };
+}
 
 function baseOpts(overrides: Record<string, unknown> = {}) {
   return {
@@ -327,5 +351,92 @@ describe('WebUiSupervisor state machine', () => {
     // A cookie signed with a different secret must be rejected.
     const otherJwt = await createSessionToken('some-other-secret');
     expect(await sup.validateSessionCookie(`craft_session=${otherJwt}`)).toBe(false);
+  });
+
+  // fork(PLAN-022): secure-tunnel wiring.
+  test('tunnel is brought up on start when provider=tailscale', async () => {
+    writeConfig(true, 3999, 'seed-password', 'tailscale');
+    const { host } = makeFakeHost();
+    const { tunnel, calls } = makeFakeTunnel();
+    const sup = new WebUiSupervisor(baseOpts({
+      hostFactory: () => host,
+      tunnelManager: tunnel as unknown as import('../tunnel').TunnelManager,
+    }));
+    active = sup;
+
+    await sup.start();
+    // Give the fire-and-forget applyTunnel a tick to run.
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(calls.up).toEqual([['tailscale', 3999]]);
+    expect(sup.getStatus().tunnel?.state).toBe('running');
+  });
+
+  test('tunnel is NOT brought up when provider=none', async () => {
+    writeConfig(true, 3999, 'seed-password', 'none');
+    const { host } = makeFakeHost();
+    const { tunnel, calls } = makeFakeTunnel();
+    const sup = new WebUiSupervisor(baseOpts({
+      hostFactory: () => host,
+      tunnelManager: tunnel as unknown as import('../tunnel').TunnelManager,
+    }));
+    active = sup;
+
+    await sup.start();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.up.length).toBe(0);
+  });
+
+  test('tunnel is torn down on stop', async () => {
+    writeConfig(true, 3999, 'seed-password', 'tailscale');
+    const { host } = makeFakeHost();
+    const { tunnel, calls } = makeFakeTunnel();
+    const sup = new WebUiSupervisor(baseOpts({
+      hostFactory: () => host,
+      tunnelManager: tunnel as unknown as import('../tunnel').TunnelManager,
+    }));
+    active = sup;
+
+    await sup.start();
+    await new Promise((r) => setTimeout(r, 0));
+    await sup.stop();
+
+    expect(calls.down).toContain('tailscale');
+  });
+
+  test('live provider change from none→tailscale applies without a listener restart', async () => {
+    writeConfig(true, 3999, 'seed-password', 'none');
+    const { host } = makeFakeHost();
+    const { tunnel, calls } = makeFakeTunnel();
+    const sup = new WebUiSupervisor(baseOpts({
+      hostFactory: () => host,
+      tunnelManager: tunnel as unknown as import('../tunnel').TunnelManager,
+    }));
+    active = sup;
+
+    await sup.start();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.up.length).toBe(0);
+
+    const returned = sup.updateConfig({ tunnel: { provider: 'tailscale' } });
+    expect(returned.tunnel.provider).toBe('tailscale');
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Provider change applied live; no configStale (tunnel fronts from outside).
+    expect(calls.up).toEqual([['tailscale', 3999]]);
+    expect(sup.getStatus().configStale).toBeUndefined();
+    expect(readConfig().webui.tunnel.provider).toBe('tailscale');
+  });
+
+  test('getConfig surfaces the tunnel provider', async () => {
+    writeConfig(true, 3999, 'seed-password', 'tailscale');
+    const { host } = makeFakeHost();
+    const { tunnel } = makeFakeTunnel();
+    const sup = new WebUiSupervisor(baseOpts({
+      hostFactory: () => host,
+      tunnelManager: tunnel as unknown as import('../tunnel').TunnelManager,
+    }));
+    active = sup;
+    expect(sup.getConfig().tunnel.provider).toBe('tailscale');
   });
 });

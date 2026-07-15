@@ -32,7 +32,7 @@ export function registerWebUiHandlers(
 
   server.handle(
     RPC_CHANNELS.webui.UPDATE_CONFIG,
-    async (_ctx, updates: Partial<Pick<WebUiRemoteConfig, 'enabled' | 'port' | 'host'>>) => {
+    async (_ctx, updates: Partial<Pick<WebUiRemoteConfig, 'enabled' | 'port' | 'host' | 'tunnel'>>) => {
       if (typeof updates?.port === 'number') {
         const port = updates.port;
         if (!Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -50,6 +50,14 @@ export function registerWebUiHandlers(
       // IPC boundary against empties that would break bind.
       if (updates?.host !== undefined && (typeof updates.host !== 'string' || updates.host.trim() === '')) {
         throw new Error('Host must be a non-empty string');
+      }
+      // fork(PLAN-022): validate the secure-tunnel provider at the IPC boundary —
+      // only the closed union ('none' | 'tailscale') is accepted.
+      if (updates?.tunnel !== undefined) {
+        const provider = updates.tunnel?.provider;
+        if (provider !== 'none' && provider !== 'tailscale') {
+          throw new Error(`Unknown tunnel provider: ${String(provider)}`);
+        }
       }
       return supervisor.updateConfig(updates ?? {});
     },

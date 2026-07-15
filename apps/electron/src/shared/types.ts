@@ -292,6 +292,24 @@ export interface RemoteAccessCreatedKey {
 // The renderer-facing shape of the embedded WebUI HTTP listener's config and
 // status. Reuses the PLAN-012 RemoteAccessState union / RemoteAccessStartResult.
 // The generated password crosses local IPC only (displayable in settings/tray).
+// fork(PLAN-022): secure-tunnel provider selection. An extensible closed union —
+// only 'tailscale' is implemented; future providers (cloudflared etc.) slot in.
+export type TunnelProvider = 'none' | 'tailscale'
+
+// fork(PLAN-022): runtime state of the managed tunnel, surfaced in settings.
+// 'unavailable' = provider selected but its CLI/prereq is missing (guidance in
+// `message`); 'error' = the CLI ran but failed (stderr-derived `message`).
+export type TunnelState = 'stopped' | 'starting' | 'running' | 'error' | 'unavailable'
+
+export interface WebUiTunnelStatus {
+  provider: TunnelProvider
+  state: TunnelState
+  /** Public HTTPS URL when running (e.g. https://machine.tailnet.ts.net). */
+  url?: string
+  /** Guidance/error detail for 'unavailable' / 'error' states (i18n key or stderr line). */
+  message?: string
+}
+
 export interface WebUiRemoteConfig {
   enabled: boolean
   port: number
@@ -300,6 +318,8 @@ export interface WebUiRemoteConfig {
    *  "custom" dropdown option. */
   host: string
   password: string | null
+  /** fork(PLAN-022): secure-tunnel provider selection ({ provider: 'none' } default). */
+  tunnel: { provider: TunnelProvider }
 }
 
 export interface WebUiStatus {
@@ -314,6 +334,8 @@ export interface WebUiStatus {
   /** Port or host change persisted but pending a restart to apply. */
   configStale?: boolean
   lastError?: string
+  /** fork(PLAN-022): managed secure-tunnel state (tailscale serve). */
+  tunnel?: WebUiTunnelStatus
 }
 
 // fork(PLAN-015): production logging control (craft-fork:logging:*).
