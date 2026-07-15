@@ -175,7 +175,7 @@ export default function WebUiSection() {
 
   const statusDescription =
     status.state === 'running'
-      ? t('settings.remoteAccess.webui.statusRunning', { host: '127.0.0.1', port })
+      ? t('settings.remoteAccess.webui.statusRunning', { host: status.host ?? config.host, port })
       : status.state === 'starting'
         ? t('settings.remoteAccess.webui.statusStarting')
         : status.state === 'stopping'
