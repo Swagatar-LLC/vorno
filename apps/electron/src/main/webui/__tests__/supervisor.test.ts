@@ -18,6 +18,9 @@ import { tmpdir } from 'node:os';
 // frozen CONFIG_DIR regardless of import order.
 process.env.CRAFT_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'webui-sup-'));
 
+import type { WebUiHandler } from '../handler';
+import type { WebUiHostOptions } from '../host';
+
 let WebUiSupervisor: typeof import('../supervisor').WebUiSupervisor;
 let loadServerConfig: typeof import('@craft-agent/http-trigger/core').loadServerConfig;
 let saveServerConfig: typeof import('@craft-agent/http-trigger/core').saveServerConfig;
@@ -257,6 +260,47 @@ describe('WebUiSupervisor state machine', () => {
 
     await sup.start();
     expect(sup.getStatus().host).toBe('127.0.0.1');
+  });
+
+  test('startInternal wires the WS-proxy seams into the host (PLAN-022)', async () => {
+    writeConfig(true, 3999, 'seed-password');
+    const { host } = makeFakeHost();
+    let captured: import('../host').WebUiHostOptions | undefined;
+    const sup = new WebUiSupervisor(baseOpts({
+      hostFactory: (_handler: WebUiHandler, opts: WebUiHostOptions) => { captured = opts; return host; },
+      getWsEndpoint: () => ({ port: 6161, protocol: 'ws' as const }),
+    }));
+    active = sup;
+
+    await sup.start();
+
+    // The host received both single-port-proxy seams.
+    expect(typeof captured?.validateCookie).toBe('function');
+    expect(typeof captured?.getWsTarget).toBe('function');
+
+    // getWsTarget projects the live RPC endpoint's port.
+    expect(captured!.getWsTarget!()).toEqual({ port: 6161 });
+
+    // validateCookie is the supervisor's own cookie validator: a cookie minted
+    // with the per-run secret passes; garbage fails.
+    const { createSessionToken } = await import('@craft-agent/server-core/webui');
+    const secret = (sup as unknown as { jwtSecret: string }).jwtSecret;
+    const jwt = await createSessionToken(secret);
+    expect(await captured!.validateCookie!(`craft_session=${jwt}`)).toBe(true);
+    expect(await captured!.validateCookie!(null)).toBe(false);
+  });
+
+  test('getWsTarget returns undefined when the RPC endpoint is down (PLAN-022)', async () => {
+    writeConfig(true, 3999, 'seed-password');
+    const { host } = makeFakeHost();
+    let captured: import('../host').WebUiHostOptions | undefined;
+    const sup = new WebUiSupervisor(baseOpts({
+      hostFactory: (_handler: WebUiHandler, opts: WebUiHostOptions) => { captured = opts; return host; },
+      getWsEndpoint: () => undefined,
+    }));
+    active = sup;
+    await sup.start();
+    expect(captured!.getWsTarget!()).toBeUndefined();
   });
 
   test('validateSessionCookie: full JWT round-trip via upstream createSessionToken', async () => {
