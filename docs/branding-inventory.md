@@ -1,138 +1,129 @@
-# Branding inventory (VOR-3)
+# Branding inventory — every location a brand change must touch
 
-Audit of every user-visible "Craft" brand string, `craft.do` endpoint, bundle
-identifier, and update endpoint across `apps/electron`, `apps/webui`,
+Authoritative map of user-visible "**Vorno**" brand strings, external endpoints,
+bundle identifiers, and logo assets across `apps/electron`, `apps/webui`,
 `apps/viewer`, `apps/cli`, `apps/server`, `packages/core`, `packages/shared`,
-`packages/ui`, `packages/session-tools-core`, `packages/session-mcp-server`
-(audited 2026-07-03, fork of upstream v0.10.5).
+`packages/ui`, `packages/session-tools-core`, `packages/session-mcp-server`.
 
-**This ticket changed no values.** Every constant keeps its current value; the
-change is pure indirection plus CI enforcement. The rebrand itself is a
-follow-up flip ticket, blocked on VOR-1 trademark clearance.
+> **Status: the Craft → Vorno flip is DONE.** Executed under
+> [ADR-0009](../roadmap/decisions/0009-vorno-rebrand-appid-release-feed-signing.md)
+> / PLAN-019 (values flipped in `branding.ts`) and swept across the
+> non-module surfaces since. This doc is now the **go-forward reference**: if
+> the brand ever changes again, everything listed here must move together in
+> one PR. Last full sweep + audit: **2026-07-16**.
 
-## The branding module
+## TL;DR — how to rebrand again
+
+1. **Change values in [`packages/core/src/branding.ts`](../packages/core/src/branding.ts).**
+   That one module drives ~70 user-visible strings/URLs across 33 code files
+   (via `@craft-agent/shared/branding` / `@craft-agent/core/branding`).
+2. **Sweep the non-module surfaces below** — they can't import the TS module
+   (static HTML, JSON locales, YAML build config, binary icon assets). The
+   `sync-with-branding` entries in
+   [`scripts/branding-allowlist.json`](../scripts/branding-allowlist.json) are
+   the checklist.
+3. **Run the gates:** `bun run lint:branding`, `bun run lint:i18n:parity`,
+   `bun run lint:i18n:sorted`, `bun run lint:i18n:coverage`, `bun run build`.
+4. **Re-register external endpoints** if `SERVICE_BASE_URL` / OAuth relay URIs
+   change (they're wire-registered with providers — see the ⚠ rows below).
+5. **Bundle ID / update-feed** is a separate one-way door (ADR-0009), not a
+   string flip — see class (b).
+
+## The branding module (class a — the one-flip surface)
 
 - Canonical: [`packages/core/src/branding.ts`](../packages/core/src/branding.ts)
   (lives in `core` because `apps/viewer` and `packages/ui` consumers don't all
-  depend on `shared`)
-- Re-export for general use: [`packages/shared/src/branding.ts`](../packages/shared/src/branding.ts)
-  → import from `@craft-agent/shared/branding` (or `../branding.ts` inside
-  `packages/shared`); `apps/viewer` imports `@craft-agent/core/branding`.
+  depend on `shared`). **All values are currently `Vorno` / Swagatar.**
+- Re-export: [`packages/shared/src/branding.ts`](../packages/shared/src/branding.ts)
+  → `@craft-agent/shared/branding`; `apps/viewer` imports `@craft-agent/core/branding`.
 
-## Enforcement
-
-- Gate: [`scripts/check-branding.ts`](../scripts/check-branding.ts), run as the
-  `branding` job in `.github/workflows/validate-pr.yml` and locally via
-  `bun run lint:branding`.
-- Rules: `Craft Agent(s)` (case-sensitive), `craft.do` (case-insensitive),
-  `lukilabs` / `luki labs` (case-insensitive). Bare `Craft` is deliberately not
-  gated — it legitimately refers to the external Craft docs product (sources,
-  `mcp.craft.do` validation) and to identifiers.
-- Heuristics: comment lines and trailing `//` comments are skipped (comments
-  are not user-visible); test files (`*.test.*`, `__tests__/`) are skipped.
-- Allowlist: [`scripts/branding-allowlist.json`](../scripts/branding-allowlist.json)
-  — a reviewed file; every entry carries a class and reason. The gate warns on
-  stale entries.
-
-## Class (a) — user-visible, routed through the branding module
-
-All refactored in VOR-3; values unchanged. ~70 occurrences across 33 files.
-
-| Surface | What | Constant |
+| Constant | Current value | Drives |
 |---|---|---|
-| electron main | `app.setName`, window title, macOS app-menu label | `PRODUCT_NAME`, `WINDOW_TITLE` |
-| electron main/renderer | Help/docs links (`agents.craft.do/docs`, `/docs/go-further/sharing`) | `DOCS_URL`, `DOCS_SHARING_URL` |
-| electron renderer | notification fallback, remote-workspace copy | `PRODUCT_NAME_SINGULAR` |
-| electron renderer | "Craft Agents Backend" provider/model-picker/settings labels (7 files) | `BACKEND_DISPLAY_NAME` |
-| viewer | header logo link + tooltip | `VIEWER_URL`, `PRODUCT_NAME_SINGULAR` (via `@craft-agent/core/branding`) |
-| server | startup/disabled console banners | `PRODUCT_NAME` |
-| cli | `--help` banner | `PRODUCT_NAME_SINGULAR` |
-| shared prompts | system-prompt identity ("You are Craft Agent…", "refer to yourself as…"), CLI section, git co-author trailer | `PRODUCT_NAME_SINGULAR`, `BRAND_NAME`, `GIT_COAUTHOR` |
-| shared agent | backend names, error messages ("Reinstalling Craft Agents…", tool-support errors), diagnostics | `BACKEND_DISPLAY_NAME`, `PRODUCT_NAME`, `PRODUCT_NAME_SINGULAR` |
-| shared auth | OAuth callback page title/link, dynamic-client-registration name | `BRAND_NAME`, `PRODUCT_NAME`, `OAUTH_CLIENT_NAME` |
-| shared auth | OAuth relay redirect URIs (`agents.craft.do/auth/callback`, `/auth/slack/callback`) | `OAUTH_RELAY_CALLBACK_URL`, `SLACK_OAUTH_RELAY_CALLBACK_URL` ⚠ registered with providers — flip requires re-registration |
-| shared version | auto-update manifest base (`agents.craft.do/electron`) | `UPDATE_MANIFEST_BASE_URL` |
-| shared docs/sources | doc-links base, built-in docs source name/URL/tagline | `DOCS_URL`, `DOCS_MCP_URL`, `PRODUCT_NAME` |
-| shared config | model descriptors ("… via Craft Agents Backend"), config-defaults description | `BACKEND_DISPLAY_NAME`, `PRODUCT_NAME` |
-| shared interceptor | blocked-request user messages | `PRODUCT_NAME` |
-| session-mcp-server | docs proxy URL + user-visible messages | `DOCS_MCP_URL`, `PRODUCT_NAME` |
+| `PRODUCT_NAME` / `PRODUCT_NAME_SINGULAR` / `BRAND_NAME` | `Vorno` | app title, menus, notifications, agent self-identity, error text, OAuth page |
+| `BACKEND_DISPLAY_NAME` | `Vorno Backend` | provider / model-picker / settings labels (7 files) |
+| `WINDOW_TITLE` | `Vorno` | main window title |
+| `COMPANY_NAME` / `SUPPORT_EMAIL` | `Swagatar LLC` / `support@swagatar.co` | installers, manifests |
+| `GIT_COAUTHOR` | `Vorno <agents-noreply@swagatar.co>` | system-prompt git trailer |
+| `OAUTH_CLIENT_NAME` | `Claude Code (Vorno)` | MCP dynamic-client-registration ⚠ some servers gate on this |
+| `SERVICE_BASE_URL` / `VIEWER_URL` / `DOCS_URL` | `https://agents.craft.do…` | ⚠ **kept on upstream infra** — registered OAuth-relay / docs endpoints; flip requires re-registration |
+| `OAUTH_RELAY_CALLBACK_URL` / `SLACK_OAUTH_RELAY_CALLBACK_URL` | `agents.craft.do/auth/*` | ⚠ wire-registered with OAuth providers |
+| `UPDATE_MANIFEST_BASE_URL` | `github.com/Swagatar-LLC/vorno-releases/releases/latest` | "get the newest build" link (auto-updater reads the github feed via `electron-builder.yml`) |
+| `VORNO_LOGO` / `VORNO_LOGO_HTML` | ASCII "VORNO" | OAuth callback pages |
 
-### Class (a), deferred to the flip ticket (`flip-deferred` / `flip-sync` in the allowlist)
+## Non-module surfaces that must be swept in the same PR (class a, deferred)
 
-These are class (a) by nature but cannot import a TS module; the flip ticket
-must sweep them in the same PR that changes `branding.ts` values:
+These are user-visible but can't import `branding.ts`. **All are currently
+Vorno-correct**; listed so a future rebrand sweeps them.
 
-- **i18n locale values** (`packages/shared/src/i18n/locales/*.json`) — ~29 keys
-  per locale contain the brand ("Welcome to Craft Agents", menu items, …).
-  Mechanical sweep, guarded by `lint:i18n:parity` / `coverage`.
-- **Static shells**: `apps/electron/src/renderer/index.html`,
-  `apps/webui/src/index.html` + `login.html` + `public/manifest.json`,
-  `apps/viewer/index.html`.
-- **Package metadata**: `package.json` descriptions/author for electron,
-  server, cli, viewer, core, shared, ui.
-- **`apps/electron/electron-builder.yml`**: `productName`, copyright,
-  maintainer, artifact names, and the auto-update `publish` URL — the publish
-  URL **must stay equal to `UPDATE_MANIFEST_BASE_URL`**.
-- **`apps/electron/scripts/afterPack.cjs`**: packaged `.app` path derived from
-  `productName`.
-- **`packages/session-tools-core`** (3 LLM-visible tool descriptions) —
-  dependency-free package; adding a workspace edge to `core` would add weekly
-  upstream-merge friction for three strings.
+| Surface | File(s) | Notes |
+|---|---|---|
+| **i18n locale values** | `packages/shared/src/i18n/locales/*.json` (7 locales) | Brand appears in `menu.*`, `onboarding.reauth.*`, welcome, etc. **Key _names_ keep "Craft" (`menu.aboutCraftAgents`, `menu.craftMenu`) by design — not user-visible; only values matter.** Guarded by `lint:i18n:parity` / `:sorted` / `:coverage`. |
+| **Electron static shell** | `apps/electron/src/renderer/index.html` (`<title>`) | |
+| **WebUI static shells** | `apps/webui/src/index.html`, `login.html`, `public/manifest.json` | login copy aligned to Settings ("Web UI" / "Password"). |
+| **WebUI icon assets** | `apps/webui/src/public/{favicon.svg,favicon.ico,apple-touch-icon.png,icon-192.png,icon-512.png}` | PWA / Add-to-Home-Screen icons. Regenerate from `apps/electron/resources/icon.png`. **Binary — not caught by the text gate.** |
+| **Viewer static shell** | `apps/viewer/index.html` (`<title>`) | |
+| **In-app logo components** | `apps/electron/src/renderer/components/icons/{CraftAgentsSymbol,CraftAppIcon}.tsx` + `assets/craft_logo_c.svg` | Redrawn to the Vorno vortex-"V". **Filenames keep "Craft" (code identifiers, not user-visible).** `CraftAgentsLogo.tsx` (pixel wordmark) is **playground-only** — cosmetic, not in shipped flows. |
+| **App / installer icons** | `apps/electron/resources/icon.png`, `icon.svg`, `build/AppIcon.icon/`, `resources/craft-logos/` | macOS app icon, dock, DMG. Binary — not gated. |
+| **Package metadata** | `package.json` `description`/`author` for electron, viewer, core, shared, ui | npm-facing. |
+| **electron-builder.yml** | `apps/electron/electron-builder.yml` | `productName: Vorno`, copyright, `artifactName: Vorno-${arch}.*`, and `publish:` (= the vorno-releases github feed). |
+| **afterPack** | `apps/electron/scripts/afterPack.cjs` | packaged `.app` path derived from `productName`. |
+| **session-tools-core** | `packages/session-tools-core/src/…` | 3 LLM-visible tool descriptions; dependency-free package (no workspace edge to `core` — swept by hand). |
 
-## Class (b) — wire-protocol / internal contracts (must NOT change)
+## Class (b) — wire / bundle identifiers that must **NOT** change
 
-Allowlisted implicitly (they don't match gate rules) or by entry; see
-[`roadmap/upstream/compatibility.md`](../roadmap/upstream/compatibility.md).
+Compatibility contracts ([`roadmap/upstream/compatibility.md`](../roadmap/upstream/compatibility.md)).
+These legitimately keep "craft" and are allowlisted or don't match gate rules.
 
 | Identifier | Where | Why it stays |
 |---|---|---|
-| `com.lukilabs.craft-agent` appId | `apps/electron/electron-builder.yml` | Bundle ID — changing breaks auto-update, keychain, userData paths. Sequenced with VOR-2 migration, not the flip ticket. |
-| `craft_sk_*` API-key prefix | `apps/server/src/config.ts`, `middleware/auth.ts` | Our own key-format contract (compatibility.md). |
-| `craft-fork:*` channel namespace | protocol docs | Reserved fork namespace per ADR-0001. |
-| `__craftRpcType` | shared codec | Upstream binary-encoding contract. |
-| `~/.craft-agent` config dir | `packages/shared/src/config/paths.ts` + consumers | Existing installs' data lives there; migration is its own ticket. |
-| `CraftAgent` / `CraftAgentConfig` aliases | `packages/shared/src/agent/claude-agent.ts` | Backward-compat exports for external consumers. |
-| `craft-agent-session`, `craft-agent-session-proxy` | `packages/session-mcp-server/src/index.ts` | MCP handshake client/server names — protocol-visible. |
-| `CRAFT_APP_NAME` env var | `apps/electron/src/main/index.ts` | Multi-instance dev hook; internal identifier. |
-| OAuth relay redirect URIs | branding module (with warning comment) | Values are wire-registered with OAuth providers; centralized but flip requires provider re-registration. |
+| `com.lukilabs.craft-agent` → `co.swagatar.vorno` appId | `electron-builder.yml` | appId already flipped (ADR-0009 clean break); a *further* change breaks auto-update/keychain/userData. |
+| `craft_sk_*` API-key prefix | `apps/server/src/config.ts`, `middleware/auth.ts` | our key-format contract. |
+| `craft-fork:*` channel namespace | `channels.ts` | reserved fork namespace (ADR-0001). |
+| `__craftRpcType` | shared codec | upstream binary-encoding contract. |
+| `~/.craft-agent` config dir | `packages/shared/src/config/paths.ts` + consumers | existing installs' data; migration is its own ticket. |
+| `CraftAgent` / `CraftAgentConfig` aliases | `packages/shared/src/agent/claude-agent.ts` | back-compat exports. |
+| `craft-agent-session[-proxy]` MCP names | `packages/session-mcp-server/src/index.ts` | protocol-visible handshake names. |
+| `CRAFT_*` env vars (`CRAFT_SERVER_TOKEN`, `CRAFT_APP_NAME`, `CRAFT_LOG_LEVEL`, `CRAFT_RPC_*`, `CRAFT_KEEP_BG_AGENTS_ALIVE`) | various | internal identifiers / dev hooks. |
+| `@craft-agent/*` workspace package names | all manifests | internal module graph. |
+| `craftagents://` deep-link scheme | ntfy source, deep links | registered URL scheme. |
 
-## Class (c) — upstream internals / dev tooling / external product references
+## Class (c) — legitimate "craft" that is NOT our brand
 
-Allowlisted by path (see `scripts/branding-allowlist.json`) or excluded by scan
-scope:
+Kept on purpose (allowlisted by path/entry or excluded by scan scope):
 
-- `packages/server-core`, `packages/server`, `packages/messaging-*`,
-  `packages/pi-agent-server` — upstream packages, out of ticket scope (not
-  scanned).
-- `packages/shared/src/validation/url-validator.ts` — validates URLs for the
-  **external Craft docs product's** MCP (`mcp.craft.do`); functional rules, not
-  our brand.
-- `packages/shared/src/docs/source-guides.ts` — maps the external Craft source
-  to its domain `craft.do`.
-- `apps/electron/resources/` (bundled docs, release notes, config defaults),
-  `apps/electron/src/renderer/playground/` + `playground.html` (design-system
-  demo data), `apps/viewer/vite.config.ts` (dev proxy),
-  `packages/shared/src/prompts/print-system-prompt.ts` (debug script),
-  `apps/electron/eslint-rules/no-localstorage.cjs` (lint message).
-- Tests and comments — excluded by gate heuristics; not user-visible.
-- References to the external **Craft** product as an integration example
-  (system prompt "integrate Linear, GitHub, Craft", `Craft source (slug:
-  craft)`, "Craft MCP server" errors) — third-party product mentions, kept.
+- **The external Craft.do product** referenced as an example integration —
+  `editPopover.example.addSource` ("Connect to my Craft space"), the
+  `{source:Craft}` example hints, system-prompt "integrate Linear, GitHub,
+  Craft", `mcp.craft.do` validator rules, `source-guides.ts` domain map.
+  Third-party product mentions.
+- **Upstream packages** — `packages/server-core`, `packages/server`,
+  `packages/messaging-*`, `packages/pi-agent-server` (their `package.json`
+  `description` fields still say "Craft Agent"; left to minimize upstream-merge
+  friction — npm metadata, not in-app UX).
+- **Dev-only surfaces** — `apps/electron/src/renderer/playground/**` +
+  `playground.html` (design-system demo data), viewer `vite.config.ts` dev
+  proxy, `print-system-prompt.ts` debug script, eslint rule messages.
+- **Code comments & tests** — not user-visible; skipped by gate heuristics.
 
-## Counts (audit, 2026-07-03)
+## Enforcement
 
-| Class | Occurrences | Disposition |
+- Gate: [`scripts/check-branding.ts`](../scripts/check-branding.ts) → `branding`
+  job in [`.github/workflows/validate-pr.yml`](../.github/workflows/validate-pr.yml);
+  local: `bun run lint:branding`. Rules: `Craft Agent(s)` (case-sensitive),
+  `craft.do`, `lukilabs`/`luki labs`. Bare `Craft` is intentionally **not**
+  gated (external product + identifiers). Comments and `*.test.*`/`__tests__/`
+  are skipped. **`release/` is gitignored** — a local packaged build will trip
+  the gate on bundled upstream/playground copies, but CI (fresh checkout, no
+  `release/`) stays clean.
+- Allowlist: [`scripts/branding-allowlist.json`](../scripts/branding-allowlist.json)
+  — every entry carries a class + reason; the gate warns on stale entries.
+- **Binary assets (icons) are not text-scannable** — verify them by eye on a
+  rebrand (favicon, apple-touch/PWA icons, app icon, DMG).
+
+## Sweep log
+
+| Date | What | Outcome |
 |---|---|---|
-| (a) refactored to branding module | ~70 in 33 code files | done in VOR-3 |
-| (a) flip-deferred/flip-sync (static files, locales, session-tools-core) | ~29 locale keys ×3 locales + 14 static files | flip ticket |
-| (b) wire/internal contracts | 9 identifier families | never change without ADR |
-| (c) upstream internals / external-product refs / dev tooling | ~70+ (mostly tests/comments/demo) | allowlisted or out of scope |
-
-## Flip-ticket checklist (draft — blocked on VOR-1)
-
-1. Change values in `packages/core/src/branding.ts`.
-2. Sweep every `flip-sync` / `flip-deferred` allowlist entry (the allowlist *is*
-   the checklist); shrink the allowlist as files are swept.
-3. Locale sweep + `bun run validate:ci`.
-4. Re-register OAuth relay redirect URIs with providers (or stand up new relay).
-5. Bundle ID / update-feed migration is **VOR-2**, not the flip ticket.
+| 2026-07-03 | VOR-3 audit | Indirection + gate landed; values unchanged (pre-flip). |
+| 2026-07-15 | WebUI shell | `index.html`/`login.html`/`manifest.json` titles + login copy; PWA/apple-touch/favicon icons regenerated from the Vorno mark (were the Craft "C"). |
+| 2026-07-16 | Full nook-and-cranny pass | Swept the last user-visible string leaks: `menu.craftMenu`, `onboarding.reauth.expired`, `onboarding.reauth.loginWithCraft` across all 7 locales. Confirmed `branding.ts` = Vorno, all logo components/assets = Vorno, static shells/builder/viewer clean. Remaining "craft" in source is class (b) wire, class (c) external-product/dev-only, code comments, or upstream `package.json` npm descriptions (intentionally deferred). |
