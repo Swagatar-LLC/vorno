@@ -1,6 +1,6 @@
 # Container Architecture for Self-Hosted Multi-Tenant Agent Deployment
 
-Research document for containerizing the Craft Agents system -- currently an Electron desktop app
+Research document for containerizing the Vorno system -- currently an Electron desktop app
 with all logic in the main process -- for self-hosted, multi-tenant remote deployment.
 
 **Version:** 0.1 (Research Draft)
@@ -25,10 +25,10 @@ with all logic in the main process -- for self-hosted, multi-tenant remote deplo
 
 ## 1. Current Architecture Overview
 
-The Craft Agents system is a monorepo with these key packages:
+The Vorno system is a monorepo with these key packages:
 
 ```
-craft-agents-oss/
+vorno/
   packages/
     core/         # Shared TypeScript types (Workspace, Session, Message, AgentEvent)
     shared/       # Core business logic: CraftAgent, MCP, sessions, config, headless mode
@@ -163,7 +163,7 @@ Do you need to run arbitrary bash commands?
 
 ## 3. Bash/Tool Execution Sandboxing
 
-The Craft Agent system uses the Claude Agent SDK's Bash tool for arbitrary command execution.
+The Vorno system uses the Claude Agent SDK's Bash tool for arbitrary command execution.
 This is the single highest-risk component in a multi-tenant deployment. Below is a thorough
 comparison of sandboxing technologies.
 
@@ -214,7 +214,7 @@ thinks it is talking to a Linux kernel, but gVisor handles (or denies) each sysc
 - Not all filesystem operations are fully supported
 - Linux only (no macOS development)
 
-**Suitability for Craft Agents:** Excellent. Agent bash commands are typically short-lived
+**Suitability for Vorno:** Excellent. Agent bash commands are typically short-lived
 processes (ls, grep, git, npm). gVisor handles these well. The overhead is acceptable for the
 security guarantee.
 
@@ -253,7 +253,7 @@ kernel, making it the strongest isolation boundary short of separate physical ma
 - Network setup requires tap devices and bridge configuration
 - No native Docker/K8s integration (needs custom tooling or Kata Containers)
 
-**Suitability for Craft Agents:** Strong but potentially over-engineered for most self-hosted
+**Suitability for Vorno:** Strong but potentially over-engineered for most self-hosted
 deployments. Best for operators who need absolute isolation guarantees (financial, healthcare)
 or who are running on bare-metal Linux with KVM available.
 
@@ -274,7 +274,7 @@ workloads (systemd, Docker, Kubernetes) inside containers without privileged mod
 - Heavier than nsjail for simple command sandboxing
 - Maintained by Nestybox (acquired by Docker Inc.)
 
-**Suitability for Craft Agents:** Good if agents need Docker-in-Docker capabilities (e.g.,
+**Suitability for Vorno:** Good if agents need Docker-in-Docker capabilities (e.g.,
 agent builds and runs containers as part of its work). Otherwise, overkill.
 
 ### 3.5 nsjail
@@ -312,7 +312,7 @@ It can sandbox individual command executions with minimal overhead.
 - Configuration is per-execution (JSON/protobuf config files)
 - Less mature ecosystem than Docker/gVisor
 
-**Suitability for Craft Agents:** Excellent for per-command sandboxing. The agent's Bash tool
+**Suitability for Vorno:** Excellent for per-command sandboxing. The agent's Bash tool
 could wrap every command execution in nsjail, providing isolation even within a shared container.
 This is the recommended approach for the hybrid model.
 
@@ -332,7 +332,7 @@ user namespaces for sandboxing.
 - No built-in resource limiting (need external cgroup management)
 - Less suitable for complex sandboxing requirements
 
-**Suitability for Craft Agents:** Suitable for lightweight sandboxing on systems where nsjail
+**Suitability for Vorno:** Suitable for lightweight sandboxing on systems where nsjail
 is not available. Not recommended as primary sandboxing for untrusted code execution due to
 limited resource controls.
 
@@ -352,7 +352,7 @@ Running Docker daemon inside a container, allowing the agent to create its own c
 - Storage driver issues (overlay-in-overlay)
 - Startup time for inner containers adds latency
 
-**Suitability for Craft Agents:** Generally not recommended. The overhead and complexity do not
+**Suitability for Vorno:** Generally not recommended. The overhead and complexity do not
 justify the benefits for typical agent command execution. If agents need to build Docker images,
 use Sysbox or kaniko instead.
 
@@ -365,7 +365,7 @@ Tier 3 (Syscall filtering):   seccomp-bpf profile (deny dangerous syscalls)
 Tier 4 (Capability dropping): Drop all capabilities except CAP_NET_RAW if needed
 ```
 
-For the Craft Agent Bash tool integration, the recommended approach is to modify the command
+For the Vorno Bash tool integration, the recommended approach is to modify the command
 execution path to wrap commands:
 
 ```typescript
@@ -421,7 +421,7 @@ its own writable layer on top of a shared read-only base.
      - /workspace:size=1G
    ```
 
-#### Craft Agent Filesystem Layout in Container
+#### Vorno Filesystem Layout in Container
 
 ```
 /app/                              # Application code (read-only)
@@ -572,7 +572,7 @@ MCP servers).
 
 ### 5.1 Current Storage Model
 
-The Craft Agent SDK and app store session data at:
+The Vorno app and its Claude Agent SDK dependency store session data at:
 
 ```
 ~/.craft-agent/workspaces/{workspaceId}/sessions/{sessionId}/
@@ -762,7 +762,7 @@ secrets:
 
 ## 6. MCP Server Connectivity from Containers
 
-### 6.1 MCP Transport Types in Craft Agents
+### 6.1 MCP Transport Types in Vorno
 
 The codebase (`packages/shared/src/sources/server-builder.ts`) supports three MCP transports:
 
@@ -908,7 +908,7 @@ GET /mcp/{tenant-id}/{source-slug}/sse
   --> Opens SSE stream to MCP server
 ```
 
-**Integration with Craft Agents:** The `SourceServerBuilder` currently returns `McpServerConfig`
+**Integration with Vorno:** The `SourceServerBuilder` currently returns `McpServerConfig`
 objects. For containerized deployment, override stdio configs with HTTP configs pointing to the
 MCP proxy:
 
@@ -1296,7 +1296,7 @@ environments that agents can use for code execution.
 - Real-time streaming of stdout/stderr
 - Network access (controllable)
 
-**Relevance to Craft Agents:**
+**Relevance to Vorno:**
 - E2B's model validates the container-per-session approach
 - Their Firecracker-based architecture is the gold standard for security
 - The SDK pattern (create sandbox, run commands, destroy) maps well to HeadlessRunner
@@ -1325,8 +1325,8 @@ dev environments from configuration.
 - API for programmatic workspace management
 - Workspace templates and prebuilds
 
-**Relevance to Craft Agents:**
-- Daytona's workspace model maps to Craft Agent's workspace concept
+**Relevance to Vorno:**
+- Daytona's workspace model maps to Vorno's workspace concept
 - The provider abstraction is valuable for supporting Docker Compose and K8s
 - Git clone + environment setup pattern useful for agent workspaces
 - **Trade-off:** Daytona is designed for human developers, not AI agents. It is heavier than
@@ -1352,7 +1352,7 @@ Originally from VS Code, now an independent spec.
 - Port forwarding and mount configuration
 - Pre-build support (GitHub Codespaces, Coder, etc.)
 
-**Relevance to Craft Agents:**
+**Relevance to Vorno:**
 - Could define the agent session container as a devcontainer
 - Features system useful for installing MCP server dependencies
 - Lifecycle hooks map to init container patterns
@@ -1382,7 +1382,7 @@ management.
 - Web endpoints
 - Queue-based execution
 
-**Relevance to Craft Agents:**
+**Relevance to Vorno:**
 - Modal's fast container starts validate the pre-warmed pool approach
 - Their image specification model (declarative, not Dockerfile) is interesting
 - Volume mount semantics map to workspace data needs
@@ -1408,7 +1408,7 @@ management.
 - Private networking between machines
 - GPU machines available
 
-**Relevance to Craft Agents:**
+**Relevance to Vorno:**
 - Fly Machines' lifecycle (start, stop, destroy) maps well to agent sessions
 - Auto-stop on idle solves the "session timeout" problem elegantly
 - The private networking model simplifies MCP proxy connectivity
@@ -1698,13 +1698,13 @@ jobs:
 
 ### 10.1 Overview
 
-Based on the research above, here is the recommended architecture for containerizing Craft Agents
+Based on the research above, here is the recommended architecture for containerizing Vorno
 for self-hosted multi-tenant deployment.
 
 ```
 +------------------------------------------------------------------+
 |                         CLIENT LAYER                              |
-|  Browser (Craft Agent Web UI)  |  CLI  |  API Integration        |
+|  Browser (Vorno Web UI)  |  CLI  |  API Integration        |
 +------------------------------------------------------------------+
                          |
                     HTTPS/WSS

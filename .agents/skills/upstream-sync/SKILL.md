@@ -7,6 +7,8 @@ description: Merge the latest from craft-ai-agents/craft-agents-oss into our for
 
 Perform the canonical upstream-merge workflow we've refined across multiple cycles. Mechanical when conflicts are limited to `bun.lock`; falls back to human judgment when novel conflicts appear.
 
+> **REPO_DIR** — the local checkout of `Swagatar-LLC/vorno`. On the maintainer's machine this is `~/dev/vorno` (the local directory is being renamed to match the repo rename; older checkouts may still live at `~/dev/craft-agents-oss` until renamed). All commands below that reference an absolute path use `REPO_DIR` as shorthand for this checkout.
+
 ## When to invoke
 
 - A new upstream release tag has been published (`v0.x.y`)
@@ -23,7 +25,7 @@ Perform the canonical upstream-merge workflow we've refined across multiple cycl
 ### Step 1 — Verify state
 
 ```bash
-cd /Users/jeffhampton/dev/craft-agents-oss
+cd REPO_DIR
 git status                      # must be clean
 git branch --show-current       # should be main (or warn)
 git remote -v | grep upstream   # must show upstream remote
@@ -119,7 +121,7 @@ Report counts. If `apps/server` tests fail → abort, don't push.
 ```bash
 git push -u origin <branch>
 gh pr create \
-  --repo Swagatar-LLC/craft-agents-oss \
+  --repo Swagatar-LLC/vorno \
   --base main \
   --head <branch> \
   --title "Merge upstream <range>" \

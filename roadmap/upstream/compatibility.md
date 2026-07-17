@@ -12,6 +12,7 @@ Per [ADR-0001](../decisions/0001-fork-relationship-with-upstream.md), we commit 
 | Source schema (`config.json` + `guide.md`) | `packages/shared/src/sources/` | Fully compatible. Our additions are skill-side only. |
 | Skill schema (`SKILL.md` frontmatter) | Convention | **Will extend additively** in [DIR-02](../directions/02-skill-contributions.md). New `contributes:` block is opt-in; existing skills behave unchanged. |
 | API key format (`craft_sk_*`) | `apps/server/src/config.ts` | Owned by us; upstream doesn't have an equivalent. No conflict. |
+| Webhook token format (`craft_whk_*`) | `packages/shared/src/automations/constants.ts` (`WEBHOOK_TOKEN_PREFIX`) | Owned by us; upstream doesn't have an equivalent. No conflict. |
 | WebSocket close codes (4001–4005) | `apps/server/src/transport/ws-transport.ts` | We mirror upstream's `WsRpcServer` codes. |
 | Binary encoding (`__craftRpcType: 'u8'`) | Shared codec | Uses the upstream codec verbatim. |
 

@@ -10,7 +10,9 @@ bundle identifiers, and logo assets across `apps/electron`, `apps/webui`,
 > / PLAN-019 (values flipped in `branding.ts`) and swept across the
 > non-module surfaces since. This doc is now the **go-forward reference**: if
 > the brand ever changes again, everything listed here must move together in
-> one PR. Last full sweep + audit: **2026-07-16**.
+> one PR. Last full sweep + audit: **2026-07-16**. A top-level docs prose sweep
+> (`ARCHITECTURE.md`, `CONTAINER-ARCHITECTURE.md`, and `docs/*.md`) followed on
+> **2026-07-17** as part of public-flip prep — see the sweep log below.
 
 ## TL;DR — how to rebrand again
 
@@ -127,3 +129,4 @@ Kept on purpose (allowlisted by path/entry or excluded by scan scope):
 | 2026-07-03 | VOR-3 audit | Indirection + gate landed; values unchanged (pre-flip). |
 | 2026-07-15 | WebUI shell | `index.html`/`login.html`/`manifest.json` titles + login copy; PWA/apple-touch/favicon icons regenerated from the Vorno mark (were the Craft "C"). |
 | 2026-07-16 | Full nook-and-cranny pass | Swept the last user-visible string leaks: `menu.craftMenu`, `onboarding.reauth.expired`, `onboarding.reauth.loginWithCraft` across all 7 locales. Confirmed `branding.ts` = Vorno, all logo components/assets = Vorno, static shells/builder/viewer clean. Remaining "craft" in source is class (b) wire, class (c) external-product/dev-only, code comments, or upstream `package.json` npm descriptions (intentionally deferred). |
+| 2026-07-17 | Public-flip prep — top-level docs prose sweep | Swept product-name prose in `ARCHITECTURE.md`, `CONTAINER-ARCHITECTURE.md`, `docs/http-trigger-server.md`, `docs/server-deployment.md`, `docs/webhooks.md`, `docs/webui-remote-access.md` ("Craft Agent(s)" → "Vorno" in titles/prose); wire identifiers (`craft_sk_*`, `craft_whk_*`, `__craftRpcType`, `CRAFT_*` env vars, `~/.craft-agent`, `craft-fork:*`) and upstream repo refs left untouched per class (b)/(c). `docs/cli.md` owned by a separate pass. |
