@@ -3,10 +3,10 @@ id: PLAN-018
 title: Runtime-configurable auto-update feed + Updates settings UI + trigger-server port-0 health-check fix
 status: done
 direction: none
-owner: jh
+owner: maintainer
 created: 2026-07-13
 updated: 2026-07-13
-related: [ADR-0009, PLAN-019, LEARNING-020, LEARNING-021]
+related: [ADR-0009, PLAN-019]
 blocked-by: []
 ---
 
@@ -18,7 +18,7 @@ The update feed (provider/owner/repo/URL/channel) is readable from a fork-owned 
 
 ## Motivation
 
-Auto-update is structurally broken for fork builds: `electron-builder.yml`'s `publish:` block points at upstream's feed, which serves Craft-Docs-signed builds that Squirrel.Mac rejects against an ad-hoc-signed running app (LEARNING-020). ADR-0009 moves the feed to a fork-owned public releases repo; this plan makes the feed a runtime-configurable surface so feed changes never again require a rebuild, and gives it a Settings UI. Separately, the embedded trigger-server supervisor health-checks the *configured* port instead of the *bound* port, so `port: 0` (OS-assigned) always fails with "Server started but failed its health check" (LEARNING-021) — the same server-config surface the user was fighting; fixed here.
+Auto-update is structurally broken for fork builds: `electron-builder.yml`'s `publish:` block points at upstream's feed, which serves upstream-signed builds that Squirrel.Mac rejects against an ad-hoc-signed running app (`vorno-internal:learnings/LEARNING-020-*`, private). ADR-0009 moves the feed to a fork-owned public releases repo; this plan makes the feed a runtime-configurable surface so feed changes never again require a rebuild, and gives it a Settings UI. Separately, the embedded trigger-server supervisor health-checks the *configured* port instead of the *bound* port, so `port: 0` (OS-assigned) always fails with "Server started but failed its health check" (`vorno-internal:learnings/LEARNING-021-*`, private) — the same server-config surface the user was fighting; fixed here.
 
 ## Scope
 
@@ -29,7 +29,7 @@ Auto-update is structurally broken for fork builds: `electron-builder.yml`'s `pu
    - `channel?: string` (default `latest`), `autoCheck?: boolean` (default `true`)
    - Default value: `{ provider: 'github', owner: 'Swagatar-LLC', repo: 'vorno-releases' }`.
 2. **Main-process wiring** — `apps/electron/src/main/auto-update.ts` applies the config via `autoUpdater.setFeedURL()` before any check; runtime config overrides the packaged `app-update.yml` default. Dev/unpackaged behavior unchanged (no auto-update). Invalid config → log + fall back to default, never crash startup.
-3. **RPC surface** — new `craft-fork:updates:getFeedConfig` / `craft-fork:updates:setFeedConfig` channels (fork namespace per compatibility.md), DTOs, main handlers with validation, `ipc-channels` EXPECTED_CHANNELS updated by hand (LEARNING-013).
+3. **RPC surface** — new `craft-fork:updates:getFeedConfig` / `craft-fork:updates:setFeedConfig` channels (fork namespace per compatibility.md), DTOs, main handlers with validation, `ipc-channels` EXPECTED_CHANNELS updated by hand (per `vorno-internal:learnings/LEARNING-013-*`, private).
 4. **Settings UI** — a new **Updates section in `AppSettingsPage`** (next to the existing About/version + check-for-updates block), not a separate page: provider select, owner/repo or URL fields, channel, auto-check toggle; client-side validation; persisted via the new RPC. New i18n keys added to **all** locales (CI parity gate).
 5. **Port-0 fix** — `EmbeddedHost.listen()` (`apps/electron/src/main/trigger-server/host.ts`) returns the actual bound port (`Promise<number>`, read from `httpServer.address()`, mirroring `packages/server-core/src/transport/server.ts`); the supervisor (`supervisor.ts`) health-checks, stores (`boundPort`), logs, and reports (GET_STATUS) the actual port. Configured non-zero ports (3847 default, 9100 in real use) behave byte-identically.
 6. **Tests** — host returns bound port (incl. port 0); supervisor starts healthy with `port: 0` and reports the real port; updater config load/save/validation/defaults; RPC handler validation.
@@ -67,7 +67,7 @@ Sequencing note: until PLAN-019 flips `publish:` in `electron-builder.yml`, pack
 - [ ] i18n keys present in all locales (parity + sort + coverage gates green).
 - [ ] Tests added/updated (host, supervisor port-0, updater config, RPC validation); shared + apps/server suites green.
 - [ ] All seven validate-pr gates green; branding gate untouched.
-- [ ] LEARNING-021 referenced from the fix commit/PR.
+- [ ] The port-0 learning (`vorno-internal:learnings/LEARNING-021-*`, private) referenced from the fix commit/PR.
 
 ## Status log
 

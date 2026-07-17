@@ -18,14 +18,22 @@ roadmap/
 ├── decisions/                     # ADRs (Architecture Decision Records)
 │   └── _template.md
 ├── discussions/                   # Captured conversations, dossiers, research
-├── learnings/                     # Debugging insights — non-obvious fixes captured for next time
-│   └── _template.md
 └── upstream/                      # Tracking lukilabs/craft-agents-oss
-    ├── HEAD.md                    # Last sync state
-    ├── delta.md                   # What we own that upstream doesn't
-    ├── compatibility.md           # Wire/protocol commitments
-    └── contribution-candidates.md # Things we might PR back upstream
+    ├── compatibility.md           # Wire/protocol commitments (public)
+    └── README.md                  # How upstream tracking works
 ```
+
+> **Public / private split.** This directory is the **public** roadmap
+> (`Swagatar-LLC/vorno`). Internal-only material lives in the private repo
+> **`Swagatar-LLC/vorno-internal`** (same subpaths):
+>
+> - `learnings/` — debugging insights (next id **030**; new LEARNINGs land there).
+> - `upstream/HEAD.md`, `upstream/delta.md`, `upstream/contribution-candidates.md`
+>   — upstream sync logs and owned-diff tracking.
+> - A handful of internal plans and one discussion.
+>
+> Everything remaining under `roadmap/` here is public. Cross-links to internal
+> material use the form `vorno-internal:learnings/LEARNING-NNN-...` (private repo).
 
 ## How to use this system
 
@@ -44,7 +52,7 @@ Skills in `.agents/skills/` self-drive this system. They're equally readable by 
 - `[skill:roadmap-plan-advance]` — move a plan to the next status (folder)
 - `[skill:roadmap-status]` — print a status overview
 - `[skill:upstream-sync]` — merge the latest upstream release
-- `[skill:upstream-delta-report]` — refresh `upstream/delta.md`
+- `[skill:upstream-delta-report]` — refresh the upstream delta log (in `vorno-internal`)
 
 The root `AGENTS.md` and `CLAUDE.md` point any agent that lands here at this system.
 
@@ -63,11 +71,11 @@ A plan **must** have frontmatter (id, title, status, direction, owner, created).
 - **Decision** — a load-bearing architectural commitment we'd need to revisit deliberately. Numbered, immutable once accepted (supersede with a new ADR).
 - **Plan** — a unit of work moving through status folders. May be small or large.
 - **Discussion** — captured thinking. Never authoritative; references for plans/decisions to draw from.
-- **Learning** — a captured debugging insight: signal, root cause, fix, recurrence, prevention. Written *during the fix*, not after the project. See [`learnings/`](learnings/) and the hard rule in [`AGENTS.md`](../AGENTS.md).
+- **Learning** — a captured debugging insight: signal, root cause, fix, recurrence, prevention. Written *during the fix*, not after the project. Learnings now live in the private `vorno-internal` repo (`learnings/`, next id 030); see the hard rule in [`AGENTS.md`](../AGENTS.md).
 
 ## Upstream relationship
 
-We are a fork of [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss) at [Swagatar-LLC/craft-agents-oss](https://github.com/Swagatar-LLC/craft-agents-oss). We aim to:
+We are a fork of [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss) at [Swagatar-LLC/vorno](https://github.com/Swagatar-LLC/vorno). We aim to:
 
 1. Stay **wire/protocol compatible** with upstream as long as feasible (`MessageEnvelope`, `AgentEvent`, source/skill conventions).
 2. Contribute portable improvements back upstream when valuable.

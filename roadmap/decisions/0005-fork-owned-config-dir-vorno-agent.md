@@ -14,9 +14,10 @@ superseded-by: []
 Upstream Craft Agents and this fork both defaulted `CONFIG_DIR` to
 `~/.craft-agent`. Running them side-by-side collides on
 `~/.craft-agent/.server.lock` and cross-contaminates config, workspaces, and
-credentials (LEARNING-002). The only mitigation was manually exporting
-`CRAFT_CONFIG_DIR`, which a consulting client can never be required to do.
-VOR-2 (VORNO M1 "Nameplate") makes isolation automatic.
+credentials (`vorno-internal:learnings/LEARNING-002-*`, private). The only
+mitigation was manually exporting `CRAFT_CONFIG_DIR`, which a consulting client
+can never be required to do. The VORNO M1 "Nameplate" work (tracked internally)
+makes isolation automatic.
 
 ## Decision
 
@@ -50,7 +51,7 @@ VOR-2 (VORNO M1 "Nameplate") makes isolation automatic.
 ## Consequences
 
 - Fork and upstream stable coexist with zero shared state by default;
-  prerequisite for shipping installers (VOR-2 customer value).
+  prerequisite for shipping installers (customer value; tracked internally).
 - Wire compatibility is unaffected — this is a local filesystem concern only.
 - Slightly larger upstream-merge surface: `paths.ts` diverges, and a handful of
   previously hardcoded `~/.craft-agent` literals now route through
@@ -58,4 +59,5 @@ VOR-2 (VORNO M1 "Nameplate") makes isolation automatic.
   interceptor, provider-domains cache, browser-tools prerequisite).
 - Startup logs one line stating which dir is active and why
   (`[config-dir] Using … — …`) in both Electron main and headless server.
-- LEARNING-002 is resolved; see that entry for the incident history.
+- The credential-bleed incident is resolved; see
+  `vorno-internal:learnings/LEARNING-002-*` (private) for the incident history.

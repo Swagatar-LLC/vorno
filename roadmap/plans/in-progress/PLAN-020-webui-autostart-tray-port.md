@@ -14,7 +14,7 @@ blocked-by: []
 
 > **Plan numbering note:** the orchestrator provisionally assigned PLAN-018, but PLAN-018
 > (updater feed config + port0 health fix) and PLAN-019 (Vorno rebrand + signed release
-> pipeline) are already claimed by session `260713-quiet-orchid` (worktrees
+> pipeline) are already claimed by a parallel session (worktrees
 > `craft-agents-oss-plan018` / `craft-agents-oss-plan019`). This plan is **PLAN-020**;
 > all fork markers in code use `fork(PLAN-020)`.
 
@@ -135,7 +135,7 @@ side.
   needed (the browser's WS goes to `instance.wsServer` directly).
 - Default `3848`: adjacent to trigger-server 3847, verified unused in the repo (as are
   3846/3849; 9100 is headless RPC). Pending PLAN-019 port-reservation confirmation from
-  quiet-orchid (§Coordination).
+  the parallel session (§Coordination).
 - Validation mirrors the trigger-server IPC handler: 1024–65535, and reject equality with
   the trigger-server's configured port.
 
@@ -344,7 +344,7 @@ dispose(): Promise<void>                         // quit path; desired state unt
    degrades to supervisor `error` state, not a crash.
 6. **WS-6 — Integration verification + docs (after 1–5).**
    Files: this plan's status log, `roadmap/upstream/compatibility.md` audit entry,
-   packaged-build smoke per LEARNING-011 recipe.
+   packaged-build smoke per `vorno-internal:learnings/LEARNING-011-*` (private) recipe.
    Accept: packaged app fresh-profile run → both listeners up; browser login →
    workspace/sessions visible; trigger-server stop leaves WebUI running and vice versa;
    `apps/server` tests + typecheck + full CI matrix green.
@@ -352,7 +352,7 @@ dispose(): Promise<void>                         // quit path; desired state unt
 File-collision check: `index.ts` only WS-3; `types.ts`/protocol files only WS-1;
 `config.ts` + `main/webui/*` only WS-2; settings page + locales only WS-4; build scripts
 only WS-5. Root `package.json` (WS-5) is the single file PLAN-019 might also touch —
-sequence that one edit with quiet-orchid.
+sequence that one edit with the parallel session.
 
 ## Test plan
 
@@ -363,12 +363,12 @@ sequence that one edit with quiet-orchid.
   fallback), config (nested merge, env overrides, defaults `enabled=true`/`webui.enabled=true`/
   `port=3848`, persistence round-trip).
 - **Wire-format:** `ipc-channels.test.ts` (regenerated) + `routing.test.ts`
-  exhaustiveness — LEARNING-013 gates.
+  exhaustiveness — `vorno-internal:learnings/LEARNING-013-*` (private) gates.
 - **i18n:** parity/sorted/coverage gates across 7 locales.
 - **Manual dev smoke:** `bun run webui:build` → launch dev Electron → tray shows both;
   `curl -X POST 127.0.0.1:3848/api/auth` with settings password → cookie → browser loads
   SPA → sessions list renders (proves WS cookie auth against ephemeral-port wsServer).
-- **Packaged smoke (LEARNING-011 recipe):** fresh `CRAFT_CONFIG_DIR`, packaged DMG:
+- **Packaged smoke (`vorno-internal:learnings/LEARNING-011-*` (private) recipe):** fresh `CRAFT_CONFIG_DIR`, packaged DMG:
   both autostart; WebUI login from Safari; stop WebUI from tray (trigger-server stays up);
   change port in settings → restart-to-apply → new port serves.
 - **CI:** all seven `validate-pr.yml` gates; branding gate unaffected (new files scanned,
@@ -386,7 +386,7 @@ sequence that one edit with quiet-orchid.
 | `copy-assets.ts` / `validate-assets.ts` / root `package.json` | **Low-medium** | Small scripts upstream occasionally touches; edits are additive blocks. Root `package.json` shared with PLAN-019 — coordinate merge order |
 | Wire protocol | **None** | New channels are `craft-fork:*` LOCAL_ONLY (compatibility.md contract: additive namespace, never proxied). `validateSessionCookie`/cookie-WS auth uses upstream's own mechanism — no envelope/close-code changes |
 
-## Coordination with PLAN-018/PLAN-019 (session 260713-quiet-orchid)
+## Coordination with PLAN-018/PLAN-019 (parallel session)
 
 Questions sent 2026-07-13 (config-key renames, tray identity, port reservations, PLAN
 numbers, WebUI branding timing, packaging surface). **Reply pending at time of writing** —
@@ -399,8 +399,9 @@ assumptions to reconcile on receipt:
    icons/product strings independently.
 4. WebUI ships with **current branding**; PLAN-019 sweeps it later (branding-gate keeps
    strings centralized).
-5. PLAN-018 (quiet-orchid) touches updater feed + a port0 health fix — if that fix lands in
+5. PLAN-018 (parallel session) touches updater feed + a port0 health fix — if that fix lands in
    `TriggerServerSupervisor`/health-probe code, WS-2 mirrors the corrected pattern.
+
 
 ## Security considerations
 
@@ -432,16 +433,16 @@ assumptions to reconcile on receipt:
 
 ## Status log
 
-- `2026-07-13` — created in `planned/` (architect session 260713-swift-shoal; renumbered
+- `2026-07-13` — created in `planned/` (architect session; renumbered
   from provisional PLAN-018 → PLAN-020, 018/019 claimed by rebrand/updater tracks)
-- `2026-07-13` — implemented on branch `jh/2026-07-13_PLAN-020_webui-autostart`
-  (orchestrator session 260713-fit-moor) via 5 fan-out workstreams:
+- `2026-07-13` — implemented on branch `2026-07-13_PLAN-020_webui-autostart`
+  (orchestrator session) via 5 fan-out workstreams:
   - WS-1 protocol/types + WS-2 config/supervisor/handler/host (commit `5fb57a1a`)
   - WS-3 main wiring/tray + WS-4 settings UI/i18n (commit `9705cdf7`)
   - WS-5 packaging/build chain (commit `07ad0aa9`)
   Auth crux verified against source before build: `validateSessionCookie` bootstrap
   passthrough (`transport/server.ts:439`) + tokenless WS upgrade in the webui adapter.
-  Coordinated with 260713-quiet-orchid (PLAN-018/019): port 3848 reserved, CRAFT_* env
+  Coordinated with the parallel session (PLAN-018/019): port 3848 reserved, CRAFT_* env
   + `server-config.json` names retained, no `electron-builder.yml` edit (root
   `package.json` webui:build add is conflict-free), new strings routed through i18n +
   branding module. PR sequencing agreed: PLAN-018 first, then this.
@@ -450,12 +451,12 @@ assumptions to reconcile on receipt:
   and `webui:build → copy-assets → validate-assets` producing `dist/resources/webui/`.
   **Deferred to WS-6 follow-up:** after PLAN-018 merges to `main`, align
   `main/webui/host.ts` with the `EmbeddedHost.listen() → Promise<number>` signature;
-  packaged fresh-profile smoke per LEARNING-011 (browser login → session list); then
+  packaged fresh-profile smoke per `vorno-internal:learnings/LEARNING-011-*` (private) (browser login → session list); then
   move to `done/`.
 - `2026-07-13` — opened PR #71 (`Swagatar-LLC/craft-agents-oss`). Merge sequencing
-  agreed with 260713-quiet-orchid: **#69 (PLAN-018) → #71 (this) → #70 (PLAN-019
+  agreed with the parallel session: **#69 (PLAN-018) → #71 (this) → #70 (PLAN-019
   rebrand)**. Rebase-on-#69 is additive keep-both in three shared files (confirmed by
-  quiet-orchid's review): `apps/electron/src/main/index.ts` (updater-config init near
+  the parallel session's review): `apps/electron/src/main/index.ts` (updater-config init near
   the auto-update setup), `packages/shared/src/protocol/channels.ts` (new
   `craft-fork:updates:getFeedConfig/setFeedConfig`), and
   `apps/electron/src/shared/__tests__/ipc-channels.test.ts` (EXPECTED_CHANNELS entries)

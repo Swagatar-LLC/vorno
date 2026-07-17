@@ -11,7 +11,7 @@ superseded-by: []
 
 ## Context
 
-We are a fork of [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss) hosted at [Swagatar-LLC/craft-agents-oss](https://github.com/Swagatar-LLC/craft-agents-oss). Upstream is actively developed (releases roughly weekly). We have non-trivial original work landed (HTTP trigger server, dual-transport WebSocket, governance system, canvas paradigm direction).
+We are a fork of [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss) hosted at [Swagatar-LLC/vorno](https://github.com/Swagatar-LLC/vorno). Upstream is actively developed (releases roughly weekly). We have non-trivial original work landed (HTTP trigger server, dual-transport WebSocket, governance system, canvas paradigm direction).
 
 We need a clear posture toward upstream so future merges, contributions, and divergences are deliberate rather than accidental.
 
@@ -21,9 +21,9 @@ We adopt a **wire-compatible, deliberately-divergent** posture:
 
 1. **Sync with upstream on every release tag.** A scheduled `[skill:upstream-sync]` workflow handles the mechanical merge.
 2. **Stay wire/protocol compatible** with upstream's `MessageEnvelope`, `AgentEvent`, source/skill conventions, and CRDT contracts (when added). Breaking these requires a new ADR.
-3. **Contribute portable improvements upstream** when value is clear and our maintenance cost is lower outside our fork. Tracked in `roadmap/upstream/contribution-candidates.md`.
+3. **Contribute portable improvements upstream** when value is clear and our maintenance cost is lower outside our fork. Tracked in the private `contribution-candidates.md` (`vorno-internal`).
 4. **Diverge deliberately** on direction (canvas paradigm, contribution model, observability) where upstream's roadmap doesn't align. Diverged code lives in `apps/server/`, the new canvas surface, the contribution registry, etc. — clearly separated from upstream packages.
-5. **Track our owned diffs** in `roadmap/upstream/delta.md`. Refreshed on every upstream sync via `[skill:upstream-delta-report]`.
+5. **Track our owned diffs** in the private `delta.md` (`vorno-internal`). Refreshed on every upstream sync via `[skill:upstream-delta-report]`.
 
 ## Consequences
 

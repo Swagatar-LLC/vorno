@@ -49,7 +49,7 @@ git diff --stat main..upstream/main | tail -20
 
 Summarize the new versions/commits to the user before proceeding. If 0 commits behind → report and exit.
 
-> **Versioning (ADR-0010):** upstream tags are *their* releases, not ours. A sync brings features in; it never drives a Vorno version bump, and upstream `v*` tags are never pushed to `origin` (nor ours to `upstream`). Record the Vorno-version ⇄ upstream-tag mapping in `roadmap/upstream/HEAD.md`.
+> **Versioning (ADR-0010):** upstream tags are *their* releases, not ours. A sync brings features in; it never drives a Vorno version bump, and upstream `v*` tags are never pushed to `origin` (nor ours to `upstream`). Record the Vorno-version ⇄ upstream-tag mapping in `INTERNAL_DIR/upstream/HEAD.md` (private `vorno-internal` repo — see Step 6).
 
 ### Step 3 — Branch and merge
 
@@ -155,9 +155,9 @@ Merge upstream releases <list> into our fork.
 
 After CI passes and PR merges, update:
 
-- `roadmap/upstream/HEAD.md` — last merged tag, commit, merge PR link, date
-- `roadmap/upstream/delta.md` — refresh via `[skill:upstream-delta-report]`
-- `roadmap/upstream/compatibility.md` — add audit-log entry if any contracts touched
+- `INTERNAL_DIR/upstream/HEAD.md` — last merged tag, commit, merge PR link, date. `INTERNAL_DIR` is the local checkout of the private `Swagatar-LLC/vorno-internal` repo (maintainer convention: `~/dev/vorno-internal`) — the sync logs moved there when the main repo went public (2026-07-17). Commit and push `vorno-internal` after updating.
+- `INTERNAL_DIR/upstream/delta.md` — refresh via `[skill:upstream-delta-report]` (same repo)
+- `roadmap/upstream/compatibility.md` — public, stays in the main repo; add audit-log entry if any contracts touched
 
 ## Constraints
 

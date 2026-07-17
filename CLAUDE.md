@@ -4,7 +4,7 @@ This is the root context file for Claude Code working in this repo. Mirrors [`AG
 
 ## What this repo is
 
-A fork of [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss) maintained at [Swagatar-LLC/craft-agents-oss](https://github.com/Swagatar-LLC/craft-agents-oss). Bun monorepo. Wire-compatible with upstream, deliberately divergent on direction.
+A fork of [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss) maintained at [Swagatar-LLC/vorno](https://github.com/Swagatar-LLC/vorno). Bun monorepo. Wire-compatible with upstream, deliberately divergent on direction.
 
 ## Read these first
 

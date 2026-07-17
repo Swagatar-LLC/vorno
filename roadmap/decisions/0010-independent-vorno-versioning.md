@@ -16,7 +16,7 @@ Through v0.11.1 the fork's version numbers mirrored upstream's release tags: an 
 Two things changed:
 
 1. **Vorno released ahead of upstream.** v0.11.2 (2026-07-13) is a fork-authored release — Developer ID signing + notarization, the fork-owned update feed, the tag-triggered release pipeline — with no upstream counterpart. Upstream will eventually publish its own 0.11.2, and the two would collide: in git tags, in the release feed's semver ordering, and in the in-app "What's New" panel (release-notes files are keyed by version string).
-2. **Vorno is now treated as a semi-polished product** (VORNO program, VOR-1..37): signed, notarized, auto-updating, with its own icon, branding, changelog, and release feed. A product's version is a promise to its users about *its own* releases, not a mirror of someone else's.
+2. **Vorno is now treated as a semi-polished product** (VORNO productization program, tracked internally): signed, notarized, auto-updating, with its own icon, branding, changelog, and release feed. A product's version is a promise to its users about *its own* releases, not a mirror of someone else's.
 
 ## Decision
 
@@ -25,10 +25,10 @@ Two things changed:
 Elaboration:
 
 - The version in `apps/electron/package.json`, git `v*` tags, the update feed (`Swagatar-LLC/vorno-releases`), and `release-notes/{version}.md` files are all **Vorno-owned** from 0.11.2 onward. Versions ≤ 0.11.1 remain historically shared with upstream.
-- Upstream syncs are **features-in, not versions-in**: an upstream merge never changes Vorno's version, and upstream release tags are tracked by their own tag names in `roadmap/upstream/HEAD.md` and `compatibility.md` — that mapping (Vorno version ⇄ last-merged upstream tag) is the compatibility record.
+- Upstream syncs are **features-in, not versions-in**: an upstream merge never changes Vorno's version, and upstream release tags are tracked by their own tag names in the private upstream `HEAD.md` (`vorno-internal`) and public `compatibility.md` — that mapping (Vorno version ⇄ last-merged upstream tag) is the compatibility record.
 - **Release notes**: upstream's `release-notes/{version}.md` files are no longer adopted as versioned files during syncs. Notable upstream features folded in by a sync get summarized as bullets in `next.md` (attributed "from upstream") and ship under the next Vorno version. Existing upstream-authored files ≤ 0.11.1 stay as history.
 - **Wire compatibility is unaffected.** The protocol contract (`roadmap/upstream/compatibility.md`) is orthogonal to version numbering; audits continue per upstream merge exactly as before.
-- Version bumps follow semver by Vorno's own release content: patch for fixes, minor for features, and 1.0 when the VORNO program ladder (VOR-1..37) says the product promise is met.
+- Version bumps follow semver by Vorno's own release content: patch for fixes, minor for features, and 1.0 when the VORNO program ladder (tracked internally) says the product promise is met.
 
 ## Consequences
 
@@ -40,7 +40,7 @@ Elaboration:
 
 ### Negative
 
-- A Vorno version no longer telegraphs which upstream it contains; you must consult `roadmap/upstream/HEAD.md` / `compatibility.md` for the mapping.
+- A Vorno version no longer telegraphs which upstream it contains; you must consult the private upstream `HEAD.md` (`vorno-internal`) / public `compatibility.md` for the mapping.
 - Upstream-sync conflict resolution gains two standing rules (version stamp = ours; upstream release-notes files = don't adopt).
 
 ### Neutral
@@ -58,4 +58,4 @@ Elaboration:
 - [ADR-0009](0009-vorno-rebrand-appid-release-feed-signing.md) — rebrand, appId, release feed, signing (the release infrastructure this decision builds on)
 - [`roadmap/upstream/compatibility.md`](../upstream/compatibility.md) — wire-contract audits (unchanged by this ADR)
 - [`.agents/skills/upstream-sync/SKILL.md`](../../.agents/skills/upstream-sync/SKILL.md) — sync mechanics updated per this ADR
-- VORNO program hub (Notion, VOR-1..37) — product ladder to 1.0
+- VORNO program hub (internal) — product ladder to 1.0

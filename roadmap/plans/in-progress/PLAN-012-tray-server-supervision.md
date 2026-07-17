@@ -12,9 +12,9 @@ blocked-by: []
 
 # PLAN-012 — Tray-based server supervision (embedded trigger-server host)
 
-Design for a macOS menu-bar (tray) presence in the Electron desktop app that supervises the fork's HTTP trigger server (`apps/server`): start/stop/status with visible state, working in the **packaged** build. This plan defines the **Embedded host** from the approved "Inbound Webhooks & Headless Server — Design Spec" (Notion, approved 2026-07-06); the Standalone/headless host is the parallel track (VOR "Headless server mode" ticket, referred to here as PLAN-013 scope).
+Design for a macOS menu-bar (tray) presence in the Electron desktop app that supervises the fork's HTTP trigger server (`apps/server`): start/stop/status with visible state, working in the **packaged** build. This plan defines the **Embedded host** from the approved "Inbound Webhooks & Headless Server — Design Spec" (internal spec, `vorno-internal`, approved by the maintainer 2026-07-06); the Standalone/headless host is the parallel track ("Headless server mode", referred to here as PLAN-013 scope).
 
-Board tracking: design = VOR-38. Implementation = VOR-41 (tray core + supervision, packaged DMG with working start/stop/status) and VOR-42 (packaged-build smoke verification). VOR-11 (launch-at-login, tray-residency polish) is deliberately **out of scope** here.
+Board tracking: design and implementation tracked internally. Implementation covers tray core + supervision (packaged DMG with working start/stop/status) and packaged-build smoke verification. Launch-at-login and tray-residency polish are tracked internally and are deliberately **out of scope** here.
 
 This is a design doc only — no implementation code ships in this PR, except ADR-0007 which is included (see §3).
 
@@ -22,7 +22,7 @@ This is a design doc only — no implementation code ships in this PR, except AD
 
 ## Goal
 
-From the menu bar, Jeff can see whether the trigger server is running, start/stop it, and trust the same behavior in the packaged DMG — with the server's webhook/automation seam wired to the desktop's own `AutomationSystem`/`SessionManager` per the approved spec, and nothing precluding the standalone headless mode.
+From the menu bar, the maintainer can see whether the trigger server is running, start/stop it, and trust the same behavior in the packaged DMG — with the server's webhook/automation seam wired to the desktop's own `AutomationSystem`/`SessionManager` per the approved spec, and nothing precluding the standalone headless mode.
 
 ## Scope
 
@@ -30,13 +30,13 @@ From the menu bar, Jeff can see whether the trigger server is running, start/sto
 - A supervised **embedded host** for the trigger server inside the Electron main process.
 - Completion of the currently-unwired `RemoteAccessSettingsPage` seam (types + IPC handlers).
 - `craft-fork:*` IPC surface for config/status/control.
-- Packaged-build verification plan (LEARNING-011 recipe).
+- Packaged-build verification plan (`vorno-internal:learnings/LEARNING-011-*` (private) recipe).
 
 ## Non-goals
 
-- Launch-at-login / login-item, dock hiding, single-instance tray polish (VOR-11).
+- Launch-at-login / login-item, dock hiding, single-instance tray polish (tracked internally).
 - Windows/Linux tray parity (tracked as follow-up; design notes included).
-- Webhook receiver implementation itself (VOR-33/34 tickets; this plan only guarantees the host seam it needs).
+- Webhook receiver implementation itself (tracked internally; this plan only guarantees the host seam it needs).
 - Standalone/headless server packaging (PLAN-013 scope).
 - SSO/IAM for the hosted offering (separate research spike per the spec).
 
@@ -69,7 +69,7 @@ The child-process path is cheaper than originally feared — bun is already vend
 
 1. **The callback seam cannot cross a process boundary.** The approved spec fixes the receiver-to-automation seam as a **constructor-injected callback** (`onWebhookEvent(workspaceId, payload)`, same shape as `onPromptsReady`) wired to *the desktop host's* `AutomationSystem`/`SessionManager`. A bun child would force a bespoke IPC bridge (child → main forwarding protocol) that reimplements the seam as a wire protocol — exactly the kind of parallel machinery the spec rejected for the receiver itself.
 2. **Two session-creation worlds.** A child process either runs its own `CraftAgent` pool (sessions invisible to the live desktop UI, duplicated agent spawning, PLAN-011's keep-alive toggle and other fork settings resolved in a second process) or bridges everything back anyway.
-3. **Packaging risk.** Every bundling change re-enters LEARNING-011 territory (staging, collector, silent `extraResources` skips). In-process embedding needs **zero** electron-builder changes: the server code is workspace TS compiled into `main.cjs` by the existing esbuild step, and `ws` is already bundled there for `WsRpcServer`. "Works in the packaged build" becomes true by construction (still smoke-verified, §8).
+3. **Packaging risk.** Every bundling change re-enters the packaging pitfalls captured in `vorno-internal:learnings/LEARNING-011-*` (private) (staging, collector, silent `extraResources` skips). In-process embedding needs **zero** electron-builder changes: the server code is workspace TS compiled into `main.cjs` by the existing esbuild step, and `ws` is already bundled there for `WsRpcServer`. "Works in the packaged build" becomes true by construction (still smoke-verified, §8).
 4. **Supervision is simpler and more truthful.** In-process, "status" is direct object state, not PID-liveness inference; port conflicts surface synchronously from `listen()`; stop is `close()` + drain, not SIGTERM/SIGKILL escalation.
 
 ### Alternatives considered (summarized; full treatment in ADR-0007)
@@ -95,7 +95,7 @@ apps/server/src/
 ```ts
 export interface HostBridge {
   // Spec seam — same shape as AutomationSystem's onPromptsReady. The webhook
-  // receiver (VOR-33) emits through this; PLAN-012 only guarantees it exists.
+  // receiver (tracked internally) emits through this; PLAN-012 only guarantees it exists.
   onWebhookEvent?: (workspaceId: string, payload: WebhookIngestEvent) => void
   // Optional session routing (see §6 open question 2)
   createSession?: (...) => Promise<...>
@@ -162,7 +162,7 @@ stateDiagram-v2
 
 ## 4. Tray UX
 
-macOS menu bar first (Jeff's daily-driver platform). `Tray` + `nativeImage` template images (`resources/tray/serverTemplate.png` + `@2x`, 16 pt, monochrome per macOS HIG so it adapts to light/dark/tint) with a state variant: plain glyph = stopped, glyph+dot = running, glyph+exclamation = error. `setToolTip` mirrors the status line.
+macOS menu bar first (the maintainer's daily-driver platform). `Tray` + `nativeImage` template images (`resources/tray/serverTemplate.png` + `@2x`, 16 pt, monochrome per macOS HIG so it adapts to light/dark/tint) with a state variant: plain glyph = stopped, glyph+dot = running, glyph+exclamation = error. `setToolTip` mirrors the status line.
 
 Menu (rebuilt on each supervisor state change):
 
@@ -180,7 +180,7 @@ Show <App Window>                              (focus/create main window)
 
 Notes:
 
-- No "Quit" item in v1 — quit stays in the app/dock menu; tray-residency behavior (app alive with windows closed, login item) is VOR-11's scope and this menu must not half-implement it.
+- No "Quit" item in v1 — quit stays in the app/dock menu; tray-residency behavior (app alive with windows closed, login item) is tracked internally and this menu must not half-implement it.
 - The FORK badge contract stays renderer-side and untouched; the tray tooltip includes the fork name so upstream-stable running side-by-side is never ambiguous.
 - Tray strings go through main-process i18n (all 7 locales, parity lint applies).
 - Windows/Linux: `Tray` is cross-platform and the design carries over (Windows needs `.ico`, Linux appindicator quirks); ship darwin-first, gate creation on platform, follow-up ticket for parity.
@@ -237,7 +237,7 @@ No push event in v1 — the page already polls at 5 s and the tray is in-process
 - **Binding:** default `127.0.0.1`; `0.0.0.0` remains an explicit user choice with the existing red warning. The tray "Copy Server URL" copies the actual bound host.
 - **API keys:** unchanged model — `craft_sk_*` shown once, SHA-256 at rest, constant-time compare in auth middleware, rate limiting per key. IPC never carries hashes; only prefix + metadata.
 - **Subprocess-env contract untouched:** the embedded host does not touch `packages/shared/src/agent/options.ts` semantics. In-process embedding means agent sessions triggered via the server spawn through the same desktop code paths (same `buildClaudeSubprocessEnv`, same `DISABLE_GROWTHBOOK=1` pin) — strictly better than the dead spawn seam, which forwarded raw `ANTHROPIC_API_KEY` etc. into a child env.
-- **Unauthenticated surface** stays `/health` only in this plan (the webhook capability-URL route class arrives with VOR-33 and has its own verification ladder per the spec).
+- **Unauthenticated surface** stays `/health` only in this plan (the webhook capability-URL route class arrives with the webhook implementation tracked internally and has its own verification ladder per the spec).
 - **CORS** middleware unchanged (permissive, localhost-first); revisit when standalone/hosted mode exposes it publicly (PLAN-013).
 - Fork-retained features unaffected by construction: token-usage indicator, ADR-0005 config isolation (all paths via `CONFIG_DIR`), branding gate (no product-name strings in new UI copy), fast mode, PLAN-011 keep-alive (single process → single resolution), FORK badge. The standalone Bun entry keeps dual-transport + auth middleware byte-compatible.
 
@@ -245,7 +245,7 @@ No push event in v1 — the page already polls at 5 s and the tray is in-process
 
 **Packaging plan: no packaging changes.** The embedded host is TypeScript compiled into `dist/main.cjs` by the existing `build:main` esbuild step (only `electron` and the Claude SDK are external; `ws` already bundles). No new binaries, no `electron-builder.yml` edits, no `build-dmg.sh` edits, no size impact beyond ~1–2 MB of bundled JS. The vendored bun and the `bun build` CI gate for the standalone server are unchanged. This is the primary reason Option A wins on the "must work packaged" acceptance criterion.
 
-**Mandatory packaged-build verification (LEARNING-011 recipe), performed in the implementation PR:**
+**Mandatory packaged-build verification (`vorno-internal:learnings/LEARNING-011-*` (private) recipe), performed in the implementation PR:**
 
 ```bash
 PATH="/opt/homebrew/opt/node@22/bin:$PATH" CRAFT_DEV_RUNTIME=1 \
@@ -267,22 +267,22 @@ Checklist against the produced `.app` with a **throwaway config dir** (`CRAFT_CO
 
 Sized as **two implementation PRs** mapping to the board:
 
-**PR-1 — VOR-41 (supervision + tray + IPC):**
+**PR-1 (supervision + tray + IPC):**
 
-1. Extract `createTriggerServer()` core + split `ws-transport.ts` into protocol logic and socket adapter; Bun entry re-composed on top, behavior-identical (`apps/server` tests + `bun build` gate stay green). Define `HostBridge` with `onWebhookEvent` (wired to a no-op logger until VOR-33) .
+1. Extract `createTriggerServer()` core + split `ws-transport.ts` into protocol logic and socket adapter; Bun entry re-composed on top, behavior-identical (`apps/server` tests + `bun build` gate stay green). Define `HostBridge` with `onWebhookEvent` (wired to a no-op logger until the webhook receiver lands) .
 2. Node host adapter (`trigger-server/host.ts`): fetch bridge with SSE streaming + `ws` upgrade path through the socket adapter.
 3. `TriggerServerSupervisor` + `before-quit` integration + autostart-on-launch reconciliation.
 4. Channels/routing/DTOs/handlers/channel-map/preload types + `ipc-channels.test.ts`; define `RemoteAccess*` types so `RemoteAccessSettingsPage` typechecks; verify its settings-navigator registration.
 5. Tray (`trigger-server/tray.ts`) + template icons + i18n (7 locales, parity lints).
 6. Tests: supervisor state machine (start/stop/error/port-conflict with an injected fake host); fetch-bridge unit tests (headers, streaming, body cap); ws-adapter handshake/close-code parity tests reusing existing ws-transport test fixtures if present; `apps/server` suite unchanged and green (strict CI gate).
 
-**PR-2 — VOR-42 (packaged verification + fixes):** run §8 end-to-end, fix what it surfaces, capture any non-obvious packaging insight as a `LEARNING-NNN`, attach the checklist results to the PR.
+**PR-2 (packaged verification + fixes):** run §8 end-to-end, fix what it surfaces, capture any non-obvious packaging insight as a learning in `vorno-internal`, attach the checklist results to the PR.
 
 If PR-1 reviews too large, the natural split line is steps 1–2 (server-side refactor, standalone-only risk) from 3–6 (Electron-side) — but the packaged acceptance only holds with both, so prefer one PR.
 
-## 10. Packaged-build verification results (VOR-42 — 2026-07-09)
+## 10. Packaged-build verification results (2026-07-09)
 
-Ran the §8 checklist against a real packaged arm64 DMG built with the canonical LEARNING-011 recipe. Every **automatable** item passed. Items requiring a human looking at pixels are listed at the end.
+Ran the §8 checklist against a real packaged arm64 DMG built with the canonical `vorno-internal:learnings/LEARNING-011-*` (private) recipe. Every **automatable** item passed. Items requiring a human looking at pixels are listed at the end.
 
 ### Build
 
@@ -291,9 +291,9 @@ Ran the §8 checklist against a real packaged arm64 DMG built with the canonical
 - Staging verified present in the bundle: `@anthropic-ai/claude-agent-sdk` v0.3.197, `@anthropic-ai/claude-agent-sdk-binary/claude` (224 MB native), `@vscode/ripgrep/bin/rg`, `vendor/bun` (57.5 MB), `dist/main.cjs` (43.7 MB). No "Cannot find module" at launch.
 - Bundled runtime: **Electron 39.2.7 / Node 22.21.1** (queried via `ELECTRON_RUN_AS_NODE=1`).
 
-### Method notes (see LEARNING-015)
+### Method notes (see `vorno-internal:learnings/LEARNING-015-*` (private))
 
-Verification ran while Jeff's daily-driver app was live, so the throwaway instance was isolated with **both** `CRAFT_CONFIG_DIR=/tmp/vor42-cfg` **and** `--user-data-dir=/tmp/vor42-userdata` (the single-instance lock is keyed on userData, not `CRAFT_CONFIG_DIR`; without the second flag the launch is bounced and quits silently). Packaged production builds disable all electron-log transports, so every check below was made through the **HTTP surface / process observation**, never logs. Port 34871 used throughout. Jeff's daily-driver (PID 45598) was untouched.
+Verification ran while the maintainer's daily-driver app was live, so the throwaway instance was isolated with **both** `CRAFT_CONFIG_DIR=/tmp/vor42-cfg` **and** `--user-data-dir=/tmp/vor42-userdata` (the single-instance lock is keyed on userData, not `CRAFT_CONFIG_DIR`; without the second flag the launch is bounced and quits silently). Packaged production builds disable all electron-log transports, so every check below was made through the **HTTP surface / process observation**, never logs. Port 34871 used throughout. The maintainer's daily-driver (PID 45598) was untouched.
 
 ### Checklist results
 
@@ -306,16 +306,16 @@ Verification ran while Jeff's daily-driver app was live, so the throwaway instan
 | 3b | API key via provisioning CLI (same config dir) → authorized 200 **live** | PASS | `--generate-api-key` wrote the hash to the shared `server-config.json`; `Bearer <key>` on `/api/workspaces` returned 200 with **no restart** (router calls `loadServerConfig()` per request, `router.ts:64`). |
 | 3c | Rate limit → 429 | PASS | 30 authorized reqs/min succeeded, the next 7 returned 429 (`X-RateLimit-Remaining`, `Retry-After:60`). |
 | 4a | WS handshake (`/ws`) | PASS | 101 upgrade; full protocol handshake with the key returned `handshake_ack` (clientId + registeredChannels). Bad path `/nope` correctly refused (socket destroyed). |
-| 4b | SSE reachability / no-hang | PASS (partial) | `curl -N` on `/api/sessions/<none>/events` with key returned 404 in <1 ms (fetch-bridge streams and does not hang). Full SSE event stream needs a live session (workspace + LLM key) the throwaway config lacks — see "needs Jeff". |
+| 4b | SSE reachability / no-hang | PASS (partial) | `curl -N` on `/api/sessions/<none>/events` with key returned 404 in <1 ms (fetch-bridge streams and does not hang). Full SSE event stream needs a live session (workspace + LLM key) the throwaway config lacks — see "needs the maintainer". |
 | 5 | Port conflict → error state, no crash, no port theft | PASS | Occupied 34871 with a dummy listener, then launched: app main process stayed alive (`ps` STAT `SN`), the squatter kept the port, the app bound nothing. `EADDRINUSE` caught at `listen()` → supervisor error state (message not observable — logs off). |
 | 5b | Recovery after port freed | PASS | Freed the port, relaunched → bound 34871, `/health` 200. |
 | 6a | `httpServer.closeAllConnections` available in bundled Node | PASS | `typeof …closeAllConnections === "function"` on Node 22.21.1 (≥18.2). |
 | 6b | Clean quit: `lsof :34871` empty, no orphans | PASS | SIGTERM to main → within ~4 s port free, zero remaining instance/helper processes. |
 | 7 | Fork-retained features ship in the packaged renderer | PASS (structural) | Rust FORK-badge accent `#c2410c` present in shipped `main-*.js` (the `VITE_HIDE_FORK_BADGE` guard is compile-inlined, so the badge always renders in prod); token-usage, keep-alive (PLAN-011), and `RemoteAccess*`/`craft-fork:triggerServer:*` markers present in the shipped bundle. |
 
-### Needs Jeff's eyes (not programmatically verifiable)
+### Needs the maintainer's eyes (not programmatically verifiable)
 
-- **Tray glyph** appearance and legibility in the macOS menu bar, light **and** dark mode, and the state variants (plain = stopped, dot = running, exclamation = error). Tray creation runs without crashing; the rendered image was not captured (two same-named app instances made PID-safe window capture unreliable, and full-screen capture would have grabbed the daily-driver).
+- **Tray glyph** appearance and legibility in the macOS menu bar, light **and** dark mode, and the state variants (plain = stopped, dot = running, exclamation = error). Tray creation runs without crashing; the rendered image was not captured (two same-named app instances made PID-safe window capture unreliable, and full-screen capture would have grabbed the maintainer's daily-driver).
 - **Tray menu** contents and interaction feel (Start/Stop/Retry, Copy Server URL, status lines, ⌥-Restart).
 - **FORK badge** visually on-screen (structurally confirmed shipped; the 2 px rust bar at the top should be visible).
 - **Settings → Remote Access page** rendered interaction — status poll, host/port edit, key create show-once dialog, 0.0.0.0 warning. (IPC handlers and DTOs are wired and the page is in the bundle; live UI walk-through not automated.)
@@ -323,7 +323,7 @@ Verification ran while Jeff's daily-driver app was live, so the throwaway instan
 
 ### Fixes made
 
-None. The packaged build behaved correctly across every automatable check; no code changes were required. One observability gap (no logs in packaged builds → a failed autostart is undiagnosable in the field) is captured as **LEARNING-015** and flagged to the orchestrator as a possible follow-up policy change to `logger.ts` — deliberately not changed here (app-wide production-logging policy is out of a verification pass's scope).
+None. The packaged build behaved correctly across every automatable check; no code changes were required. One observability gap (no logs in packaged builds → a failed autostart is undiagnosable in the field) is captured in `vorno-internal:learnings/LEARNING-015-*` (private) and flagged to the orchestrator as a possible follow-up policy change to `logger.ts` — deliberately not changed here (app-wide production-logging policy is out of a verification pass's scope).
 
 ## Acceptance
 
@@ -333,7 +333,7 @@ None. The packaged build behaved correctly across every automatable check; no co
 - [ ] Packaged arm64 DMG passes the full §8 checklist with a throwaway `CRAFT_CONFIG_DIR`.
 - [ ] Standalone Bun entry behavior-identical: `apps/server` tests green (strict), `bun build` gate green, WS close codes 4001–4005 preserved.
 - [ ] All new channels under `craft-fork:triggerServer:*`, `LOCAL_ONLY`, exhaustiveness + ipc-channels tests updated; compatibility.md audit note at next merge audit.
-- [ ] `HostBridge.onWebhookEvent` seam exists and is host-injected (spec compliance for VOR-33/PLAN-013); no code path assumes the Electron host.
+- [ ] `HostBridge.onWebhookEvent` seam exists and is host-injected (spec compliance for the webhook receiver / PLAN-013); no code path assumes the Electron host.
 - [ ] `server-lifecycle.ts` deleted.
 - [ ] Fork-retained features verified in the packaged build (§8 item 7).
 - [ ] ADR-0007 accepted.
@@ -341,13 +341,13 @@ None. The packaged build behaved correctly across every automatable check; no co
 ## Risks / open questions (with defaults)
 
 1. **Fetch-bridge fidelity** (streaming SSE, backpressure, abort propagation, large bodies) is the main technical risk. Default: hand-rolled minimal adapter with unit tests + packaged smoke; if it fights back, adopt a tiny vetted adapter dependency instead of growing our own.
-2. **Should embedded REST session creation route through the desktop `SessionManager` (live in UI) instead of the server's own `CraftAgent` pool?** Default for v1: **keep the existing `SessionPool`** (behavior parity with today's server, zero new seam surface); routing through `SessionManager` via `HostBridge.createSession` is the natural follow-up and the spec's direction for webhook-spawned sessions (which go through `executePromptAutomation` anyway). Needs Jeff/orchestrator confirmation before PR-1 step 1 finalizes the `HostBridge` shape.
+2. **Should embedded REST session creation route through the desktop `SessionManager` (live in UI) instead of the server's own `CraftAgent` pool?** Default for v1: **keep the existing `SessionPool`** (behavior parity with today's server, zero new seam surface); routing through `SessionManager` via `HostBridge.createSession` is the natural follow-up and the spec's direction for webhook-spawned sessions (which go through `executePromptAutomation` anyway). Needs the maintainer/orchestrator confirmation before PR-1 step 1 finalizes the `HostBridge` shape.
 3. **Main-process load:** trigger traffic is low-rate by design (rate limits default 30 req/min), but a misbehaving client hits the UI process's event loop. Mitigation: existing per-key rate limiting + body cap; escalation path is Option C (`utilityProcess`) behind the same supervisor interface — the seam makes that a host swap, not a redesign.
 4. **`/health` fingerprint** (port-conflict disambiguation) adds a field to an unauthenticated response. Default: innocuous static marker (no version leak beyond what's already there).
-5. **Tray + window-all-closed interplay:** with a tray present, users may expect close-to-tray semantics. Explicitly unchanged in v1 (VOR-11); tray only supervises the server.
+5. **Tray + window-all-closed interplay:** with a tray present, users may expect close-to-tray semantics. Explicitly unchanged in v1 (tracked internally); tray only supervises the server.
 
 ## Status log
 
-- 2026-07-08 — created in `planned/` (design doc, VOR-38); ADR-0007 drafted in the same PR.
-- 2026-07-09 — VOR-42 packaged-build verification complete (§10). Built the canonical arm64 DMG (Electron 39.2.7 / Node 22.21.1, SDK 0.3.197 + native binary staged, no OOM, no missing-module crash). Every automatable §8 item passed against a throwaway `CRAFT_CONFIG_DIR` + isolated `--user-data-dir`: autostart reconcile, `/health` fork fingerprint, 401→200 auth (CLI key applied live), 429 rate limit, WS `handshake_ack`, SSE no-hang, port-conflict error-without-crash + recovery, `closeAllConnections` present, clean quit (no orphans, port freed), fork features shipped in the bundle. No code fixes needed. Two non-obvious verification gotchas captured as LEARNING-015 (single-instance lock keyed on userData; production builds disable all electron-log transports). Visual items (tray glyph/menu, FORK badge, Remote Access page walk-through, full SSE stream) flagged for Jeff.
-- 2026-07-08 — moved from planned to in-progress: PR-1 (VOR-41) implemented — runtime-neutral `createTriggerServer` core + `WsProtocol`/`WsSocketAdapter` split (WS adapter PORTED, not deferred; standalone Bun path byte-identical, strict tests green), embedded node:http + `ws` host, `TriggerServerSupervisor` (state machine + autostart + port-conflict + `/health` fork fingerprint), macOS tray, `craft-fork:triggerServer:*` IPC, completed `RemoteAccessSettingsPage`, deleted `server-lifecycle.ts`. ADR-0007 flipped proposed → accepted. Rebased onto main @ 09f9ee27 (absorbed PLAN-013 provisioning + standalone host — both compose on the new core). VOR-42 (packaged DMG verification) remains.
+- 2026-07-08 — created in `planned/` (design doc, tracked internally); ADR-0007 drafted in the same PR.
+- 2026-07-09 — packaged-build verification complete (§10). Built the canonical arm64 DMG (Electron 39.2.7 / Node 22.21.1, SDK 0.3.197 + native binary staged, no OOM, no missing-module crash). Every automatable §8 item passed against a throwaway `CRAFT_CONFIG_DIR` + isolated `--user-data-dir`: autostart reconcile, `/health` fork fingerprint, 401→200 auth (CLI key applied live), 429 rate limit, WS `handshake_ack`, SSE no-hang, port-conflict error-without-crash + recovery, `closeAllConnections` present, clean quit (no orphans, port freed), fork features shipped in the bundle. No code fixes needed. Two non-obvious verification gotchas captured in `vorno-internal:learnings/LEARNING-015-*` (private) (single-instance lock keyed on userData; production builds disable all electron-log transports). Visual items (tray glyph/menu, FORK badge, Remote Access page walk-through, full SSE stream) flagged for the maintainer.
+- 2026-07-08 — moved from planned to in-progress: PR-1 implemented — runtime-neutral `createTriggerServer` core + `WsProtocol`/`WsSocketAdapter` split (WS adapter PORTED, not deferred; standalone Bun path byte-identical, strict tests green), embedded node:http + `ws` host, `TriggerServerSupervisor` (state machine + autostart + port-conflict + `/health` fork fingerprint), macOS tray, `craft-fork:triggerServer:*` IPC, completed `RemoteAccessSettingsPage`, deleted `server-lifecycle.ts`. ADR-0007 flipped proposed → accepted. Rebased onto main @ 09f9ee27 (absorbed PLAN-013 provisioning + standalone host — both compose on the new core). Packaged DMG verification remains.

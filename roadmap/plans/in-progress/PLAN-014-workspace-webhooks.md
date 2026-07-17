@@ -14,10 +14,9 @@ blocked-by: []
 
 ## Provenance
 
-This plan ports and formalizes the approved design spec **"Inbound Webhooks & Headless Server — Design Spec"** (Notion, approved by Jeff 2026-07-06):
-<https://app.notion.com/p/395d0b5898d8812fbdc4edf4b42d205c>
+This plan ports and formalizes the approved design spec **"Inbound Webhooks & Headless Server — Design Spec"** (internal spec, `vorno-internal`, approved by the maintainer 2026-07-06).
 
-The architecture in that spec is **decided** and is not relitigated here: a webhook is a new automation event type (`WebhookReceived`) emitted onto the per-workspace `WorkspaceEventBus`, fed by a receiver endpoint on `apps/server`. This plan adds what the spec under-specifies for the M2 goal: first-class **per-workspace scoping** and an **action vocabulary beyond "trigger prompt"** (set status, set labels, message an existing session). Board ticket: **VOR-40** (this design), implementation tickets VOR-33/34/37 (see Phasing).
+The architecture in that spec is **decided** and is not relitigated here: a webhook is a new automation event type (`WebhookReceived`) emitted onto the per-workspace `WorkspaceEventBus`, fed by a receiver endpoint on `apps/server`. This plan adds what the spec under-specifies for the M2 goal: first-class **per-workspace scoping** and an **action vocabulary beyond "trigger prompt"** (set status, set labels, message an existing session). This design and its implementation phases are tracked internally (see Phasing).
 
 ### Spec verification against current tree (main @ `ec74ea3e`, 2026-07-08)
 
@@ -53,7 +52,7 @@ Each workspace can register custom inbound webhooks that perform specific action
 ## Non-goals
 
 - **Server deployment/runtime/config/credentials** — owned by PLAN-013 (headless/hosted server mode, how/where `apps/server` runs, TLS/tunnel exposure, remote-access settings). See "Boundary with PLAN-013".
-- **IAM/SSO for a hosted management plane** — VOR-36, explicitly **parked for M2**. Webhook ingress never uses SSO (providers can't); `craft_sk_*` keys remain the machine-to-machine story.
+- **IAM/SSO for a hosted management plane** — tracked internally, explicitly **parked for M2**. Webhook ingress never uses SSO (providers can't); `craft_sk_*` keys remain the machine-to-machine story.
 - Outbound webhooks — already exist (`WebhookAction`, `webhook-handler.ts`); untouched.
 - Upstream wire/protocol changes — none needed; everything is fork-owned code.
 
@@ -162,7 +161,7 @@ Decision (from the spec, with justification made explicit):
 
 ### 4. Action vocabulary v1 (gap-fill over the spec)
 
-The spec ships `prompt` only. Jeff's M2 goal requires status/label/message actions. These are new members of the `AutomationAction` union (`types.ts:107`) — additive, validator-extended, and executed through the same handler pattern:
+The spec ships `prompt` only. The maintainer's M2 goal requires status/label/message actions. These are new members of the `AutomationAction` union (`types.ts:107`) — additive, validator-extended, and executed through the same handler pattern:
 
 ```jsonc
 // Target selector shared by the three new actions:
@@ -218,7 +217,7 @@ Host implementations:
 ### 8. Management surface
 
 - **v1 (this plan):** hooks are edited in `automations.json` (the existing automations editing surface, including the desktop Automations UI's raw-config path, keeps working — the validator understands `hook`). A small script `apps/server/scripts/mint-hook-token.ts` generates a `craft_whk_` token, prints the full ingest URL once, and writes `tokenHash`/`tokenPrefix` into the named hook entry. That is enough to create/list/revoke by hand and is fully curl-testable.
-- **Phase 3 (VOR-37):** `craft-fork:webhooks:*` RPC + Electron settings UI + delivery-log viewer (below).
+- **Phase 3 (tracked internally):** `craft-fork:webhooks:*` RPC + Electron settings UI + delivery-log viewer (below).
 
 ### 9. Wire contract (`craft-fork:*`)
 
@@ -278,7 +277,7 @@ The ingest path is **unauthenticated by provider necessity** (§2–3): the capa
 
 **Adjacent hardening (not prompt injection, same untrusted-body origin):** any payload value that *does* become an env var passes through `sanitizeForShell` (`automations/security.ts`), escaping shell metacharacters (`` ` ``, `$`, quotes, newlines) so a prompt that shells out with those vars is not exposed to command injection.
 
-**Residual risk (documented, not eliminated).** Boundary B relies on the automation author. Guidance we surface to operators (and mirror in the public docs and the colocated `webhook-ingest/SECURITY.md`): treat payload contents as untrusted; never instruct an agent to execute or obey them; prefer extracting specific fields (`matchField`, `$.`-selectors) over dumping the whole body into a prompt. HMAC verification (§3, VOR-34) authenticates the *sender* but does not change Boundary B — a signed payload is still untrusted content.
+**Residual risk (documented, not eliminated).** Boundary B relies on the automation author. Guidance we surface to operators (and mirror in the public docs and the colocated `webhook-ingest/SECURITY.md`): treat payload contents as untrusted; never instruct an agent to execute or obey them; prefer extracting specific fields (`matchField`, `$.`-selectors) over dumping the whole body into a prompt. HMAC verification (§3, Phase 2) authenticates the *sender* but does not change Boundary B — a signed payload is still untrusted content.
 
 ## End-to-end local test plan
 
@@ -329,7 +328,7 @@ Automated coverage (bun test, `apps/server/tests/` conventions + `packages/share
 
 ## Implementation steps
 
-### Phase 1 — VOR-33 (one implementation PR): safe polling replacement + M2 action vocabulary
+### Phase 1 (one implementation PR): safe polling replacement + M2 action vocabulary
 
 1. `packages/shared/src/automations/types.ts` — `WebhookReceived` in `AppEvent`/`APP_EVENTS`; `HookConfig`; `hook`/`matchField` on `AutomationMatcher`; `SetStatusAction`/`SetLabelsAction`/`SendMessageAction` + `SessionTargetSelector` joining `AutomationAction`; `PendingSessionAction`; `WebhookReceivedPayload`.
 2. `event-bus.ts` — `EventPayloadMap.WebhookReceived`; set its per-event bus rate limit ≥ receiver ceiling.
@@ -341,15 +340,15 @@ Automated coverage (bun test, `apps/server/tests/` conventions + `packages/share
 8. `apps/server/scripts/mint-hook-token.ts`.
 9. Tests per the plan above; `bun run typecheck`; `cd apps/server && bun test` (strict gate); build check; branding script.
 
-### Phase 2 — VOR-34
+### Phase 2
 
 HMAC verification (+ signed-timestamp tolerance), debounce/coalesce (`trailing`/`collect`/`debounceKey`), per-hook concurrency guards, batch payload files (`$CRAFT_WEBHOOK_COUNT`).
 
-### Phase 3 — VOR-37
+### Phase 3
 
 `craft-fork:webhooks:*` RPC (channels/routing/handlers per PLAN-011 pattern), Electron settings UI (hook CRUD + token rotate shown-once), delivery-log viewer over `automations-history.jsonl`. Compatibility.md audit-table entry.
 
-Parked: VOR-36 (IAM/SSO research for the hosted management plane) — excluded from M2; its future ADR proposes a provider-agnostic OIDC/SAML abstraction.
+Parked: IAM/SSO research for the hosted management plane (tracked internally) — excluded from M2; its future ADR proposes a provider-agnostic OIDC/SAML abstraction.
 
 ## Acceptance
 
@@ -375,7 +374,7 @@ Parked: VOR-36 (IAM/SSO research for the hosted management plane) — excluded f
 
 ## Status log
 
-- `2026-07-08` — created in `planned/`; ported from the approved 2026-07-06 Notion design spec (VOR-40); spec references re-verified against main @ `ec74ea3e`.
-- `2026-07-08` — moved from planned to in-progress; Phase 1 (VOR-33) implementation started in worktree branch `jh/2026-07-08_plan-014-webhooks-impl`.
-- `2026-07-09` — **Embedded host now serves webhooks with full desktop parity** (branch `jh/2026-07-09_embedded-hooks-receiver`; closes LEARNING-018, QA-blocking for M2 goal 3). Realized §5(2): the receiver composition was **extracted host-agnostic** into `packages/shared/src/automations/webhook-ingest/` — `dispatcher.ts` (`createWebhookDispatcher(executors)`, the per-workspace `AutomationSystem` registry parameterized by injected executors) + `host.ts` (`initWebhooks` + `WebhooksHandle`). `apps/server/src/webhooks/init.ts` is now a thin wrapper binding the DISK-ONLY standalone executors — standalone path byte-identical (182 strict tests green, build check green). The embedded Electron host (`apps/electron/src/main/trigger-server/`) composes the SAME dispatcher + receiver but binds `webhook-executors.ts` to the live `SessionManager`: prompt → `executePromptAutomation` (LIVE session, `waitForCompletion:false`), set-status/set-labels → `setSessionStatus`/`setSessionLabels` (UI-reflecting via `updateSessionMetadata`), send-message → `sendMessage` (the desktop-only case, PLAN-014 Risk #2 resolved for the embedded host). The supervisor gained a `webhooks?: WebhooksHandle` option threaded into `createTriggerServer`, and `index.ts` replaced the PLAN-012 log-only `onWebhookEvent` stub with `createEmbeddedWebhooks(instance.sessionManager)`. Also fixed the cosmetic trailing-"undefined" port-conflict ERROR log (LEARNING-018). No wire/protocol changes (host wiring only); `options.ts` subprocess-env untouched. New tests: shared dispatcher composition (3), CI-gated router-mounting regression guard (4, the inverse of LEARNING-018's 401 probe), desktop-executor unit tests (8), and a real-HTTP embedded E2E (`webhooks-e2e.test.ts`: 202→spawn, duplicate→200, wrong-token→404). GUI `electron:dev` launch wasn't available in the isolated worktree; the real-HTTP E2E through the actual embedded host stack stands in as reproducible evidence.
-- `2026-07-09` — Phase 3 (VOR-37) management surface implemented on branch `jh/2026-07-09_webhook-mgmt-ui` (unparked by Jeff's QA: "Webhooks don't have a clear Automation UI so that they can be managed"). Reserved `craft-fork:webhooks:*` group (`list`/`upsert`/`revoke`/`deliveries`) landed exactly per §9, LOCAL_ONLY; shared host-agnostic `webhook-management.ts` (single-writer, validate-then-atomic-write, token minted once via `generateHookToken`); Electron-main handlers compose copyable ingest URLs from the trigger-server config; UI added as a native **Webhooks** sub-view under Automations (peer to Scheduled/Event-based/Agentic) plus a per-hook endpoint card on the automation detail page (URL copy, token generate/rotate/revoke show-once, delivery log) and a create dialog. `HookConfig.tokenHash` made optional to support `revoke(clear)`. i18n in all 7 locales; compatibility.md audit entry added. `apps/server` untouched (receiver from Phase 1 reused). Deferred: session-action-only hooks (no prompt/webhook action) don't yet appear in the parsed list — the create flow defaults to a prompt action, so UI-created hooks always list.
+- `2026-07-08` — created in `planned/`; ported from the approved 2026-07-06 internal design spec (`vorno-internal`); spec references re-verified against main @ `ec74ea3e`.
+- `2026-07-08` — moved from planned to in-progress; Phase 1 implementation started in a worktree branch.
+- `2026-07-09` — **Embedded host now serves webhooks with full desktop parity** (implemented in a parallel session; closes an internal learning, QA-blocking for M2 goal 3). Realized §5(2): the receiver composition was **extracted host-agnostic** into `packages/shared/src/automations/webhook-ingest/` — `dispatcher.ts` (`createWebhookDispatcher(executors)`, the per-workspace `AutomationSystem` registry parameterized by injected executors) + `host.ts` (`initWebhooks` + `WebhooksHandle`). `apps/server/src/webhooks/init.ts` is now a thin wrapper binding the DISK-ONLY standalone executors — standalone path byte-identical (182 strict tests green, build check green). The embedded Electron host (`apps/electron/src/main/trigger-server/`) composes the SAME dispatcher + receiver but binds `webhook-executors.ts` to the live `SessionManager`: prompt → `executePromptAutomation` (LIVE session, `waitForCompletion:false`), set-status/set-labels → `setSessionStatus`/`setSessionLabels` (UI-reflecting via `updateSessionMetadata`), send-message → `sendMessage` (the desktop-only case, PLAN-014 Risk #2 resolved for the embedded host). The supervisor gained a `webhooks?: WebhooksHandle` option threaded into `createTriggerServer`, and `index.ts` replaced the PLAN-012 log-only `onWebhookEvent` stub with `createEmbeddedWebhooks(instance.sessionManager)`. Also fixed the cosmetic trailing-"undefined" port-conflict ERROR log (captured in `vorno-internal:learnings/LEARNING-018-*` (private)). No wire/protocol changes (host wiring only); `options.ts` subprocess-env untouched. New tests: shared dispatcher composition (3), CI-gated router-mounting regression guard (4, the inverse of that learning's 401 probe), desktop-executor unit tests (8), and a real-HTTP embedded E2E (`webhooks-e2e.test.ts`: 202→spawn, duplicate→200, wrong-token→404). GUI `electron:dev` launch wasn't available in the isolated worktree; the real-HTTP E2E through the actual embedded host stack stands in as reproducible evidence.
+- `2026-07-09` — Phase 3 management surface implemented in a parallel session (unparked by the maintainer's QA: "Webhooks don't have a clear Automation UI so that they can be managed"). Reserved `craft-fork:webhooks:*` group (`list`/`upsert`/`revoke`/`deliveries`) landed exactly per §9, LOCAL_ONLY; shared host-agnostic `webhook-management.ts` (single-writer, validate-then-atomic-write, token minted once via `generateHookToken`); Electron-main handlers compose copyable ingest URLs from the trigger-server config; UI added as a native **Webhooks** sub-view under Automations (peer to Scheduled/Event-based/Agentic) plus a per-hook endpoint card on the automation detail page (URL copy, token generate/rotate/revoke show-once, delivery log) and a create dialog. `HookConfig.tokenHash` made optional to support `revoke(clear)`. i18n in all 7 locales; compatibility.md audit entry added. `apps/server` untouched (receiver from Phase 1 reused). Deferred: session-action-only hooks (no prompt/webhook action) don't yet appear in the parsed list — the create flow defaults to a prompt action, so UI-created hooks always list.

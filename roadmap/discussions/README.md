@@ -18,7 +18,7 @@ Recommended frontmatter:
 ```yaml
 ---
 date: 2026-04-28
-participants: [jh, claude-opus]
+participants: maintainer + agent
 topic: Canvas paradigm directions
 related-decisions: [ADR-0003]
 related-directions: [DIR-01, DIR-02, DIR-03]

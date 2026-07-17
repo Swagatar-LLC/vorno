@@ -3,10 +3,10 @@ id: PLAN-019
 title: Vorno rebrand + tag-triggered signed release pipeline publishing to vorno-releases
 status: done
 direction: none
-owner: jh
+owner: maintainer
 created: 2026-07-13
 updated: 2026-07-13
-related: [ADR-0009, PLAN-018, LEARNING-020]
+related: [ADR-0009, PLAN-018]
 blocked-by: []
 ---
 
@@ -18,9 +18,9 @@ The app builds, presents, and updates as **Vorno** (`appId co.swagatar.vorno`, a
 
 ## Scope
 
-1. **Branding flip** (`packages/core/src/branding.ts` — the one-module flip VOR-3 built for):
+1. **Branding flip** (`packages/core/src/branding.ts` — the one-module branding flip):
    - `PRODUCT_NAME` → `Vorno`, `PRODUCT_NAME_SINGULAR` → `Vorno`, `BRAND_NAME` → `Vorno`, `WINDOW_TITLE` → `Vorno`, `BACKEND_DISPLAY_NAME` derives.
-   - `COMPANY_NAME` → `Swagatar LLC`, `SUPPORT_EMAIL` → `support@swagatar.co`, `GIT_COAUTHOR_EMAIL` → `agents-noreply@swagatar.co`.
+   - `COMPANY_NAME` → `Swagatar LLC`, `SUPPORT_EMAIL` → `support@swagatar.co`, and the git co-author email flip to a Swagatar address.
    - `UPDATE_MANIFEST_BASE_URL` decouples from `SERVICE_BASE_URL` → the vorno-releases releases URL; repoint consumers.
    - ASCII logo → VORNO art (text asset, done in-PR).
    - **Unchanged**: `SERVICE_BASE_URL` + viewer/docs/OAuth-relay derivatives, `OAUTH_CLIENT_NAME` (see ADR-0009 "Explicitly NOT rebranded").
@@ -60,11 +60,10 @@ graph LR
 
 Order of operations inside the PR: flip `branding.ts` → sweep static files in the same commit series (the gate enforces yml/branding sync) → tighten allowlist → add workflow + install script. Rebrand rides its own branch so the large rename diff can't block PLAN-018's smaller PR; PLAN-018 merges first if both are ready (it touches runtime updater code this plan deliberately avoids).
 
-Human steps (before first publish, flagged in the PR):
-- Create the public repo `Swagatar-LLC/vorno-releases`.
-- Add CI secrets: `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` (when the cert lands), `VORNO_RELEASES_TOKEN` (now).
-- Confirm `appId = co.swagatar.vorno` at PR review — permanent once first-published (ADR-0009).
-- Commission Vorno icon art.
+Human steps (before first publish, flagged in the PR): create the public
+`Swagatar-LLC/vorno-releases` repo, add the CI signing/release secrets, confirm
+the permanent `appId = co.swagatar.vorno` at review, and commission Vorno icon
+art. Full identity/signing detail: `vorno-internal`.
 
 ## Acceptance
 
@@ -78,7 +77,7 @@ Human steps (before first publish, flagged in the PR):
 - [ ] `install-vorno.sh` present, minimal, documented as first-install-only.
 - [ ] All seven validate-pr gates green.
 - [ ] PR description flags the two confirm-before-merge decisions (appId, vorno-releases feed) and lists the human steps above.
-- [ ] `roadmap/upstream/delta.md` updated (rebrand widens the static-file delta).
+- [ ] Upstream-delta log updated (rebrand widens the static-file delta) — now tracked in the private `vorno-internal` repo.
 
 ## Status log
 
