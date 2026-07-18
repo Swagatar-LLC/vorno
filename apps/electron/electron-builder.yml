@@ -74,7 +74,7 @@ extraMetadata:
   main: dist/main.cjs
 
 # Auto-update: electron-updater fetches update metadata (latest-mac.yml) from the
-# public GitHub releases feed. Source stays private (Swagatar-LLC/craft-agents-oss);
+# public GitHub releases feed. Source repo: Swagatar-LLC/vorno (public as of 2026-07-17);
 # signed release artifacts are published to Swagatar-LLC/vorno-releases (ADR-0009).
 # No token ships in the app — the github provider reads public release assets.
 # releaseType: release publishes immediately (a pushed v* tag IS the release action)

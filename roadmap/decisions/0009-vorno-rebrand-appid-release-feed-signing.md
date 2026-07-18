@@ -16,18 +16,19 @@ com.lukilabs.craft-agent`, `productName: Craft Agents`, artifact names
 `Craft-Agents-${arch}`, and — critically — `publish: { provider: generic, url:
 https://agents.craft.do/electron/latest }`. That publish block points the
 fork's electron-updater at **upstream's** feed, which serves builds signed by
-"Craft Docs Limited (LVV532B7S8)". Local fork builds are ad-hoc signed
+upstream's own Apple identity. Local fork builds are ad-hoc signed
 (`TeamIdentifier=not set`), so Squirrel.Mac's code-requirement validation
 rejects the downloaded official build against the running fork app ("code
 failed to satisfy specified code requirement(s)") — auto-update is structurally
-broken for the fork today (LEARNING-020).
+broken for the fork today (see `vorno-internal:learnings/LEARNING-020-*`,
+private repo). Full identity/signing detail: `vorno-internal`.
 
 The identity is already half-flipped: ADR-0005 moved the config dir to
 `~/.vorno-agent`, the headless unit ships as `vorno-server.service`, and the
-VORNO program (VOR-1..37) names the productized fork. What remains is the
-user-visible product identity, the bundle identity, and a working release +
-auto-update pipeline the fork owns. VOR-2 (bundle-ID migration) and VOR-3
-(branding gate) sequenced exactly this flip; the branding module
+VORNO productization program (tracked internally) names the productized fork.
+What remains is the user-visible product identity, the bundle identity, and a
+working release + auto-update pipeline the fork owns. The bundle-ID migration
+and branding gate were sequenced to enable exactly this flip; the branding module
 (`packages/core/src/branding.ts`) and gate (`scripts/check-branding.ts` +
 `scripts/branding-allowlist.json`) were built so the rebrand is a one-module
 flip plus a static-file sweep.
@@ -37,9 +38,9 @@ Constraints that shape the decision:
 - The source repo (`Swagatar-LLC/craft-agents-oss`) is **private**. electron-
   updater's `github` provider needs unauthenticated access to release assets;
   no token may ship inside the app.
-- The individual Apple Developer ID certificate is pending (VOR-7). The
-  pipeline must be buildable and mergeable now, and start signing the day the
-  cert lands, with zero rework.
+- The individual Apple Developer ID certificate is pending (tracked
+  internally). The pipeline must be buildable and mergeable now, and start
+  signing the day the cert lands, with zero rework.
 - Squirrel.Mac ties update continuity to the bundle identifier. Whatever appId
   ships in the first published Vorno build is frozen forever.
 - macOS Intel (x64) builds were discontinued upstream at v0.10.1 (arm64 only);
@@ -57,11 +58,11 @@ Constraints that shape the decision:
    rule); the fork-vs-upstream distinction still matters while both run
    side-by-side.
 
-2. **appId: `co.swagatar.vorno` — permanent.** Confirmed by Jeff
+2. **appId: `co.swagatar.vorno` — permanent.** Confirmed by the maintainer
    2026-07-13; once a build is published under it, it never changes (Squirrel
    continuity). The appId is independent of the Apple Team ID — the Team ID
    arrives with the cert and lives only in signing metadata, not the bundle
-   identifier.
+   identifier. Full identity/signing detail: `vorno-internal`.
 
 3. **Update feed: dedicated public repo `Swagatar-LLC/vorno-releases`** via
    electron-updater's `github` provider (`owner: Swagatar-LLC`, `repo:
@@ -115,8 +116,8 @@ Constraints that shape the decision:
 ### Positive
 
 - Auto-update works end-to-end for the fork: fork-owned feed, fork-signed
-  builds, Squirrel-validating chain — the LEARNING-020 failure class is
-  eliminated by construction.
+  builds, Squirrel-validating chain — the auto-update failure class (private
+  `vorno-internal:learnings/LEARNING-020-*`) is eliminated by construction.
 - Zero-rework signing: the cert landing is a secrets-configuration event, not
   a code change.
 - The branding gate flips from "hold upstream identity stable" to "enforce
@@ -134,9 +135,9 @@ Constraints that shape the decision:
   app is a build of (mostly) public upstream code; secrets never enter
   artifacts.
 - A wider one-time diff against upstream in `electron-builder.yml`,
-  `package.json`, i18n locales, and static HTML — recorded in
-  `upstream/delta.md`; future upstream syncs will conflict on these files
-  predictably.
+  `package.json`, i18n locales, and static HTML — recorded in the private
+  upstream-delta log (`vorno-internal`); future upstream syncs will conflict on
+  these files predictably.
 
 ### Neutral
 
@@ -166,14 +167,14 @@ Constraints that shape the decision:
 
 ## References
 
-- LEARNING-020 — ad-hoc fork + upstream feed → Squirrel code-requirement
-  failure (the motivating breakage).
+- `vorno-internal:learnings/LEARNING-020-*` (private) — ad-hoc fork + upstream
+  feed → Squirrel code-requirement failure (the motivating breakage).
 - ADR-0005 — fork-owned config dir `~/.vorno-agent` (the identity flip's first
   half; makes the clean break data-safe).
 - PLAN-018 — runtime-configurable update feed + Updates settings UI.
 - PLAN-019 — rebrand + release pipeline implementation of this ADR.
-- VOR-2 (bundle-ID migration), VOR-3 (branding gate), VOR-7 (signing path:
-  Apple enrollment = M2 critical path).
+- Bundle-ID migration, branding gate, and signing path (Apple enrollment = M2
+  critical path) — tracked internally.
 - `scripts/check-branding.ts`, `scripts/branding-allowlist.json` — the gate
   this ADR's implementation must keep green and tighten.
 - `roadmap/upstream/compatibility.md` — wire contracts unaffected.

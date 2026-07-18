@@ -1,6 +1,25 @@
 # Trademark Policy
 
-This trademark policy governs the use of the "Craft" and "Craft Agents" names, logos, and branding in connection with the Craft Agents open source project.
+Vorno is an independent fork of Craft Agents, maintained by Swagatar LLC. This file covers two distinct sets of marks:
+
+- **The "Craft" and "Craft Agents" sections below** describe trademarks of **Craft Docs Ltd.** (the upstream project). They are retained here because Vorno derives from Craft Docs Ltd.'s open-source code, and the guidance remains relevant to anyone reusing that code.
+- **The "Vorno" section** describes the marks used by Swagatar LLC to identify this fork.
+
+Vorno is not affiliated with, sponsored by, or endorsed by Craft Docs Ltd. Please do not use either party's marks in a way that implies endorsement or affiliation.
+
+## Vorno
+
+"Vorno" and the Vorno logo are used by Swagatar LLC to identify this project. Vorno is Swagatar LLC's fork of Craft Agents.
+
+- Vorno is not affiliated with or endorsed by Craft Docs Ltd.
+- Do not use the "Vorno" name or logo in a way that implies Swagatar LLC created, endorses, or is affiliated with your product.
+- Do not use the "Craft" or "Craft Agents" marks (see below) to imply that Craft Docs Ltd. created or endorses Vorno.
+
+---
+
+# Craft Agents Trademarks (Craft Docs Ltd. — Upstream)
+
+The following sections describe the trademarks of Craft Docs Ltd., the upstream project from which Vorno is forked.
 
 ## Trademarks
 
@@ -89,7 +108,7 @@ For those creating forks, the following files contain branding that should be up
 
 ## Questions
 
-If you have questions about this trademark policy or would like to request permission for a specific use, please open an issue in the repository or contact us at legal@craft.do.
+For questions about the "Vorno" mark, contact Swagatar LLC at support@swagatar.co or open an issue in this repository. Questions about the "Craft" and "Craft Agents" marks are directed to Craft Docs Ltd. at legal@craft.do.
 
 ## Changes
 

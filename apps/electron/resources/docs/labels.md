@@ -2,9 +2,9 @@
 
 Labels are additive tags that can be applied to sessions. Unlike statuses (which are exclusive — one per session), labels are multi-select (many per session). They support hierarchical organization via nested JSON trees.
 
-> **CLI-first workflow (recommended):** Use `craft-agent label ...` commands instead of editing JSON directly.
-> - `craft-agent label --help`
-> - Canonical command reference: [craft-cli.md](./craft-cli.md)
+> **CLI-first workflow (recommended):** Use `vorno-cli label ...` commands instead of editing JSON directly.
+> - `vorno-cli label --help`
+> - Canonical command reference: [vorno-cli.md](./vorno-cli.md)
 
 ## Storage Locations
 
@@ -140,16 +140,16 @@ The optional `valueType` in config is a hint only — the parser always infers f
 
 ## Adding Labels
 
-Prefer `craft-agent` commands:
+Prefer `vorno-cli` commands:
 
 ```bash
-craft-agent label create --name "Bug" --color "destructive"
-craft-agent label create --name "Priority" --color "accent" --value-type number
-craft-agent label create --name "Due Date" --color "info" --value-type date
-craft-agent label create --name "Docs" --color "info" --value-type link
-craft-agent label create --name "Project" --color "foreground/60"
-craft-agent label create --name "Alpha" --color "info" --parent-id project
-craft-agent label create --name "Beta" --color "success" --parent-id project
+vorno-cli label create --name "Bug" --color "destructive"
+vorno-cli label create --name "Priority" --color "accent" --value-type number
+vorno-cli label create --name "Due Date" --color "info" --value-type date
+vorno-cli label create --name "Docs" --color "info" --value-type link
+vorno-cli label create --name "Project" --color "foreground/60"
+vorno-cli label create --name "Alpha" --color "info" --parent-id project
+vorno-cli label create --name "Beta" --color "success" --parent-id project
 ```
 
 Use direct JSON edits only for bulk/manual operations where CLI is not sufficient.

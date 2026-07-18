@@ -10,7 +10,9 @@ bundle identifiers, and logo assets across `apps/electron`, `apps/webui`,
 > / PLAN-019 (values flipped in `branding.ts`) and swept across the
 > non-module surfaces since. This doc is now the **go-forward reference**: if
 > the brand ever changes again, everything listed here must move together in
-> one PR. Last full sweep + audit: **2026-07-16**.
+> one PR. Last full sweep + audit: **2026-07-16**. A top-level docs prose sweep
+> (`ARCHITECTURE.md`, `CONTAINER-ARCHITECTURE.md`, and `docs/*.md`) followed on
+> **2026-07-17** as part of public-flip prep — see the sweep log below.
 
 ## TL;DR — how to rebrand again
 
@@ -62,7 +64,7 @@ Vorno-correct**; listed so a future rebrand sweeps them.
 | **WebUI static shells** | `apps/webui/src/index.html`, `login.html`, `public/manifest.json` | login copy aligned to Settings ("Web UI" / "Password"). |
 | **WebUI icon assets** | `apps/webui/src/public/{favicon.svg,favicon.ico,apple-touch-icon.png,icon-192.png,icon-512.png}` | PWA / Add-to-Home-Screen icons. Regenerate from `apps/electron/resources/icon.png`. **Binary — not caught by the text gate.** |
 | **Viewer static shell** | `apps/viewer/index.html` (`<title>`) | |
-| **In-app logo components** | `apps/electron/src/renderer/components/icons/{CraftAgentsSymbol,CraftAppIcon}.tsx` + `assets/craft_logo_c.svg` | Redrawn to the Vorno vortex-"V". **Filenames keep "Craft" (code identifiers, not user-visible).** `CraftAgentsLogo.tsx` (pixel wordmark) is **playground-only** — cosmetic, not in shipped flows. |
+| **In-app logo components** | `apps/electron/src/renderer/components/icons/{AppSymbol,AppIcon}.tsx` + `assets/logo_mark.svg` | Redrawn to the Vorno vortex-"V". **Filenames + code identifiers scrubbed brand-neutral 2026-07-18** (`CraftAgentsSymbol`→`AppSymbol`, `CraftAppIcon`→`AppIcon`, `craft_logo_c.svg`→`logo_mark.svg`) per owner decision — see sweep log. `AppWordmark.tsx` (was `CraftAgentsLogo.tsx`, pixel wordmark) is **playground-only** — cosmetic, not in shipped flows. |
 | **App / installer icons** | `apps/electron/resources/icon.png`, `icon.svg`, `build/AppIcon.icon/`, `resources/craft-logos/` | macOS app icon, dock, DMG. Binary — not gated. |
 | **Package metadata** | `package.json` `description`/`author` for electron, viewer, core, shared, ui | npm-facing. |
 | **electron-builder.yml** | `apps/electron/electron-builder.yml` | `productName: Vorno`, copyright, `artifactName: Vorno-${arch}.*`, and `publish:` (= the vorno-releases github feed). |
@@ -127,3 +129,5 @@ Kept on purpose (allowlisted by path/entry or excluded by scan scope):
 | 2026-07-03 | VOR-3 audit | Indirection + gate landed; values unchanged (pre-flip). |
 | 2026-07-15 | WebUI shell | `index.html`/`login.html`/`manifest.json` titles + login copy; PWA/apple-touch/favicon icons regenerated from the Vorno mark (were the Craft "C"). |
 | 2026-07-16 | Full nook-and-cranny pass | Swept the last user-visible string leaks: `menu.craftMenu`, `onboarding.reauth.expired`, `onboarding.reauth.loginWithCraft` across all 7 locales. Confirmed `branding.ts` = Vorno, all logo components/assets = Vorno, static shells/builder/viewer clean. Remaining "craft" in source is class (b) wire, class (c) external-product/dev-only, code comments, or upstream `package.json` npm descriptions (intentionally deferred). |
+| 2026-07-17 | Public-flip prep — top-level docs prose sweep | Swept product-name prose in `ARCHITECTURE.md`, `CONTAINER-ARCHITECTURE.md`, `docs/http-trigger-server.md`, `docs/server-deployment.md`, `docs/webhooks.md`, `docs/webui-remote-access.md` ("Craft Agent(s)" → "Vorno" in titles/prose); wire identifiers (`craft_sk_*`, `craft_whk_*`, `__craftRpcType`, `CRAFT_*` env vars, `~/.craft-agent`, `craft-fork:*`) and upstream repo refs left untouched per class (b)/(c). `docs/cli.md` owned by a separate pass. |
+| 2026-07-18 | Public-flip prep — Craft-branded FILENAME scrub (owner decision: drop the brand from asset/component filenames; supersedes the earlier "filenames keep Craft" note) | `git mv` renames: `resources/logos/craft_app_icon{,_dark}.png`→`app_icon{,_dark}.png`, `resources/logos/craft_logo_{black,white}.png`→`logo_{black,white}.png` (dir copied wholesale by `copy-assets.ts`; verified zero code refs to old basenames); `renderer/assets/craft_logo_c.svg`→`logo_mark.svg` (import in `AppIcon.tsx` updated); components `CraftAppIcon.tsx`→`AppIcon.tsx`, `CraftAgentsSymbol.tsx`→`AppSymbol.tsx`, `CraftAgentsLogo.tsx`→`AppWordmark.tsx` with exported identifiers renamed and all 8 importers + playground registry ids (`craft-agents-{logo,symbol}`→`app-{wordmark,symbol}`, playground-only) updated; `resources/tool-icons/craft-agent.svg`→`agent.svg` (renamed the FILE only + updated the `icon` field in `tool-icons.json`; the entry's `id`/`commands` `"craft-agent"` are the runtime command-match keys, not the filename, and were left intact per class (b)). Runtime behavior identical; `bunx tsc --noEmit -p apps/electron` clean. |

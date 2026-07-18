@@ -18,8 +18,9 @@ and Pi SDK 0.80.3 (which moves model/provider discovery to the
 `@earendil-works/pi-ai/compat` entrypoint).
 
 The fork had been building its own cross-session **Activity pane** (an
-"orchestration panel" — PLAN-007/008/009) plus live model enumeration
-(PLAN-010), under the VORNO productization program. Upstream's background-task +
+"orchestration panel") plus live model enumeration, under the VORNO
+productization program (those specific plans are archived in the private
+`vorno-internal` repo). Upstream's background-task +
 Conductor system now covers the same problem space natively and is the surface
 the fork must stay wire-compatible with. Maintaining a parallel fork-only
 orchestration UI on top of it is redundant divergence with a growing merge cost.
@@ -27,25 +28,26 @@ orchestration UI on top of it is redundant divergence with a growing merge cost.
 ## Decision
 
 1. **VORNO program paused as of 2026-07-08.** The productization ladder
-   (VOR-1..37) is not being actively advanced; the fork instead tracks and
-   aligns to upstream 0.11.x.
-2. **Drop the fork Activity pane.** PLAN-007 (orchestration/activity panel),
-   PLAN-008 (richer progress), and PLAN-009 (phase 1.5) are removed from the
-   codebase and archived. Upstream's background-task/Conductor system replaces
-   them. Fork-only files removed: `atoms/orchestration.ts`, `OrchestrationRail`,
-   and `packages/ui/src/components/orchestration/`.
-3. **Pause PLAN-010 (live model enumeration).** Archived, not deleted from
-   research history. The one code remnant (Pi driver OpenAI-catalog enrichment)
-   is retained but realigned to the SDK 0.80.3 `/compat` import.
+   (tracked internally) is not being actively advanced; the fork instead tracks
+   and aligns to upstream 0.11.x.
+2. **Drop the fork Activity pane.** The orchestration/activity-panel plans
+   (activity panel, richer progress, phase 1.5) are removed from the codebase
+   and archived to the private `vorno-internal` repo. Upstream's
+   background-task/Conductor system replaces them. Fork-only files removed:
+   `atoms/orchestration.ts`, `OrchestrationRail`, and
+   `packages/ui/src/components/orchestration/`.
+3. **Pause the live-model-enumeration plan.** Archived to `vorno-internal`, not
+   deleted from research history. The one code remnant (Pi driver OpenAI-catalog
+   enrichment) is retained but realigned to the SDK 0.80.3 `/compat` import.
 4. **Retained fork features** (explicitly kept through the 0.11 merge):
    - Token-usage / context-window indicator (PLAN-002 UI, PLAN-003 configurable
      thresholds) — `ContextUsageIndicator`, `useTokenUsageThresholds`, and the
      `tokenUsageThresholds` / `tokenUsageModelOverrides` protocol DTO fields.
    - Subprocess-env security contract in `agent/options.ts`
      (`DISABLE_GROWTHBOOK=1` pin, `delete env.CLAUDECODE`, Bedrock-routing
-     strips) — see LEARNING-008.
+     strips) — see `vorno-internal:learnings/LEARNING-008-*` (private).
    - Config-dir isolation (`~/.vorno-agent`, ADR-0005).
-   - Branding gate (VOR-3) and the visible FORK badge.
+   - Branding gate (tracked internally) and the visible FORK badge.
    - Fast mode (PLAN-006).
 5. **`CRAFT_KEEP_BG_AGENTS_ALIVE` default is left ON**, matching upstream's
    shipped behavior. A user-facing settings toggle for it will come in a
@@ -65,6 +67,6 @@ orchestration UI on top of it is redundant divergence with a growing merge cost.
   changes originate from this decision. Upstream's new wire surface
   (protocol/dto, channels, events, routing, `tasks/`) is adopted as-is; see the
   compatibility audit entry for v0.11.0.
-- VORNO plans remain in `roadmap/plans/archived/` for research reference; if the
-  program resumes, they are the starting point but must be re-evaluated against
-  whatever upstream ships by then.
+- The paused VORNO plans remain archived in the private `vorno-internal` repo
+  for research reference; if the program resumes, they are the starting point
+  but must be re-evaluated against whatever upstream ships by then.

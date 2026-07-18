@@ -6,7 +6,7 @@ direction: none
 owner: jh
 created: 2026-07-09
 updated: 2026-07-09
-related: [PLAN-011, PLAN-012, LEARNING-015]
+related: [PLAN-011, PLAN-012]
 blocked-by: []
 ---
 
@@ -14,7 +14,7 @@ blocked-by: []
 
 ## Goal
 
-Packaged builds write a grep-able, rotating log file by default, the log level (including debug) is changeable at runtime from a new Settings → Advanced page without restart, and the trigger-server supervisor's lifecycle messages are field-diagnosable — closing the observability gap documented in LEARNING-015.
+Packaged builds write a grep-able, rotating log file by default, the log level (including debug) is changeable at runtime from a new Settings → Advanced page without restart, and the trigger-server supervisor's lifecycle messages are field-diagnosable — closing the observability gap documented in `vorno-internal:learnings/LEARNING-015-*` (private).
 
 ## Scope
 
@@ -52,12 +52,12 @@ graph LR
     G -->|reveal/open| H[shell]
 ```
 
-- **`packages/shared/src/logging/`** (new, CI-tested): `file-log.ts` (level types + `resolveLogLevel(env, readStored)` + `dailyLogFileName` + `nextArchiveFileName` + `pruneDailyLogs` + `formatLogLine`), `redact.ts` (`redactSecrets`), `index.ts`, tests. New `./logging` subpath export (LEARNING-013).
+- **`packages/shared/src/logging/`** (new, CI-tested): `file-log.ts` (level types + `resolveLogLevel(env, readStored)` + `dailyLogFileName` + `nextArchiveFileName` + `pruneDailyLogs` + `formatLogLine`), `redact.ts` (`redactSecrets`), `index.ts`, tests. New `./logging` subpath export (`vorno-internal:learnings/LEARNING-013-*` (private)).
 - **`packages/shared/src/config/storage.ts`**: `logLevel?: 'error'|'warn'|'info'|'debug'` on `StoredConfig` + `getLogLevel`/`setLogLevel` (default `info`), mirrored in `config-defaults-schema.ts`, `apps/electron/resources/config-defaults.json`, `FALLBACK_CONFIG_DEFAULTS`.
 - **`apps/electron/src/main/logger.ts`** (production branch only): enable file transport at the resolved level; plain-line format with redaction; `resolvePathFn` → `CONFIG_DIR/logs/main-<date>.log`; `maxSize` 10 MiB + fork archive fn; startup prune (14 days); console transport stays off. Exports `getLoggingState()` / `setRuntimeLogLevel()` / `getLogDirectory()`; `getLogFilePath()` now also answers in production.
 - **IPC**: `craft-fork:logging:{getState,setLevel,openLogFolder,revealLogFile}` in `channels.ts`, LOCAL_ONLY in `routing.ts`, new `apps/electron/src/main/handlers/logging.ts` (modeled on PLAN-012's `trigger-server.ts`), registered beside the trigger-server handlers; `channel-map.ts` + `shared/types.ts` client entries; `ipc-channels.test.ts` updated.
 - **UI**: new `advanced` settings page (registry + `AdvancedSettingsPage.tsx` + icon), level select, retention note, path display, open/reveal buttons, env-override + debug-build hints. i18n keys `settings.advanced.*` in en/de/es/hu/ja/pl/zh-Hans.
-- **LEARNING-015 closure**: the supervisor already logs via `mainLog` (`index.ts:1092-1096`) — `[trigger-server] autostart/running on/start failed/stopped` land in the production file with no supervisor changes.
+- **`vorno-internal:learnings/LEARNING-015-*` (private) closure**: the supervisor already logs via `mainLog` (`index.ts:1092-1096`) — `[trigger-server] autostart/running on/start failed/stopped` land in the production file with no supervisor changes.
 
 Level semantics: stored setting → live `log.transports.file.level`; `CRAFT_LOG_LEVEL` (error/warn/info/debug) overrides and disables the selector with a hint (PLAN-011 precedent). Changing the level takes effect on the next log call — no restart, no transport rebuild.
 
@@ -67,7 +67,7 @@ Additive new files: `packages/shared/src/logging/*`, `handlers/logging.ts`, `Adv
 
 ## Acceptance
 
-- [x] Packaged-mode run (`CRAFT_IS_PACKAGED=true`) writes `CONFIG_DIR/logs/main-<today>.log` with plain single-line entries including `[trigger-server]` lifecycle messages. *(Verified by the Bun harness — 16/16 checks; see LEARNING-016 for the harness recipe.)*
+- [x] Packaged-mode run (`CRAFT_IS_PACKAGED=true`) writes `CONFIG_DIR/logs/main-<today>.log` with plain single-line entries including `[trigger-server]` lifecycle messages. *(Verified by the Bun harness — 16/16 checks; see `vorno-internal:learnings/LEARNING-016-*` (private) for the harness recipe.)*
 - [x] Level change via IPC/Settings takes effect without restart (debug lines appear/disappear live). *(Harness: debug suppressed at info, appears immediately after `setRuntimeLogLevel('debug')`, persisted to config.json.)*
 - [x] Size cap rotates to `main-<date>.1.log`; date change rotates to a new daily file; files older than 14 days are pruned at startup. *(Harness: forced rotation produced `.1`–`.9`; 20-day-old seeded file pruned at import. Date rollover unit-tested via `dailyLogFileName` + per-message `resolvePathFn`.)*
 - [x] Key material (sk-ant-, craft_sk_, bearer tokens, key=value secrets) never reaches disk — unit-tested. *(`redact.test.ts` + harness on-disk assertions.)*

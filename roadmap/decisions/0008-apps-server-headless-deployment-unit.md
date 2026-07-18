@@ -11,8 +11,8 @@ superseded-by: []
 
 ## Context
 
-The approved "Inbound Webhooks & Headless Server — Design Spec" (Notion, approved
-2026-07-06) requires the fork to run headless/hosted (VPS/container/cloud), not
+The approved "Inbound Webhooks & Headless Server — Design Spec" (internal spec,
+`vorno-internal`, approved 2026-07-06) requires the fork to run headless/hosted (VPS/container/cloud), not
 only Electron-spawned. PLAN-013 operationalizes the deployment half of that spec.
 
 The repo has **two** server stacks, and they are different products:
@@ -110,7 +110,7 @@ subprocess out of `node_modules`.
   convergence.
 - Exporting `acquireServerLock` slightly widens the fork's `packages/server-core`
   delta; the `webui-serve.ts` / `getMessagingDir` fixes widen the diff too. All
-  small, additive, in-process (not wire), recorded in `upstream/delta.md`.
+  small, additive, in-process (not wire), recorded in the private upstream-delta log (`vorno-internal`).
 - The lean image does not pre-build the MCP/Pi/WhatsApp helper bundles, so tool-
   heavy sessions need the fuller image or an added build step.
 
@@ -145,7 +145,7 @@ subprocess out of `node_modules`.
   hatch (honored by the recipe).
 - ADR-0007 — Trigger-server host adapter (embedded vs standalone host; the
   `onWebhookEvent` seam this ADR instantiates for the standalone case).
-- "Inbound Webhooks & Headless Server — Design Spec" (Notion, approved 2026-07-06).
+- "Inbound Webhooks & Headless Server — Design Spec" (internal spec, `vorno-internal`, approved 2026-07-06).
 - `roadmap/upstream/compatibility.md` — no protocol surface changes; `craft_sk_*`
   and REST/SSE are fork-owned.
 - `deploy/` + `docs/server-deployment.md` — the artifacts and PoC walkthrough.

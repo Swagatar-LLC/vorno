@@ -1,4 +1,4 @@
-interface CraftAgentsSymbolProps {
+interface AppSymbolProps {
   className?: string
 }
 
@@ -6,7 +6,7 @@ interface CraftAgentsSymbolProps {
  * Vorno vortex-"V" symbol - the monochrome brand mark
  * Uses accent color from theme (currentColor from className)
  */
-export function CraftAgentsSymbol({ className }: CraftAgentsSymbolProps) {
+export function AppSymbol({ className }: AppSymbolProps) {
   return (
     <svg
       viewBox="0 0 1024 1024"

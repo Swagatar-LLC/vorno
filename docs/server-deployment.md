@@ -185,7 +185,7 @@ bun build apps/server/src/index.ts --target=bun --outdir=/tmp/build-check --no-s
 
 ## Proof-of-concept — systemd (bare metal)
 
-1. Install `bun` to `/usr/local/bin/bun`; clone the repo to `/opt/craft-agents-oss`;
+1. Install `bun` to `/usr/local/bin/bun`; clone the repo to `/opt/vorno`;
    `bun install --frozen-lockfile`.
 2. Create the `vorno` service user. On bare metal the ADR-0005 fork default
    `~/.vorno-agent` is honored with **no env var** — the real `/etc/machine-id`

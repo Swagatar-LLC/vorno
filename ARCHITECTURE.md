@@ -1,4 +1,4 @@
-# Craft Agents: Architecture & Remote/Mobile Enablement Analysis
+# Vorno: Architecture & Remote/Mobile Enablement Analysis
 
 ## Table of Contents
 
@@ -13,7 +13,7 @@
 
 ## Current Architecture
 
-Craft Agents is a **Claude-powered desktop agent app** built as a Bun monorepo with Electron:
+Vorno is a **Claude-powered desktop agent app** built as a Bun monorepo with Electron:
 
 ```
 apps/electron/          # Electron desktop app (main + preload + renderer)
@@ -326,7 +326,7 @@ The `event-processor/` (pure functions: `processEvent(state, event) -> ProcessRe
 - Configurable permission policies: `deny-all`, `allow-safe`, `allow-all`
 - Session management: fresh, explicit ID, or resume last
 - Add: remote server connection (HTTP client), authentication, session selection
-- Could become a `craft-agent` CLI similar to `claude` CLI
+- Could become a `vorno` CLI similar to `claude` CLI
 
 #### 7. Infrastructure & Deployment (Medium-High effort)
 

@@ -57,7 +57,7 @@ As shipped, the value is frozen at **process start** (SessionManager) and **agen
 
 ### Storage
 
-`keepBackgroundAgentsAlive?: boolean` on `AppConfig` in `packages/shared/src/config/storage.ts` (comment: `// Keep background subagents alive across turns (default: true; env CRAFT_KEEP_BG_AGENTS_ALIVE overrides)`), persisted in `~/.craft-agent/config.json`. Default **true** (upstream default, per Jeff). Also add to `config-defaults-schema.ts`, `apps/electron/resources/config-defaults.json`, and `FALLBACK_CONFIG_DEFAULTS` in storage.ts. Getter/setter mirror `getExtendedPromptCache`/`setExtendedPromptCache` exactly.
+`keepBackgroundAgentsAlive?: boolean` on `AppConfig` in `packages/shared/src/config/storage.ts` (comment: `// Keep background subagents alive across turns (default: true; env CRAFT_KEEP_BG_AGENTS_ALIVE overrides)`), persisted in `~/.craft-agent/config.json`. Default **true** (upstream default, per the maintainer). Also add to `config-defaults-schema.ts`, `apps/electron/resources/config-defaults.json`, and `FALLBACK_CONFIG_DEFAULTS` in storage.ts. Getter/setter mirror `getExtendedPromptCache`/`setExtendedPromptCache` exactly.
 
 ### Precedence: explicit env var wins (recommended)
 
@@ -209,7 +209,7 @@ Deliberately **not** touched: `persistent-input.ts` (upstream's resolver + tests
 
 ## 5. Risks / open questions (with defaults)
 
-1. **Toggle-off does not kill a session's already-running background agents until that session's next message** (per-turn snapshot). **Default: accept next-turn semantics** — self-healing, keeps turns internally consistent, UI copy states it plainly. Immediate global teardown (SET handler sweeping sessions) is a follow-up if Jeff wants a harder kill.
+1. **Toggle-off does not kill a session's already-running background agents until that session's next message** (per-turn snapshot). **Default: accept next-turn semantics** — self-healing, keeps turns internally consistent, UI copy states it plainly. Immediate global teardown (SET handler sweeping sessions) is a follow-up if the maintainer wants a harder kill.
 2. **Upstream may ship its own keep-alive setting later.** **Default:** `craft-fork:bgAgents:*` namespace + isolated fork resolver file; on such a merge, adopt upstream's surface, migrate the stored key, delete `keep-alive-setting.ts`.
 3. **Config read frequency** — live getter hits `loadStoredConfig()` a few times per turn + per background-task event; matches `getExtendedPromptCache` house pattern. **Default: ship without a cache**, measure later; add a TTL cache inside `keep-alive-setting.ts` only if hot.
 

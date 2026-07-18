@@ -38,3 +38,5 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0008](0008-apps-server-headless-deployment-unit.md) | apps/server is the fork's headless deployment unit; Docker primary | proposed |
 | [0009](0009-vorno-rebrand-appid-release-feed-signing.md) | Vorno rebrand — appId `co.swagatar.vorno`, public update feed, parameterized signing | accepted |
 | [0010](0010-independent-vorno-versioning.md) | Vorno versions independently of upstream from 0.11.2 onward | accepted |
+| [0011](0011-public-repo-rename-and-internal-corpus-split.md) | Public source repo, rename to `Swagatar-LLC/vorno`, private internal corpus split | accepted |
+| [0012](0012-additive-vorno-protocol-namespace.md) | Additive `vorno:*` protocol namespace atop maintained Craft wire compatibility | accepted |

@@ -57,7 +57,7 @@ Projects were bolted onto navigation as a *sticky filter* rather than a route:
 
 - User-configurable sidebar section reordering (answering feasibility only:
   the sidebar is a hardcoded array in `AppShell.tsx` ~2418–2717; a persisted
-  per-workspace order is a straightforward follow-up plan if Jeff wants it).
+  per-workspace order is a straightforward follow-up plan if the maintainer wants it).
 - Project CRUD changes, kanban changes, or per-project settings.
 - Upstream wire-compat surfaces (this is all renderer/nav; no protocol
   changes).
@@ -101,7 +101,7 @@ Mirror the `label` filter end-to-end:
 ## Status log
 
 - `2026-07-14` — created in `planned/`; implementation starting immediately
-  (Jeff requested for next point release).
+  (the maintainer requested for next point release).
 - `2026-07-14` — moved to `in-progress/`.
 - `2026-07-14` — implemented: `project/{id}` filter route end-to-end (types, routes, parser, session-list filtering, titles, sidebar highlight), All Sessions clears residual project chips, ProjectBadge + `chat.assignProject` (mod+shift+p) in the input badges row, parser round-trip tests (16 pass). PR #90.
-- `2026-07-14` — PR #90 merged to main (all 7 gates green, rebased over #89's release-notes conflict). Remaining: Jeff verifies acceptance in the next point-release build, then move to done/.
+- `2026-07-14` — PR #90 merged to main (all 7 gates green, rebased over #89's release-notes conflict). Remaining: the maintainer verifies acceptance in the next point-release build, then move to done/.

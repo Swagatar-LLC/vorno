@@ -77,7 +77,7 @@ graph LR
 - [ ] Tests added/updated (shared + server suites green)
 - [ ] `bun build` succeeds for `apps/server` and `packages/pi-agent-server`
 - [ ] PR opened against `Swagatar-LLC/craft-agents-oss` with two logical commits
-- [ ] `roadmap/upstream/contribution-candidates.md` notes "fast-mode toggle" as planned upstream contribution
+- [ ] The private contribution-candidates log (`vorno-internal`) notes "fast-mode toggle" as planned upstream contribution
 
 ## Status log
 

@@ -7,6 +7,8 @@ description: Merge the latest from craft-ai-agents/craft-agents-oss into our for
 
 Perform the canonical upstream-merge workflow we've refined across multiple cycles. Mechanical when conflicts are limited to `bun.lock`; falls back to human judgment when novel conflicts appear.
 
+> **REPO_DIR** — the local checkout of `Swagatar-LLC/vorno`. On the maintainer's machine this is `~/dev/vorno` (the local directory is being renamed to match the repo rename; older checkouts may still live at `~/dev/craft-agents-oss` until renamed). All commands below that reference an absolute path use `REPO_DIR` as shorthand for this checkout.
+
 ## When to invoke
 
 - A new upstream release tag has been published (`v0.x.y`)
@@ -23,7 +25,7 @@ Perform the canonical upstream-merge workflow we've refined across multiple cycl
 ### Step 1 — Verify state
 
 ```bash
-cd /Users/jeffhampton/dev/craft-agents-oss
+cd REPO_DIR
 git status                      # must be clean
 git branch --show-current       # should be main (or warn)
 git remote -v | grep upstream   # must show upstream remote
@@ -47,7 +49,7 @@ git diff --stat main..upstream/main | tail -20
 
 Summarize the new versions/commits to the user before proceeding. If 0 commits behind → report and exit.
 
-> **Versioning (ADR-0010):** upstream tags are *their* releases, not ours. A sync brings features in; it never drives a Vorno version bump, and upstream `v*` tags are never pushed to `origin` (nor ours to `upstream`). Record the Vorno-version ⇄ upstream-tag mapping in `roadmap/upstream/HEAD.md`.
+> **Versioning (ADR-0010):** upstream tags are *their* releases, not ours. A sync brings features in; it never drives a Vorno version bump, and upstream `v*` tags are never pushed to `origin` (nor ours to `upstream`). Record the Vorno-version ⇄ upstream-tag mapping in `INTERNAL_DIR/upstream/HEAD.md` (private `vorno-internal` repo — see Step 6).
 
 ### Step 3 — Branch and merge
 
@@ -119,7 +121,7 @@ Report counts. If `apps/server` tests fail → abort, don't push.
 ```bash
 git push -u origin <branch>
 gh pr create \
-  --repo Swagatar-LLC/craft-agents-oss \
+  --repo Swagatar-LLC/vorno \
   --base main \
   --head <branch> \
   --title "Merge upstream <range>" \
@@ -153,9 +155,9 @@ Merge upstream releases <list> into our fork.
 
 After CI passes and PR merges, update:
 
-- `roadmap/upstream/HEAD.md` — last merged tag, commit, merge PR link, date
-- `roadmap/upstream/delta.md` — refresh via `[skill:upstream-delta-report]`
-- `roadmap/upstream/compatibility.md` — add audit-log entry if any contracts touched
+- `INTERNAL_DIR/upstream/HEAD.md` — last merged tag, commit, merge PR link, date. `INTERNAL_DIR` is the local checkout of the private `Swagatar-LLC/vorno-internal` repo (maintainer convention: `~/dev/vorno-internal`) — the sync logs moved there when the main repo went public (2026-07-17). Commit and push `vorno-internal` after updating.
+- `INTERNAL_DIR/upstream/delta.md` — refresh via `[skill:upstream-delta-report]` (same repo)
+- `roadmap/upstream/compatibility.md` — public, stays in the main repo; add audit-log entry if any contracts touched
 
 ## Constraints
 

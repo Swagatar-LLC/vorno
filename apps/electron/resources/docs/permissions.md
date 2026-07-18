@@ -2,9 +2,9 @@
 
 This guide explains how to configure custom permission rules for Explore mode.
 
-> **CLI-first workflow (recommended):** Use `craft-agent permission ...` commands instead of editing JSON directly.
-> - `craft-agent permission --help`
-> - Canonical command reference: [craft-cli.md](./craft-cli.md)
+> **CLI-first workflow (recommended):** Use `vorno-cli permission ...` commands instead of editing JSON directly.
+> - `vorno-cli permission --help`
+> - Canonical command reference: [vorno-cli.md](./vorno-cli.md)
 
 ## Overview
 

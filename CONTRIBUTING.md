@@ -1,6 +1,8 @@
-# Contributing to Craft Agents
+# Contributing to Vorno
 
-Thank you for your interest in contributing to Craft Agents! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Vorno! This document provides guidelines and instructions for contributing.
+
+Vorno is an independent fork of [Craft Agents](https://github.com/craft-ai-agents/craft-agents-oss) maintained by Swagatar LLC. Contributions that reduce the diff to upstream are especially welcome, as they make it easier to keep tracking upstream. Where a fix is relevant to upstream rather than fork-specific, we may also contribute it to the Craft Agents project.
 
 ## Getting Started
 
@@ -14,8 +16,8 @@ Thank you for your interest in contributing to Craft Agents! This document provi
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/lukilabs/craft-agents-oss.git
-   cd craft-agents-oss
+   git clone https://github.com/Swagatar-LLC/vorno.git
+   cd vorno
    ```
 
 2. Install dependencies:
@@ -93,7 +95,7 @@ How you tested these changes
 ## Project Structure
 
 ```
-craft-agents/
+vorno/
 ├── apps/
 │   ├── electron/    # Desktop GUI (primary interface)
 │   └── tui/         # Terminal CLI (deprecated)

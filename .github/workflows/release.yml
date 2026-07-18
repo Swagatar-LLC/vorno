@@ -109,7 +109,7 @@ jobs:
             echo "Release for ${TAG} already exists in ${FEED}"
           else
             gh release create "${TAG}" --repo "${FEED}" --title "${VERSION}" \
-              --notes "Vorno ${VERSION} — assets uploading. See https://github.com/Swagatar-LLC/craft-agents-oss for the changelog."
+              --notes "Vorno ${VERSION} — assets uploading. See https://github.com/Swagatar-LLC/vorno for the changelog."
             echo "Created release ${VERSION} (${TAG}) in ${FEED}"
           fi
 

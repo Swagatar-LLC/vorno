@@ -7,10 +7,10 @@ related-discussions:
   - 2026-04-28-canvas-paradigm-directions.md
 related-plans:
   - PLAN-005-webui-tailscale-launcher.md
-  - PLAN-007-orchestration-activity-panel.md
-  - PLAN-008-orchestration-richer-progress.md
-  - PLAN-009-orchestration-panel-phase-1_5.md
+  - PLAN-007-orchestration-activity-panel-done.md
   - PLAN-013-server-only-deployment.md
+  # The paused richer-progress / phase-1.5 orchestration plans are archived in
+  # the private vorno-internal repo (see ADR-0006).
 ---
 
 # Direction 3 — The Live Observatory

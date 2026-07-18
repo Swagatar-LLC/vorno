@@ -18,7 +18,7 @@ Make `automations-history.jsonl` report what actually happened, not just what wa
 
 ## Motivation
 
-External audit (agentic-systems Wave H2, `platform-gap-automation-outcomes.md`) proved the gap: 240/240 history records read `ok:true` while a spawned session (`260712-coral-lagoon`) contained a `type:"error"` record (`invalid_api_key`). `ok` currently means "session created + turn threw no unhandled exception" — semantic failures, in-turn handled errors, and missed cron fires are all invisible. No on-failure hook exists.
+External audit (agentic-systems Wave H2, `platform-gap-automation-outcomes.md`) proved the gap: 240/240 history records read `ok:true` while a spawned session contained a `type:"error"` record (`invalid_api_key`). `ok` currently means "session created + turn threw no unhandled exception" — semantic failures, in-turn handled errors, and missed cron fires are all invisible. No on-failure hook exists.
 
 ## Scope
 
@@ -77,4 +77,4 @@ graph LR
 - `2026-07-12` — moved from planned to in-progress: implementation starting same session (agentic-systems Wave H2 follow-up)
 - `2026-07-13` — implemented all three features + supporting changes (additive-only, wire-compatible). New `outcome`/`missed` record kinds via `webhook-utils.ts` helpers; `missed-fire.ts` pure detector + one-shot-per-process AutomationSystem integration; per-matcher `onFailure` (prompt/webhook) executed via new `on-failure.ts` with matcher-less recursion guard. Compaction retention re-keyed to `id + kind`; `GET_LAST_EXECUTED` skips `kind`-bearing records; renderer run list filters out reconciliation kinds (no new i18n strings). 297 shared automation tests + new server-core tests green; docs updated.
 - `2026-07-13` — staff-review fixes: (1) `waitForAutomationSessionSettled` closes the errorCount race with `attemptAuthRetry`'s detached re-dispatch (two consecutive quiet polls @250ms, 15min hard cap); (2) `validateAutomationsContent` now prepends the type-naming onFailure error on schema failure (PreToolUse-path parity with `validateAutomationsConfig`); (3) dedicated `on-failure.test.ts` (8 tests: matcher-less PendingPrompt routing, runPrompt preference, default failure-context webhook body captured via local Bun.serve, explicit-body passthrough, error swallowing). NUL-byte in the history-store retention key replaced with the `\u0000` escape (coordinator fix) — verified zero raw NULs across all touched files. Full shared suite 3135/0, server-core 220/0, apps/server 182/0, six-package tsc clean.
-- `2026-07-13` — moved from in-progress to done: merged to main as PR #65 (all seven CI gates green). LEARNING-019 captured (raw NUL byte → binary-to-git source file).
+- `2026-07-13` — moved from in-progress to done: merged to main as PR #65 (all seven CI gates green). Captured in `vorno-internal:learnings/LEARNING-019-*` (private) — raw NUL byte → binary-to-git source file.
