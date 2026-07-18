@@ -229,7 +229,18 @@ export function createWebuiHandler(options: WebuiHandlerOptions): WebuiHandler {
     }
 
     // ── Static assets that login page needs (no auth) ──
-    if (path === '/favicon.ico' || path.startsWith('/login-assets/')) {
+    // fork: login.html references ./favicon.svg and iOS fetches
+    // apple-touch-icon.png / PWA metadata without cookies; anything not
+    // allowlisted here redirects to /login and renders as a broken image.
+    const publicStaticFiles = [
+      '/favicon.ico',
+      '/favicon.svg',
+      '/apple-touch-icon.png',
+      '/manifest.json',
+      '/icon-192.png',
+      '/icon-512.png',
+    ]
+    if (publicStaticFiles.includes(path) || path.startsWith('/login-assets/')) {
       const file = Bun.file(join(webuiDir, path))
       if (await file.exists()) {
         return new Response(file, {
