@@ -1,10 +1,10 @@
 # Sources Configuration Guide
 
-This guide explains how to configure sources (MCP servers, APIs, local filesystems) in Craft Agent.
+This guide explains how to configure sources (MCP servers, APIs, local filesystems) in Vorno.
 
-> **CLI-first workflow (recommended):** Use `craft-agent source ...` commands instead of editing source config files directly.
-> - `craft-agent source --help`
-> - Canonical command reference: [craft-cli.md](./craft-cli.md)
+> **CLI-first workflow (recommended):** Use `vorno-cli source ...` commands instead of editing source config files directly.
+> - `vorno-cli source --help`
+> - Canonical command reference: [vorno-cli.md](./vorno-cli.md)
 
 ## Source Setup Process
 

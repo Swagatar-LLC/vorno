@@ -123,7 +123,7 @@ export const DOC_REFS = {
   markdownPreview: `${APP_ROOT}/docs/markdown-preview.md`,
   llmTool: `${APP_ROOT}/docs/llm-tool.md`,
   browserTools: `${APP_ROOT}/docs/browser-tools.md`,
-  craftCli: `${APP_ROOT}/docs/craft-cli.md`,
+  craftCli: `${APP_ROOT}/docs/vorno-cli.md`,
   docsDir: `${APP_ROOT}/docs/`,
 } as const;
 

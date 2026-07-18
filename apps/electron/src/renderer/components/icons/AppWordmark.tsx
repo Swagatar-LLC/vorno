@@ -1,12 +1,12 @@
-interface CraftAgentsLogoProps {
+interface AppWordmarkProps {
   className?: string
 }
 
 /**
- * Craft Agents pixel art logo - uses accent color from theme
- * Apply text-accent class to get the brand purple color
+ * App pixel art wordmark - uses accent color from theme
+ * Apply text-accent class to get the brand accent color
  */
-export function CraftAgentsLogo({ className }: CraftAgentsLogoProps) {
+export function AppWordmark({ className }: AppWordmarkProps) {
   return (
     <svg
       viewBox="0 0 408 66"
