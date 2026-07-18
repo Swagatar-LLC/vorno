@@ -65,6 +65,18 @@ function getMimeType(path: string): string {
   return MIME_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream';
 }
 
+// Static files servable WITHOUT auth. login.html references ./favicon.svg, and
+// iOS fetches apple-touch-icon.png / PWA metadata without cookies; anything not
+// listed here 302s to /login pre-auth and renders as a broken image.
+const PUBLIC_STATIC_FILES = new Set([
+  '/favicon.ico',
+  '/favicon.svg',
+  '/apple-touch-icon.png',
+  '/manifest.json',
+  '/icon-192.png',
+  '/icon-512.png',
+]);
+
 // ---------------------------------------------------------------------------
 // fork(PLAN-022): single-port WS URL resolution
 // ---------------------------------------------------------------------------
@@ -224,7 +236,7 @@ export function createWebUiHandler(options: WebUiHandlerOptions): WebUiHandler {
     }
 
     // ── Login-page static assets (no auth) ──
-    if (path === '/favicon.ico' || path.startsWith('/login-assets/')) {
+    if (PUBLIC_STATIC_FILES.has(path) || path.startsWith('/login-assets/')) {
       const abs = resolveStaticPath(webuiDir, path);
       if (abs && existsSync(abs)) {
         return serveFile(abs, getMimeType(path));

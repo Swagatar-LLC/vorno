@@ -30,6 +30,8 @@ beforeAll(() => {
   writeFileSync(join(webuiDir, 'index.html'), '<!doctype html><title>App</title>');
   writeFileSync(join(webuiDir, 'app.js'), 'console.log("app")');
   writeFileSync(join(webuiDir, 'favicon.ico'), 'icodata');
+  writeFileSync(join(webuiDir, 'favicon.svg'), '<svg/>');
+  writeFileSync(join(webuiDir, 'apple-touch-icon.png'), 'pngdata');
   mkdirSync(join(webuiDir, 'login-assets'), { recursive: true });
   writeFileSync(join(webuiDir, 'login-assets', 'login.css'), 'body{}');
   // A "secret" file OUTSIDE webuiDir to prove traversal is blocked.
@@ -83,6 +85,17 @@ describe('WebUI handler — health & login (no auth)', () => {
     const css = await h.fetch(req('/login-assets/login.css'));
     expect(css.status).toBe(200);
     expect(css.headers.get('content-type')).toContain('text/css');
+    h.dispose();
+  });
+
+  test('GET /favicon.svg and /apple-touch-icon.png served without auth (login.html logo)', async () => {
+    const h = makeHandler();
+    const svg = await h.fetch(req('/favicon.svg'));
+    expect(svg.status).toBe(200);
+    expect(svg.headers.get('content-type')).toContain('image/svg+xml');
+    const touch = await h.fetch(req('/apple-touch-icon.png'));
+    expect(touch.status).toBe(200);
+    expect(touch.headers.get('content-type')).toContain('image/png');
     h.dispose();
   });
 });
