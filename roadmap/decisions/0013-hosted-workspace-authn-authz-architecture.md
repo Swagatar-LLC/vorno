@@ -1,8 +1,9 @@
 ---
 id: ADR-0013
 title: Hosted workspace server AuthN/AuthZ — single-principal now, multi-user-ready seams, three trust zones
-status: proposed
+status: accepted
 date: 2026-07-18
+accepted: 2026-07-19
 supersedes: []
 superseded-by: []
 ---
@@ -19,15 +20,34 @@ Constraints: multi-user implementation is out of scope but the architecture must
 
 The full boxes-and-arrows, with code grounding and diagrams, is [`docs/hosted-workspace-architecture.md`](../../docs/hosted-workspace-architecture.md). This ADR records the decisions.
 
+**Acceptance (2026-07-19).** Jeff signed off on the four flagged one-way doors, with conditions folded into the decisions below: the vault header is accepted *provided its evolution is additive-only* (decision 4); `instanceId`-in-`serverId` is accepted *provided the field stays an opaque identifier and all metadata growth rides `vorno:server:info`* (decision 5); workspace-as-AuthZ-unit and git-HTTPS-only are accepted *widened toward richer identity and RBAC semantics* per the PLAN-023 ALIGN review (decision 2a–2e). The ALIGN review's paper amendments (N-1..N-7) are incorporated here and in the architecture doc.
+
 ## Decision
 
 1. **The app-server (`packages/server` via `bootstrapServer`) is the hosted-workspace unit.** The ADR-0008 trigger server remains the machine-to-machine trigger surface; the two coexist on one host only with distinct CONFIG_DIRs (both take `.server.lock`, making same-dir concurrency impossible by construction).
 2. **Single-principal AuthN now; multi-user is a named future reached through existing seams, never the wire.** Today's model (bearer token + WebUI password/JWT) ships unchanged. The multi-user path is fixed as: the edge callbacks (`validateToken` / `validateSessionCookie`) widen from boolean to principal-returning; the principal rides server-side connection state keyed by `clientId`; `MessageEnvelope` never gains an identity field. **The workspace is the AuthZ unit** — future ACLs are `principal → workspace → role`, enforced at the single choke point where handlers resolve a `workspaceId`, keeping `SessionManager` principal-unaware until multi-user actually lands. No per-user vaults, per-user config dirs, or principal wire fields are built now.
+
+   Accepted 2026-07-19 **widened toward OIDC-pluggable identity and RBAC**, per the ALIGN review:
+
+   - **2a — Principal shape is fixed now:** `Principal = { iss, sub, claims, expiresAt }`, keyed on `(iss, sub)` — never email/username (OIDC Core §5.7). The resolver seam returns the constant `{ iss: 'local', sub: 'owner' }` until multi-user lands. The widening is `⇒ Promise<Principal | null>`, not `⇒ Promise<{id}>`.
+   - **2b — The OIDC edge is an HTTP redirect endpoint, not the WS handshake.** OIDC AuthN (authorization-code + PKCE) happens at `/auth/login → IdP → /auth/callback`, which mints the session the WS handshake later *validates*. The WS callbacks validate a resolved principal; they never perform OIDC. **App-embedded OIDC RP is the product AuthN target; reverse-proxy forward-auth is an optional operator deployment, never the only path** (Vorno has desktop + CLI + WS clients, which forward-auth does not cover safely).
+   - **2c — Group mapping is an explicit translation tier:** IdP org/group claims never *are* workspace roles. A per-issuer, configurable-claim-path mapping table `(iss, external_group) → workspace → role`, with a default/no-match role, sits between the principal's claims and the workspace AuthZ check.
+   - **2d — The `craft_session` cookie is a BFF session wrapper, not the identity token.** Identity derives from a validated credential (today the password check; later a JWKS-validated IdP token — `jose` already supports RS256/JWKS); the cookie format stays free to evolve without a breaking change.
+   - **2e — Named zero-trust gaps carried, not hidden:** the Zone A single-root-secret coupling (SEC-001), connection-lifetime auth (SEC-003), the unsigned-state upstream OAuth relay transit (SEC-004), and the missing `Origin` allowlist on the cookie-authed WS upgrade (SEC-005 — a Phase-1 hardening line, a few lines of code, independent of OIDC).
 3. **Three trust zones are the credential vocabulary:** Zone A transport secrets (server token, WebUI password, JWT — today rooted in one secret; deployment guidance is to set `CRAFT_WEBUI_PASSWORD` distinct from the server token), Zone B the vault (machine-bound `credentials.enc`), Zone C per-source OAuth tokens (stored in the vault; external blast radius). Multi-user AuthN, when it comes, lives in Zone A only.
 4. **A client-owned vault key becomes an opt-in alternative to the machine-bound key; machine-bound stays the default.** The key is generated server-side, revealed once in the UI within a limited window, held only by the user thereafter; lost key = re-auth everything, stated at reveal time. `credentials.enc` gains a versioned header recording key-mode and KDF parameters. This is the zero-trust, migration-friendly path and the real fix for the container machine-id weakness.
+
+   Accepted 2026-07-19 with two binding conditions:
+
+   - **4a — The header evolves additive-only.** The header is a versioned, self-describing envelope (version + key-mode + KDF parameters). Future changes may *add* fields (readers ignore unknown fields) or bump the version for a new layout that still parses all prior versions; no field is ever repurposed or removed. A vault written by version N must be readable by every version ≥ N. This is what makes the frozen-layout door safe to walk through.
+   - **4b — Authentication ≠ decryption, permanently.** IdP/OIDC login (when it exists) authenticates the principal and **never unlocks the vault**; recovery is user-held (recovery codes / user-managed key backup), never IdP escrow. Wiring "log in with your IdP to recover your vault" would silently destroy the zero-trust property and is prohibited without a superseding ADR. (Bitwarden's auth≠decryption separation is the reference model.)
 5. **Hosted instances get durable identity, additively:** a random `instanceId` (+ user-editable display name) persisted in the CONFIG_DIR (`instance.json`), carried in the existing `serverId` envelope field, with richer metadata on a new `vorno:server:info` channel. Instance identity is never derived from machine id and is distinct from user identity (an instance is a place; a user is a principal — 1:1 now, 1:N later without touching instance identity).
+
+   Accepted 2026-07-19 with the metadata rule made binding: **`serverId` carries exactly one opaque identifier — the random `instanceId` UUID — and nothing else, forever.** All instance metadata, present and future (display name, version, capabilities, and anything not yet imagined), rides the `vorno:server:info` channel, which is additive by construction (new response fields are always safe; clients ignore unknown fields). No metadata is ever encoded *into* the `serverId` string — that is the failure mode that would actually lock us, and it is prohibited. If a future need arises that cannot be a `vorno:server:info` field (e.g. something needed at handshake time before any RPC), it gets a new `vorno:*` handshake extension per ADR-0012, not a `serverId` format change.
 6. **First-run onboarding forks at provider selection:** "set up this computer" (existing flow) vs. "connect to your online Vorno" (URL + pairing token, later QR; skips local credential setup; persists a known-instance entry in local config with the pairing token in the desktop's local vault). `CRAFT_SERVER_URL` remains the always-wins escape hatch. Connection failures route to the PLAN-022 connection-error screen, not the local-setup walkthrough.
 7. **Git remotes are pluggable behind a three-method provider interface** — token acquisition, remote-URL construction, credential presentation — over git-HTTPS only, with provider tokens stored as ordinary Zone C vault credentials. GitHub ships first but nothing in the interface may assume GitHub semantics; GitLab is the proving second provider. Git push/pull is the only sync fabric; working trees are never file-synced.
+
+   Accepted 2026-07-19 as written. SSH remains deferred-not-rejected (see Alternatives); revisiting it requires its own ADR.
 
 ## Consequences
 
@@ -47,7 +67,7 @@ The full boxes-and-arrows, with code grounding and diagrams, is [`docs/hosted-wo
 
 ### Neutral
 
-- Reusing `serverId` for `instanceId` is upstream-compatible, but once pairing flows key on it the choice is locked by deployed clients (flagged as a one-way door).
+- Reusing `serverId` for `instanceId` is upstream-compatible, but once pairing flows key on it the choice is locked by deployed clients (signed off 2026-07-19; safe because the opaque-identifier rule in decision 5 routes all metadata growth through `vorno:server:info`).
 - The Zone A root-secret coupling (JWT signed by the server token; password defaulting to it) is accepted for now; splitting the WebUI password is deployment guidance, not a code change.
 - Phase 2 must still remove the `agents.craft.do` relay coupling for self-hosted OAuth (Vorno-owned client IDs / relay); this ADR only fixes where the tokens land (the server's vault) and which zone they live in.
 
