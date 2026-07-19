@@ -32,5 +32,8 @@ export function isDetailNavState(navState: NavigationState | null): boolean {
     case 'automations':
     case 'projects':
       return navState.details !== null
+    case 'workbench':
+      // Workbench selection lives in atoms, not the route — never "detail mode".
+      return false
   }
 }

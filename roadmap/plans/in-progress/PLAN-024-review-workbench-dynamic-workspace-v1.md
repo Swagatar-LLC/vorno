@@ -67,12 +67,13 @@ Anchoring (ADR-0014): quote-anchored `AnnotationV1` targets + artifact `contentH
 - [ ] Select text → add comment → thread persists under `{workspaceRoot}/reviews/` as plain JSON with content-hash anchor
 - [ ] Ask a question from an annotation → message lands in a chosen session with artifact path + quote + thread id
 - [ ] Stale-artifact badge appears when the underlying file changes
-- [ ] An agent can locate and read review threads with Read/Grep alone (no new tools)
-- [ ] Tests added/updated (store round-trip, index scan, anchor staleness)
-- [ ] Behind feature flag
-- [ ] `compatibility.md` vorno-surface entry; ADR-0014 recorded
+- [x] An agent can locate and read review threads with Read/Grep alone (no new tools — plain JSON under `{workspaceRoot}/reviews/`, verified by store tests)
+- [x] Tests added/updated (19: store round-trip, corrupt-file skip, index scan, containment rejection, content-hash staleness)
+- [x] Behind feature flag (`workspaceSettings.workbenchEnabled`, default off; toggle in Settings → Workspace)
+- [x] `compatibility.md` vorno-surface entry; ADR-0014 recorded
 
 ## Status log
 
 - `2026-07-19` — created in `planned/`
 - `2026-07-19` — moved to `in-progress/`: build underway on branch plan-024-review-workbench
+- `2026-07-19` — v0.1 built end-to-end (contract → store/index/handlers → renderer page → gates). CI-parity gates green: 6-package typecheck clean, shared 3180 tests 0 fail, server 190 tests 0 fail, doc-tools OK, i18n ×3 OK, branding gate clean, server build OK, electron tsc at 108 pre-existing baseline (0 new). Remaining unchecked acceptance items are runtime QA (Jeff): open the ALIGN artifacts, annotate, ask-agent round-trip, stale badge in UI.

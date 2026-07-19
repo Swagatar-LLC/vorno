@@ -921,6 +921,11 @@ export interface WorkbenchThreadsListRequest {
 }
 
 /** vorno:workbench:review:threads:mutate */
+export interface WorkbenchThreadsMutateRequest {
+  workbenchId: string
+  command: WorkbenchThreadCommand
+}
+
 export type WorkbenchThreadCommand =
   | { type: 'add'; thread: ReviewThreadV1 }
   | { type: 'update'; threadId: string; patch: Partial<ReviewThreadV1> }

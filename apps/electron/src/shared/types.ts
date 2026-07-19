@@ -1152,6 +1152,17 @@ export interface ProjectsNavigationState {
 }
 
 /**
+ * Workbench navigation state (Review Workbench — ADR-0014, PLAN-024).
+ * The selected instance/artifact/thread live in jotai atoms, not the route,
+ * so v0.1 keeps a single flat `workbench` route (details always null).
+ */
+export interface WorkbenchNavigationState {
+  navigator: 'workbench'
+  details: null
+  rightSidebar?: RightSidebarPanel
+}
+
+/**
  * Unified navigation state
  */
 export type NavigationState =
@@ -1161,6 +1172,7 @@ export type NavigationState =
   | SkillsNavigationState
   | AutomationsNavigationState
   | ProjectsNavigationState
+  | WorkbenchNavigationState
 
 export const isSessionsNavigation = (
   state: NavigationState
@@ -1185,6 +1197,10 @@ export const isAutomationsNavigation = (
 export const isProjectsNavigation = (
   state: NavigationState
 ): state is ProjectsNavigationState => state.navigator === 'projects'
+
+export const isWorkbenchNavigation = (
+  state: NavigationState
+): state is WorkbenchNavigationState => state.navigator === 'workbench'
 
 export const DEFAULT_NAVIGATION_STATE: NavigationState = {
   navigator: 'sessions',
@@ -1220,6 +1236,9 @@ export const getNavigationStateKey = (state: NavigationState): string => {
   if (state.navigator === 'settings') {
     if (state.subpage === null) return 'settings'
     return `settings:${state.subpage}`
+  }
+  if (state.navigator === 'workbench') {
+    return 'workbench'
   }
   // Chats
   const f = state.filter

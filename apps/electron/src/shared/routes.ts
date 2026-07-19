@@ -202,6 +202,9 @@ export const routes = {
 
     /** Kanban board view (sessions navigator, board view mode, all sessions) */
     board: () => 'board' as const,
+
+    /** Review Workbench view (workbench navigator). fork(PLAN-024) */
+    workbench: () => 'workbench' as const,
   },
 } as const
 

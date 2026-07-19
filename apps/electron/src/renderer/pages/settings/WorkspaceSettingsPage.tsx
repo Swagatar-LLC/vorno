@@ -65,6 +65,8 @@ export default function WorkspaceSettingsPage() {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
   const [workingDirectory, setWorkingDirectory] = useState('')
   const [localMcpEnabled, setLocalMcpEnabled] = useState(true)
+  // fork(PLAN-024): Review Workbench feature flag
+  const [workbenchEnabled, setWorkbenchEnabled] = useState(false)
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true)
 
   // Default sources state
@@ -92,6 +94,7 @@ export default function WorkspaceSettingsPage() {
           setPermissionMode(settings.permissionMode || 'ask')
           setWorkingDirectory(settings.workingDirectory || '')
           setLocalMcpEnabled(settings.localMcpEnabled ?? true)
+          setWorkbenchEnabled(settings.workbenchEnabled ?? false)
           // Load cyclable permission modes from workspace settings
           if (settings.cyclablePermissionModes && settings.cyclablePermissionModes.length >= 2) {
             setEnabledModes(settings.cyclablePermissionModes)
@@ -280,6 +283,21 @@ export default function WorkspaceSettingsPage() {
       await updateWorkspaceSetting('localMcpEnabled', enabled)
     },
     [updateWorkspaceSetting]
+  )
+
+  // fork(PLAN-024): Review Workbench feature flag. Notify the shell so the
+  // sidebar entry appears/disappears without a workspace re-focus.
+  const handleWorkbenchEnabledChange = useCallback(
+    async (enabled: boolean) => {
+      setWorkbenchEnabled(enabled)
+      await updateWorkspaceSetting('workbenchEnabled', enabled)
+      window.dispatchEvent(
+        new CustomEvent('workbench:flag-changed', {
+          detail: { workspaceId: activeWorkspaceId, enabled },
+        })
+      )
+    },
+    [updateWorkspaceSetting, activeWorkspaceId]
   )
 
   const handleSourceToggle = useCallback(
@@ -544,6 +562,13 @@ export default function WorkspaceSettingsPage() {
                   description={t("settings.workspace.localMcpServersDesc")}
                   checked={localMcpEnabled}
                   onCheckedChange={handleLocalMcpEnabledChange}
+                />
+                {/* fork(PLAN-024): Review Workbench feature flag */}
+                <SettingsToggle
+                  label={t("settings.workspace.workbench")}
+                  description={t("settings.workspace.workbenchDesc")}
+                  checked={workbenchEnabled}
+                  onCheckedChange={handleWorkbenchEnabledChange}
                 />
               </SettingsCard>
             </SettingsSection>

@@ -34,6 +34,7 @@ import {
   Info,
   MailOpen,
   FolderKanban,
+  ClipboardCheck,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -117,6 +118,7 @@ import {
   isSkillsNavigation,
   isAutomationsNavigation,
   isProjectsNavigation,
+  isWorkbenchNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
@@ -941,6 +943,9 @@ function AppShellContent({
   // Whether local MCP servers are enabled (affects stdio source status)
   const [localMcpEnabled, setLocalMcpEnabled] = React.useState(true)
 
+  // fork(PLAN-024): Review Workbench feature flag — gates the sidebar entry.
+  const [workbenchEnabled, setWorkbenchEnabled] = React.useState(false)
+
   // Enabled permission modes for Shift+Tab cycling (min 2 modes)
   const [enabledModes, setEnabledModes] = React.useState<PermissionMode[]>(['safe', 'ask', 'allow-all'])
 
@@ -950,6 +955,7 @@ function AppShellContent({
     window.electronAPI.getWorkspaceSettings(activeWorkspaceId).then((settings) => {
       if (settings) {
         setLocalMcpEnabled(settings.localMcpEnabled ?? true)
+        setWorkbenchEnabled(settings.workbenchEnabled ?? false)
         // Load cyclablePermissionModes from workspace settings
         if (settings.cyclablePermissionModes && settings.cyclablePermissionModes.length >= 2) {
           setEnabledModes(settings.cyclablePermissionModes)
@@ -958,6 +964,19 @@ function AppShellContent({
     }).catch((err) => {
       console.error('[Chat] Failed to load workspace settings:', err)
     })
+  }, [activeWorkspaceId])
+
+  // fork(PLAN-024): keep the workbench flag live when toggled from settings.
+  // The settings page dispatches this event after persisting the change.
+  React.useEffect(() => {
+    const onFlag = (e: Event) => {
+      const detail = (e as CustomEvent<{ workspaceId: string; enabled: boolean }>).detail
+      if (detail && detail.workspaceId === activeWorkspaceId) {
+        setWorkbenchEnabled(detail.enabled)
+      }
+    }
+    window.addEventListener('workbench:flag-changed', onFlag)
+    return () => window.removeEventListener('workbench:flag-changed', onFlag)
   }, [activeWorkspaceId])
 
   // Reset UI state when workspace changes
@@ -1835,6 +1854,11 @@ function AppShellContent({
     navigate(routes.view.projects())
   }, [])
 
+  // fork(PLAN-024): Handler for Review Workbench view
+  const handleWorkbenchClick = useCallback(() => {
+    navigate(routes.view.workbench())
+  }, [])
+
   const handleAutomationsScheduledClick = useCallback(() => {
     navigate(routes.view.automationsScheduled())
   }, [])
@@ -2696,6 +2720,14 @@ function AppShellContent({
                         },
                       ],
                     },
+                    // --- Review Workbench (feature-flagged). fork(PLAN-024) ---
+                    ...(workbenchEnabled ? [{
+                      id: "nav:workbench",
+                      title: t("sidebar.workbench"),
+                      icon: ClipboardCheck,
+                      variant: isWorkbenchNavigation(navState) ? "default" as const : "ghost" as const,
+                      onClick: handleWorkbenchClick,
+                    }] : []),
                     // --- Separator ---
                     { id: "separator:skills-settings", type: "separator" },
                     // --- Settings ---
