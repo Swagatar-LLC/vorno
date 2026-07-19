@@ -770,6 +770,8 @@ export interface WorkspaceSettings {
   tokenUsageThresholds?: Record<string, TokenUsageThresholdsDto>
   /** Per-model token-usage threshold overrides, keyed by model ID. Beats the per-provider default. */
   tokenUsageModelOverrides?: Record<string, TokenUsageThresholdsDto>
+  /** Feature flag for the Workbench surface (ADR-0014, PLAN-024). Default off. */
+  workbenchEnabled?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -860,3 +862,70 @@ export interface DeepLinkNavigation {
   action?: string
   actionParams?: Record<string, string>
 }
+
+// ---------------------------------------------------------------------------
+// Workbench — dynamic workspace surfaces (ADR-0014, PLAN-024)
+// ---------------------------------------------------------------------------
+
+import type {
+  ArtifactRef as WorkbenchArtifactRef,
+  ArtifactVersion as WorkbenchArtifactVersion,
+  ReviewThreadV1,
+  WorkbenchInstanceV1,
+} from '@craft-agent/core/types'
+
+/** vorno:workbench:review:instances:create */
+export interface WorkbenchInstanceCreateRequest {
+  title: string
+  corpusRoots?: string[]
+  artifactUris?: string[]
+  boundSessionId?: string
+}
+
+/** vorno:workbench:review:instances:update — additive patch; arrays replace wholesale. */
+export interface WorkbenchInstanceUpdateRequest {
+  workbenchId: string
+  patch: Partial<
+    Pick<WorkbenchInstanceV1, 'title' | 'corpusRoots' | 'artifactUris' | 'boundSessionId'>
+  >
+}
+
+/** vorno:workbench:review:artifacts:index */
+export interface WorkbenchArtifactIndexRequest {
+  workbenchId: string
+}
+export interface WorkbenchArtifactIndexResult {
+  artifacts: WorkbenchArtifactRef[]
+  /** Roots that could not be scanned (missing/denied) — surfaced, not swallowed. */
+  skippedRoots: string[]
+}
+
+/** vorno:workbench:review:artifacts:read — uri must be inside a corpus root,
+ * a pinned artifactUri, or the workspace sessions dir (containment enforced
+ * server-side; reads outside are rejected). */
+export interface WorkbenchArtifactReadRequest {
+  workbenchId: string
+  uri: string
+}
+export interface WorkbenchArtifactReadResult {
+  ref: WorkbenchArtifactRef
+  content: string
+  version: WorkbenchArtifactVersion
+}
+
+/** vorno:workbench:review:threads:list */
+export interface WorkbenchThreadsListRequest {
+  workbenchId: string
+  /** Filter to one artifact when present. */
+  artifactUri?: string
+}
+
+/** vorno:workbench:review:threads:mutate */
+export type WorkbenchThreadCommand =
+  | { type: 'add'; thread: ReviewThreadV1 }
+  | { type: 'update'; threadId: string; patch: Partial<ReviewThreadV1> }
+  | { type: 'remove'; threadId: string }
+
+export type WorkbenchThreadMutationResult =
+  | { ok: true; thread?: ReviewThreadV1 }
+  | { ok: false; reason: 'workbench-not-found' | 'thread-not-found' | 'duplicate-id' | 'invalid-payload' | 'write-failed' }

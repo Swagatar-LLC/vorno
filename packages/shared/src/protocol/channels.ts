@@ -513,6 +513,22 @@ export const RPC_CHANNELS = {
     ALLOW_PENDING_SENDER: 'messaging:access:allowPending',
     SET_BINDING_ACCESS: 'messaging:access:setBindingAccess',
   },
+
+  /**
+   * Workbench — dynamic workspace surfaces (ADR-0012 vorno:* additive
+   * namespace; ADR-0014). Wire shape: vorno:workbench:<type>:<action>.
+   * Workbench *instances* are addressed by workbenchId in payloads, never
+   * in channel names (the channel set stays static and auditable).
+   */
+  workbench: {
+    REVIEW_INSTANCES_LIST: 'vorno:workbench:review:instances:list',
+    REVIEW_INSTANCES_CREATE: 'vorno:workbench:review:instances:create',
+    REVIEW_INSTANCES_UPDATE: 'vorno:workbench:review:instances:update',
+    REVIEW_ARTIFACTS_INDEX: 'vorno:workbench:review:artifacts:index',
+    REVIEW_ARTIFACTS_READ: 'vorno:workbench:review:artifacts:read',
+    REVIEW_THREADS_LIST: 'vorno:workbench:review:threads:list',
+    REVIEW_THREADS_MUTATE: 'vorno:workbench:review:threads:mutate',
+  },
 } as const
 
 // IPC_CHANNELS compat alias removed — all consumers now use RPC_CHANNELS
