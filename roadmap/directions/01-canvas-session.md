@@ -7,6 +7,7 @@ related-discussions:
   - 2026-04-28-canvas-paradigm-directions.md
 related-plans:
   - PLAN-001-canvas-session-spectator-v0.md
+  - PLAN-024-review-workbench-dynamic-workspace-v1.md
 ---
 
 # Direction 1 — The Canvas Session
