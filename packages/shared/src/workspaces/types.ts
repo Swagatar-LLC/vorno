@@ -76,6 +76,9 @@ export interface WorkspaceConfig {
      * Keyed by model ID. Takes precedence over the per-provider default.
      */
     tokenUsageModelOverrides?: Record<string, TokenUsageThresholds>;
+
+    /** Feature flag for the Workbench surface (ADR-0014, PLAN-024). Default off. */
+    workbenchEnabled?: boolean;
   };
 
   /**

@@ -123,6 +123,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       enabledSourceSlugs: config?.defaults?.enabledSourceSlugs ?? [],
       tokenUsageThresholds: config?.defaults?.tokenUsageThresholds,
       tokenUsageModelOverrides: config?.defaults?.tokenUsageModelOverrides,
+      workbenchEnabled: config?.defaults?.workbenchEnabled ?? false,
     }
   })
 
@@ -134,7 +135,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'workbenchEnabled']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
     }
