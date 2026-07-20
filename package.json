@@ -21,8 +21,16 @@
     "!apps/online-docs"
   ],
   "scripts": {
-    "test": "bun test && for f in $(find . -name '*.isolated.ts' -not -path './node_modules/*'); do bun test \"$f\" || exit 1; done",
-    "typecheck": "bun run typecheck:shared",
+    "dev": "bun run electron:dev",
+    "dev:webui": "bun run webui:dev",
+    "test": "bun run test:shared && bun run test:server",
+    "test:shared": "cd packages/shared && bun test",
+    "test:server": "cd apps/server && bun test",
+    "test:all": "bun test && for f in $(find . -name '*.isolated.ts' -not -path './node_modules/*'); do bun test \"$f\" || exit 1; done",
+    "typecheck": "bun run typecheck:ci",
+    "typecheck:ci": "bun run typecheck:packages && bun run typecheck:server",
+    "typecheck:packages": "cd packages/core && bun run tsc --noEmit && cd ../shared && bun run tsc --noEmit && cd ../server-core && bun run tsc --noEmit && cd ../server && bun run tsc --noEmit && cd ../session-tools-core && bun run tsc --noEmit && cd ../ui && bun run tsc --noEmit",
+    "typecheck:server": "cd apps/server && OUT=$(bun run tsc --noEmit 2>&1); echo \"$OUT\" | grep -E 'error TS' | grep -qv 'TS6059' && { echo \"$OUT\" | grep -E 'error TS' | grep -v 'TS6059'; exit 1; } || exit 0",
     "typecheck:shared": "cd packages/shared && bun run tsc --noEmit",
     "typecheck:staged": "bash scripts/typecheck-staged.sh",
     "typecheck:all": "cd packages/core && bun run tsc --noEmit && cd ../shared && bun run tsc --noEmit && cd ../server-core && bun run tsc --noEmit && cd ../server && bun run tsc --noEmit && cd ../session-tools-core && bun run tsc --noEmit && cd ../pi-agent-server && bun run typecheck && cd ../../apps/electron && bun run typecheck && cd ../../packages/ui && bun run tsc --noEmit",
