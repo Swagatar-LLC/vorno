@@ -1,11 +1,11 @@
 ---
 id: PLAN-023
 title: Hosted Workspace Server (self-hosted app-server; desktop + phone as thin clients)
-status: planned
+status: in-progress
 direction: DIR-03
 owner: jh
 created: 2026-07-17
-updated: 2026-07-17
+updated: 2026-07-18
 related:
   - PLAN-013-server-only-deployment.md
   - PLAN-005-webui-tailscale-launcher.md
@@ -161,3 +161,5 @@ Designed *after* Phase 1 teaches the sharp edges (deliberately sequenced last).
 ## Status log
 
 - `2026-07-17` — created in `planned/`
+- `2026-07-18` — moved from planned to in-progress: Phase 0 (architecture doc + ADR-0013) underway
+- `2026-07-19` — Jeff signed off all four Phase-0 one-way doors; ADR-0013 **accepted** with conditions (additive-only vault header, opaque `serverId` + `vorno:server:info` metadata rule, ALIGN-widened identity/RBAC semantics, git-HTTPS as written). ALIGN review paper edits (N-1..N-7) folded into ADR + architecture doc.
