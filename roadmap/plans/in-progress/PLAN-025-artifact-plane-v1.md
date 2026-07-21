@@ -1,15 +1,14 @@
 ---
 id: PLAN-025
 title: Artifact plane v1 — registry, context-aware index, relations, Artifact Home (C1)
-status: planned
+status: in-progress
 direction: DIR-04
 owner: jh
 created: 2026-07-21
 updated: 2026-07-21
 related:
   - PLAN-024-review-workbench-dynamic-workspace-v1.md
-blocked-by:
-  - PR #104 merge (kernel lands on main first)
+blocked-by: []
 ---
 
 # PLAN-025 — Artifact plane v1: registry, context-aware index, relations, Artifact Home (C1)
@@ -55,3 +54,4 @@ Refactor-first: the workbench store/types/channels/handlers become the artifact 
 ## Status log
 
 - `2026-07-21` — created in `planned/` (ADR-0015 ratified the two-plane ladder; this is C1)
+- `2026-07-21` — moved from planned to in-progress: PR #104 merged (`595a3bda`) unblocked the kernel; door ADR-0016 (URI scheme + open type registry) drafted as `proposed` on branch `plan-025-artifact-plane` — implementation gated on owner sign-off (G2a); detailed technical sketch lands post-sign-off
