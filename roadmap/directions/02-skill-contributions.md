@@ -12,6 +12,8 @@ related-plans: []
 
 > *"VS Code's contribution model, rethought around AI-native modalities."*
 
+> **Revision note (2026-07-21, ADR-0015):** contribution points now have concrete targets — DIR-04's surface spec (PLAN-026), artifact-type registry (PLAN-025), and block renderers. Sequenced to DIR-04's C4 phase: building the registry before the things it registers inverts the dependency, and contribution surfaces may partially duplicate what downstream harnesses (Claude, Codex, Pi) provide — reassess scope when C2's spec is stable. The `contributes:` frontmatter seam is verified zero-migration (skills parsing is lenient); note the item-renderer registry described under "Early seams" was never landed on main — treat it as design intent, not existing code.
+
 ## Thesis
 
 A Craft skill today is a `SKILL.md` file containing instructions. Useful, but limited: skills can't extend the *shell*, only inform the *agent*.

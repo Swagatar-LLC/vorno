@@ -13,6 +13,8 @@ related-plans:
 
 > *"The chat is a canvas now."*
 
+> **Revision note (2026-07-21, ADR-0015):** the canvas is now framed as a *projection of the artifact plane* (DIR-04). PLAN-025 makes JSON Canvas v1.0 a first-class artifact type, prefiguring this direction; the spatial act consumes DIR-04's index and relations rather than inventing its own substrate. Canvas-first sequencing was evaluated and rejected twice (260719-young-willow, 260721-fleet-spring) — this direction remains the later act it was designed to be.
+
 ## Thesis
 
 A Craft session is currently rendered as a vertical scroll of messages. It does not need to be. The session's underlying data — a stream of `AgentEvent` objects — is **already a graph of causally-linked artifacts**. We've been flattening it into a transcript by convention, not necessity.
