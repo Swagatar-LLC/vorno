@@ -94,6 +94,7 @@ Store directory naming (parameterizing the `reviews/` literal), index caching st
 ### Neutral
 
 - `file` fallback rendering for unknown types means a contributed type degrades gracefully rather than erroring — watch that this doesn't hide misregistration.
+- The shape is deliberately **OCI-artifact-packaging-compatible**: content-hash version identity + portable plain files, no live-server-resolved URIs (root bindings are workspace-local config) — keeps the door open for portable artifact/skill bundle packaging (fleet-spring `plans/bundle-standards-judgment.md`, R1 research).
 - The registry API shape must anticipate DIR-02 contribution without building it (C4).
 
 ## Alternatives considered
