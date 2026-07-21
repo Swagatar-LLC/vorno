@@ -31,11 +31,12 @@ So we don't start from zero. We grow it.
 
 ## Strategic directions
 
-Three layered bets — each independently shippable, each enables the next. See [`directions/`](directions/) for full statements.
+Layered bets — each independently shippable, each enables the next. See [`directions/`](directions/) for full statements.
 
-1. **The Canvas Session** — every `AgentEvent` is a shape on a tldraw canvas. The conversation becomes malleable spatial data. *(Direction 1, near-term)*
-2. **Skills as Contribution Points** — skills register custom shapes, tools, and views via a manifest. The third-party modality ecosystem opens. *(Direction 2, mid-term)*
-3. **The Live Observatory** — a separate app that renders all sessions across all clients as a live spatial graph. Local-first via Automerge. *(Direction 3, longer-term)*
+1. **Dynamic Workspaces** — every workspace output (and every UI surface) is a typed, versioned, related artifact; surfaces are generated compositions of trusted blocks, with a ratified-standard escape hatch for expressive apps. *(Direction 4, near-term — the current active build, ADR-0015)*
+2. **The Canvas Session** — every `AgentEvent` is a shape on a tldraw canvas, projected from the artifact plane. *(Direction 1, mid-term)*
+3. **Skills as Contribution Points** — skills register surface templates, artifact types, and views via a manifest. The third-party modality ecosystem opens. *(Direction 2, mid-term)*
+4. **The Live Observatory** — a separate app that renders all sessions across all clients as a live spatial graph. Local-first via Automerge. *(Direction 3, longer-term)*
 
 ## Principles
 

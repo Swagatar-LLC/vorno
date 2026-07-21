@@ -9,6 +9,7 @@ Multi-quarter strategic bets. Each direction is a coherent paradigm move that re
 | 01 | [The Canvas Session](01-canvas-session.md) | active | Every `AgentEvent` is a shape on a tldraw canvas |
 | 02 | [Skills as Contribution Points](02-skill-contributions.md) | active | Skills register custom shapes, tools, views |
 | 03 | [The Live Observatory](03-observatory.md) | future | Multi-session, multi-device live spatial graph |
+| 04 | [Dynamic Workspaces](04-dynamic-workspaces.md) | active | Artifact plane + surface plane, coupled by "a surface is an artifact" (ADR-0015) |
 
 ## How a direction differs from a plan
 
