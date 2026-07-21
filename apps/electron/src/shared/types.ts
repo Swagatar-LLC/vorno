@@ -52,6 +52,36 @@ export type {
   AnnotationV1,
 };
 
+// Workbench types (dynamic workspace surfaces — ADR-0014, PLAN-024)
+import type {
+  ReviewThreadV1,
+  WorkbenchInstanceV1,
+} from '@craft-agent/core/types';
+import type {
+  WorkbenchInstanceCreateRequest,
+  WorkbenchInstanceUpdateRequest,
+  WorkbenchArtifactIndexRequest,
+  WorkbenchArtifactIndexResult,
+  WorkbenchArtifactReadRequest,
+  WorkbenchArtifactReadResult,
+  WorkbenchThreadsListRequest,
+  WorkbenchThreadCommand,
+  WorkbenchThreadMutationResult,
+} from '@craft-agent/shared/protocol';
+export type {
+  ReviewThreadV1,
+  WorkbenchInstanceV1,
+  WorkbenchInstanceCreateRequest,
+  WorkbenchInstanceUpdateRequest,
+  WorkbenchArtifactIndexRequest,
+  WorkbenchArtifactIndexResult,
+  WorkbenchArtifactReadRequest,
+  WorkbenchArtifactReadResult,
+  WorkbenchThreadsListRequest,
+  WorkbenchThreadCommand,
+  WorkbenchThreadMutationResult,
+};
+
 // Auth types for onboarding
 import type { AuthState, SetupNeeds } from '@craft-agent/shared/auth/types';
 import type { AuthType } from '@craft-agent/shared/config/types';
@@ -627,6 +657,16 @@ export interface ElectronAPI {
   getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettings | null>
   updateWorkspaceSetting<K extends keyof WorkspaceSettings>(workspaceId: string, key: K, value: WorkspaceSettings[K]): Promise<void>
 
+  // Workbench (dynamic workspace surfaces — ADR-0014, PLAN-024).
+  // Workspace resolution is server-side via RequestContext (like getSessions).
+  workbenchListInstances(): Promise<WorkbenchInstanceV1[]>
+  workbenchCreateInstance(req: WorkbenchInstanceCreateRequest): Promise<WorkbenchInstanceV1>
+  workbenchUpdateInstance(req: WorkbenchInstanceUpdateRequest): Promise<WorkbenchInstanceV1 | null>
+  workbenchIndexArtifacts(req: WorkbenchArtifactIndexRequest): Promise<WorkbenchArtifactIndexResult>
+  workbenchReadArtifact(req: WorkbenchArtifactReadRequest): Promise<WorkbenchArtifactReadResult | null>
+  workbenchListThreads(req: WorkbenchThreadsListRequest): Promise<ReviewThreadV1[]>
+  workbenchMutateThread(req: { workbenchId: string; command: WorkbenchThreadCommand }): Promise<WorkbenchThreadMutationResult>
+
   // Folder dialog
   openFolderDialog(): Promise<string | null>
 
@@ -1112,6 +1152,17 @@ export interface ProjectsNavigationState {
 }
 
 /**
+ * Workbench navigation state (Review Workbench — ADR-0014, PLAN-024).
+ * The selected instance/artifact/thread live in jotai atoms, not the route,
+ * so v0.1 keeps a single flat `workbench` route (details always null).
+ */
+export interface WorkbenchNavigationState {
+  navigator: 'workbench'
+  details: null
+  rightSidebar?: RightSidebarPanel
+}
+
+/**
  * Unified navigation state
  */
 export type NavigationState =
@@ -1121,6 +1172,7 @@ export type NavigationState =
   | SkillsNavigationState
   | AutomationsNavigationState
   | ProjectsNavigationState
+  | WorkbenchNavigationState
 
 export const isSessionsNavigation = (
   state: NavigationState
@@ -1145,6 +1197,10 @@ export const isAutomationsNavigation = (
 export const isProjectsNavigation = (
   state: NavigationState
 ): state is ProjectsNavigationState => state.navigator === 'projects'
+
+export const isWorkbenchNavigation = (
+  state: NavigationState
+): state is WorkbenchNavigationState => state.navigator === 'workbench'
 
 export const DEFAULT_NAVIGATION_STATE: NavigationState = {
   navigator: 'sessions',
@@ -1180,6 +1236,9 @@ export const getNavigationStateKey = (state: NavigationState): string => {
   if (state.navigator === 'settings') {
     if (state.subpage === null) return 'settings'
     return `settings:${state.subpage}`
+  }
+  if (state.navigator === 'workbench') {
+    return 'workbench'
   }
   // Chats
   const f = state.filter

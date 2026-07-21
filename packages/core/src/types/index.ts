@@ -67,3 +67,16 @@ export type {
   ActiveSessionInfo,
 } from './server.ts';
 
+
+// Workbench types (dynamic workspace surfaces — ADR-0014, PLAN-024)
+export type {
+  ArtifactVersion,
+  WorkbenchArtifactKind,
+  ArtifactRef,
+  WorkbenchSessionLink,
+  ReviewThreadKind,
+  ReviewThreadStatus,
+  ReviewThreadV1,
+  WorkbenchType,
+  WorkbenchInstanceV1,
+} from './workbench.ts';

@@ -257,6 +257,17 @@ let pendingDeepLink: string | null = null
 // Supports multi-instance dev: CRAFT_APP_NAME env var (e.g., "Craft Agents [1]")
 app.setName(process.env.CRAFT_APP_NAME || PRODUCT_NAME)
 
+// fork(PLAN-024 QA): Electron derives userData — and therefore the
+// requestSingleInstanceLock() below — from the bundle's package.json name
+// ("@craft-agent/electron"), NOT from app.setName(). A CRAFT_APP_NAME dev
+// instance therefore shares the singleton lock with a running packaged app
+// and quits before showing a window. Named instances get their own userData
+// so the lock (and Chromium profile) are per-instance. Packaged runs
+// (CRAFT_APP_NAME unset) are unchanged.
+if (process.env.CRAFT_APP_NAME) {
+  app.setPath('userData', join(app.getPath('appData'), process.env.CRAFT_APP_NAME))
+}
+
 // Register as default protocol client for craftagents:// URLs
 // This must be done before app.whenReady() on some platforms
 if (process.defaultApp) {

@@ -517,6 +517,17 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.messaging.DISMISS_PENDING_SENDER,
   RPC_CHANNELS.messaging.ALLOW_PENDING_SENDER,
   RPC_CHANNELS.messaging.SET_BINDING_ACCESS,
+
+  // workbench — dynamic workspace surfaces; state lives in the workspace
+  // (reviews/ store + session/corpus files), so it runs wherever the
+  // workspace lives (ADR-0014)
+  RPC_CHANNELS.workbench.REVIEW_INSTANCES_LIST,
+  RPC_CHANNELS.workbench.REVIEW_INSTANCES_CREATE,
+  RPC_CHANNELS.workbench.REVIEW_INSTANCES_UPDATE,
+  RPC_CHANNELS.workbench.REVIEW_ARTIFACTS_INDEX,
+  RPC_CHANNELS.workbench.REVIEW_ARTIFACTS_READ,
+  RPC_CHANNELS.workbench.REVIEW_THREADS_LIST,
+  RPC_CHANNELS.workbench.REVIEW_THREADS_MUTATE,
 ])
 
 // ---------------------------------------------------------------------------

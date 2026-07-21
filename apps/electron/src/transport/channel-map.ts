@@ -478,4 +478,13 @@ export const CHANNEL_MAP = {
   allowMessagingPendingSender: invoke(RPC_CHANNELS.messaging.ALLOW_PENDING_SENDER),
   setMessagingBindingAccess: invoke(RPC_CHANNELS.messaging.SET_BINDING_ACCESS),
   onMessagingPendingChanged: listener(RPC_CHANNELS.messaging.PENDING_CHANGED),
+
+  // Workbench (dynamic workspace surfaces — ADR-0014, PLAN-024)
+  workbenchListInstances: invoke(RPC_CHANNELS.workbench.REVIEW_INSTANCES_LIST),
+  workbenchCreateInstance: invoke(RPC_CHANNELS.workbench.REVIEW_INSTANCES_CREATE),
+  workbenchUpdateInstance: invoke(RPC_CHANNELS.workbench.REVIEW_INSTANCES_UPDATE),
+  workbenchIndexArtifacts: invoke(RPC_CHANNELS.workbench.REVIEW_ARTIFACTS_INDEX),
+  workbenchReadArtifact: invoke(RPC_CHANNELS.workbench.REVIEW_ARTIFACTS_READ),
+  workbenchListThreads: invoke(RPC_CHANNELS.workbench.REVIEW_THREADS_LIST),
+  workbenchMutateThread: invoke(RPC_CHANNELS.workbench.REVIEW_THREADS_MUTATE),
 } satisfies ChannelMap
