@@ -80,3 +80,14 @@ export type {
   WorkbenchType,
   WorkbenchInstanceV1,
 } from './workbench.ts';
+
+// Artifact plane types (generalized artifact plane — ADR-0016, PLAN-025)
+export type {
+  ParsedArtifactUri,
+  ArtifactOriginKind,
+  ArtifactOrigin,
+  ArtifactEntry,
+  ArtifactTypeDescriptor,
+  ArtifactRelationKind,
+  ArtifactRelation,
+} from './artifacts.ts';
