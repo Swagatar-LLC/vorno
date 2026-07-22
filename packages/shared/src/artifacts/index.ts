@@ -35,8 +35,13 @@ export {
 } from './registry.ts';
 
 // Index / scan
-export { indexArtifacts } from './scan.ts';
+export { indexArtifacts, indexArtifactUris } from './scan.ts';
 export type { IndexArtifactsOptions } from './scan.ts';
+
+// Relation-edge display resolution (browser-safe; also deep-importable via
+// `@craft-agent/shared/artifacts/relations-view`)
+export { describeRelationEdges } from './relations-view.ts';
+export type { RelationEdgeView } from './relations-view.ts';
 
 // Relations + lifecycle store
 export {
@@ -56,7 +61,7 @@ export type {
 } from './store.ts';
 
 // Read gate
-export { readArtifactByUri } from './read.ts';
+export { readArtifactByUri, MAX_ARTIFACT_BYTES } from './read.ts';
 export type { ReadArtifactOptions, ReadArtifactByUriResult } from './read.ts';
 
 // Content hashing / versioning

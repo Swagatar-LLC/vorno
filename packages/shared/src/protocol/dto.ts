@@ -948,6 +948,7 @@ export type WorkbenchThreadMutationResult =
 import type {
   ArtifactEntry,
   ArtifactRelation,
+  ArtifactSkippedRoot,
   ArtifactTypeDescriptor,
   ArtifactVersion as ArtifactPlaneVersion,
 } from '@craft-agent/core/types'
@@ -965,8 +966,8 @@ export interface ArtifactsIndexRequest {
 }
 export interface ArtifactsIndexResult {
   artifacts: ArtifactEntry[]
-  /** Roots that could not be scanned (missing/denied/truncated) — surfaced, not swallowed. */
-  skippedRoots: string[]
+  /** Roots the scan could not (fully) serve — rootId + reason, never absolute paths (ADR-0016 §2). */
+  skippedRoots: ArtifactSkippedRoot[]
 }
 
 /** vorno:artifacts:read — uri gated by containment ∧ (indexed ∨ pinned) (ADR-0016 §4). */

@@ -9,6 +9,10 @@
  * `schemaVersion: 1` pinned, atomic writes, pretty JSON. A corrupt file is
  * warned about and treated as empty — one bad file never sinks a read. Dirs are
  * created lazily on first write.
+ *
+ * Forward compatibility (read-side half of the ADR-0013 additive discipline):
+ * a file whose `schemaVersion` is newer than this code reads as empty and is
+ * NEVER written — no silent downgrade, no partial destruction of future fields.
  */
 
 import { existsSync, mkdirSync, readFileSync } from 'fs';
@@ -51,16 +55,28 @@ interface RelationsFile {
   relations: ArtifactRelation[];
 }
 
-function readRelationsFile(workspaceRoot: string): RelationsFile {
+const KNOWN_SCHEMA_VERSION = 1;
+
+/** True when a parsed store file declares a schemaVersion newer than this code. */
+function isNewerSchema(parsed: { schemaVersion?: unknown }): boolean {
+  return typeof parsed.schemaVersion === 'number' && parsed.schemaVersion > KNOWN_SCHEMA_VERSION;
+}
+
+function readRelationsFile(workspaceRoot: string): { file: RelationsFile; incompatible: boolean } {
   const path = getRelationsPath(workspaceRoot);
-  if (!existsSync(path)) return { schemaVersion: 1, relations: [] };
+  const empty: RelationsFile = { schemaVersion: 1, relations: [] };
+  if (!existsSync(path)) return { file: empty, incompatible: false };
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<RelationsFile>;
+    if (isNewerSchema(parsed)) {
+      debug('[artifacts] relations.json has a newer schemaVersion — reading as empty, writes refused:', parsed.schemaVersion);
+      return { file: empty, incompatible: true };
+    }
     const relations = Array.isArray(parsed.relations) ? parsed.relations : [];
-    return { schemaVersion: 1, relations };
+    return { file: { schemaVersion: 1, relations }, incompatible: false };
   } catch (error) {
     debug('[artifacts] Corrupt relations.json — treating as empty:', path, error);
-    return { schemaVersion: 1, relations: [] };
+    return { file: empty, incompatible: false };
   }
 }
 
@@ -79,9 +95,9 @@ function writeRelationsFile(workspaceRoot: string, file: RelationsFile): boolean
  * List relations, optionally filtered to those touching `uri` (either endpoint).
  */
 export function listRelations(workspaceRoot: string, uri?: string): ArtifactRelation[] {
-  const { relations } = readRelationsFile(workspaceRoot);
-  if (!uri) return relations;
-  return relations.filter((r) => r.from === uri || r.to === uri);
+  const { file } = readRelationsFile(workspaceRoot);
+  if (!uri) return file.relations;
+  return file.relations.filter((r) => r.from === uri || r.to === uri);
 }
 
 export interface AddRelationInput {
@@ -108,7 +124,10 @@ export function addRelation(workspaceRoot: string, input: AddRelationInput): Add
     return { ok: false, reason: 'invalid-payload' };
   }
 
-  const file = readRelationsFile(workspaceRoot);
+  const { file, incompatible } = readRelationsFile(workspaceRoot);
+  // ponytail: 'write-failed' stands in for a distinct incompatible-schema
+  // reason until a caller needs to tell them apart.
+  if (incompatible) return { ok: false, reason: 'write-failed' };
   const duplicate = file.relations.some(
     (r) => r.from === input.from && r.to === input.to && r.kind === input.kind,
   );
@@ -127,9 +146,13 @@ export function addRelation(workspaceRoot: string, input: AddRelationInput): Add
   return { ok: true, relation };
 }
 
-/** Remove a relation by id. Returns false when the id was not present. */
+/**
+ * Remove a relation by id. Returns false when the id was not present (which
+ * includes a newer-schema file — read as empty, never rewritten).
+ */
 export function removeRelation(workspaceRoot: string, id: string): boolean {
-  const file = readRelationsFile(workspaceRoot);
+  const { file, incompatible } = readRelationsFile(workspaceRoot);
+  if (incompatible) return false;
   const next = file.relations.filter((r) => r.id !== id);
   if (next.length === file.relations.length) return false;
   file.relations = next;
@@ -151,17 +174,25 @@ interface StateFile {
   entries: Record<string, ArtifactStateEntry>;
 }
 
-function readStateFile(workspaceRoot: string): StateFile {
+function readStateFile(workspaceRoot: string): { file: StateFile; incompatible: boolean } {
   const path = getStatePath(workspaceRoot);
-  if (!existsSync(path)) return { schemaVersion: 1, entries: {} };
+  const empty: StateFile = { schemaVersion: 1, entries: {} };
+  if (!existsSync(path)) return { file: empty, incompatible: false };
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<StateFile>;
+    if (isNewerSchema(parsed)) {
+      debug('[artifacts] state.json has a newer schemaVersion — reading as empty, writes refused:', parsed.schemaVersion);
+      return { file: empty, incompatible: true };
+    }
     const entries =
       parsed.entries && typeof parsed.entries === 'object' ? parsed.entries : {};
-    return { schemaVersion: 1, entries: entries as Record<string, ArtifactStateEntry> };
+    return {
+      file: { schemaVersion: 1, entries: entries as Record<string, ArtifactStateEntry> },
+      incompatible: false,
+    };
   } catch (error) {
     debug('[artifacts] Corrupt state.json — treating as empty:', path, error);
-    return { schemaVersion: 1, entries: {} };
+    return { file: empty, incompatible: false };
   }
 }
 
@@ -178,7 +209,7 @@ function writeStateFile(workspaceRoot: string, file: StateFile): boolean {
 
 /** Read the full lifecycle-state map (uri → entry). */
 export function getArtifactState(workspaceRoot: string): Record<string, ArtifactStateEntry> {
-  return readStateFile(workspaceRoot).entries;
+  return readStateFile(workspaceRoot).file.entries;
 }
 
 /**
@@ -191,7 +222,12 @@ export function setArtifactState(
   uri: string,
   patch: { pinned?: boolean; archived?: boolean },
 ): ArtifactStateEntry | undefined {
-  const file = readStateFile(workspaceRoot);
+  const { file, incompatible } = readStateFile(workspaceRoot);
+  if (incompatible) {
+    // Refuse to touch a newer-schema file. Throw so RPC callers surface
+    // 'write-failed' via their existing catch path.
+    throw new Error('artifacts state.json has a newer schemaVersion — refusing to write');
+  }
   const existing = file.entries[uri];
 
   const pinned = patch.pinned ?? existing?.pinned;

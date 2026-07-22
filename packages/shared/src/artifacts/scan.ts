@@ -11,8 +11,10 @@
  * frontmatter contributes title/tags/metadata (never type). Session context
  * (projectId, labels, status) is joined once per call from listSessions().
  *
- * Caps + skip conventions carry over from workbench/artifacts.ts: recursion
- * depth caps, SKIP_DIRS, GLOBAL_FILE_CAP, and a `<root> (truncated)` marker.
+ * Caps carry over from workbench/artifacts.ts: recursion depth caps, SKIP_DIRS,
+ * GLOBAL_FILE_CAP. Roots the scan cannot (fully) serve are surfaced as
+ * `ArtifactSkippedRoot` — rootId + reason only, never absolute paths
+ * (ADR-0016 §2 door 2).
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
@@ -24,6 +26,7 @@ import type {
   ArtifactEntry,
   ArtifactOrigin,
   ArtifactOriginKind,
+  ArtifactSkippedRoot,
 } from '@craft-agent/core/types';
 import { getArtifactTypeForPath, getRegisteredExtensions } from './registry.ts';
 import { resolveRootBindings, absPathToUri, type RootBinding } from './roots.ts';
@@ -153,12 +156,15 @@ function extractTags(data: Record<string, unknown>): string[] | undefined {
   return undefined;
 }
 
-/** First `# ` heading (stripping leading #s), else null. */
+/**
+ * First ATX heading (`#`–`######` followed by whitespace), else null. A bare
+ * `#hashtag` line is not a heading and never becomes a title.
+ */
 function firstHeading(content: string): string | null {
   for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('#')) {
-      const title = trimmed.replace(/^#+\s*/, '').trim();
+    const match = line.trim().match(/^#{1,6}\s+(.*)$/);
+    if (match) {
+      const title = (match[1] ?? '').trim();
       if (title) return title;
     }
   }
@@ -254,32 +260,33 @@ function makeEntry(
   return entry;
 }
 
+/** A file surfaced by the scan, before entry construction. */
+interface ScannedFile {
+  absPath: string;
+  originKind: ArtifactOriginKind;
+  sessionId?: string;
+}
+
 /**
- * Index all artifacts visible to a workspace. Missing/unreadable roots are
- * surfaced in `skippedRoots` (never thrown); a root truncated by the global file
- * cap is recorded as `<root> (truncated)`. Archived artifacts are excluded
- * unless `includeArchived` is set.
+ * The shared scan stage: walk session plans/data + configured roots and collect
+ * candidate files. No content reads — `indexArtifacts` builds full entries from
+ * this, and `indexArtifactUris` builds the read-gate URI set (ADR-0016 §4).
+ * Skips are per rootId + reason, deduped, never absolute paths.
  */
-export function indexArtifacts(options: IndexArtifactsOptions): {
-  artifacts: ArtifactEntry[];
-  skippedRoots: string[];
+function collectScannedFiles(
+  workspaceRootPath: string,
+  configuredRoots?: Record<string, string>,
+): {
+  files: ScannedFile[];
+  skippedRoots: ArtifactSkippedRoot[];
+  bindings: Map<string, RootBinding>;
 } {
-  const { workspaceRootPath, configuredRoots, includeArchived } = options;
   const bindings = resolveRootBindings(workspaceRootPath, configuredRoots);
   const extensions = getRegisteredExtensions();
-  const sessionCtx = buildSessionContext(workspaceRootPath);
-  const state = getArtifactState(workspaceRootPath);
-
-  const artifacts: ArtifactEntry[] = [];
-  const skippedRoots: string[] = [];
-  const seen = new Set<string>();
-
-  const push = (entry: ArtifactEntry | null) => {
-    if (!entry) return;
-    if (seen.has(entry.uri)) return;
-    if (entry.archived && !includeArchived) return;
-    seen.add(entry.uri);
-    artifacts.push(entry);
+  const files: ScannedFile[] = [];
+  const skipped = new Map<string, ArtifactSkippedRoot>();
+  const skip = (rootId: string, reason: ArtifactSkippedRoot['reason']) => {
+    skipped.set(`${rootId}:${reason}`, { rootId, reason });
   };
 
   // (1) workspace root — session plans + data.
@@ -290,42 +297,30 @@ export function indexArtifacts(options: IndexArtifactsOptions): {
       sessionEntries = readdirSync(sessionsDir, { withFileTypes: true });
     } catch (error) {
       debug('[artifacts] Skipping sessions dir:', sessionsDir, error);
-      skippedRoots.push(sessionsDir);
+      skip(RESERVED_WORKSPACE_ROOT_ID, 'unreadable');
     }
     for (const sessionEntry of sessionEntries) {
       if (!sessionEntry.isDirectory()) continue;
       const sessionId = sessionEntry.name;
       const sessionDir = join(sessionsDir, sessionId);
 
-      // plans/** → session-plan
-      const plansDir = join(sessionDir, 'plans');
-      if (existsSync(plansDir)) {
+      const subdirs = [
+        { name: 'plans', originKind: 'session-plan' as const },
+        { name: 'data', originKind: 'session-data' as const },
+      ];
+      for (const { name, originKind } of subdirs) {
+        const dir = join(sessionDir, name);
+        if (!existsSync(dir)) continue;
         const st: ScanState = { files: [], truncated: false };
         try {
-          scanFiles(plansDir, 0, SESSION_DATA_DEPTH_CAP, extensions, st);
+          scanFiles(dir, 0, SESSION_DATA_DEPTH_CAP, extensions, st);
         } catch (error) {
-          debug('[artifacts] Skipping session plans dir:', plansDir, error);
+          debug('[artifacts] Skipping session subdir:', dir, error);
           st.files = [];
         }
-        if (st.truncated) skippedRoots.push(`${plansDir} (truncated)`);
-        for (const file of st.files) {
-          push(makeEntry(file, 'session-plan', bindings, sessionId, sessionCtx, state));
-        }
-      }
-
-      // data/** → session-data (depth-capped)
-      const dataDir = join(sessionDir, 'data');
-      if (existsSync(dataDir)) {
-        const st: ScanState = { files: [], truncated: false };
-        try {
-          scanFiles(dataDir, 0, SESSION_DATA_DEPTH_CAP, extensions, st);
-        } catch (error) {
-          debug('[artifacts] Skipping session data dir:', dataDir, error);
-          st.files = [];
-        }
-        if (st.truncated) skippedRoots.push(`${dataDir} (truncated)`);
-        for (const file of st.files) {
-          push(makeEntry(file, 'session-data', bindings, sessionId, sessionCtx, state));
+        if (st.truncated) skip(RESERVED_WORKSPACE_ROOT_ID, 'truncated');
+        for (const absPath of st.files) {
+          files.push({ absPath, originKind, sessionId });
         }
       }
     }
@@ -335,19 +330,69 @@ export function indexArtifacts(options: IndexArtifactsOptions): {
   for (const [rootId, binding] of bindings) {
     if (rootId === RESERVED_WORKSPACE_ROOT_ID) continue;
     if (binding.kind !== 'filesystem') continue;
+    if (!existsSync(binding.path)) {
+      skip(rootId, 'missing');
+      continue;
+    }
     const st: ScanState = { files: [], truncated: false };
     try {
       scanFiles(binding.path, 0, CORPUS_DEPTH_CAP, extensions, st);
     } catch (error) {
       debug('[artifacts] Skipping corpus root:', binding.path, error);
-      skippedRoots.push(binding.path);
+      skip(rootId, 'unreadable');
       continue;
     }
-    if (st.truncated) skippedRoots.push(`${binding.path} (truncated)`);
-    for (const file of st.files) {
-      push(makeEntry(file, 'corpus', bindings, undefined, sessionCtx, state));
+    if (st.truncated) skip(rootId, 'truncated');
+    for (const absPath of st.files) {
+      files.push({ absPath, originKind: 'corpus' });
     }
   }
 
+  return { files, skippedRoots: Array.from(skipped.values()), bindings };
+}
+
+/**
+ * Index all artifacts visible to a workspace. Missing/unreadable roots are
+ * surfaced in `skippedRoots` (never thrown), identified by rootId + reason —
+ * never absolute paths (ADR-0016 §2). Archived artifacts are excluded unless
+ * `includeArchived` is set.
+ */
+export function indexArtifacts(options: IndexArtifactsOptions): {
+  artifacts: ArtifactEntry[];
+  skippedRoots: ArtifactSkippedRoot[];
+} {
+  const { workspaceRootPath, configuredRoots, includeArchived } = options;
+  const { files, skippedRoots, bindings } = collectScannedFiles(workspaceRootPath, configuredRoots);
+  const sessionCtx = buildSessionContext(workspaceRootPath);
+  const state = getArtifactState(workspaceRootPath);
+
+  const artifacts: ArtifactEntry[] = [];
+  const seen = new Set<string>();
+  for (const f of files) {
+    const entry = makeEntry(f.absPath, f.originKind, bindings, f.sessionId, sessionCtx, state);
+    if (!entry) continue;
+    if (seen.has(entry.uri)) continue;
+    if (entry.archived && !includeArchived) continue;
+    seen.add(entry.uri);
+    artifacts.push(entry);
+  }
   return { artifacts, skippedRoots };
+}
+
+/**
+ * The read-gate membership set (ADR-0016 §4 door 4): the URIs the index scan
+ * surfaces, computed without any content reads. Archived artifacts are
+ * included — archival is a lifecycle flag, not a read restriction.
+ */
+export function indexArtifactUris(options: {
+  workspaceRootPath: string;
+  configuredRoots?: Record<string, string>;
+}): Set<string> {
+  const { files, bindings } = collectScannedFiles(options.workspaceRootPath, options.configuredRoots);
+  const uris = new Set<string>();
+  for (const f of files) {
+    const uri = absPathToUri(f.absPath, bindings);
+    if (uri) uris.add(uri);
+  }
+  return uris;
 }

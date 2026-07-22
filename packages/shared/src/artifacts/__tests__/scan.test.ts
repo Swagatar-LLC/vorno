@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { indexArtifacts } from '../scan.ts';
+import { indexArtifacts, indexArtifactUris } from '../scan.ts';
 import { setArtifactState } from '../store.ts';
 import { formatArtifactUri } from '../uri.ts';
 import type { ArtifactEntry } from '@craft-agent/core/types';
@@ -157,5 +157,43 @@ describe('indexArtifacts', () => {
     setArtifactState(workspaceRoot, uri, { pinned: true });
     const { artifacts } = indexArtifacts({ workspaceRootPath: workspaceRoot });
     expect(artifacts.find((a) => a.uri === uri)?.pinned).toBe(true);
+  });
+
+  // F2 (G2b review): skipped roots are rootId + reason — never absolute paths.
+  it('reports a missing configured root as {rootId, reason} with no absolute path', () => {
+    const { skippedRoots } = indexArtifacts({
+      workspaceRootPath: workspaceRoot,
+      configuredRoots: { ghost: join(tempDir, 'does-not-exist') },
+    });
+    expect(skippedRoots).toEqual([{ rootId: 'ghost', reason: 'missing' }]);
+    for (const s of skippedRoots) {
+      expect(s.rootId.includes('/')).toBe(false);
+    }
+  });
+
+  // A3 (G2b review): a bare #hashtag line is not a heading.
+  it('does not mistake a #hashtag line for a heading title', () => {
+    write(join(workspaceRoot, 'sessions', 's1', 'plans', 'tagged.md'), '#todo\n\n# Real Title\nbody');
+    write(join(workspaceRoot, 'sessions', 's1', 'plans', 'only-tag.md'), '#todo\nbody');
+    const { artifacts } = indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const byRel = (rel: string) =>
+      artifacts.find((a) => a.uri === formatArtifactUri({ rootId: 'workspace', relPath: rel }));
+    expect(byRel('sessions/s1/plans/tagged.md')?.title).toBe('Real Title');
+    expect(byRel('sessions/s1/plans/only-tag.md')?.title).toBe('only-tag.md');
+  });
+
+  // F1 support: the URI-set variant matches the full index's surface.
+  it('indexArtifactUris matches the URIs indexArtifacts surfaces (archived included)', () => {
+    writeSession('s1', {});
+    write(join(workspaceRoot, 'sessions', 's1', 'plans', 'p.md'), '# P');
+    write(join(workspaceRoot, 'sessions', 's1', 'data', 'd.json'), '{}');
+    write(join(workspaceRoot, 'unindexed.md'), '# Not scanned');
+    const archivedUri = formatArtifactUri({ rootId: 'workspace', relPath: 'sessions/s1/plans/p.md' });
+    setArtifactState(workspaceRoot, archivedUri, { archived: true });
+
+    const uris = indexArtifactUris({ workspaceRootPath: workspaceRoot });
+    const full = indexArtifacts({ workspaceRootPath: workspaceRoot, includeArchived: true });
+    expect(uris).toEqual(new Set(full.artifacts.map((a) => a.uri)));
+    expect(uris.has(formatArtifactUri({ rootId: 'workspace', relPath: 'unindexed.md' }))).toBe(false);
   });
 });

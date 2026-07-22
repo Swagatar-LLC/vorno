@@ -84,6 +84,7 @@ export type {
 // Artifact plane types (generalized artifact plane — ADR-0016, PLAN-025)
 export type {
   ParsedArtifactUri,
+  ArtifactSkippedRoot,
   ArtifactOriginKind,
   ArtifactOrigin,
   ArtifactEntry,

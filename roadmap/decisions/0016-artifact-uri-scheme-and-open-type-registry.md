@@ -96,7 +96,7 @@ Store directory naming (parameterizing the `reviews/` literal), index caching st
 
 - **Storage separation is now a stated goal** (*owner amendment 2026-07-22*, on door 2): the root-binding indirection is expected to enable future artifact versioning and storage separation — "integrate object storage with identity federation for artifacts (at a minimum, all workspace storage ideally has a plugin architecture to enable more complicated artifact/document storage and AuthZ stories)." C1 stays filesystem-only and builds no providers, but the root-resolution seam is shaped so a storage-provider interface can slot in behind root bindings later. Ties to ADR-0013 / PLAN-023.
 - `file` fallback rendering for unknown types means a contributed type degrades gracefully rather than erroring — watch that this doesn't hide misregistration.
-- The shape is deliberately **OCI-artifact-packaging-compatible**: content-hash version identity + portable plain files, no live-server-resolved URIs (root bindings are workspace-local config) — keeps the door open for portable artifact/skill bundle packaging (fleet-spring `plans/bundle-standards-judgment.md`, R1 research).
+- The shape is deliberately **OCI-artifact-packaging-compatible**: content-hash version identity + portable plain files, no live-server-resolved URIs (root bindings are workspace-local config) — keeps the door open for portable artifact/skill bundle packaging (ADR-0017, standards stack).
 - The registry API shape must anticipate DIR-02 contribution without building it (C4).
 
 ## Alternatives considered

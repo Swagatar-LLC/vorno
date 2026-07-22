@@ -23,7 +23,8 @@ import { toast } from 'sonner'
 import { formatDistanceToNowStrict } from 'date-fns'
 import { Library, RefreshCw, Pin, PinOff, Archive, ArchiveRestore, X, Plus, AlertTriangle } from 'lucide-react'
 import { Markdown } from '@craft-agent/ui'
-import type { ArtifactEntry, ArtifactRelation } from '@craft-agent/core'
+import type { ArtifactEntry, ArtifactRelation, ArtifactSkippedRoot } from '@craft-agent/core'
+import { describeRelationEdges } from '@craft-agent/shared/artifacts/relations-view'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -381,7 +382,7 @@ function ListPane({
   selectedUri: string | null
   onSelect: (uri: string) => void
   onRefresh: () => void
-  skippedRoots: string[]
+  skippedRoots: ArtifactSkippedRoot[]
   skippedDismissed: boolean
   onDismissSkipped: () => void
 }) {
@@ -400,7 +401,9 @@ function ListPane({
       {skippedRoots.length > 0 && !skippedDismissed && (
         <div className="mx-3 mt-2 flex items-start gap-1.5 rounded-md bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
           <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-          <span className="flex-1">{t('artifacts.skippedRoots', { count: skippedRoots.length })}</span>
+          <span className="flex-1" title={skippedRoots.map((s) => `${s.rootId}: ${s.reason}`).join(', ')}>
+            {t('artifacts.skippedRoots', { count: skippedRoots.length })}
+          </span>
           <button onClick={onDismissSkipped} className="shrink-0 opacity-70 hover:opacity-100" title={t('common.dismiss')}>
             <X className="h-3 w-3" />
           </button>
@@ -605,13 +608,9 @@ function RelationsSection({
     void load()
   }, [load])
 
-  const titleFor = React.useCallback(
-    (u: string): { title: string; resolved: boolean } => {
-      const found = index.find((a) => a.uri === u)
-      return found ? { title: found.title, resolved: true } : { title: u, resolved: false }
-    },
-    [index]
-  )
+  // Edge resolution lives in the shared, unit-tested helper — an unresolvable
+  // other-end renders a badge, never a crash or a dropped edge.
+  const edges = React.useMemo(() => describeRelationEdges(relations, uri, index), [relations, uri, index])
 
   const handleAdd = async () => {
     if (!addTo) return
@@ -701,10 +700,7 @@ function RelationsSection({
         <p className="text-xs text-muted-foreground">{t('artifacts.noRelations')}</p>
       ) : (
         <div className="flex flex-col gap-1.5">
-          {relations.map((rel) => {
-            // The "other end" is whichever side isn't the current uri.
-            const otherUri = rel.from === uri ? rel.to : rel.from
-            const { title, resolved } = titleFor(otherUri)
+          {edges.map(({ relation: rel, otherUri, otherTitle: title, resolved }) => {
             return (
               <div key={rel.id} className="flex items-center gap-2 rounded-md border border-border/40 px-2 py-1.5 text-xs">
                 <Badge variant="outline" className="h-4 px-1.5 text-[10px]">

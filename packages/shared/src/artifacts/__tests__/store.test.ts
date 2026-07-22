@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -97,5 +97,45 @@ describe('lifecycle state', () => {
     expect(getArtifactState(workspaceRoot)).toEqual({});
     setArtifactState(workspaceRoot, A, { pinned: true });
     expect(getArtifactState(workspaceRoot)[A]?.pinned).toBe(true);
+  });
+});
+
+// A2 (G2b review): forward compatibility — a newer-schema file reads as empty
+// and is NEVER written (no silent downgrade, no destruction of future fields).
+describe('newer schemaVersion forward-compat guard', () => {
+  const A = 'vorno-artifact://workspace/sessions/s1/plans/a.md';
+  const B = 'vorno-artifact://workspace/sessions/s1/plans/b.md';
+
+  it('relations.json v2: reads empty, refuses writes, file bytes untouched', () => {
+    mkdirSync(join(workspaceRoot, 'artifacts'), { recursive: true });
+    const v2 = JSON.stringify({
+      schemaVersion: 2,
+      futureField: { keep: true },
+      relations: [{ id: 'r1', from: A, to: B, kind: 'references', createdAt: 1, futureEdgeField: 'x' }],
+    });
+    writeFileSync(getRelationsPath(workspaceRoot), v2);
+
+    expect(listRelations(workspaceRoot)).toEqual([]);
+    expect(addRelation(workspaceRoot, { from: A, to: B, kind: 'renders' })).toEqual({
+      ok: false,
+      reason: 'write-failed',
+    });
+    expect(removeRelation(workspaceRoot, 'r1')).toBe(false);
+    // The v2 file survives byte-for-byte.
+    expect(readFileSync(getRelationsPath(workspaceRoot), 'utf-8')).toBe(v2);
+  });
+
+  it('state.json v2: reads empty, setArtifactState throws, file bytes untouched', () => {
+    mkdirSync(join(workspaceRoot, 'artifacts'), { recursive: true });
+    const v2 = JSON.stringify({
+      schemaVersion: 2,
+      futureField: 'keep',
+      entries: { [A]: { pinned: true, updatedAt: 1, futureFlag: true } },
+    });
+    writeFileSync(getStatePath(workspaceRoot), v2);
+
+    expect(getArtifactState(workspaceRoot)).toEqual({});
+    expect(() => setArtifactState(workspaceRoot, A, { pinned: true })).toThrow();
+    expect(readFileSync(getStatePath(workspaceRoot), 'utf-8')).toBe(v2);
   });
 });

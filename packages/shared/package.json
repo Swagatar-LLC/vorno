@@ -41,6 +41,7 @@
     "./workbench": "./src/workbench/index.ts",
     "./artifacts": "./src/artifacts/index.ts",
     "./artifacts/canvas": "./src/artifacts/canvas.ts",
+    "./artifacts/relations-view": "./src/artifacts/relations-view.ts",
     "./sources": "./src/sources/index.ts",
     "./sources/types": "./src/sources/types.ts",
     "./skills": "./src/skills/index.ts",

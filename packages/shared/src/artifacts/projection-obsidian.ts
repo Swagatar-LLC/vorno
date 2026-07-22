@@ -17,9 +17,8 @@ import { parseArtifactUri } from './uri.ts';
 import { resolveArtifactPath, resolveRootBindings } from './roots.ts';
 import { getRegisteredExtensions } from './registry.ts';
 import { getArtifactState } from './store.ts';
-
-// ponytail: mirrors read.ts flat cap — a projection is a batch of reads.
-const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024;
+// A projection is a batch of reads — share read.ts's cap (single definition).
+import { MAX_ARTIFACT_BYTES } from './read.ts';
 
 export interface ExportObsidianVaultOptions {
   workspaceRootPath: string;

@@ -25,6 +25,15 @@ export interface ParsedArtifactUri {
 }
 
 /**
+ * A root the index scan could not (fully) serve. Identified by rootId only —
+ * absolute paths never ride the wire (ADR-0016 §2 door 2).
+ */
+export interface ArtifactSkippedRoot {
+  rootId: string;
+  reason: 'missing' | 'unreadable' | 'truncated';
+}
+
+/**
  * Open provenance kinds. Un-prefixed values reserved for system built-ins
  * (ADR-0016 namespace reservation); prefixed (`<prefix>:<name>`) values carry
  * user/third-party provenance.
