@@ -331,14 +331,18 @@ export default function WorkspaceSettingsPage() {
     [updateWorkspaceSetting]
   )
 
-  // Route directory-picker selections to the row that requested it.
+  // Route directory-picker selections: a rootId re-picks that row's path; null
+  // means "add a new root" — pick-directory-first, the id derives from the
+  // folder name (ADR-0015 §7: pickers over free-text; QA G2c-2 flow fix).
   const pendingRootIdRef = React.useRef<string | null>(null)
   const handleRootDirSelected = useCallback(
     (path: string) => {
       const rootId = pendingRootIdRef.current
       pendingRootIdRef.current = null
-      if (!rootId) return
-      void saveArtifactRoots({ ...artifactRoots, [rootId]: path })
+      const id =
+        rootId ??
+        deriveRootId(path, new Set([...Object.keys(artifactRoots), 'workspace']))
+      void saveArtifactRoots({ ...artifactRoots, [id]: path })
     },
     [artifactRoots, saveArtifactRoots]
   )
@@ -637,6 +641,7 @@ export default function WorkspaceSettingsPage() {
                     roots={artifactRoots}
                     onSave={saveArtifactRoots}
                     onBrowse={(rootId) => {
+                      // null rootId = add-new (id derived from the picked folder)
                       pendingRootIdRef.current = rootId
                       pickRootDirectory()
                     }}
@@ -672,9 +677,27 @@ export default function WorkspaceSettingsPage() {
 // ============================================
 
 /**
- * Advanced artifact-roots editor: rows of rootId (lowercase kebab) + directory
- * path. Paths are chosen via the app's directory picker (reused from the
- * working-directory setting); the server validates on save (ADR-0016 §2).
+ * Derive a valid root id from a picked folder: basename → lowercase, non
+ * [a-z0-9] runs → '-', trimmed, ≤64 chars, deduped against taken ids
+ * (including the reserved 'workspace').
+ */
+function deriveRootId(path: string, taken: Set<string>): string {
+  const base = path.split('/').filter(Boolean).pop() ?? 'root'
+  let id = base.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64)
+  if (!id) id = 'root'
+  if (!taken.has(id)) return id
+  for (let n = 2; ; n++) {
+    const candidate = `${id.slice(0, 60)}-${n}`
+    if (!taken.has(candidate)) return candidate
+  }
+}
+
+/**
+ * Advanced artifact-roots editor, pick-directory-first (ADR-0015 §7; QA
+ * G2c-2): "Add folder" opens the directory picker immediately, the root id is
+ * derived from the folder name, and id + path save together in one write —
+ * no empty-path intermediate state. Rows re-pick their path or remove.
+ * Server validates on save (ADR-0016 §2).
  */
 function ArtifactRootsEditor({
   roots,
@@ -683,10 +706,9 @@ function ArtifactRootsEditor({
 }: {
   roots: Record<string, string>
   onSave: (next: Record<string, string>) => void
-  onBrowse: (rootId: string) => void
+  onBrowse: (rootId: string | null) => void
 }) {
   const { t } = useTranslation()
-  const [newId, setNewId] = React.useState('')
 
   const entries = React.useMemo(() => Object.entries(roots), [roots])
 
@@ -694,14 +716,6 @@ function ArtifactRootsEditor({
     const next = { ...roots }
     delete next[rootId]
     onSave(next)
-  }
-
-  const addRoot = () => {
-    const id = newId.trim()
-    if (!id || roots[id]) return
-    // Persist with an empty path; the user then browses to set it.
-    onSave({ ...roots, [id]: '' })
-    setNewId('')
   }
 
   return (
@@ -740,25 +754,13 @@ function ArtifactRootsEditor({
         </div>
       )}
 
-      <div className="flex items-center gap-2">
-        <input
-          value={newId}
-          onChange={(e) => setNewId(e.target.value.toLowerCase())}
-          placeholder={t("settings.workspace.artifactRootIdPlaceholder")}
-          className="h-8 min-w-0 flex-1 rounded-lg border border-border/40 bg-background px-2 font-mono text-xs"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') addRoot()
-          }}
-        />
-        <button
-          type="button"
-          onClick={addRoot}
-          disabled={!newId.trim() || !!roots[newId.trim()]}
-          className="inline-flex h-8 items-center px-3 text-sm rounded-lg bg-background shadow-minimal hover:bg-foreground/[0.02] transition-colors disabled:opacity-50"
-        >
-          {t("settings.workspace.addArtifactRoot")}
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => onBrowse(null)}
+        className="inline-flex h-8 items-center px-3 text-sm rounded-lg bg-background shadow-minimal hover:bg-foreground/[0.02] transition-colors"
+      >
+        {t("settings.workspace.addArtifactRoot")}
+      </button>
     </div>
   )
 }
