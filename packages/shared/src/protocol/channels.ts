@@ -529,6 +529,23 @@ export const RPC_CHANNELS = {
     REVIEW_THREADS_LIST: 'vorno:workbench:review:threads:list',
     REVIEW_THREADS_MUTATE: 'vorno:workbench:review:threads:mutate',
   },
+
+  /**
+   * Artifact plane — the generalized workspace artifact surface (ADR-0016,
+   * ADR-0015 / DIR-04, PLAN-025 C1; ADR-0012 vorno:* additive namespace).
+   * Wire payloads carry only `vorno-artifact://` URIs — never absolute paths
+   * (ADR-0016 §2). The channel set stays static and auditable; artifacts are
+   * addressed by URI in payloads, never in channel names.
+   */
+  artifacts: {
+    INDEX: 'vorno:artifacts:index',
+    READ: 'vorno:artifacts:read',
+    RELATIONS_LIST: 'vorno:artifacts:relations:list',
+    RELATIONS_MUTATE: 'vorno:artifacts:relations:mutate',
+    LIFECYCLE_SET: 'vorno:artifacts:lifecycle:set',
+    ROOTS_LIST: 'vorno:artifacts:roots:list',
+    TYPES_LIST: 'vorno:artifacts:types:list',
+  },
 } as const
 
 // IPC_CHANNELS compat alias removed — all consumers now use RPC_CHANNELS
