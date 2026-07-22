@@ -5,6 +5,7 @@ status: active
 opened: 2026-07-21
 related-decisions:
   - 0015-two-plane-artifact-surface-architecture.md
+  - 0017-standards-stack-artifact-packaging-distribution.md
 related-plans:
   - PLAN-025-artifact-plane-v1.md
   - PLAN-026-composed-surfaces-v1.md
@@ -38,10 +39,11 @@ This direction operationalizes the VISION's "open, extensible shell for AI-nativ
 
 1. Zero-config, context-aware artifact acquisition; manual configuration is an advanced override.
 2. Blandness > jank: trusted composed surfaces are the default class; expressive HTML apps are the escape hatch.
-3. Adopt open specs at code level (MCP Apps `ui/*`, JSON Canvas v1.0, frontmatter conventions) — invent only where no standard exists.
+3. Adopt open specs at code level (MCP Apps `ui/*`, JSON Canvas v1.0, frontmatter conventions; Agent Skills authoring + OCI/ORAS + Sigstore for packaging/distribution/provenance per ADR-0017) — invent only where no standard exists.
 4. External integrations are first-class interactive clients or not built.
 5. Interaction quality is a design principle: auto-save, responsive state, pickers over free-text config.
 6. Catalog gaps to close deliberately: editable graphs/diagrams, editable datagrids, smart chips.
+7. Storage separation as a stated goal: artifact/document storage behind pluggable backends (object storage + identity-federated AuthZ at minimum) via the ADR-0016 root-binding seam; lands with the hosted track (ADR-0013/PLAN-023).
 
 ## Working vocabulary (non-binding)
 
