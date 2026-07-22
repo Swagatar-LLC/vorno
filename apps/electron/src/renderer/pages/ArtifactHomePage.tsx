@@ -463,6 +463,23 @@ function DetailPane({
 }) {
   const { t } = useTranslation()
 
+  // Stale detection: remember the first contentHash seen for this uri; if a later
+  // re-read of the SAME uri yields a different hash, the artifact changed under us.
+  // Hooks run unconditionally (Rules of Hooks — QA crash G2c-1: these previously
+  // sat below the early return and threw on first selection); the memo guards on
+  // entry internally.
+  const entryUri = entry?.uri
+  const firstHashRef = React.useRef<{ uri: string; hash: string } | null>(null)
+  const stale = React.useMemo(() => {
+    if (!entryUri || !read?.ok) return false
+    const seen = firstHashRef.current
+    if (!seen || seen.uri !== entryUri) {
+      firstHashRef.current = { uri: entryUri, hash: read.version.contentHash }
+      return false
+    }
+    return seen.hash !== read.version.contentHash
+  }, [read, entryUri])
+
   if (!entry) {
     return (
       <div className="flex min-w-0 flex-1 items-center justify-center bg-background">
@@ -470,19 +487,6 @@ function DetailPane({
       </div>
     )
   }
-
-  // Stale detection: remember the first contentHash seen for this uri; if a later
-  // re-read of the SAME uri yields a different hash, the artifact changed under us.
-  const firstHashRef = React.useRef<{ uri: string; hash: string } | null>(null)
-  const stale = React.useMemo(() => {
-    if (!read?.ok) return false
-    const seen = firstHashRef.current
-    if (!seen || seen.uri !== entry.uri) {
-      firstHashRef.current = { uri: entry.uri, hash: read.version.contentHash }
-      return false
-    }
-    return seen.hash !== read.version.contentHash
-  }, [read, entry.uri])
 
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-background">
