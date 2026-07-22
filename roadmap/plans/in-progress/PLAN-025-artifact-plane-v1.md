@@ -55,3 +55,4 @@ Refactor-first: the workbench store/types/channels/handlers become the artifact 
 
 - `2026-07-21` — created in `planned/` (ADR-0015 ratified the two-plane ladder; this is C1)
 - `2026-07-21` — moved from planned to in-progress: PR #104 merged (`595a3bda`) unblocked the kernel; door ADR-0016 (URI scheme + open type registry) drafted as `proposed` on branch `plan-025-artifact-plane` — implementation gated on owner sign-off (G2a); detailed technical sketch lands post-sign-off
+- `2026-07-22` — **G2a closed**: owner signed all four doors (PR #106 review) with three inline amendments (storage-separation stated goal on root bindings; namespace reservation — un-prefixed ids reserved for system; read serves an *artifact*, not a file). ADR-0016 → `accepted` with amendments folded in. C1 build proceeding on `plan-025-artifact-plane`.

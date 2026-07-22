@@ -1,7 +1,7 @@
 ---
 id: ADR-0016
 title: Artifact plane addressing — vorno-artifact:// URI scheme and open artifact-type registry
-status: proposed
+status: accepted
 date: 2026-07-21
 supersedes: []
 superseded-by: []
@@ -9,7 +9,7 @@ superseded-by: []
 
 # ADR-0016 — Artifact plane addressing: `vorno-artifact://` URI scheme and open artifact-type registry
 
-> **Door ADR (PLAN-025 / C1 gate G2a).** Owner sign-off required before implementation. The four one-way doors are listed explicitly in §Doors below.
+> **Door ADR (PLAN-025 / C1 gate G2a).** All four doors **signed by owner 2026-07-22** ([PR #106 review](https://github.com/Swagatar-LLC/vorno/pull/106#pullrequestreview-4755396336)), with three inline amendments folded into this text (marked *owner amendment 2026-07-22*).
 
 ## Context
 
@@ -56,11 +56,12 @@ Registry contract (the permanent part):
 
 - Type ids are **never repurposed or re-semanticized**; descriptors evolve additively.
 - **Unknown ids are tolerated**: consumers render unknown types via the `file` fallback and must round-trip the id unmodified. This keeps the door open for workspace-level and DIR-02 skill-contributed types (C4) without another schema change.
-- Relation-edge kinds (`derived-from`, `references`, `renders`, `discussed-in`, …) follow the **same open-string + additive discipline**.
+- **Namespace reservation** (*owner amendment 2026-07-22*): **un-prefixed ids are reserved for system built-ins.** Internal representations necessary for system operation stay un-prefixed; user/third-party provenance values and contributed type ids require a **registered prefix** going forward (prefixed form `<prefix>:<name>`, prefix lowercase-kebab, registered with the system) — separating system vs. user provenance across all the open string spaces this ADR creates (type ids, origin kinds, relation kinds).
+- Relation-edge kinds (`derived-from`, `references`, `renders`, `discussed-in`, …) follow the **same open-string + additive + namespace-reservation discipline**.
 
 ### 4. Read policy (resolves A5)
 
-`artifacts:read` serves a file only when **all** hold: (a) realpath containment in a registered root (as today), (b) the URI is **indexed or explicitly pinned** — index membership derives from registered type matchers, pinning is a deliberate user/agent act, and (c) a byte-size cap. Opening types beyond `.md` therefore widens reads only to what the registry declares plus explicit pins — never to "anything within a root."
+`artifacts:read` serves an **artifact** (*owner amendment 2026-07-22*: not always a file on a filesystem — see the storage-separation goal in Consequences) only when **all** hold: (a) the URI resolves within a registered root (realpath containment for filesystem-backed roots, which is all of C1), (b) the URI is **indexed or explicitly pinned** — index membership derives from registered type matchers, pinning is a deliberate user/agent act, and (c) a byte-size cap. Opening types beyond `.md` therefore widens reads only to what the registry declares plus explicit pins — never to "anything within a root."
 
 ### Non-doors (implementation, changeable later)
 
@@ -93,6 +94,7 @@ Store directory naming (parameterizing the `reviews/` literal), index caching st
 
 ### Neutral
 
+- **Storage separation is now a stated goal** (*owner amendment 2026-07-22*, on door 2): the root-binding indirection is expected to enable future artifact versioning and storage separation — "integrate object storage with identity federation for artifacts (at a minimum, all workspace storage ideally has a plugin architecture to enable more complicated artifact/document storage and AuthZ stories)." C1 stays filesystem-only and builds no providers, but the root-resolution seam is shaped so a storage-provider interface can slot in behind root bindings later. Ties to ADR-0013 / PLAN-023.
 - `file` fallback rendering for unknown types means a contributed type degrades gracefully rather than erroring — watch that this doesn't hide misregistration.
 - The shape is deliberately **OCI-artifact-packaging-compatible**: content-hash version identity + portable plain files, no live-server-resolved URIs (root bindings are workspace-local config) — keeps the door open for portable artifact/skill bundle packaging (fleet-spring `plans/bundle-standards-judgment.md`, R1 research).
 - The registry API shape must anticipate DIR-02 contribution without building it (C4).
