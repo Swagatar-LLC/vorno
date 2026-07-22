@@ -35,7 +35,7 @@ export interface ParsedRoute {
 // Compound Route Types (new format)
 // =============================================================================
 
-export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'workbench' | 'settings'
+export type NavigatorType = 'sessions' | 'sources' | 'skills' | 'automations' | 'projects' | 'workbench' | 'artifacts' | 'settings'
 
 export interface ParsedCompoundRoute {
   /** The navigator type */
@@ -63,7 +63,7 @@ export interface ParsedCompoundRoute {
  * Known prefixes that indicate a compound route
  */
 const COMPOUND_ROUTE_PREFIXES = [
-  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'project', 'board', 'sources', 'skills', 'automations', 'projects', 'workbench', 'settings'
+  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'project', 'board', 'sources', 'skills', 'automations', 'projects', 'workbench', 'artifacts', 'settings'
 ]
 
 /**
@@ -196,6 +196,12 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
   // in atoms, so the route carries no details in v0.1.
   if (first === 'workbench') {
     return { navigator: 'workbench', details: null }
+  }
+
+  // Artifacts navigator (Artifact Home — PLAN-025 C1). Flat: selection/filters
+  // live in atoms, so the route carries no details in C1.
+  if (first === 'artifacts') {
+    return { navigator: 'artifacts', details: null }
   }
 
   // Automations navigator - supports type filters (scheduled, event, agentic)
@@ -340,6 +346,10 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
 
   if (parsed.navigator === 'workbench') {
     return 'workbench'
+  }
+
+  if (parsed.navigator === 'artifacts') {
+    return 'artifacts'
   }
 
   // Sessions navigator
@@ -631,6 +641,11 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     return { navigator: 'workbench', details: null }
   }
 
+  // Artifacts (PLAN-025 C1) — flat, no details in the route
+  if (compound.navigator === 'artifacts') {
+    return { navigator: 'artifacts', details: null }
+  }
+
   // Sessions
   const filter = compound.sessionFilter || { kind: 'allSessions' as const }
   if (compound.details) {
@@ -847,6 +862,10 @@ function navigationStateToCompoundRoute(state: NavigationState): ParsedCompoundR
 
   if (state.navigator === 'workbench') {
     return { navigator: 'workbench', details: null }
+  }
+
+  if (state.navigator === 'artifacts') {
+    return { navigator: 'artifacts', details: null }
   }
 
   // Sessions

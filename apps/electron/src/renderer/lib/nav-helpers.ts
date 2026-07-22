@@ -35,5 +35,8 @@ export function isDetailNavState(navState: NavigationState | null): boolean {
     case 'workbench':
       // Workbench selection lives in atoms, not the route — never "detail mode".
       return false
+    case 'artifacts':
+      // Artifact Home selection/filters live in atoms, not the route.
+      return false
   }
 }

@@ -772,6 +772,10 @@ export interface WorkspaceSettings {
   tokenUsageModelOverrides?: Record<string, TokenUsageThresholdsDto>
   /** Feature flag for the Workbench surface (ADR-0014, PLAN-024). Default off. */
   workbenchEnabled?: boolean
+  /** Feature flag for the Artifact Home surface (ADR-0016, PLAN-025). Default off. */
+  artifactsEnabled?: boolean
+  /** Named artifact root bindings (rootId → absolute path), ADR-0016 §2. 'workspace' is reserved and implicit. */
+  artifactRoots?: Record<string, string>
 }
 
 // ---------------------------------------------------------------------------

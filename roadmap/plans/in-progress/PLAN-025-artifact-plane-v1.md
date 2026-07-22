@@ -42,17 +42,18 @@ Refactor-first: the workbench store/types/channels/handlers become the artifact 
 
 ## Acceptance
 
-- [ ] Open Vorno in a workspace with prior sessions → Artifact Home lists their plans/data artifacts with project/label/status context, zero configuration
-- [ ] `vorno:artifacts:*` channels serve index/read/relations/lifecycle; recorded in compatibility.md
-- [ ] A `.canvas` file renders read-only; an emitted artifact set opens cleanly as an Obsidian vault folder
-- [ ] Review workbench still functions on the generalized store (no data loss)
-- [ ] Door ADR (URI scheme + type model) accepted by owner before implementation
-- [ ] Tests added/updated; CI-parity gates green
-- [ ] Behind feature flag
-- [ ] Roadmap docs updated
+- [ ] Open Vorno in a workspace with prior sessions → Artifact Home lists their plans/data artifacts with project/label/status context, zero configuration *(runtime QA — Jeff)*
+- [x] `vorno:artifacts:*` channels serve index/read/relations/lifecycle; recorded in compatibility.md
+- [ ] A `.canvas` file renders read-only; an emitted artifact set opens cleanly as an Obsidian vault folder *(parse/emit/projection covered by tests; in-app render + Obsidian open = runtime QA)*
+- [x] Review workbench still functions on the generalized store (no data loss — `reviews/` store and frozen wire family untouched; 19-test workbench suite green; A3/A4 advisory fixes applied)
+- [x] Door ADR (URI scheme + type model) accepted by owner before implementation (ADR-0016 signed 2026-07-22, PR #106 review)
+- [x] Tests added/updated (78 artifact-module tests); CI-parity gates green (7 typechecks, shared 3246/0, server 190/0, doc-tools, i18n ×3, branding, build; electron tsc at 108 baseline)
+- [x] Behind feature flag (`artifactsEnabled`, default off)
+- [x] Roadmap docs updated
 
 ## Status log
 
 - `2026-07-21` — created in `planned/` (ADR-0015 ratified the two-plane ladder; this is C1)
 - `2026-07-21` — moved from planned to in-progress: PR #104 merged (`595a3bda`) unblocked the kernel; door ADR-0016 (URI scheme + open type registry) drafted as `proposed` on branch `plan-025-artifact-plane` — implementation gated on owner sign-off (G2a); detailed technical sketch lands post-sign-off
 - `2026-07-22` — **G2a closed**: owner signed all four doors (PR #106 review) with three inline amendments (storage-separation stated goal on root bindings; namespace reservation — un-prefixed ids reserved for system; read serves an *artifact*, not a file). ADR-0016 → `accepted` with amendments folded in. C1 build proceeding on `plan-025-artifact-plane`.
+- `2026-07-22` — **C1 built end-to-end** (three legs): (1) shared module `@craft-agent/shared/artifacts` — URI parse/format, root bindings + realpath containment, open type registry (markdown/json-canvas/json/file), zero-config index with frontmatter + SessionHeader context join, relations + lifecycle stores, read gate, JSON Canvas parse/emit, Obsidian vault projection, 78 tests; (2) `vorno:artifacts:*` wire surface (7 channels, REMOTE_ELIGIBLE) + server-authoritative handlers + `artifactsEnabled`/`artifactRoots` workspace settings; (3) renderer — Artifact Home page (filter rail / list / detail + relations w/ unresolvable-badge), read-only JSON Canvas view, settings toggle + roots editor (directory-picker), 57 i18n keys ×7 locales, workbench advisory fixes A3 (annotation-drop toast) + A4 (corpus-roots draft clobber). CI-parity gates all green. Remaining: Jeff runtime QA (G2c) + Obsidian-open spot check.

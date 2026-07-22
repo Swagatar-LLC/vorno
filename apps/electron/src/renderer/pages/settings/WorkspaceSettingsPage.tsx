@@ -67,6 +67,9 @@ export default function WorkspaceSettingsPage() {
   const [localMcpEnabled, setLocalMcpEnabled] = useState(true)
   // fork(PLAN-024): Review Workbench feature flag
   const [workbenchEnabled, setWorkbenchEnabled] = useState(false)
+  // fork(PLAN-025 C1): Artifact plane feature flag + registered roots
+  const [artifactsEnabled, setArtifactsEnabled] = useState(false)
+  const [artifactRoots, setArtifactRoots] = useState<Record<string, string>>({})
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true)
 
   // Default sources state
@@ -95,6 +98,8 @@ export default function WorkspaceSettingsPage() {
           setWorkingDirectory(settings.workingDirectory || '')
           setLocalMcpEnabled(settings.localMcpEnabled ?? true)
           setWorkbenchEnabled(settings.workbenchEnabled ?? false)
+          setArtifactsEnabled(settings.artifactsEnabled ?? false)
+          setArtifactRoots(settings.artifactRoots ?? {})
           // Load cyclable permission modes from workspace settings
           if (settings.cyclablePermissionModes && settings.cyclablePermissionModes.length >= 2) {
             setEnabledModes(settings.cyclablePermissionModes)
@@ -299,6 +304,52 @@ export default function WorkspaceSettingsPage() {
     },
     [updateWorkspaceSetting, activeWorkspaceId]
   )
+
+  // fork(PLAN-025 C1): Artifact plane feature flag. Notify the shell so the
+  // sidebar entry appears/disappears without a workspace re-focus.
+  const handleArtifactsEnabledChange = useCallback(
+    async (enabled: boolean) => {
+      setArtifactsEnabled(enabled)
+      await updateWorkspaceSetting('artifactsEnabled', enabled)
+      window.dispatchEvent(
+        new CustomEvent('artifacts:flag-changed', {
+          detail: { workspaceId: activeWorkspaceId, enabled },
+        })
+      )
+    },
+    [updateWorkspaceSetting, activeWorkspaceId]
+  )
+
+  // Persist the artifact-roots map. Server validates (root-id syntax, reserved
+  // 'workspace' id, absolute paths); validation errors surface via the shared
+  // updateWorkspaceSetting toast. On success, adopt the saved map locally.
+  const saveArtifactRoots = useCallback(
+    async (next: Record<string, string>) => {
+      const saved = await updateWorkspaceSetting('artifactRoots', next)
+      if (saved) setArtifactRoots(next)
+    },
+    [updateWorkspaceSetting]
+  )
+
+  // Route directory-picker selections to the row that requested it.
+  const pendingRootIdRef = React.useRef<string | null>(null)
+  const handleRootDirSelected = useCallback(
+    (path: string) => {
+      const rootId = pendingRootIdRef.current
+      pendingRootIdRef.current = null
+      if (!rootId) return
+      void saveArtifactRoots({ ...artifactRoots, [rootId]: path })
+    },
+    [artifactRoots, saveArtifactRoots]
+  )
+
+  const {
+    pickDirectory: pickRootDirectory,
+    showServerBrowser: showRootBrowser,
+    serverBrowserMode: rootBrowserMode,
+    cancelServerBrowser: cancelRootBrowser,
+    confirmServerBrowser: confirmRootBrowser,
+  } = useDirectoryPicker(handleRootDirSelected)
 
   const handleSourceToggle = useCallback(
     async (slug: string, checked: boolean) => {
@@ -570,7 +621,28 @@ export default function WorkspaceSettingsPage() {
                   checked={workbenchEnabled}
                   onCheckedChange={handleWorkbenchEnabledChange}
                 />
+                {/* fork(PLAN-025 C1): Artifact plane feature flag */}
+                <SettingsToggle
+                  label={t("settings.workspace.artifacts")}
+                  description={t("settings.workspace.artifactsDesc")}
+                  checked={artifactsEnabled}
+                  onCheckedChange={handleArtifactsEnabledChange}
+                />
               </SettingsCard>
+
+              {/* fork(PLAN-025 C1): advanced artifact-roots editor (visible when enabled) */}
+              {artifactsEnabled && (
+                <div className="mt-3">
+                  <ArtifactRootsEditor
+                    roots={artifactRoots}
+                    onSave={saveArtifactRoots}
+                    onBrowse={(rootId) => {
+                      pendingRootIdRef.current = rootId
+                      pickRootDirectory()
+                    }}
+                  />
+                </div>
+              )}
             </SettingsSection>
 
           </div>
@@ -584,6 +656,109 @@ export default function WorkspaceSettingsPage() {
         onCancel={cancelWdBrowser}
         initialPath={workingDirectory || undefined}
       />
+      {/* fork(PLAN-025 C1): directory picker for artifact-root rows */}
+      <ServerDirectoryBrowser
+        open={showRootBrowser}
+        mode={rootBrowserMode}
+        onSelect={confirmRootBrowser}
+        onCancel={cancelRootBrowser}
+      />
+    </div>
+  )
+}
+
+// ============================================
+// Artifact roots editor (fork PLAN-025 C1)
+// ============================================
+
+/**
+ * Advanced artifact-roots editor: rows of rootId (lowercase kebab) + directory
+ * path. Paths are chosen via the app's directory picker (reused from the
+ * working-directory setting); the server validates on save (ADR-0016 §2).
+ */
+function ArtifactRootsEditor({
+  roots,
+  onSave,
+  onBrowse,
+}: {
+  roots: Record<string, string>
+  onSave: (next: Record<string, string>) => void
+  onBrowse: (rootId: string) => void
+}) {
+  const { t } = useTranslation()
+  const [newId, setNewId] = React.useState('')
+
+  const entries = React.useMemo(() => Object.entries(roots), [roots])
+
+  const removeRoot = (rootId: string) => {
+    const next = { ...roots }
+    delete next[rootId]
+    onSave(next)
+  }
+
+  const addRoot = () => {
+    const id = newId.trim()
+    if (!id || roots[id]) return
+    // Persist with an empty path; the user then browses to set it.
+    onSave({ ...roots, [id]: '' })
+    setNewId('')
+  }
+
+  return (
+    <div className="rounded-xl border border-border/50 bg-background p-4">
+      <div className="mb-3">
+        <p className="text-sm font-medium">{t("settings.workspace.artifactRoots")}</p>
+        <p className="text-xs text-muted-foreground">{t("settings.workspace.artifactRootsDesc")}</p>
+      </div>
+
+      {entries.length === 0 ? (
+        <p className="mb-3 text-xs text-muted-foreground">{t("settings.workspace.noArtifactRoots")}</p>
+      ) : (
+        <div className="mb-3 flex flex-col gap-2">
+          {entries.map(([rootId, path]) => (
+            <div key={rootId} className="flex items-center gap-2">
+              <span className="w-32 shrink-0 truncate font-mono text-xs" title={rootId}>
+                {rootId}
+              </span>
+              <button
+                type="button"
+                onClick={() => onBrowse(rootId)}
+                className="min-w-0 flex-1 truncate rounded-lg bg-foreground/[0.03] px-2 py-1.5 text-left text-xs shadow-minimal hover:bg-foreground/[0.06] transition-colors"
+                title={path || t("settings.workspace.chooseArtifactRootDir")}
+              >
+                {path || t("settings.workspace.chooseArtifactRootDir")}
+              </button>
+              <button
+                type="button"
+                onClick={() => removeRoot(rootId)}
+                className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-foreground/60 hover:text-destructive transition-colors"
+              >
+                {t("common.remove")}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <input
+          value={newId}
+          onChange={(e) => setNewId(e.target.value.toLowerCase())}
+          placeholder={t("settings.workspace.artifactRootIdPlaceholder")}
+          className="h-8 min-w-0 flex-1 rounded-lg border border-border/40 bg-background px-2 font-mono text-xs"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') addRoot()
+          }}
+        />
+        <button
+          type="button"
+          onClick={addRoot}
+          disabled={!newId.trim() || !!roots[newId.trim()]}
+          className="inline-flex h-8 items-center px-3 text-sm rounded-lg bg-background shadow-minimal hover:bg-foreground/[0.02] transition-colors disabled:opacity-50"
+        >
+          {t("settings.workspace.addArtifactRoot")}
+        </button>
+      </div>
     </div>
   )
 }

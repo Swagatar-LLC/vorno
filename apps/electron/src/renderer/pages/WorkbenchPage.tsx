@@ -232,7 +232,13 @@ export default function WorkbenchPage({ workspaceId }: WorkbenchPageProps) {
   // --- Annotation → thread bridges ----------------------------------------
   const handleAddAnnotation = React.useCallback(
     (_messageId: string, annotation: AnnotationV1) => {
-      if (!selectedId || !selectedUri || !artifactRead) return
+      if (!selectedId || !selectedUri) return
+      // A3 (PLAN-025 review): don't drop the annotation silently when the read
+      // hasn't landed yet — a thread needs the artifact version to anchor to.
+      if (!artifactRead) {
+        toast.error(t('workbench.annotationNotReady'))
+        return
+      }
       const now = Date.now()
       const thread: ReviewThreadV1 = {
         schemaVersion: 1,
@@ -249,7 +255,7 @@ export default function WorkbenchPage({ workspaceId }: WorkbenchPageProps) {
       }
       void mutateThread({ type: 'add', thread })
     },
-    [selectedId, selectedUri, artifactRead, mutateThread]
+    [selectedId, selectedUri, artifactRead, mutateThread, t]
   )
 
   const handleUpdateAnnotation = React.useCallback(
@@ -372,9 +378,13 @@ function LeftPane({
   const [rootsDraft, setRootsDraft] = React.useState('')
 
   // Keep the corpus-roots textarea in sync with the selected instance.
+  // A4 (PLAN-025 review): resync ONLY when the selected instance id changes.
+  // Depending on `selected.corpusRoots` (a fresh array reference on every
+  // loadInstances() rebuild) clobbered an in-progress edit mid-typing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   React.useEffect(() => {
     setRootsDraft((selected?.corpusRoots ?? []).join('\n'))
-  }, [selected?.id, selected?.corpusRoots])
+  }, [selected?.id])
 
   const handleCreate = async () => {
     const title = newTitle.trim()

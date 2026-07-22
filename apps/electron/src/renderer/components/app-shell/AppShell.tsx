@@ -35,6 +35,7 @@ import {
   MailOpen,
   FolderKanban,
   ClipboardCheck,
+  Library,
 } from "lucide-react"
 // SessionStatusIcons no longer used - icons come from dynamic sessionStatuses
 import { SourceAvatar } from "@/components/ui/source-avatar"
@@ -119,6 +120,7 @@ import {
   isAutomationsNavigation,
   isProjectsNavigation,
   isWorkbenchNavigation,
+  isArtifactsNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
@@ -946,6 +948,9 @@ function AppShellContent({
   // fork(PLAN-024): Review Workbench feature flag — gates the sidebar entry.
   const [workbenchEnabled, setWorkbenchEnabled] = React.useState(false)
 
+  // fork(PLAN-025 C1): Artifact plane feature flag — gates the sidebar entry.
+  const [artifactsEnabled, setArtifactsEnabled] = React.useState(false)
+
   // Enabled permission modes for Shift+Tab cycling (min 2 modes)
   const [enabledModes, setEnabledModes] = React.useState<PermissionMode[]>(['safe', 'ask', 'allow-all'])
 
@@ -956,6 +961,7 @@ function AppShellContent({
       if (settings) {
         setLocalMcpEnabled(settings.localMcpEnabled ?? true)
         setWorkbenchEnabled(settings.workbenchEnabled ?? false)
+        setArtifactsEnabled(settings.artifactsEnabled ?? false)
         // Load cyclablePermissionModes from workspace settings
         if (settings.cyclablePermissionModes && settings.cyclablePermissionModes.length >= 2) {
           setEnabledModes(settings.cyclablePermissionModes)
@@ -977,6 +983,18 @@ function AppShellContent({
     }
     window.addEventListener('workbench:flag-changed', onFlag)
     return () => window.removeEventListener('workbench:flag-changed', onFlag)
+  }, [activeWorkspaceId])
+
+  // fork(PLAN-025 C1): keep the artifacts flag live when toggled from settings.
+  React.useEffect(() => {
+    const onFlag = (e: Event) => {
+      const detail = (e as CustomEvent<{ workspaceId: string; enabled: boolean }>).detail
+      if (detail && detail.workspaceId === activeWorkspaceId) {
+        setArtifactsEnabled(detail.enabled)
+      }
+    }
+    window.addEventListener('artifacts:flag-changed', onFlag)
+    return () => window.removeEventListener('artifacts:flag-changed', onFlag)
   }, [activeWorkspaceId])
 
   // Reset UI state when workspace changes
@@ -1859,6 +1877,11 @@ function AppShellContent({
     navigate(routes.view.workbench())
   }, [])
 
+  // fork(PLAN-025 C1): Handler for Artifact Home view
+  const handleArtifactsClick = useCallback(() => {
+    navigate(routes.view.artifacts())
+  }, [])
+
   const handleAutomationsScheduledClick = useCallback(() => {
     navigate(routes.view.automationsScheduled())
   }, [])
@@ -2727,6 +2750,14 @@ function AppShellContent({
                       icon: ClipboardCheck,
                       variant: isWorkbenchNavigation(navState) ? "default" as const : "ghost" as const,
                       onClick: handleWorkbenchClick,
+                    }] : []),
+                    // --- Artifact Home (feature-flagged). fork(PLAN-025 C1) ---
+                    ...(artifactsEnabled ? [{
+                      id: "nav:artifacts",
+                      title: t("sidebar.artifacts"),
+                      icon: Library,
+                      variant: isArtifactsNavigation(navState) ? "default" as const : "ghost" as const,
+                      onClick: handleArtifactsClick,
                     }] : []),
                     // --- Separator ---
                     { id: "separator:skills-settings", type: "separator" },

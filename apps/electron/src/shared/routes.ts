@@ -205,6 +205,9 @@ export const routes = {
 
     /** Review Workbench view (workbench navigator). fork(PLAN-024) */
     workbench: () => 'workbench' as const,
+
+    /** Artifact Home view (artifacts navigator). fork(PLAN-025 C1) */
+    artifacts: () => 'artifacts' as const,
   },
 } as const
 

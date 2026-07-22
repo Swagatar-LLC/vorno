@@ -67,6 +67,19 @@ import type {
   WorkbenchThreadsListRequest,
   WorkbenchThreadCommand,
   WorkbenchThreadMutationResult,
+  // Artifact plane (ADR-0015/0016, PLAN-025 C1)
+  ArtifactsIndexRequest,
+  ArtifactsIndexResult,
+  ArtifactsReadRequest,
+  ArtifactsReadResult,
+  ArtifactsRelationsListRequest,
+  ArtifactsRelationsListResult,
+  ArtifactsRelationsMutateRequest,
+  ArtifactsRelationsMutateResult,
+  ArtifactsLifecycleSetRequest,
+  ArtifactsLifecycleSetResult,
+  ArtifactsRootsListResult,
+  ArtifactsTypesListResult,
 } from '@craft-agent/shared/protocol';
 export type {
   ReviewThreadV1,
@@ -80,6 +93,18 @@ export type {
   WorkbenchThreadsListRequest,
   WorkbenchThreadCommand,
   WorkbenchThreadMutationResult,
+  ArtifactsIndexRequest,
+  ArtifactsIndexResult,
+  ArtifactsReadRequest,
+  ArtifactsReadResult,
+  ArtifactsRelationsListRequest,
+  ArtifactsRelationsListResult,
+  ArtifactsRelationsMutateRequest,
+  ArtifactsRelationsMutateResult,
+  ArtifactsLifecycleSetRequest,
+  ArtifactsLifecycleSetResult,
+  ArtifactsRootsListResult,
+  ArtifactsTypesListResult,
 };
 
 // Auth types for onboarding
@@ -667,6 +692,16 @@ export interface ElectronAPI {
   workbenchListThreads(req: WorkbenchThreadsListRequest): Promise<ReviewThreadV1[]>
   workbenchMutateThread(req: { workbenchId: string; command: WorkbenchThreadCommand }): Promise<WorkbenchThreadMutationResult>
 
+  // Artifact plane (generalized workspace artifact surface — ADR-0015/0016, PLAN-025 C1).
+  // Workspace resolution is server-side via RequestContext (like getSessions).
+  artifactsIndex(req: ArtifactsIndexRequest): Promise<ArtifactsIndexResult>
+  artifactsRead(req: ArtifactsReadRequest): Promise<ArtifactsReadResult>
+  artifactsRelationsList(req: ArtifactsRelationsListRequest): Promise<ArtifactsRelationsListResult>
+  artifactsRelationsMutate(req: ArtifactsRelationsMutateRequest): Promise<ArtifactsRelationsMutateResult>
+  artifactsLifecycleSet(req: ArtifactsLifecycleSetRequest): Promise<ArtifactsLifecycleSetResult>
+  artifactsRootsList(): Promise<ArtifactsRootsListResult>
+  artifactsTypesList(): Promise<ArtifactsTypesListResult>
+
   // Folder dialog
   openFolderDialog(): Promise<string | null>
 
@@ -1163,6 +1198,17 @@ export interface WorkbenchNavigationState {
 }
 
 /**
+ * Artifacts navigation state (Artifact Home — ADR-0015/0016, PLAN-025 C1).
+ * Selection and filters live in jotai atoms, not the route, so C1 keeps a single
+ * flat `artifacts` route (details always null).
+ */
+export interface ArtifactsNavigationState {
+  navigator: 'artifacts'
+  details: null
+  rightSidebar?: RightSidebarPanel
+}
+
+/**
  * Unified navigation state
  */
 export type NavigationState =
@@ -1173,6 +1219,7 @@ export type NavigationState =
   | AutomationsNavigationState
   | ProjectsNavigationState
   | WorkbenchNavigationState
+  | ArtifactsNavigationState
 
 export const isSessionsNavigation = (
   state: NavigationState
@@ -1201,6 +1248,10 @@ export const isProjectsNavigation = (
 export const isWorkbenchNavigation = (
   state: NavigationState
 ): state is WorkbenchNavigationState => state.navigator === 'workbench'
+
+export const isArtifactsNavigation = (
+  state: NavigationState
+): state is ArtifactsNavigationState => state.navigator === 'artifacts'
 
 export const DEFAULT_NAVIGATION_STATE: NavigationState = {
   navigator: 'sessions',
@@ -1239,6 +1290,9 @@ export const getNavigationStateKey = (state: NavigationState): string => {
   }
   if (state.navigator === 'workbench') {
     return 'workbench'
+  }
+  if (state.navigator === 'artifacts') {
+    return 'artifacts'
   }
   // Chats
   const f = state.filter
