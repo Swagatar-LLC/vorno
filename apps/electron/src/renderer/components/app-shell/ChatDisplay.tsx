@@ -1090,6 +1090,11 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     return pending.sort((a, b) => a.createdAt - b.createdAt)
   }, [session?.messages])
 
+  // Latest-value ref so async send flows (Save & Send) can read the current
+  // pending follow-ups without capturing a stale render's closure.
+  const pendingFollowUpAnnotationsRef = React.useRef(pendingFollowUpAnnotations)
+  pendingFollowUpAnnotationsRef.current = pendingFollowUpAnnotations
+
   const followUpInputItems = useMemo(() => {
     return pendingFollowUpAnnotations.map((followUp, idx) => ({
       id: `${followUp.messageId}:${followUp.annotationId}`,
@@ -1281,7 +1286,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     })
   }
 
-  const handleSaveAndSendFollowUp = useCallback((_target: {
+  const handleSaveAndSendFollowUp = useCallback((target: {
     messageId: string
     annotationId: string
     note: string
@@ -1296,13 +1301,30 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
       return
     }
 
-    // Mimic pressing Send in the input after Save completes.
-    window.setTimeout(() => {
-      window.dispatchEvent(new CustomEvent('craft:submit-input', {
-        detail: { sessionId: session.id },
-      }))
-    }, 0)
-  }, [session, isInputDisabled, disableSend, connectionUnavailable])
+    // The annotation was already persisted server-side by the time this fires,
+    // but the local session.messages (and therefore pendingFollowUpAnnotations,
+    // which composes the outgoing message in handleSubmit) only updates
+    // asynchronously via the annotations event. Dispatching immediately races
+    // that update and drops the just-saved follow-up from the sent message.
+    // Wait for `target` to actually appear in the derived pending list before
+    // sending so the send is deterministic (cf. LEARNING-007: don't assume the
+    // async state caught up — act on the data you hold). Bounded so a follow-up
+    // that never lands can't hang the send.
+    let frames = 0
+    const trySend = () => {
+      const landed = pendingFollowUpAnnotationsRef.current.some(
+        (f) => f.annotationId === target.annotationId && f.messageId === target.messageId,
+      )
+      if (landed || frames++ > 60) {
+        window.dispatchEvent(new CustomEvent('craft:submit-input', {
+          detail: { sessionId: session.id },
+        }))
+        return
+      }
+      requestAnimationFrame(trySend)
+    }
+    requestAnimationFrame(trySend)
+  }, [session, isInputDisabled, disableSend, connectionUnavailable, t])
 
   // Handle stop request from InputContainer
   // silent=true when redirecting (sending new message), silent=false when user clicks Stop button
