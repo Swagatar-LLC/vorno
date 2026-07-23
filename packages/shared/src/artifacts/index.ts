@@ -14,6 +14,7 @@ export {
   isValidRootId,
   formatArtifactUri,
   parseArtifactUri,
+  canonicalizeArtifactUri,
 } from './uri.ts';
 
 // Root registry + containment

@@ -86,8 +86,27 @@ export function parseArtifactUri(uri: string): ParsedArtifactUri | null {
     }
     if (decoded === '.' || decoded === '..') return null; // dot segment
     if (decoded.includes('/') || decoded.includes('\\')) return null; // separator smuggled via encoding
+    // C0 controls + DEL (e.g. %00): storable-but-unresolvable identities; the
+    // future object-store provider has no fs-throw backstop (audit F6).
+    if (CONTROL_CHARS_RE.test(decoded)) return null;
     segments.push(decoded);
   }
 
   return { rootId, relPath: segments.join('/') };
+}
+
+// eslint-disable-next-line no-control-regex -- rejecting control chars is the point
+const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
+
+/**
+ * Canonicalize a URI to the scheme's single comparison form: the exact output
+ * of `formatArtifactUri` (uppercase-hex, minimal-set percent-encoding). Stores
+ * and gates compare canonical strings only, so RFC 3986 §6.2.2-equivalent
+ * spellings (lowercase hex, over/under-encoded reserved chars) collapse to one
+ * identity instead of silently failing string joins (audit F2). Returns null
+ * for anything `parseArtifactUri` rejects.
+ */
+export function canonicalizeArtifactUri(uri: string): string | null {
+  const parsed = parseArtifactUri(uri);
+  return parsed ? formatArtifactUri(parsed) : null;
 }

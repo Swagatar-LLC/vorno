@@ -106,6 +106,22 @@ describe('readArtifactByUri gate', () => {
     expect(result?.content).toBe('# Pinned note');
   });
 
+  // Standards-audit F2 (ADR-0016 §5): the gate canonicalizes before membership
+  // lookup, so an RFC 3986-equivalent alias spelling of an indexed URI is
+  // served (as its canonical identity), not falsely denied.
+  it('serves an indexed artifact addressed by an alias spelling (canonicalization)', async () => {
+    const body = '# Aliased';
+    write('sessions/s1/plans/a$b.md', body);
+    const canonical = wsUri('sessions/s1/plans/a$b.md'); // → …/a%24b.md ($ percent-encoded)
+    expect(canonical).toContain('%24');
+    // Same resource, raw-$ spelling (legal pchar per RFC 3986 §3.3).
+    const alias = 'vorno-artifact://workspace/sessions/s1/plans/a$b.md';
+    const result = await readArtifactByUri({ workspaceRootPath: workspaceRoot, uri: alias });
+    expect(result).not.toBeNull();
+    expect(result!.content).toBe(body);
+    expect(result!.uri).toBe(canonical); // echoes the canonical form
+  });
+
   it('serves an archived indexed artifact (archival is lifecycle, not a read restriction)', async () => {
     write('sessions/s1/plans/old.md', '# Old plan');
     const uri = wsUri('sessions/s1/plans/old.md');

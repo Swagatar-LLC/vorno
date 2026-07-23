@@ -20,6 +20,7 @@ import { dirname } from 'path';
 import { debug } from '../utils/debug.ts';
 import type { ArtifactVersion } from '@craft-agent/core/types';
 import { resolveArtifactPath, resolveRootBindings } from './roots.ts';
+import { canonicalizeArtifactUri } from './uri.ts';
 import { indexArtifactUris } from './scan.ts';
 import { getArtifactState } from './store.ts';
 import { computeContentHash, getGitSha } from './content.ts';
@@ -48,7 +49,12 @@ export interface ReadArtifactByUriResult {
 export async function readArtifactByUri(
   options: ReadArtifactOptions,
 ): Promise<ReadArtifactByUriResult | null> {
-  const { workspaceRootPath, configuredRoots, uri } = options;
+  const { workspaceRootPath, configuredRoots } = options;
+  // Canonical spelling only: index/pin membership is string equality, so an
+  // RFC 3986-equivalent alias (lowercase hex, over-encoded reserved chars)
+  // must collapse to one identity before any lookup (ADR-0016 §1 canonical form).
+  const uri = canonicalizeArtifactUri(options.uri);
+  if (!uri) return null;
   const bindings = resolveRootBindings(workspaceRootPath, configuredRoots);
 
   // (a) containment

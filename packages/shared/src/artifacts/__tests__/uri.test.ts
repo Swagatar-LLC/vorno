@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   formatArtifactUri,
   parseArtifactUri,
+  canonicalizeArtifactUri,
   RESERVED_WORKSPACE_ROOT_ID,
   isValidRootId,
 } from '../uri.ts';
@@ -58,12 +59,45 @@ describe('parseArtifactUri / formatArtifactUri', () => {
       ['encoded dotdot', 'vorno-artifact://workspace/%2e%2e/secret.md'],
       ['encoded slash smuggle', 'vorno-artifact://workspace/a%2Fb.md'],
       ['malformed percent-escape', 'vorno-artifact://workspace/a%2.md'],
+      ['encoded NUL', 'vorno-artifact://workspace/a%00b.md'],
+      ['encoded C0 control (ESC)', 'vorno-artifact://workspace/a%1Bb.md'],
+      ['encoded DEL', 'vorno-artifact://workspace/a%7Fb.md'],
+      ['invalid UTF-8 percent sequence', 'vorno-artifact://workspace/a%E9.md'],
     ];
     for (const [label, uri] of rejected) {
       it(`rejects: ${label}`, () => {
         expect(parseArtifactUri(uri)).toBeNull();
       });
     }
+  });
+
+  describe('canonicalizeArtifactUri', () => {
+    it('is identity on canonical URIs', () => {
+      const canonical = formatArtifactUri({ rootId: 'docs', relPath: 'a folder/Ünïcödé note.md' });
+      expect(canonicalizeArtifactUri(canonical)).toBe(canonical);
+    });
+
+    it('collapses RFC 3986-equivalent alias spellings to the canonical form', () => {
+      // lowercase hex ≡ uppercase hex (§6.2.2.1); over/under-encoded reserved
+      // chars decode to the same relPath under scheme-based normalization (§6.2.3).
+      const aliases = [
+        'vorno-artifact://docs/a%c3%a9.md', // lowercase hex
+        'vorno-artifact://docs/aé.md', // raw unicode (unencoded)
+      ];
+      const canonical = formatArtifactUri({ rootId: 'docs', relPath: 'aé.md' });
+      for (const alias of aliases) {
+        expect(canonicalizeArtifactUri(alias)).toBe(canonical);
+      }
+      expect(canonicalizeArtifactUri('vorno-artifact://docs/a$b.md')).toBe(
+        canonicalizeArtifactUri('vorno-artifact://docs/a%24b.md'),
+      );
+    });
+
+    it('returns null for anything parseArtifactUri rejects', () => {
+      expect(canonicalizeArtifactUri('vorno-artifact://workspace/a/../b.md')).toBeNull();
+      expect(canonicalizeArtifactUri('vorno-artifact://workspace/a%00b.md')).toBeNull();
+      expect(canonicalizeArtifactUri('file:///etc/passwd')).toBeNull();
+    });
   });
 
   it('isValidRootId matches the kebab regex', () => {

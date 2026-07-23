@@ -63,6 +63,15 @@ Registry contract (the permanent part):
 
 `artifacts:read` serves an **artifact** (*owner amendment 2026-07-22*: not always a file on a filesystem — see the storage-separation goal in Consequences) only when **all** hold: (a) the URI resolves within a registered root (realpath containment for filesystem-backed roots, which is all of C1), (b) the URI is **indexed or explicitly pinned** — index membership derives from registered type matchers, pinning is a deliberate user/agent act, and (c) a byte-size cap. Opening types beyond `.md` therefore widens reads only to what the registry declares plus explicit pins — never to "anything within a root."
 
+### 5. Canonicalization, hash encoding, and normalization posture (*standards-audit amendment 2026-07-22*)
+
+Folded in from the RFC/OCI conformance audit (session 260722-amber-quasar, `plans/standards-validation-report.md`), owner-directed. Clarifies §1/§4 — no door is reopened.
+
+- **Canonical form.** The canonical spelling of an artifact URI is the exact output of `formatArtifactUri` (uppercase-hex, minimal-set percent-encoding). Stores (relations, lifecycle state) hold **only canonical URIs**; equality everywhere is string equality over canonical forms. Wire ingest (`relations:mutate`, `lifecycle:set`) and the read gate canonicalize via `canonicalizeArtifactUri` (= parse ∘ format) before any lookup or write. This is the scheme's RFC 3986 §6.2.2/§6.2.3 normalization policy, implemented once.
+- **`contentHash` is normative:** SHA-256 over the artifact bytes, **lowercase hex, exactly 64 chars** (`/^[a-f0-9]{64}$/`). This keeps the OCI digest projection lawful as the literal concat `sha256:<contentHash>` (OCI prohibits uppercase hex). Algorithm changes require a new field or a self-describing prefixed form — never a silent re-semanticization. External/wire projections beyond the current family (OCI bundles per ADR-0017; HTTP digest fields, if ever, per RFC 9530 `sha-256=:base64:`) use self-describing forms.
+- **Reject-don't-normalize, recorded:** the parser rejects (never repairs) uppercase scheme/host, encoded separators (`%2F`/`%5C`), dot-segments, and C0/DEL control characters. `parseArtifactUri` is the **sole admission gate** — URIs are never pre-processed through WHATWG `new URL()` or any generic normalizer first (WHATWG silently collapses dot-segments even for this non-special scheme, laundering shapes the parser exists to refuse).
+- **Scheme-name note (RFC 7595):** `vorno-artifact` diverges from the §3.8 reversed-domain SHOULD; it is collision-free in the IANA URI-scheme registry as of 2026-07-22. Provisional IANA registration goes on the pre-1.0 checklist (URIs leak beyond the closed environment via Obsidian exports and future bundles — §6's trigger).
+
 ### Non-doors (implementation, changeable later)
 
 Store directory naming (parameterizing the `reviews/` literal), index caching strategy, relation storage layout (per-artifact file vs. store-side index), and the Artifact Home UI are two-way decisions inside PLAN-025 and are deliberately not fixed here.

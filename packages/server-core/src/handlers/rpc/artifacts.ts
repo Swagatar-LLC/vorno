@@ -150,7 +150,7 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
       const command = req?.command
       if (!command || typeof command !== 'object') return { ok: false, reason: 'invalid-payload' }
 
-      const { addRelation, removeRelation, parseArtifactUri } = await import(
+      const { addRelation, removeRelation, canonicalizeArtifactUri } = await import(
         '@craft-agent/shared/artifacts'
       )
 
@@ -165,13 +165,17 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
             ) {
               return { ok: false, reason: 'invalid-payload' }
             }
-            // Both endpoints must be well-formed `vorno-artifact://` URIs.
-            if (!parseArtifactUri(command.from) || !parseArtifactUri(command.to)) {
+            // Both endpoints must be well-formed `vorno-artifact://` URIs; the
+            // store holds only the canonical spelling (equality is string
+            // equality over canonical forms — ADR-0016 §1).
+            const from = canonicalizeArtifactUri(command.from)
+            const to = canonicalizeArtifactUri(command.to)
+            if (!from || !to) {
               return { ok: false, reason: 'invalid-payload' }
             }
             const result = addRelation(workspaceRoot, {
-              from: command.from,
-              to: command.to,
+              from,
+              to,
               kind: command.kind,
               note: command.note,
             })
@@ -203,9 +207,13 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
       const workspaceRoot = resolveWorkspaceRoot(ctx)
       if (!workspaceRoot) return { ok: false, reason: 'write-failed' }
 
-      const { parseArtifactUri, setArtifactState } = await import('@craft-agent/shared/artifacts')
+      const { canonicalizeArtifactUri, setArtifactState } = await import(
+        '@craft-agent/shared/artifacts'
+      )
 
-      if (!req || typeof req.uri !== 'string' || !parseArtifactUri(req.uri)) {
+      // Canonical spelling only — pins are keyed by string equality (ADR-0016 §1).
+      const uri = req && typeof req.uri === 'string' ? canonicalizeArtifactUri(req.uri) : null
+      if (!uri) {
         return { ok: false, reason: 'invalid-payload' }
       }
       const patch = req.patch
@@ -215,7 +223,7 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
       if (!hasPinned && !hasArchived) return { ok: false, reason: 'invalid-payload' }
 
       try {
-        setArtifactState(workspaceRoot, req.uri, {
+        setArtifactState(workspaceRoot, uri, {
           ...(hasPinned ? { pinned: patch.pinned } : {}),
           ...(hasArchived ? { archived: patch.archived } : {}),
         })
