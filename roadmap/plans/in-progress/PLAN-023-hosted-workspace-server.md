@@ -5,7 +5,7 @@ status: in-progress
 direction: DIR-03
 owner: jh
 created: 2026-07-17
-updated: 2026-07-18
+updated: 2026-07-19
 related:
   - PLAN-013-server-only-deployment.md
   - PLAN-005-webui-tailscale-launcher.md

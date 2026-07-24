@@ -1,11 +1,11 @@
 ---
 id: PLAN-015
 title: Production file logging with runtime level control and Advanced settings
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-09
-updated: 2026-07-09
+updated: 2026-07-24
 related: [PLAN-011, PLAN-012]
 blocked-by: []
 ---
@@ -80,3 +80,4 @@ Additive new files: `packages/shared/src/logging/*`, `handlers/logging.ts`, `Adv
 
 - `2026-07-09` — created in `planned/`
 - `2026-07-09` — moved from planned to in-progress: implemented + verified in the same PR (design-and-implement task)
+- `2026-07-24` — closing to `done/`: production file logging with runtime level control + Advanced settings is shipped and live on `main`. Bookkeeping catch-up (ADR-0002).

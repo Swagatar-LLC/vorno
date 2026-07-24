@@ -1,11 +1,11 @@
 ---
 id: PLAN-013
 title: Server-only deployment path (Linux/remote)
-status: in-progress
+status: done
 direction: DIR-03
 owner: jh
 created: 2026-07-08
-updated: 2026-07-08
+updated: 2026-07-24
 related:
   - PLAN-005-webui-tailscale-launcher.md
   - PLAN-014 (per-workspace webhooks — parallel workstream, shared apps/server surface)
@@ -299,3 +299,4 @@ No protocol surface changes. The WS transport keeps mirroring upstream's close c
 
 - `2026-07-08` — created in `planned/` (design doc; PoC deferred to implementation phase)
 - `2026-07-08` — moved from planned to in-progress: implementation landed (tracked internally). Work items 1–5 complete — config-dir literal fixes (`webui-serve.ts`, `getMessagingDir`), headless provisioning CLI (`--generate-api-key` / `--provision-llm-key` / `--show-config`) with 21 unit tests, `CRAFT_TRIGGER_HOST/PORT/ENABLED` overrides, standalone host composition (`apps/server/src/standalone/host.ts`) with the `onWebhookEvent` seam at the host layer, and `deploy/` (Dockerfile, compose, systemd, Caddy/nginx) + `docs/server-deployment.md`. Decisions recorded in ADR-0008: standalone acquires `.server.lock`; two session stacks stay parallel; host/port via non-secret env overrides. Docker PoC (OrbStack, arm64 Linux) verified over the network from a separate container — steps 1 (health 200), 2 (401), 3 (201 session create after auth+workspace resolution), and 5 (restart persistence: same key 201, config survives) all pass; step 4 (live LLM turn → PONG) and the SDK-subprocess-under-bun checkpoint remain for a real deployment with an LLM key. Build check + `apps/server` strict tests green.
+- `2026-07-24` — closing to `done/`: the headless / Docker server-deployment path is shipped and live on `main`. ADR-0008's residual (step-4 live-LLM turn + SDK-under-bun checkpoint) is a deployment-time verification note, not open build work. Bookkeeping catch-up (ADR-0002).

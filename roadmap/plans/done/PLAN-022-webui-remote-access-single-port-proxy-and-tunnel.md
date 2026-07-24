@@ -1,7 +1,7 @@
 ---
 id: PLAN-022
 title: WebUI remote access — single-port WS proxy, connection-error screen, bind settings, tailscale tunnel
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-15
@@ -79,3 +79,4 @@ PLAN-005 (done, 2026-05) was the **dev-tooling** answer: `webui:serve`/`daily-dr
 - `2026-07-15` — legs 1+2 merged (PR #93), leg 3 merged (PR #92), leg 4 merged (PR #94); e2e proxy verified from a non-loopback interface under real Node (auth reject + cookie splice + echo). v0.12.0 release prep (notes consolidation + full-cluster bump) in flight.
 - `2026-07-15` — **v0.12.0 released** (PR #95 → tag v0.12.0 → release run 29437863410 success; latest-mac.yml + dmg/zip + blockmaps verified on vorno-releases). Remaining acceptance: the maintainer's real-device phone test of the shipped build.
 - `2026-07-24` — **v0.12.3 follow-up fixes** (branch `jh/release-0.12.3`, ready-to-ship): three remote-access field bugs found while validating the shipped build — (1) the WebSocket URL is now upgraded `ws→wss` when the page is served over an HTTPS proxy (`apps/webui/adapter/ws-url.ts`, unit-tested), fixing mixed-content login/connect failures behind Tailscale; (2) the WebUI login password now persists across restarts and is user-settable via a new **LOCAL_ONLY** `craft-fork:webui:setPassword` channel (`WebUiSection.tsx` → `setWebUiPassword`), not only regenerable; (3) the Tailscale tunnel accepts a configurable HTTPS port (not hardcoded 443) and reliably clears its serve rule on stop/quit (`webui/tunnel.ts`, `supervisor.ts`). Adds a CI-gated **headless WebUI smoke suite** (`webui/__tests__/{smoke,settings}.e2e.test.ts` + `validate-pr.yml`) exercising a real HTTP host + login + single-port WS proxy, and settings-driven revert detectors for the three fixes. Compatibility audit line added (additive fork channel, wire-compatible). tsc baseline held. Real-device phone test of the shipped build still pending.
+- `2026-07-24` — closing to `done/`: single-port WS proxy + connection-error screen + bind settings + Tailscale tunnel shipped in v0.12.0; remote-access field fixes shipped in v0.12.3 (PR #113). Bookkeeping catch-up (ADR-0002).

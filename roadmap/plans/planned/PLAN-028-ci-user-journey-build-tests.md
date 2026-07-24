@@ -2,7 +2,7 @@
 id: PLAN-028
 title: In-CI build + user-journey tests — WebUI suite first, Electron later
 status: planned
-direction: null
+direction: none
 owner: jh
 created: 2026-07-22
 updated: 2026-07-24

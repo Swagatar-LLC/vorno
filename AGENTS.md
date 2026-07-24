@@ -4,7 +4,7 @@ This file orients any AI agent (Codex, Claude Code, Pi Agent, etc.) that lands i
 
 ## What this repo is
 
-A fork of [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss) maintained at [Swagatar-LLC/vorno](https://github.com/Swagatar-LLC/vorno). Bun monorepo with `packages/*` and `apps/*`.
+A fork of [craft-ai-agents/craft-agents-oss](https://github.com/craft-ai-agents/craft-agents-oss) maintained at [Swagatar-LLC/vorno](https://github.com/Swagatar-LLC/vorno). Bun monorepo with `packages/*` and `apps/*`.
 
 We are **wire-compatible** with upstream and **deliberately divergent** on direction (canvas paradigm, contribution model, observability). See [`roadmap/decisions/0001-fork-relationship-with-upstream.md`](roadmap/decisions/0001-fork-relationship-with-upstream.md).
 

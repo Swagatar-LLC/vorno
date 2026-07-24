@@ -1,11 +1,11 @@
 ---
 id: PLAN-020
 title: Desktop WebUI — zero-config autostart, tray control, configurable port
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-07-24
 related: [PLAN-005, PLAN-012, PLAN-013, PLAN-014, PLAN-019]
 blocked-by: []
 ---
@@ -462,3 +462,5 @@ assumptions to reconcile on receipt:
   `apps/electron/src/shared/__tests__/ipc-channels.test.ts` (EXPECTED_CHANNELS entries)
   — plus the `host.listen()` alignment above. Branding scan of the PR diff came back
   clean (no hardcoded product strings); PLAN-019 needs no renames on our side.
+
+- `2026-07-24` — closing to `done/`: desktop WebUI zero-config autostart, tray control, and configurable port shipped (PR #71) and are live on `main`. Bookkeeping catch-up (ADR-0002).

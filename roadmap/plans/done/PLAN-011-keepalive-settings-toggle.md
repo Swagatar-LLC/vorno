@@ -1,11 +1,11 @@
 ---
 id: PLAN-011
 title: Settings toggle for background-agent keep-alive
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-08
-updated: 2026-07-08
+updated: 2026-07-24
 related: []
 blocked-by: []
 ---
@@ -216,3 +216,8 @@ Deliberately **not** touched: `persistent-input.ts` (upstream's resolver + tests
 ---
 
 **Bottom line:** app-level boolean in the app config (default ON), env var wins when explicitly set, two surgical hot-file edits (per-turn snapshot + teardown guard in `ClaudeAgent`; live getter with test-preserving setter in `SessionManager`), everything else additive under a `craft-fork:*` namespace. Effect timing: **next message per session, no restart**.
+
+## Status log
+
+- `2026-07-08` — created; background-agent keep-alive settings toggle designed and implemented (`craft-fork:bgAgents:*` namespace, isolated resolver file, app-level boolean default ON, env override).
+- `2026-07-24` — closing to `done/`: the keep-alive toggle is shipped and live on `main` (actively defended in upstream-merge audits). Retroactive status log added; bookkeeping catch-up (ADR-0002).
