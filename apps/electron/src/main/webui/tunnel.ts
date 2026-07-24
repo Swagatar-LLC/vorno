@@ -19,9 +19,10 @@
  * tunnel status. Never a crash.
  *
  * Commands (verified against tailscale.com/kb/1242 `tailscale serve` reference,
- * 2026-07-15; CLI ≥1.52 syntax):
- *   up:     tailscale serve --bg --https=443 http://127.0.0.1:<port>
- *   off:    tailscale serve --https=443 off
+ * 2026-07-15; CLI ≥1.52 syntax). The tailnet HTTPS port is configurable
+ * (default 443) — teardown always targets the port actually served last:
+ *   up:     tailscale serve --bg --https=<httpsPort> http://127.0.0.1:<port>
+ *   off:    tailscale serve --https=<httpsPort> off
  *   status: tailscale status --json      → .Self.DNSName for the ts.net URL
  */
 
@@ -145,6 +146,13 @@ export class TunnelManager {
   /** Last computed status, for synchronous getStatus() reads by the supervisor. */
   private status: WebUiTunnelStatus = { provider: 'none', state: 'stopped' };
 
+  /**
+   * fork(BUG-3): the tailnet HTTPS port currently served (set by up(), cleared by
+   * down()). Teardown targets THIS port — not a hardcoded 443 — so a non-default
+   * serve rule is actually cleared on stop/quit.
+   */
+  private servedHttpsPort: number | undefined;
+
   constructor(opts: TunnelManagerOptions = {}) {
     this.log = opts.log ?? NOOP_LOGGER;
     this.exec = opts.exec ?? defaultExec;
@@ -161,12 +169,20 @@ export class TunnelManager {
    *
    * - provider 'none' → clears status to stopped (no CLI touched).
    * - provider 'tailscale' → locate the CLI (unavailable+guidance if absent),
-   *   run `serve --bg --https=443 http://127.0.0.1:<port>`, then resolve the
-   *   public ts.net URL from `tailscale status --json`.
+   *   run `serve --bg --https=<httpsPort> http://127.0.0.1:<port>`, then resolve
+   *   the public ts.net URL from `tailscale status --json`.
+   *
+   * `httpsPort` is the tailnet HTTPS port (default 443). If a DIFFERENT port was
+   * already served, its serve rule is best-effort cleared first so we never leak
+   * a stale rule on the old port.
    *
    * Never throws — every failure is folded into the returned status.
    */
-  async up(provider: TunnelProvider, port: number): Promise<WebUiTunnelStatus> {
+  async up(
+    provider: TunnelProvider,
+    port: number,
+    httpsPort: number = HTTPS_PORT,
+  ): Promise<WebUiTunnelStatus> {
     if (provider === 'none') {
       this.status = { provider: 'none', state: 'stopped' };
       return this.status;
@@ -185,13 +201,26 @@ export class TunnelManager {
       return this.status;
     }
 
+    // fork(BUG-3): if a different HTTPS port is already served, clear the old
+    // rule first (best-effort) so switching ports doesn't leave two serve rules.
+    if (this.servedHttpsPort !== undefined && this.servedHttpsPort !== httpsPort) {
+      try {
+        await this.exec(bin, ['serve', `--https=${this.servedHttpsPort}`, 'off']);
+      } catch (err) {
+        this.log.warn(
+          `[webui] could not clear previous serve on --https=${this.servedHttpsPort}: ${guidanceFromError(err)}`,
+        );
+      }
+    }
+
     try {
       await this.exec(bin, [
         'serve',
         '--bg',
-        `--https=${HTTPS_PORT}`,
+        `--https=${httpsPort}`,
         `http://127.0.0.1:${port}`,
       ]);
+      this.servedHttpsPort = httpsPort;
     } catch (err) {
       const message = guidanceFromError(err);
       this.status = { provider, state: 'error', message };
@@ -222,13 +251,17 @@ export class TunnelManager {
       this.status = { provider, state: 'stopped' };
       return;
     }
+    // fork(BUG-3): clear the port that was ACTUALLY served (falling back to the
+    // 443 default when nothing was tracked), not a hardcoded 443.
+    const offPort = this.servedHttpsPort ?? HTTPS_PORT;
     try {
-      await this.exec(bin, ['serve', `--https=${HTTPS_PORT}`, 'off']);
+      await this.exec(bin, ['serve', `--https=${offPort}`, 'off']);
       this.log.info('[webui] tailscale serve cleared');
     } catch (err) {
       // Best-effort teardown: a stale rule is preferable to a crash on stop.
       this.log.warn(`[webui] tailscale serve off failed: ${guidanceFromError(err)}`);
     }
+    this.servedHttpsPort = undefined;
     this.status = { provider, state: 'stopped' };
   }
 

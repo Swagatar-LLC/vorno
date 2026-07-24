@@ -118,6 +118,51 @@ describe('TunnelManager', () => {
     expect(mgr.getStatus()).toEqual({ provider: 'none', state: 'stopped' });
   });
 
+  // fork(BUG-3): configurable tailnet HTTPS port.
+  test('serve up honors a custom httpsPort in the serve command', async () => {
+    const { exec, calls } = makeFakeExec([
+      { match: (_f, a) => a[0] === 'serve', result: { stdout: '', stderr: '' } },
+      { match: (_f, a) => a[0] === 'status', result: { stdout: STATUS_JSON, stderr: '' } },
+    ]);
+    const mgr = new TunnelManager({ exec, locateBinary: async () => 'tailscale' });
+
+    await mgr.up('tailscale', 3848, 8443);
+
+    const serveCall = calls.find((c) => c.args[0] === 'serve')!;
+    expect(serveCall.args).toEqual(['serve', '--bg', '--https=8443', 'http://127.0.0.1:3848']);
+  });
+
+  test('down after a custom-port up clears the port actually served (8443, not 443)', async () => {
+    const { exec, calls } = makeFakeExec([
+      { match: (_f, a) => a[0] === 'serve', result: { stdout: '', stderr: '' } },
+      { match: (_f, a) => a[0] === 'status', result: { stdout: STATUS_JSON, stderr: '' } },
+    ]);
+    const mgr = new TunnelManager({ exec, locateBinary: async () => 'tailscale' });
+
+    await mgr.up('tailscale', 3848, 8443);
+    await mgr.down('tailscale');
+
+    const offCall = calls.find((c) => c.args.includes('off'))!;
+    expect(offCall.args).toEqual(['serve', '--https=8443', 'off']);
+    // Tracked port is cleared after teardown.
+    expect(mgr.getStatus()).toEqual({ provider: 'tailscale', state: 'stopped' });
+  });
+
+  test('up on a different httpsPort best-effort clears the previously served port', async () => {
+    const { exec, calls } = makeFakeExec([
+      { match: (_f, a) => a[0] === 'serve', result: { stdout: '', stderr: '' } },
+      { match: (_f, a) => a[0] === 'status', result: { stdout: STATUS_JSON, stderr: '' } },
+    ]);
+    const mgr = new TunnelManager({ exec, locateBinary: async () => 'tailscale' });
+
+    await mgr.up('tailscale', 3848, 443);
+    await mgr.up('tailscale', 3848, 8443);
+
+    // An `off` on the OLD port (443) was issued before the new serve.
+    const offCalls = calls.filter((c) => c.args.includes('off'));
+    expect(offCalls.some((c) => c.args.includes('--https=443'))).toBe(true);
+  });
+
   test('default locateBinary probes PATH first via `version`', async () => {
     // A fake exec that answers `version` (PATH hit) — no macOS bundle needed.
     const { exec, calls } = makeFakeExec([

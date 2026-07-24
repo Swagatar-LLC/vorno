@@ -200,6 +200,7 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.webui.START,
   RPC_CHANNELS.webui.STOP,
   RPC_CHANNELS.webui.REGENERATE_PASSWORD,
+  RPC_CHANNELS.webui.SET_PASSWORD,
   // fork(PLAN-018 / ADR-0009): runtime-configurable auto-update feed — local-only,
   // the feed override drives electron-updater in the local main process. Never
   // proxied to a remote workspace server.

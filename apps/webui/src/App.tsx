@@ -11,6 +11,7 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { useTranslation } from 'react-i18next'
 import { createWebApi } from './adapter/web-api'
+import { resolvePageWsUrl } from './adapter/ws-url'
 import type { WsRpcClient } from '../../electron/src/transport/client'
 
 // Lazy-load the Electron App after window.electronAPI is set up.
@@ -82,8 +83,14 @@ export default function App() {
         throw new Error(`Failed to fetch config: ${configRes.status}`)
       }
 
-      const { wsUrl } = await configRes.json() as { wsUrl: string }
-      if (!wsUrl) throw new Error('Server did not return a WebSocket URL')
+      const { wsUrl: rawWsUrl } = await configRes.json() as { wsUrl: string }
+      if (!rawWsUrl) throw new Error('Server did not return a WebSocket URL')
+
+      // Force the WS scheme to match the page's scheme (mixed-content guard).
+      // Proxy-agnostic: doesn't rely on the server correctly detecting
+      // x-forwarded-proto, which reverse proxies (e.g. tailscale serve)
+      // don't always forward.
+      const wsUrl = resolvePageWsUrl(rawWsUrl, window.location.protocol)
 
       // 2. Determine workspace — check URL params first
       const params = new URLSearchParams(window.location.search)

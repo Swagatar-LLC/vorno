@@ -1,5 +1,6 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -121,7 +122,8 @@ describe('Server Config', () => {
       expect(cfg.webui.host).toBe('127.0.0.1');
       expect(cfg.webui.password).toBeNull();
       // fork(PLAN-022): tunnel defaults to { provider: 'none' }.
-      expect(cfg.webui.tunnel).toEqual({ provider: 'none' });
+      // fork(BUG-3): httpsPort now defaults to 443.
+      expect(cfg.webui.tunnel).toEqual({ provider: 'none', httpsPort: 443 });
     });
 
     test('nested merge: file predating webui block gets webui defaults', () => {
@@ -131,7 +133,7 @@ describe('Server Config', () => {
       );
       const cfg = loadServerConfig();
       expect(cfg.enabled).toBe(false); // file value respected
-      expect(cfg.webui).toEqual({ enabled: true, port: 3848, host: '127.0.0.1', password: null, tunnel: { provider: 'none' } });
+      expect(cfg.webui).toEqual({ enabled: true, port: 3848, host: '127.0.0.1', password: null, tunnel: { provider: 'none', httpsPort: 443 } });
     });
 
     // fork(PLAN-022): second-level merge for the tunnel sub-object.
@@ -142,7 +144,7 @@ describe('Server Config', () => {
       );
       const cfg = loadServerConfig();
       expect(cfg.webui.password).toBe('kept');
-      expect(cfg.webui.tunnel).toEqual({ provider: 'none' }); // filled in
+      expect(cfg.webui.tunnel).toEqual({ provider: 'none', httpsPort: 443 }); // filled in
     });
 
     test('nested merge: persisted tunnel provider is respected', () => {
@@ -192,6 +194,60 @@ describe('Server Config', () => {
       process.env.CRAFT_WEBUI_PORT = 'not-a-number';
       const cfg = loadServerConfig();
       expect(cfg.webui.port).toBe(3850);
+    });
+
+    // fork(BUG-3): tunnel httpsPort default + merge.
+    test('tunnel httpsPort defaults to 443 and old files pick it up', () => {
+      clearWebuiEnv();
+      const cfg = loadServerConfig(); // no file → defaults
+      expect(cfg.webui.tunnel.httpsPort).toBe(443);
+
+      writeFileSync(
+        CONFIG_PATH,
+        JSON.stringify({ enabled: true, port: 3847, host: '127.0.0.1', apiKeys: [], rateLimits: { requestsPerMinute: 30, concurrentSessions: 5 }, webui: { enabled: true, port: 3848, host: '127.0.0.1', password: null, tunnel: { provider: 'tailscale' } } }),
+      );
+      const reloaded = loadServerConfig();
+      expect(reloaded.webui.tunnel.provider).toBe('tailscale');
+      expect(reloaded.webui.tunnel.httpsPort).toBe(443); // filled in
+    });
+  });
+
+  // fork(BUG-2): atomic write + corrupt-file handling.
+  describe('saveServerConfig atomicity (BUG-2)', () => {
+    test('saved config reloads intact with no leftover .tmp-* file', () => {
+      clearWebuiEnv();
+      const base = loadServerConfig();
+      const next: ServerConfig = {
+        ...base,
+        webui: { ...base.webui, password: 'atomic-pw-12345' },
+      };
+      saveServerConfig(next);
+
+      const reloaded = loadServerConfig();
+      expect(reloaded.webui.password).toBe('atomic-pw-12345');
+
+      // No temp litter remains in the config dir.
+      const dir = dirname(CONFIG_PATH);
+      const leftovers = readdirSync(dir).filter((f) => f.includes('.tmp-'));
+      expect(leftovers).toEqual([]);
+    });
+
+    test('loadServerConfig preserves an unreadable file and returns defaults', () => {
+      clearWebuiEnv();
+      // First write a valid config with a password.
+      const base = loadServerConfig();
+      saveServerConfig({ ...base, webui: { ...base.webui, password: 'recover-me-123' } });
+
+      // Now corrupt the file (torn write simulation).
+      writeFileSync(CONFIG_PATH, '{ this is not: valid json', 'utf-8');
+
+      const cfg = loadServerConfig();
+      // Falls back to defaults (null password) rather than crashing...
+      expect(cfg.webui.password).toBeNull();
+      // ...and the corrupt file is LEFT INTACT (not overwritten), so a recovery
+      // tool could still inspect it.
+      const raw = require('node:fs').readFileSync(CONFIG_PATH, 'utf-8');
+      expect(raw).toBe('{ this is not: valid json');
     });
   });
 });
