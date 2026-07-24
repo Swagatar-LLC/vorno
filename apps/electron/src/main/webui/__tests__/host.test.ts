@@ -4,9 +4,11 @@
  * The host's `upgrade` handler authenticates the `craft_session` cookie on `/ws`
  * and RAW-TCP splices the upgrade to a loopback RPC listener. These drive
  * `handleWsUpgrade` directly with a fake client socket and a real loopback
- * "RPC" TCP target (rather than through a real http server: bun's `node:http`
- * does not emit `upgrade` events, so an end-to-end http path can't be exercised
- * under `bun test` — the packaged Electron app runs on Node, where it does).
+ * "RPC" TCP target. Bun ≥1.3 emits `upgrade` on `node:http` (older bun did
+ * not), but writes to the upgraded socket never reach the TCP client under bun
+ * (LEARNING-038) — so the reverse leg and status-line rejects are asserted
+ * HERE with the fake socket, while smoke.e2e.test.ts covers the forward leg
+ * through the real listener. The packaged app runs on Node, where both work.
  *
  * Asserts:
  *   - no cookie / invalid cookie ⇒ 401 (never spliced)
