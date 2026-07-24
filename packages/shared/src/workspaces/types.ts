@@ -13,6 +13,7 @@
 
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
+import type { ArtifactRootsConfig } from '@craft-agent/core/types';
 
 /**
  * Local MCP server configuration
@@ -84,7 +85,7 @@ export interface WorkspaceConfig {
     artifactsEnabled?: boolean;
 
     /** Named artifact root bindings (rootId → absolute path), ADR-0016 §2. Advanced override; 'workspace' is reserved and implicit. */
-    artifactRoots?: Record<string, string>;
+    artifactRoots?: ArtifactRootsConfig;
   };
 
   /**

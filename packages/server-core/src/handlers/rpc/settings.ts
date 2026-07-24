@@ -142,23 +142,45 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
     }
 
-    // Validate artifactRoots: plain object of rootId(string) → absolutePath(string).
-    // Root ids must be syntactically valid and not shadow the reserved 'workspace'
-    // id; paths must be absolute (ADR-0016 §2).
+    // Validate artifactRoots: object map of rootId → (absolute path | binding
+    // config). Root ids must be syntactically valid and not shadow the reserved
+    // 'workspace' id (ADR-0016 §2). Values may be a bare string (filesystem
+    // shorthand) or a `{ kind, ... }` config (ADR-0019 §1). Save is
+    // server-authoritative and STRICT: only known/buildable kinds are accepted
+    // here (unknown kinds are rejected on save with a clear reason, even though
+    // resolution stays tolerant so a newer config never bricks an older Vorno).
+    // Secret-bearing kinds are not accepted — no secret-carrying kind exists yet
+    // and inline secrets are forbidden (ADR-0019 §4).
     if (key === 'artifactRoots' && normalizedValue !== undefined && normalizedValue !== null) {
       if (typeof normalizedValue !== 'object' || Array.isArray(normalizedValue)) {
-        throw new Error('artifactRoots must be an object map of rootId → absolute path')
+        throw new Error('artifactRoots must be an object map of rootId → binding')
       }
-      const { isValidRootId, RESERVED_WORKSPACE_ROOT_ID } = await import('@craft-agent/shared/artifacts')
-      for (const [rootId, rawPath] of Object.entries(normalizedValue as Record<string, unknown>)) {
+      const { isValidRootId, RESERVED_WORKSPACE_ROOT_ID, normalizeRootConfig } = await import(
+        '@craft-agent/shared/artifacts'
+      )
+      for (const [rootId, rawValue] of Object.entries(normalizedValue as Record<string, unknown>)) {
         if (rootId === RESERVED_WORKSPACE_ROOT_ID) {
           throw new Error(`artifactRoots: '${RESERVED_WORKSPACE_ROOT_ID}' is a reserved, implicit root id`)
         }
         if (!isValidRootId(rootId)) {
           throw new Error(`artifactRoots: invalid root id "${rootId}" (must be lowercase kebab, 1–64 chars)`)
         }
-        if (typeof rawPath !== 'string' || !isAbsolute(rawPath)) {
-          throw new Error(`artifactRoots."${rootId}": value must be an absolute path`)
+        const cfg = normalizeRootConfig(rawValue)
+        if (!cfg) {
+          throw new Error(
+            `artifactRoots."${rootId}": value must be an absolute path or a { kind, ... } binding`,
+          )
+        }
+        if (cfg.kind === 'filesystem') {
+          const path = (cfg as { path?: unknown }).path
+          if (typeof path !== 'string' || !isAbsolute(path)) {
+            throw new Error(`artifactRoots."${rootId}": filesystem path must be absolute`)
+          }
+        } else {
+          // Only 'filesystem' is buildable in C2 (PLAN-029 — no second backend).
+          throw new Error(
+            `artifactRoots."${rootId}": unsupported kind "${cfg.kind}" (only 'filesystem' is available)`,
+          )
         }
       }
     }

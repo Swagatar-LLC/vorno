@@ -12,6 +12,7 @@
 
 import { copyFileSync, mkdirSync, statSync } from 'fs';
 import { dirname, extname, join } from 'path';
+import type { ArtifactRootsConfig } from '@craft-agent/core/types';
 import { debug } from '../utils/debug.ts';
 import { parseArtifactUri } from './uri.ts';
 import { resolveArtifactPath, resolveRootBindings } from './roots.ts';
@@ -22,7 +23,7 @@ import { MAX_ARTIFACT_BYTES } from './read.ts';
 
 export interface ExportObsidianVaultOptions {
   workspaceRootPath: string;
-  configuredRoots?: Record<string, string>;
+  configuredRoots?: ArtifactRootsConfig;
   uris: string[];
   destDir: string;
 }

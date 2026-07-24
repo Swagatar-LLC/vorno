@@ -91,4 +91,11 @@ export type {
   ArtifactTypeDescriptor,
   ArtifactRelationKind,
   ArtifactRelation,
+  // Root binding config schema + storage descriptors (ADR-0019, PLAN-029)
+  FilesystemRootConfig,
+  RootBindingConfig,
+  ArtifactRootsConfig,
+  RootHealth,
+  StorageCapabilities,
+  ArtifactRootDescriptor,
 } from './artifacts.ts';

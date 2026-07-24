@@ -1,7 +1,7 @@
 ---
 id: PLAN-029
 title: Storage-provider config, management, and documentation surfaces
-status: planned
+status: in-progress
 direction: DIR-04
 owner: jh
 created: 2026-07-24
@@ -11,9 +11,21 @@ related:
   - 0018-storage-provider-seam-and-pure-admissibility.md
   - 0016-artifact-uri-scheme-and-open-type-registry.md
 blocked-by:
-  - PR #114 (ADR-0018 StorageProvider seam) must merge first
-  - ADR-0019 doors must be signed (proposed → accepted)
+  - ADR-0019 doors must be signed (proposed → accepted) before merge
 ---
+
+> **Build note (2026-07-24, decoupled from PR #114).** PR #114 (ADR-0018
+> `StorageProvider` seam) is **unmerged + conflicting**, so this build does NOT
+> depend on it. The three surfaces were built on the *current-main* `RootBinding`
+> model with a **self-contained** `StorageCapabilities`/`RootHealth` descriptor
+> and a `createRootBinding` provider-factory seam — all additive and
+> forward-compatible. When PR #114 finally lands, its `StorageProvider` seam and
+> this factory reconcile (the factory becomes the provider constructor; the
+> capability descriptor moves from `capabilitiesForKind` to the provider). No
+> second backend was built (non-goal). **ADR-0019 remains `proposed`: doors 1–3
+> were exercised per the explicit build directive, but the ADR still needs Jeff's
+> signature before merge; door 4 (vault secrets) + the second backend are left as
+> stubs/seams, not decided here.**
 
 # PLAN-029 — Storage-provider config, management, and documentation surfaces
 
@@ -169,3 +181,11 @@ and extend, or the bundled in-app docs set):
 ## Status log
 
 - `2026-07-24` — created in `planned/` (design session 260724-ready-shark; ADR-0019 drafted proposed).
+- `2026-07-24` — **built** on `jh/plan-029-storage-config` (session 260724-prime-dove), decoupled from
+  the unmerged/conflicting PR #114 (built on current-main `RootBinding` with a self-contained
+  `StorageCapabilities`/`RootHealth` descriptor + `createRootBinding` factory seam). Config value-union
+  widening, `roots:list` capabilities+status enrichment, settings UI (kind badge / health dot /
+  capability chips / kind-first add menu), server-authoritative save validation, 13 new artifact tests
+  (115 total green), i18n across all 7 locales, compatibility.md audit-log row, contributor + user docs.
+  All seven `validate-pr` gates pass locally. Moved to `in-progress/`. **Merge-blocked on ADR-0019
+  sign-off (still `proposed`).** Door 4 (vault secrets) + second backend left as stubs.

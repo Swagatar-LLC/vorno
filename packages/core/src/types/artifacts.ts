@@ -24,6 +24,80 @@ export interface ParsedArtifactUri {
   relPath: string;
 }
 
+// ---------------------------------------------------------------------------
+// Root binding config schema + storage descriptors (ADR-0019, PLAN-029)
+//
+// The persisted `artifactRoots` map value widens in place from a bare path
+// string to `string | RootBindingConfig` (ADR-0019 door 1). A bare string is
+// the filesystem shorthand — `{ kind: 'filesystem', path }`. `kind` is a
+// reserved ADR-0016 §3 open-string space (door 2): un-prefixed = system
+// built-in; third-party kinds require a registered prefix. The shape is
+// forward-compatible so a future object-store backend plugs into the provider
+// factory with no config migration; no second backend is implemented here.
+// ---------------------------------------------------------------------------
+
+/** Filesystem root binding config — the only built-in kind in C2. */
+export interface FilesystemRootConfig {
+  kind: 'filesystem';
+  /** Absolute path (validated server-side on save and skipped at resolution if not). */
+  path: string;
+}
+
+/**
+ * A configured (non-workspace) root binding, discriminated by `kind` (ADR-0019
+ * §1–2). The open `{ kind: string; ... }` arm keeps the type forward-tolerant:
+ * an unknown/prefixed kind parses and is skipped at resolution, never thrown.
+ * Secret-bearing kinds reference a vault key server-side (ADR-0013) — inline
+ * secrets are forbidden by ADR-0019 §4 and none exist for filesystem.
+ */
+export type RootBindingConfig =
+  | FilesystemRootConfig
+  | { kind: string; [k: string]: unknown };
+
+/**
+ * Persisted `artifactRoots` map: `rootId → binding`. A `string` value is the
+ * filesystem shorthand (`{ kind: 'filesystem', path: <string> }`). Existing
+ * `Record<string, string>` configs are a subset — zero migration.
+ */
+export type ArtifactRootsConfig = Record<string, string | RootBindingConfig>;
+
+/**
+ * Per-root health surfaced additively on `roots:list` (ADR-0019 door 3). Reuses
+ * the `ArtifactSkippedRoot.reason` vocabulary plus `ok`. Semantics freeze on
+ * ship (ADR-0016 wire discipline).
+ */
+export type RootHealth = 'ok' | 'missing' | 'unreadable' | 'truncated';
+
+/**
+ * Provider-declared capabilities for a root (ADR-0018 seam, surfaced by
+ * ADR-0019 §3). Config never asserts these — the provider is authoritative.
+ * C2 roots are read-only: `write`/`presign` are always false until a write path
+ * lands. Serializable so it can ride the REMOTE_ELIGIBLE `roots:list` wire.
+ */
+export interface StorageCapabilities {
+  /** Can read artifact bytes by URI. */
+  read: boolean;
+  /** Can enumerate/index artifacts under the root. */
+  list: boolean;
+  /** Can write artifact bytes (unimplemented in C2 — always false). */
+  write: boolean;
+  /** Can mint presigned URLs (object-store future — always false in C2). */
+  presign: boolean;
+}
+
+/**
+ * A root binding as seen on the wire (`roots:list`). Ids + kind + capabilities
+ * + optional health only — absolute paths NEVER leave the server (ADR-0016 §2).
+ */
+export interface ArtifactRootDescriptor {
+  id: string;
+  /** Provider kind (ADR-0019 §2 open-string space); `'filesystem'` in C2. */
+  kind: string;
+  capabilities: StorageCapabilities;
+  /** Bounded root-level health probe; absent when not probed. */
+  status?: RootHealth;
+}
+
 /**
  * A root the index scan could not (fully) serve. Identified by rootId only —
  * absolute paths never ride the wire (ADR-0016 §2 door 2).

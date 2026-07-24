@@ -22,6 +22,11 @@ export {
   resolveRootBindings,
   resolveArtifactPath,
   absPathToUri,
+  // Config schema + provider factory seam + descriptors (ADR-0019, PLAN-029)
+  normalizeRootConfig,
+  createRootBinding,
+  capabilitiesForKind,
+  probeRootHealth,
 } from './roots.ts';
 export type { RootBinding } from './roots.ts';
 

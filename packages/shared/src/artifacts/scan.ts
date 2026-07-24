@@ -26,6 +26,7 @@ import type {
   ArtifactEntry,
   ArtifactOrigin,
   ArtifactOriginKind,
+  ArtifactRootsConfig,
   ArtifactSkippedRoot,
 } from '@craft-agent/core/types';
 import { getArtifactTypeForPath, getRegisteredExtensions } from './registry.ts';
@@ -46,7 +47,7 @@ interface ScanState {
 
 export interface IndexArtifactsOptions {
   workspaceRootPath: string;
-  configuredRoots?: Record<string, string>;
+  configuredRoots?: ArtifactRootsConfig;
   includeArchived?: boolean;
 }
 
@@ -275,7 +276,7 @@ interface ScannedFile {
  */
 function collectScannedFiles(
   workspaceRootPath: string,
-  configuredRoots?: Record<string, string>,
+  configuredRoots?: ArtifactRootsConfig,
 ): {
   files: ScannedFile[];
   skippedRoots: ArtifactSkippedRoot[];
@@ -386,7 +387,7 @@ export function indexArtifacts(options: IndexArtifactsOptions): {
  */
 export function indexArtifactUris(options: {
   workspaceRootPath: string;
-  configuredRoots?: Record<string, string>;
+  configuredRoots?: ArtifactRootsConfig;
 }): Set<string> {
   const { files, bindings } = collectScannedFiles(options.workspaceRootPath, options.configuredRoots);
   const uris = new Set<string>();

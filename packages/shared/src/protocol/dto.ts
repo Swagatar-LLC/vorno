@@ -774,8 +774,12 @@ export interface WorkspaceSettings {
   workbenchEnabled?: boolean
   /** Feature flag for the Artifact Home surface (ADR-0016, PLAN-025). Default off. */
   artifactsEnabled?: boolean
-  /** Named artifact root bindings (rootId → absolute path), ADR-0016 §2. 'workspace' is reserved and implicit. */
-  artifactRoots?: Record<string, string>
+  /**
+   * Named artifact root bindings (rootId → binding), ADR-0016 §2. A bare string
+   * value is the filesystem shorthand (absolute path); the object form carries a
+   * `kind` discriminator (ADR-0019 §1). 'workspace' is reserved and implicit.
+   */
+  artifactRoots?: ArtifactRootsConfig
 }
 
 // ---------------------------------------------------------------------------
@@ -948,6 +952,8 @@ export type WorkbenchThreadMutationResult =
 import type {
   ArtifactEntry,
   ArtifactRelation,
+  ArtifactRootDescriptor,
+  ArtifactRootsConfig,
   ArtifactSkippedRoot,
   ArtifactTypeDescriptor,
   ArtifactVersion as ArtifactPlaneVersion,
@@ -1007,9 +1013,14 @@ export type ArtifactsLifecycleSetResult =
   | { ok: true }
   | { ok: false; reason: 'invalid-payload' | 'write-failed' }
 
-/** vorno:artifacts:roots:list — binding ids + kinds only; NEVER absolute paths (ADR-0016 §2). */
+/**
+ * vorno:artifacts:roots:list — binding ids + kind + capabilities + optional
+ * health only; NEVER absolute paths (ADR-0016 §2). `capabilities` and `status`
+ * are additive (ADR-0019 §3, door 3); old clients that read only `id`/`kind`
+ * keep working (ADR-0012 tolerate-absence).
+ */
 export interface ArtifactsRootsListResult {
-  roots: { id: string; kind: string }[]
+  roots: ArtifactRootDescriptor[]
 }
 
 /** vorno:artifacts:types:list — the open type registry descriptors. */

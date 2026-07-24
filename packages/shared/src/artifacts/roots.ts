@@ -12,8 +12,14 @@
  * sibling-prefix attacks are all rejected by construction.
  */
 
-import { realpathSync } from 'fs';
+import { realpathSync, statSync } from 'fs';
 import { isAbsolute, join } from 'path';
+import type {
+  ArtifactRootsConfig,
+  RootBindingConfig,
+  RootHealth,
+  StorageCapabilities,
+} from '@craft-agent/core/types';
 import { debug } from '../utils/debug.ts';
 import {
   RESERVED_WORKSPACE_ROOT_ID,
@@ -25,26 +31,111 @@ import {
 /**
  * How a root id resolves to bytes.
  *
- * // ponytail: single variant; storage-provider kinds (object storage etc.) slot
- * // in additively per ADR-0016 storage-separation goal.
+ * Single variant today (filesystem). Storage-provider kinds (object storage
+ * etc.) slot in additively through `createRootBinding` — the provider factory
+ * seam (ADR-0019 §1) — per the ADR-0016 storage-separation goal. No second
+ * backend is implemented here (PLAN-029 non-goal).
  */
 export type RootBinding = { kind: 'filesystem'; path: string };
 
 /**
+ * Normalize a persisted `artifactRoots` value into a `RootBindingConfig`
+ * (ADR-0019 §1). A bare `string` is the filesystem shorthand; an object with a
+ * string `kind` passes through; anything else is rejected (`null`). Pure — no
+ * fs access, no absolute-path check (that lives in the factory per-kind).
+ */
+export function normalizeRootConfig(value: unknown): RootBindingConfig | null {
+  if (typeof value === 'string') {
+    return { kind: 'filesystem', path: value };
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const kind = (value as { kind?: unknown }).kind;
+    if (typeof kind === 'string' && kind.length > 0) {
+      return value as RootBindingConfig;
+    }
+  }
+  return null;
+}
+
+/**
+ * Provider factory (ADR-0019 §1) — the single registration point where a future
+ * kind plugs in. Dispatches on `cfg.kind` and returns a `RootBinding`, or `null`
+ * for an invalid/unknown kind (skipped-and-logged at resolution, never thrown).
+ *
+ * A future object-store backend is one `case`:
+ *   case 'object-store': return new ObjectStoreProvider(rootId, cfg) ...
+ * touching only this factory, not `resolveRootBindings` control flow. No second
+ * backend is built here (PLAN-029 non-goal); unknown/prefixed kinds fall
+ * through to the tolerant default.
+ */
+export function createRootBinding(rootId: string, cfg: RootBindingConfig): RootBinding | null {
+  switch (cfg.kind) {
+    case 'filesystem': {
+      const path = (cfg as { path?: unknown }).path;
+      if (typeof path !== 'string' || !isAbsolute(path)) {
+        debug('[artifacts] Skipping filesystem root with non-absolute path:', rootId, path);
+        return null;
+      }
+      return { kind: 'filesystem', path };
+    }
+    default:
+      // Forward-tolerant: unknown/prefixed kinds (e.g. a newer config's
+      // 'object-store') are skipped so a newer config never bricks an older
+      // Vorno. Secret-bearing kinds route to the ADR-0013 vault (ADR-0019 §4).
+      debug('[artifacts] Skipping root with unsupported kind:', rootId, cfg.kind);
+      return null;
+  }
+}
+
+/**
+ * Declared capabilities for a provider kind (ADR-0019 §3). The provider is the
+ * authority — config never asserts capabilities. C2 is read-only across all
+ * kinds; `write`/`presign` land with a real write path.
+ */
+export function capabilitiesForKind(kind: string): StorageCapabilities {
+  switch (kind) {
+    case 'filesystem':
+      return { read: true, list: true, write: false, presign: false };
+    default:
+      return { read: false, list: false, write: false, presign: false };
+  }
+}
+
+/**
+ * Bounded root-level health probe (ADR-0019 §3). Stats the root once: missing
+ * path → `'missing'`, not a directory / stat error → `'unreadable'`, else
+ * `'ok'`. `'truncated'` is a scan-time concept (index cap), not a root probe —
+ * it stays reachable via `ArtifactSkippedRoot`. Never throws.
+ */
+export function probeRootHealth(binding: RootBinding): RootHealth {
+  if (binding.kind !== 'filesystem') return 'unreadable';
+  try {
+    const st = statSync(binding.path);
+    return st.isDirectory() ? 'ok' : 'unreadable';
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    return code === 'ENOENT' ? 'missing' : 'unreadable';
+  }
+}
+
+/**
  * Resolve the effective root bindings for a workspace. The `workspace` root is
  * always present (bound to `workspaceRootPath`). Configured entries are
- * validated (id regex, must not be the reserved `workspace` id, value must be an
- * absolute path); invalid entries are skipped and debug-logged, never thrown.
+ * normalized (`string` → filesystem shorthand), validated (id regex, must not be
+ * the reserved `workspace` id), then dispatched through the provider factory
+ * (`createRootBinding`); invalid/unknown entries are skipped and debug-logged,
+ * never thrown. Accepts the widened `ArtifactRootsConfig` value union — old
+ * `Record<string, string>` configs are a subset (ADR-0019 §1, zero migration).
  */
 export function resolveRootBindings(
   workspaceRootPath: string,
-  configuredRoots?: Record<string, string>,
+  configuredRoots?: ArtifactRootsConfig,
 ): Map<string, RootBinding> {
   const bindings = new Map<string, RootBinding>();
   bindings.set(RESERVED_WORKSPACE_ROOT_ID, { kind: 'filesystem', path: workspaceRootPath });
 
   if (configuredRoots) {
-    for (const [rootId, path] of Object.entries(configuredRoots)) {
+    for (const [rootId, rawValue] of Object.entries(configuredRoots)) {
       if (rootId === RESERVED_WORKSPACE_ROOT_ID) {
         debug('[artifacts] Skipping configured root that shadows reserved id:', rootId);
         continue;
@@ -53,11 +144,14 @@ export function resolveRootBindings(
         debug('[artifacts] Skipping configured root with invalid id:', rootId);
         continue;
       }
-      if (typeof path !== 'string' || !isAbsolute(path)) {
-        debug('[artifacts] Skipping configured root with non-absolute path:', rootId, path);
+      const cfg = normalizeRootConfig(rawValue);
+      if (!cfg) {
+        debug('[artifacts] Skipping configured root with unparseable value:', rootId, rawValue);
         continue;
       }
-      bindings.set(rootId, { kind: 'filesystem', path });
+      const binding = createRootBinding(rootId, cfg);
+      if (!binding) continue; // factory already logged the reason
+      bindings.set(rootId, binding);
     }
   }
 

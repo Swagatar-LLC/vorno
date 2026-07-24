@@ -28,7 +28,7 @@ import type {
   ArtifactsRootsListResult,
   ArtifactsTypesListResult,
 } from '@craft-agent/shared/protocol'
-import type { ArtifactEntry } from '@craft-agent/core/types'
+import type { ArtifactEntry, ArtifactRootsConfig } from '@craft-agent/core/types'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import type { RpcServer, RequestContext } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -64,7 +64,7 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
   /** Load the configured (non-workspace) root bindings from workspace config. */
   async function loadConfiguredRoots(
     workspaceRoot: string,
-  ): Promise<Record<string, string> | undefined> {
+  ): Promise<ArtifactRootsConfig | undefined> {
     const { loadWorkspaceConfig } = await import('@craft-agent/shared/workspaces')
     const config = loadWorkspaceConfig(workspaceRoot)
     return config?.defaults?.artifactRoots
@@ -235,18 +235,25 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
     },
   )
 
-  // List root binding ids + kinds only — NEVER absolute paths (ADR-0016 §2).
+  // List root binding ids + kind + capabilities + health — NEVER absolute paths
+  // (ADR-0016 §2). `capabilities` (provider-authoritative, ADR-0019 §3) and the
+  // per-root `status` probe (ADR-0019 door 3) are additive; the probe is a
+  // single bounded `stat` per root.
   server.handle(
     RPC_CHANNELS.artifacts.ROOTS_LIST,
     async (ctx): Promise<ArtifactsRootsListResult> => {
       const workspaceRoot = resolveWorkspaceRoot(ctx)
       if (!workspaceRoot) return { roots: [] }
       const configuredRoots = await loadConfiguredRoots(workspaceRoot)
-      const { resolveRootBindings } = await import('@craft-agent/shared/artifacts')
+      const { resolveRootBindings, capabilitiesForKind, probeRootHealth } = await import(
+        '@craft-agent/shared/artifacts'
+      )
       const bindings = resolveRootBindings(workspaceRoot, configuredRoots)
       const roots = Array.from(bindings.entries()).map(([id, binding]) => ({
         id,
         kind: binding.kind,
+        capabilities: capabilitiesForKind(binding.kind),
+        status: probeRootHealth(binding),
       }))
       return { roots }
     },

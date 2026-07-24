@@ -6,6 +6,10 @@ import {
   resolveRootBindings,
   resolveArtifactPath,
   absPathToUri,
+  normalizeRootConfig,
+  createRootBinding,
+  capabilitiesForKind,
+  probeRootHealth,
 } from '../roots.ts';
 import { formatArtifactUri } from '../uri.ts';
 
@@ -46,6 +50,161 @@ describe('resolveRootBindings', () => {
     expect(b.get('workspace')).toEqual({ kind: 'filesystem', path: workspaceRoot });
     expect(b.has('Bad')).toBe(false);
     expect(b.has('rel')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Config schema widening + provider factory seam (ADR-0019, PLAN-029)
+// ---------------------------------------------------------------------------
+
+describe('normalizeRootConfig', () => {
+  it('reads a bare string as the filesystem shorthand', () => {
+    expect(normalizeRootConfig('/abs/path')).toEqual({ kind: 'filesystem', path: '/abs/path' });
+  });
+
+  it('passes through an object with a string kind', () => {
+    expect(normalizeRootConfig({ kind: 'filesystem', path: '/x' })).toEqual({
+      kind: 'filesystem',
+      path: '/x',
+    });
+    // Unknown/prefixed kind still parses (tolerant) — rejection is at the factory.
+    expect(normalizeRootConfig({ kind: 'object-store', bucket: 'b' })).toEqual({
+      kind: 'object-store',
+      bucket: 'b',
+    });
+  });
+
+  it('rejects values with no string kind', () => {
+    expect(normalizeRootConfig(null)).toBeNull();
+    expect(normalizeRootConfig(42)).toBeNull();
+    expect(normalizeRootConfig([])).toBeNull();
+    expect(normalizeRootConfig({})).toBeNull();
+    expect(normalizeRootConfig({ kind: 123 })).toBeNull();
+    expect(normalizeRootConfig({ kind: '' })).toBeNull();
+  });
+});
+
+describe('createRootBinding (provider factory)', () => {
+  it('builds a filesystem binding from an absolute path', () => {
+    expect(createRootBinding('r', { kind: 'filesystem', path: '/abs' })).toEqual({
+      kind: 'filesystem',
+      path: '/abs',
+    });
+  });
+
+  it('skips a filesystem binding with a non-absolute path', () => {
+    expect(createRootBinding('r', { kind: 'filesystem', path: 'rel' })).toBeNull();
+    expect(createRootBinding('r', { kind: 'filesystem' } as never)).toBeNull();
+  });
+
+  it('skips an unknown/unsupported kind (no second backend in C2), never throws', () => {
+    expect(createRootBinding('r', { kind: 'object-store', bucket: 'b' })).toBeNull();
+    expect(createRootBinding('r', { kind: 'acme:widgets' })).toBeNull();
+  });
+});
+
+describe('resolveRootBindings — widened value union (ADR-0019 §1)', () => {
+  it('treats a string value identically to the filesystem object form', () => {
+    const dir = join(tempDir, 'corpus');
+    const fromString = resolveRootBindings(workspaceRoot, { corpus: dir });
+    const fromObject = resolveRootBindings(workspaceRoot, {
+      corpus: { kind: 'filesystem', path: dir },
+    });
+    expect(fromString.get('corpus')).toEqual({ kind: 'filesystem', path: dir });
+    expect(fromObject.get('corpus')).toEqual(fromString.get('corpus'));
+  });
+
+  it('skips an unknown-kind object at resolution (forward-tolerant)', () => {
+    const b = resolveRootBindings(workspaceRoot, {
+      later: { kind: 'object-store', bucket: 'b' },
+      good: { kind: 'filesystem', path: join(tempDir, 'g') },
+    });
+    expect(b.has('later')).toBe(false);
+    expect(b.get('good')).toEqual({ kind: 'filesystem', path: join(tempDir, 'g') });
+  });
+
+  it('skips a filesystem object with a non-absolute path', () => {
+    const b = resolveRootBindings(workspaceRoot, {
+      bad: { kind: 'filesystem', path: 'relative' },
+    });
+    expect(b.has('bad')).toBe(false);
+  });
+});
+
+describe('capabilitiesForKind', () => {
+  it('reports filesystem as read-only (C2: no write path)', () => {
+    expect(capabilitiesForKind('filesystem')).toEqual({
+      read: true,
+      list: true,
+      write: false,
+      presign: false,
+    });
+  });
+
+  it('reports no capabilities for an unknown kind', () => {
+    expect(capabilitiesForKind('object-store')).toEqual({
+      read: false,
+      list: false,
+      write: false,
+      presign: false,
+    });
+  });
+});
+
+describe('probeRootHealth', () => {
+  it('reports ok for an existing directory root', () => {
+    expect(probeRootHealth({ kind: 'filesystem', path: workspaceRoot })).toBe('ok');
+  });
+
+  it('reports missing for a non-existent path', () => {
+    expect(probeRootHealth({ kind: 'filesystem', path: join(tempDir, 'nope') })).toBe('missing');
+  });
+
+  it('reports unreadable when the path is a file, not a directory', () => {
+    const f = write(join(tempDir, 'file-root.md'), '# f');
+    expect(probeRootHealth({ kind: 'filesystem', path: f })).toBe('unreadable');
+  });
+});
+
+describe('roots:list payload shape (ADR-0016 §2 + ADR-0019 §3)', () => {
+  // Mirrors the ROOTS_LIST handler mapping exactly: id + kind + capabilities +
+  // status, with absolute paths NEVER present on the wire.
+  it('emits id/kind/capabilities/status and never leaks an absolute path', () => {
+    const corpus = join(tempDir, 'corpus');
+    mkdirSync(corpus, { recursive: true });
+    const bindings = resolveRootBindings(workspaceRoot, { corpus });
+    const payload = Array.from(bindings.entries()).map(([id, binding]) => ({
+      id,
+      kind: binding.kind,
+      capabilities: capabilitiesForKind(binding.kind),
+      status: probeRootHealth(binding),
+    }));
+
+    const workspaceEntry = payload.find((r) => r.id === 'workspace');
+    const corpusEntry = payload.find((r) => r.id === 'corpus');
+    expect(workspaceEntry).toEqual({
+      id: 'workspace',
+      kind: 'filesystem',
+      capabilities: { read: true, list: true, write: false, presign: false },
+      status: 'ok',
+    });
+    expect(corpusEntry?.status).toBe('ok');
+
+    // No entry carries a `path` (or any absolute-path string) — ADR-0016 §2.
+    for (const entry of payload) {
+      expect(entry).not.toHaveProperty('path');
+      const serialized = JSON.stringify(entry);
+      expect(serialized.includes(workspaceRoot)).toBe(false);
+      expect(serialized.includes(corpus)).toBe(false);
+    }
+  });
+
+  it('surfaces missing health for a configured root whose path is gone', () => {
+    const gone = join(tempDir, 'ghost-root');
+    const bindings = resolveRootBindings(workspaceRoot, { ghost: gone });
+    const ghost = bindings.get('ghost');
+    expect(ghost).toBeDefined();
+    expect(probeRootHealth(ghost!)).toBe('missing');
   });
 });
 

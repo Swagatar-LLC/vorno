@@ -24,6 +24,19 @@ import { routes } from '@/lib/navigate'
 import { Spinner } from '@craft-agent/ui'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import type { PermissionMode, WorkspaceSettings, LoadedSource } from '../../../shared/types'
+import type {
+  ArtifactRootsConfig,
+  ArtifactRootDescriptor,
+  RootHealth,
+  StorageCapabilities,
+} from '@craft-agent/core'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+} from '@/components/ui/dropdown-menu'
 import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import { PERMISSION_MODE_CONFIG } from '@craft-agent/shared/agent/mode-types'
@@ -69,7 +82,7 @@ export default function WorkspaceSettingsPage() {
   const [workbenchEnabled, setWorkbenchEnabled] = useState(false)
   // fork(PLAN-025 C1): Artifact plane feature flag + registered roots
   const [artifactsEnabled, setArtifactsEnabled] = useState(false)
-  const [artifactRoots, setArtifactRoots] = useState<Record<string, string>>({})
+  const [artifactRoots, setArtifactRoots] = useState<ArtifactRootsConfig>({})
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true)
 
   // Default sources state
@@ -324,7 +337,7 @@ export default function WorkspaceSettingsPage() {
   // 'workspace' id, absolute paths); validation errors surface via the shared
   // updateWorkspaceSetting toast. On success, adopt the saved map locally.
   const saveArtifactRoots = useCallback(
-    async (next: Record<string, string>) => {
+    async (next: ArtifactRootsConfig) => {
       const saved = await updateWorkspaceSetting('artifactRoots', next)
       if (saved) setArtifactRoots(next)
     },
@@ -692,25 +705,127 @@ function deriveRootId(path: string, taken: Set<string>): string {
   }
 }
 
+// fork(PLAN-029): the persisted root value can be a bare path string
+// (filesystem shorthand) or a `{ kind, ... }` binding config. These helpers read
+// both forms for display; capabilities/health come from `roots:list` (server-
+// authoritative, ADR-0019 §3), never inferred client-side.
+function rootKindOf(value: ArtifactRootsConfig[string]): string {
+  return typeof value === 'string' ? 'filesystem' : value.kind
+}
+function rootTargetLabel(value: ArtifactRootsConfig[string], fallback: string): string {
+  if (typeof value === 'string') return value || fallback
+  if (value.kind === 'filesystem' && typeof (value as { path?: unknown }).path === 'string') {
+    return ((value as { path: string }).path) || fallback
+  }
+  // Non-filesystem kinds have no local path to show — surface the kind instead.
+  return value.kind
+}
+
+/** Small pill for the provider kind (DIR-04 tenet 6 smart-chip). */
+function KindBadge({ kind }: { kind: string }) {
+  const { t } = useTranslation()
+  const label =
+    kind === 'filesystem' ? t("settings.workspace.rootKind.filesystem") : kind
+  return (
+    <span
+      className="shrink-0 rounded-md bg-foreground/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground/70"
+      title={label}
+    >
+      {label}
+    </span>
+  )
+}
+
+/** Health dot fed by the `roots:list` status probe (ADR-0019 §3). */
+function HealthDot({ status }: { status?: RootHealth }) {
+  const { t } = useTranslation()
+  const color =
+    status === 'ok'
+      ? 'bg-green-500'
+      : status === 'truncated'
+        ? 'bg-amber-500'
+        : status === undefined
+          ? 'bg-foreground/20'
+          : 'bg-red-500'
+  const label =
+    status === undefined
+      ? t("settings.workspace.rootHealth.unknown")
+      : t(`settings.workspace.rootHealth.${status}`)
+  return (
+    <span
+      className={cn('inline-block h-2 w-2 shrink-0 rounded-full', color)}
+      title={label}
+      aria-label={label}
+    />
+  )
+}
+
 /**
- * Advanced artifact-roots editor, pick-directory-first (ADR-0015 §7; QA
- * G2c-2): "Add folder" opens the directory picker immediately, the root id is
- * derived from the folder name, and id + path save together in one write —
- * no empty-path intermediate state. Rows re-pick their path or remove.
- * Server validates on save (ADR-0016 §2).
+ * Capability chips from the provider descriptor (ADR-0019 §3). C2 roots are
+ * read-only, so `read`/`list` render and `write`/`presign` are omitted until a
+ * write path lands.
+ */
+function CapabilityChips({ capabilities }: { capabilities?: StorageCapabilities }) {
+  const { t } = useTranslation()
+  if (!capabilities) return null
+  const active = (
+    ['read', 'list', 'write', 'presign'] as (keyof StorageCapabilities)[]
+  ).filter((k) => capabilities[k])
+  if (active.length === 0) return null
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {active.map((cap) => (
+        <span
+          key={cap}
+          className="rounded bg-foreground/[0.04] px-1 py-0.5 text-[10px] text-foreground/60"
+        >
+          {t(`settings.workspace.rootCapability.${cap}`)}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+/**
+ * Advanced artifact-roots editor (PLAN-029). Rows show
+ * `rootId · kind · target · health · capabilities · remove`; kind/capabilities/
+ * health come from the `roots:list` descriptor (server-authoritative, absolute
+ * paths never on the wire — ADR-0016 §2). "Add root" is a kind-first menu whose
+ * only live item is a local folder (pick-directory-first, ADR-0015 §7); the
+ * object-storage item is the seam for the hosted track (ADR-0013), disabled
+ * here. Server validates on save (ADR-0016 §2, ADR-0019 §1).
  */
 function ArtifactRootsEditor({
   roots,
   onSave,
   onBrowse,
 }: {
-  roots: Record<string, string>
-  onSave: (next: Record<string, string>) => void
+  roots: ArtifactRootsConfig
+  onSave: (next: ArtifactRootsConfig) => void
   onBrowse: (rootId: string | null) => void
 }) {
   const { t } = useTranslation()
 
   const entries = React.useMemo(() => Object.entries(roots), [roots])
+
+  // Provider descriptors (kind + capabilities + health) for the configured
+  // rows. Refetched whenever the root set changes (C1/C2 have no push events).
+  const [descById, setDescById] = useState<Map<string, ArtifactRootDescriptor>>(new Map())
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI
+      .artifactsRootsList()
+      .then((res) => {
+        if (cancelled) return
+        setDescById(new Map(res.roots.map((r) => [r.id, r])))
+      })
+      .catch(() => {
+        /* best-effort; rows still render config-derived kind + target */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [roots])
 
   const removeRoot = (rootId: string) => {
     const next = { ...roots }
@@ -729,38 +844,65 @@ function ArtifactRootsEditor({
         <p className="mb-3 text-xs text-muted-foreground">{t("settings.workspace.noArtifactRoots")}</p>
       ) : (
         <div className="mb-3 flex flex-col gap-2">
-          {entries.map(([rootId, path]) => (
-            <div key={rootId} className="flex items-center gap-2">
-              <span className="w-32 shrink-0 truncate font-mono text-xs" title={rootId}>
-                {rootId}
-              </span>
-              <button
-                type="button"
-                onClick={() => onBrowse(rootId)}
-                className="min-w-0 flex-1 truncate rounded-lg bg-foreground/[0.03] px-2 py-1.5 text-left text-xs shadow-minimal hover:bg-foreground/[0.06] transition-colors"
-                title={path || t("settings.workspace.chooseArtifactRootDir")}
-              >
-                {path || t("settings.workspace.chooseArtifactRootDir")}
-              </button>
-              <button
-                type="button"
-                onClick={() => removeRoot(rootId)}
-                className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-foreground/60 hover:text-destructive transition-colors"
-              >
-                {t("common.remove")}
-              </button>
-            </div>
-          ))}
+          {entries.map(([rootId, value]) => {
+            const desc = descById.get(rootId)
+            const kind = desc?.kind ?? rootKindOf(value)
+            const target = rootTargetLabel(value, t("settings.workspace.chooseArtifactRootDir"))
+            const isFilesystem = kind === 'filesystem'
+            return (
+              <div key={rootId} className="flex items-center gap-2">
+                <span className="w-28 shrink-0 truncate font-mono text-xs" title={rootId}>
+                  {rootId}
+                </span>
+                <KindBadge kind={kind} />
+                <button
+                  type="button"
+                  onClick={() => isFilesystem && onBrowse(rootId)}
+                  disabled={!isFilesystem}
+                  className={cn(
+                    'min-w-0 flex-1 truncate rounded-lg bg-foreground/[0.03] px-2 py-1.5 text-left text-xs shadow-minimal transition-colors',
+                    isFilesystem
+                      ? 'hover:bg-foreground/[0.06]'
+                      : 'cursor-default opacity-70',
+                  )}
+                  title={target}
+                >
+                  {target}
+                </button>
+                <HealthDot status={desc?.status} />
+                <CapabilityChips capabilities={desc?.capabilities} />
+                <button
+                  type="button"
+                  onClick={() => removeRoot(rootId)}
+                  className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-foreground/60 hover:text-destructive transition-colors"
+                >
+                  {t("common.remove")}
+                </button>
+              </div>
+            )
+          })}
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => onBrowse(null)}
-        className="inline-flex h-8 items-center px-3 text-sm rounded-lg bg-background shadow-minimal hover:bg-foreground/[0.02] transition-colors"
-      >
-        {t("settings.workspace.addArtifactRoot")}
-      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex h-8 items-center px-3 text-sm rounded-lg bg-background shadow-minimal hover:bg-foreground/[0.02] transition-colors"
+          >
+            {t("settings.workspace.addArtifactRoot")}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          <DropdownMenuLabel>{t("settings.workspace.addRootMenuLabel")}</DropdownMenuLabel>
+          <DropdownMenuItem onSelect={() => onBrowse(null)}>
+            {t("settings.workspace.addRootLocalFolder")}
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled>
+            {t("settings.workspace.addRootObjectStorage")}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
 }
