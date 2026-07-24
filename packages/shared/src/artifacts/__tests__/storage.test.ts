@@ -2,18 +2,17 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import {
-  resolveRootBindings,
-  resolveArtifactPath,
-  absPathToUri,
-} from '../roots.ts';
+import { resolveRootBindings } from '../roots.ts';
+import { FilesystemStorageProvider } from '../storage/filesystem.ts';
+import { isWriteCapable } from '../storage/provider.ts';
 import { formatArtifactUri } from '../uri.ts';
+import { hashString } from '../content.ts';
 
 let tempDir: string;
 let workspaceRoot: string;
 
 beforeEach(() => {
-  tempDir = mkdtempSync(join(tmpdir(), 'artifacts-roots-test-'));
+  tempDir = mkdtempSync(join(tmpdir(), 'artifacts-storage-test-'));
   workspaceRoot = join(tempDir, 'workspace');
   mkdirSync(workspaceRoot, { recursive: true });
 });
@@ -29,12 +28,14 @@ function write(path: string, content: string): string {
 }
 
 describe('resolveRootBindings', () => {
-  it('always includes the workspace root', () => {
+  it('always includes the workspace root as a filesystem provider', () => {
     const b = resolveRootBindings(workspaceRoot);
-    expect(b.get('workspace')).toEqual({ kind: 'filesystem', path: workspaceRoot });
+    const ws = b.get('workspace');
+    expect(ws).toBeInstanceOf(FilesystemStorageProvider);
+    expect(ws!.kind).toBe('filesystem');
   });
 
-  it('validates configured roots (id regex, absolute path, not workspace)', () => {
+  it('validates configured roots (id regex, absolute path, not workspace)', async () => {
     const roadmap = join(tempDir, 'roadmap');
     const b = resolveRootBindings(workspaceRoot, {
       roadmap,
@@ -42,97 +43,155 @@ describe('resolveRootBindings', () => {
       Bad: '/x', // invalid id → skipped
       rel: 'relative/path', // not absolute → skipped
     });
-    expect(b.get('roadmap')).toEqual({ kind: 'filesystem', path: roadmap });
-    expect(b.get('workspace')).toEqual({ kind: 'filesystem', path: workspaceRoot });
+    expect(b.get('roadmap')).toBeInstanceOf(FilesystemStorageProvider);
     expect(b.has('Bad')).toBe(false);
     expect(b.has('rel')).toBe(false);
+    // The reserved id stays bound to the workspace path — the shadow was skipped.
+    write(join(workspaceRoot, 'a.md'), '# a');
+    expect(
+      await b.get('workspace')!.exists(formatArtifactUri({ rootId: 'workspace', relPath: 'a.md' })),
+    ).toBe(true);
+  });
+
+  it('exposes a serializable, read-only capability descriptor (C2: no write impls)', () => {
+    const b = resolveRootBindings(workspaceRoot);
+    const ws = b.get('workspace')!;
+    expect(ws.capabilities).toEqual({
+      read: true,
+      stat: true,
+      list: true,
+      contentHash: true,
+      write: false,
+      delete: false,
+      copy: false,
+      presign: false,
+    });
+    // In-process half of the hybrid negotiation agrees with the descriptor.
+    expect(isWriteCapable(ws)).toBe(false);
   });
 });
 
-describe('resolveArtifactPath containment', () => {
-  it('resolves an in-root URI to its realpath', () => {
-    const file = write(join(workspaceRoot, 'sessions', 's1', 'plans', 'p.md'), '# p');
-    const b = resolveRootBindings(workspaceRoot);
+describe('FilesystemStorageProvider containment (ADR-0018 door 2)', () => {
+  it('reads an in-root URI and hashes the buffer', async () => {
+    write(join(workspaceRoot, 'sessions', 's1', 'plans', 'p.md'), '# p');
+    const p = new FilesystemStorageProvider('workspace', workspaceRoot);
     const uri = formatArtifactUri({ rootId: 'workspace', relPath: 'sessions/s1/plans/p.md' });
-    const resolved = resolveArtifactPath(uri, b);
-    expect(resolved?.absPath).toBe(require('fs').realpathSync(file));
+    const result = await p.read(uri);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.bytes.toString('utf-8')).toBe('# p');
+      expect(result.value.meta.contentHash).toBe(hashString('# p'));
+      expect(result.value.meta.uri).toBe(uri);
+    }
   });
 
-  it('rejects a path outside the bound root (dotdot cannot even be expressed)', () => {
+  it('rejects a path outside the bound root (dotdot cannot even be expressed)', async () => {
     write(join(workspaceRoot, 'in.md'), '# in');
     write(join(tempDir, 'outside.md'), '# out');
-    const b = resolveRootBindings(workspaceRoot);
+    const p = new FilesystemStorageProvider('workspace', workspaceRoot);
     // dotdot is parse-rejected at the URI layer, so containment is belt+braces.
-    expect(resolveArtifactPath('vorno-artifact://workspace/../outside.md', b)).toBeNull();
+    const result = await p.read('vorno-artifact://workspace/../outside.md');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('not-found');
   });
 
-  it('rejects a symlink leaf that escapes the root', () => {
+  it('rejects a symlink leaf that escapes the root', async () => {
     const secret = write(join(tempDir, 'secret.md'), '# secret');
-    const linkPath = join(workspaceRoot, 'link.md');
-    symlinkSync(secret, linkPath);
-    const b = resolveRootBindings(workspaceRoot);
+    symlinkSync(secret, join(workspaceRoot, 'link.md'));
+    const p = new FilesystemStorageProvider('workspace', workspaceRoot);
     const uri = formatArtifactUri({ rootId: 'workspace', relPath: 'link.md' });
-    expect(resolveArtifactPath(uri, b)).toBeNull();
+    expect((await p.read(uri)).ok).toBe(false);
+    expect((await p.stat(uri)).ok).toBe(false);
+    expect(await p.exists(uri)).toBe(false);
   });
 
-  it('rejects a symlinked directory that escapes the root', () => {
+  it('rejects a symlinked directory that escapes the root', async () => {
     const secretDir = join(tempDir, 'secretdir');
     write(join(secretDir, 'x.md'), '# x');
-    const linkDir = join(workspaceRoot, 'linkdir');
-    symlinkSync(secretDir, linkDir);
-    const b = resolveRootBindings(workspaceRoot);
+    symlinkSync(secretDir, join(workspaceRoot, 'linkdir'));
+    const p = new FilesystemStorageProvider('workspace', workspaceRoot);
     const uri = formatArtifactUri({ rootId: 'workspace', relPath: 'linkdir/x.md' });
-    expect(resolveArtifactPath(uri, b)).toBeNull();
+    expect((await p.read(uri)).ok).toBe(false);
   });
 
-  it('does not treat a sibling prefix dir as contained', () => {
+  it('does not treat a sibling prefix dir as contained', async () => {
     // root = <tmp>/root, sibling = <tmp>/root-evil — segment guard must reject.
     const root = join(tempDir, 'root');
     write(join(root, 'a.md'), '# a');
     write(join(tempDir, 'root-evil', 'y.md'), '# y');
-    const b = resolveRootBindings(workspaceRoot, { root });
-    // Address the sibling via the root binding — its realpath is outside.
-    // (Can't express via relPath directly; use absPathToUri to confirm the
-    // sibling maps to no root.)
-    expect(absPathToUri(join(tempDir, 'root-evil', 'y.md'), b)).toBeNull();
-    // And the legitimate one resolves.
-    const uri = formatArtifactUri({ rootId: 'root', relPath: 'a.md' });
-    expect(resolveArtifactPath(uri, b)).not.toBeNull();
+    const p = new FilesystemStorageProvider('root', root);
+    expect((await p.read(formatArtifactUri({ rootId: 'root', relPath: 'a.md' }))).ok).toBe(true);
+    // The sibling is unaddressable — any traversal spelling is rejected.
+    expect((await p.read('vorno-artifact://root/../root-evil/y.md')).ok).toBe(false);
   });
 
-  it('returns null for an unknown root id', () => {
-    const b = resolveRootBindings(workspaceRoot);
-    expect(resolveArtifactPath('vorno-artifact://ghost/a.md', b)).toBeNull();
+  it('rejects a URI for a foreign root id', async () => {
+    write(join(workspaceRoot, 'a.md'), '# a');
+    const p = new FilesystemStorageProvider('workspace', workspaceRoot);
+    expect((await p.read('vorno-artifact://ghost/a.md')).ok).toBe(false);
+  });
+
+  it('returns not-found for a directory read', async () => {
+    mkdirSync(join(workspaceRoot, 'dir'), { recursive: true });
+    const p = new FilesystemStorageProvider('workspace', workspaceRoot);
+    const result = await p.read(formatArtifactUri({ rootId: 'workspace', relPath: 'dir' }));
+    expect(result.ok).toBe(false);
+  });
+
+  it('enforces maxBytes with a distinct too-large error', async () => {
+    write(join(workspaceRoot, 'big.md'), 'x'.repeat(64));
+    const p = new FilesystemStorageProvider('workspace', workspaceRoot);
+    const result = await p.read(formatArtifactUri({ rootId: 'workspace', relPath: 'big.md' }), {
+      maxBytes: 16,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe('too-large');
   });
 });
 
-describe('absPathToUri', () => {
-  it('maps an in-workspace path to a workspace URI', () => {
-    const file = write(join(workspaceRoot, 'sessions', 's1', 'data', 'o.md'), '# o');
-    const b = resolveRootBindings(workspaceRoot);
-    expect(absPathToUri(file, b)).toBe(
-      formatArtifactUri({ rootId: 'workspace', relPath: 'sessions/s1/data/o.md' }),
-    );
+describe('FilesystemStorageProvider.list', () => {
+  it('lists files recursively with URIs, never following symlinks', async () => {
+    write(join(workspaceRoot, 'a.md'), '# a');
+    write(join(workspaceRoot, 'sub', 'b.md'), '# b');
+    const secretDir = join(tempDir, 'secretdir');
+    write(join(secretDir, 'x.md'), '# x');
+    symlinkSync(secretDir, join(workspaceRoot, 'linkdir'));
+
+    const p = new FilesystemStorageProvider('workspace', workspaceRoot);
+    const uris: string[] = [];
+    for await (const meta of p.list()) uris.push(meta.uri);
+    expect(uris.sort()).toEqual([
+      formatArtifactUri({ rootId: 'workspace', relPath: 'a.md' }),
+      formatArtifactUri({ rootId: 'workspace', relPath: 'sub/b.md' }),
+    ]);
   });
 
-  it('longest-match binding wins (nested root beats workspace)', () => {
-    // roadmap lives inside the workspace; a file under it should map to roadmap.
-    const roadmap = join(workspaceRoot, 'roadmap');
-    const file = write(join(roadmap, 'decisions', 'adr.md'), '# adr');
-    const b = resolveRootBindings(workspaceRoot, { roadmap });
-    expect(absPathToUri(file, b)).toBe(
-      formatArtifactUri({ rootId: 'roadmap', relPath: 'decisions/adr.md' }),
-    );
+  it('honors prefix, maxDepth, and skipDir pruning', async () => {
+    write(join(workspaceRoot, 'top.md'), '# top');
+    write(join(workspaceRoot, 'docs', 'd1.md'), '# d1');
+    write(join(workspaceRoot, 'docs', 'skipme', 'd2.md'), '# d2');
+    write(join(workspaceRoot, 'docs', 'deep', 'deeper', 'd3.md'), '# d3');
+
+    const p = new FilesystemStorageProvider('workspace', workspaceRoot);
+    const uris: string[] = [];
+    for await (const meta of p.list({
+      prefix: 'docs',
+      maxDepth: 1,
+      skipDir: (rel) => rel.endsWith('/skipme'),
+    })) {
+      uris.push(meta.uri);
+    }
+    // top.md is outside the prefix; skipme/ pruned; deeper/ is beyond maxDepth
+    // so d3.md is never reached (d1.md at depth 0 is the only survivor... and
+    // files directly inside deep/ would be at depth 1 — none exist here).
+    expect(uris).toEqual([formatArtifactUri({ rootId: 'workspace', relPath: 'docs/d1.md' })]);
   });
 
-  it('returns null for a path inside no root', () => {
-    const file = write(join(tempDir, 'loose.md'), '# loose');
-    const b = resolveRootBindings(workspaceRoot);
-    expect(absPathToUri(file, b)).toBeNull();
-  });
-
-  it('returns null for the root dir itself (no relPath)', () => {
-    const b = resolveRootBindings(workspaceRoot);
-    expect(absPathToUri(workspaceRoot, b)).toBeNull();
+  it('throws not-found for a missing walk root', async () => {
+    const p = new FilesystemStorageProvider('ghost', join(tempDir, 'does-not-exist'));
+    const iterate = async () => {
+      for await (const meta of p.list()) void meta;
+    };
+    await expect(iterate()).rejects.toMatchObject({ kind: 'not-found' });
   });
 });

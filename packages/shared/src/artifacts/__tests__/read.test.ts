@@ -84,7 +84,7 @@ describe('readArtifactByUri gate', () => {
     write('sessions/s1/notes.md', '# Not a plan artifact');
 
     // Index lists exactly the plan artifact.
-    const { artifacts } = indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const { artifacts } = await indexArtifacts({ workspaceRootPath: workspaceRoot });
     expect(artifacts.map((a) => a.uri)).toEqual([wsUri('sessions/s1/plans/p.md')]);
 
     // Every unindexed probe is DENIED despite containment + registered extension.

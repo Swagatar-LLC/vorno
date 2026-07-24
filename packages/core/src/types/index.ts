@@ -88,6 +88,7 @@ export type {
   ArtifactOriginKind,
   ArtifactOrigin,
   ArtifactEntry,
+  StorageCapabilities,
   ArtifactTypeDescriptor,
   ArtifactRelationKind,
   ArtifactRelation,
