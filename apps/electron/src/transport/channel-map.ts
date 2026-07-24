@@ -487,4 +487,13 @@ export const CHANNEL_MAP = {
   workbenchReadArtifact: invoke(RPC_CHANNELS.workbench.REVIEW_ARTIFACTS_READ),
   workbenchListThreads: invoke(RPC_CHANNELS.workbench.REVIEW_THREADS_LIST),
   workbenchMutateThread: invoke(RPC_CHANNELS.workbench.REVIEW_THREADS_MUTATE),
+
+  // Artifact plane (generalized workspace artifact surface — ADR-0015/0016, PLAN-025 C1)
+  artifactsIndex: invoke(RPC_CHANNELS.artifacts.INDEX),
+  artifactsRead: invoke(RPC_CHANNELS.artifacts.READ),
+  artifactsRelationsList: invoke(RPC_CHANNELS.artifacts.RELATIONS_LIST),
+  artifactsRelationsMutate: invoke(RPC_CHANNELS.artifacts.RELATIONS_MUTATE),
+  artifactsLifecycleSet: invoke(RPC_CHANNELS.artifacts.LIFECYCLE_SET),
+  artifactsRootsList: invoke(RPC_CHANNELS.artifacts.ROOTS_LIST),
+  artifactsTypesList: invoke(RPC_CHANNELS.artifacts.TYPES_LIST),
 } satisfies ChannelMap

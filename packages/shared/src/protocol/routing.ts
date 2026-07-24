@@ -528,6 +528,17 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.workbench.REVIEW_ARTIFACTS_READ,
   RPC_CHANNELS.workbench.REVIEW_THREADS_LIST,
   RPC_CHANNELS.workbench.REVIEW_THREADS_MUTATE,
+
+  // artifacts — generalized artifact plane; state is workspace content
+  // (artifacts/ store + session/corpus files + root bindings), so it runs
+  // wherever the workspace lives. Same rationale as workbench (ADR-0016 §2).
+  RPC_CHANNELS.artifacts.INDEX,
+  RPC_CHANNELS.artifacts.READ,
+  RPC_CHANNELS.artifacts.RELATIONS_LIST,
+  RPC_CHANNELS.artifacts.RELATIONS_MUTATE,
+  RPC_CHANNELS.artifacts.LIFECYCLE_SET,
+  RPC_CHANNELS.artifacts.ROOTS_LIST,
+  RPC_CHANNELS.artifacts.TYPES_LIST,
 ])
 
 // ---------------------------------------------------------------------------

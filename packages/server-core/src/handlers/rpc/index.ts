@@ -26,6 +26,7 @@ import { registerTransferHandlers } from './transfer'
 import { registerWorkspaceCoreHandlers } from './workspace'
 import { registerMessagingHandlers } from './messaging'
 import { registerWorkbenchHandlers } from './workbench'
+import { registerArtifactsHandlers } from './artifacts'
 
 export function registerCoreRpcHandlers(
   server: RpcServer,
@@ -53,4 +54,5 @@ export function registerCoreRpcHandlers(
   registerWorkspaceCoreHandlers(server, deps)
   registerMessagingHandlers(server, deps)
   registerWorkbenchHandlers(server, deps)
+  registerArtifactsHandlers(server, deps)
 }

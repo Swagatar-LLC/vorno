@@ -26,8 +26,14 @@ export function SessionStatusIcon({ item }: SessionStatusIconProps) {
   return (
     <Popover modal={true} open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
-          type="button"
+        {/* Rendered as a span (not a <button>) because this icon lives inside
+            EntityRow's row-level <button>; a nested <button> is invalid DOM
+            (validateDOMNesting) and gets reparented by the browser. Matches the
+            sibling more-menu trigger in entity-row.tsx, which uses a div for the
+            same reason. Keyboard activation is wired manually below. */}
+        <span
+          role="button"
+          tabIndex={0}
           className={cn(
             "!h-5 !w-5 flex items-center justify-center rounded-full transition-colors cursor-pointer",
             "hover:bg-foreground/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -37,13 +43,19 @@ export function SessionStatusIcon({ item }: SessionStatusIconProps) {
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label={t("status.change")}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault()
+              setOpen((prev) => !prev)
+            }
+          }}
           onContextMenu={(e) => {
             e.preventDefault()
             e.stopPropagation()
           }}
         >
           {getStateIcon(status, ctx.sessionStatuses)}
-        </button>
+        </span>
       </PopoverTrigger>
       <PopoverContent
         className="w-auto p-0 border-0 shadow-none bg-transparent"

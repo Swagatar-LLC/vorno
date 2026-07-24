@@ -5556,8 +5556,16 @@ export class SessionManager implements ISessionManager {
 
     const existing = message.annotations ?? []
     if (!existing.some(a => a.id === annotationId)) {
-      sessionLog.warn(`Cannot remove annotation: annotation ${annotationId} not found on message ${messageId}`)
-      return { success: false, reason: 'annotation-not-found' }
+      // Idempotent delete: the annotation is already absent, which IS the caller's
+      // desired end state, so report success rather than a hard `annotation-not-found`.
+      // A client whose cached session.messages still carries this (stale) annotation —
+      // e.g. after a desync where the follow-up chip reappears but the annotation was
+      // already removed server-side — can otherwise never clear it: every remove hits
+      // this guard, and no sync event is emitted. Re-broadcasting the message's current
+      // annotations reconciles that client so the phantom chip disappears. (cf. LEARNING-007)
+      sessionLog.warn(`Remove annotation no-op: annotation ${annotationId} already absent on message ${messageId} — re-syncing client`)
+      this.sendEvent({ type: 'message_annotations_updated', sessionId, messageId, annotations: existing }, managed.workspace.id)
+      return { success: true }
     }
 
     message.annotations = existing.filter(a => a.id !== annotationId)

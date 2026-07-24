@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { dirname } from 'path'
+import { dirname, isAbsolute } from 'path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getPreferencesPath, getSessionDraft, setSessionDraft, deleteSessionDraft, getAllSessionDrafts, getWorkspaceByNameOrId, getDefaultThinkingLevel, setDefaultThinkingLevel } from '@craft-agent/shared/config'
 import { isValidThinkingLevel, normalizeThinkingLevel, THINKING_LEVEL_IDS } from '@craft-agent/shared/agent/thinking-levels'
@@ -124,6 +124,8 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       tokenUsageThresholds: config?.defaults?.tokenUsageThresholds,
       tokenUsageModelOverrides: config?.defaults?.tokenUsageModelOverrides,
       workbenchEnabled: config?.defaults?.workbenchEnabled ?? false,
+      artifactsEnabled: config?.defaults?.artifactsEnabled ?? false,
+      artifactRoots: config?.defaults?.artifactRoots ?? {},
     }
   })
 
@@ -135,9 +137,30 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'workbenchEnabled']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'workbenchEnabled', 'artifactsEnabled', 'artifactRoots']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
+    }
+
+    // Validate artifactRoots: plain object of rootId(string) → absolutePath(string).
+    // Root ids must be syntactically valid and not shadow the reserved 'workspace'
+    // id; paths must be absolute (ADR-0016 §2).
+    if (key === 'artifactRoots' && normalizedValue !== undefined && normalizedValue !== null) {
+      if (typeof normalizedValue !== 'object' || Array.isArray(normalizedValue)) {
+        throw new Error('artifactRoots must be an object map of rootId → absolute path')
+      }
+      const { isValidRootId, RESERVED_WORKSPACE_ROOT_ID } = await import('@craft-agent/shared/artifacts')
+      for (const [rootId, rawPath] of Object.entries(normalizedValue as Record<string, unknown>)) {
+        if (rootId === RESERVED_WORKSPACE_ROOT_ID) {
+          throw new Error(`artifactRoots: '${RESERVED_WORKSPACE_ROOT_ID}' is a reserved, implicit root id`)
+        }
+        if (!isValidRootId(rootId)) {
+          throw new Error(`artifactRoots: invalid root id "${rootId}" (must be lowercase kebab, 1–64 chars)`)
+        }
+        if (typeof rawPath !== 'string' || !isAbsolute(rawPath)) {
+          throw new Error(`artifactRoots."${rootId}": value must be an absolute path`)
+        }
+      }
     }
 
     // Validate threshold maps: each entry must be { warn, danger } with 0 < warn < danger < 1.

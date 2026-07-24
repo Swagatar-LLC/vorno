@@ -33,6 +33,7 @@ import {
   isAutomationsNavigation,
   isProjectsNavigation,
   isWorkbenchNavigation,
+  isArtifactsNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
@@ -44,6 +45,7 @@ import { getSettingsPageComponent } from '@/pages/settings/settings-pages'
 import { AutomationInfoPage } from '../automations/AutomationInfoPage'
 import ProjectInfoPage from '@/pages/ProjectInfoPage'
 import WorkbenchPage from '@/pages/WorkbenchPage'
+import ArtifactHomePage from '@/pages/ArtifactHomePage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
@@ -384,6 +386,15 @@ export function MainContentPanel({
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
         <WorkbenchPage workspaceId={activeWorkspaceId || ''} />
+      </Panel>
+    )
+  }
+
+  // Artifacts navigator - Artifact Home surface (feature-flagged). fork(PLAN-025 C1)
+  if (isArtifactsNavigation(navState)) {
+    return wrapWithStoplight(
+      <Panel variant="grow" className={className}>
+        <ArtifactHomePage workspaceId={activeWorkspaceId || ''} />
       </Panel>
     )
   }

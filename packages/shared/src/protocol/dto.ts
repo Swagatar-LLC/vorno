@@ -772,6 +772,10 @@ export interface WorkspaceSettings {
   tokenUsageModelOverrides?: Record<string, TokenUsageThresholdsDto>
   /** Feature flag for the Workbench surface (ADR-0014, PLAN-024). Default off. */
   workbenchEnabled?: boolean
+  /** Feature flag for the Artifact Home surface (ADR-0016, PLAN-025). Default off. */
+  artifactsEnabled?: boolean
+  /** Named artifact root bindings (rootId → absolute path), ADR-0016 §2. 'workspace' is reserved and implicit. */
+  artifactRoots?: Record<string, string>
 }
 
 // ---------------------------------------------------------------------------
@@ -934,3 +938,81 @@ export type WorkbenchThreadCommand =
 export type WorkbenchThreadMutationResult =
   | { ok: true; thread?: ReviewThreadV1 }
   | { ok: false; reason: 'workbench-not-found' | 'thread-not-found' | 'duplicate-id' | 'invalid-payload' | 'write-failed' }
+
+// ---------------------------------------------------------------------------
+// Artifact plane — generalized workspace artifact surface (ADR-0016, PLAN-025 C1).
+// Wire payloads carry only `vorno-artifact://` URIs; never absolute paths
+// (ADR-0016 §2). Distinct from the frozen `vorno:workbench:review:*` family above.
+// ---------------------------------------------------------------------------
+
+import type {
+  ArtifactEntry,
+  ArtifactRelation,
+  ArtifactSkippedRoot,
+  ArtifactTypeDescriptor,
+  ArtifactVersion as ArtifactPlaneVersion,
+} from '@craft-agent/core/types'
+
+/** vorno:artifacts:index — zero-config, context-aware index (server applies filters). */
+export interface ArtifactsIndexRequest {
+  filters?: {
+    type?: string
+    projectId?: string
+    label?: string
+    sessionStatus?: string
+    originKind?: string
+    includeArchived?: boolean
+  }
+}
+export interface ArtifactsIndexResult {
+  artifacts: ArtifactEntry[]
+  /** Roots the scan could not (fully) serve — rootId + reason, never absolute paths (ADR-0016 §2). */
+  skippedRoots: ArtifactSkippedRoot[]
+}
+
+/** vorno:artifacts:read — uri gated by containment ∧ (indexed ∨ pinned) (ADR-0016 §4). */
+export interface ArtifactsReadRequest {
+  uri: string
+}
+export type ArtifactsReadResult =
+  | { ok: true; uri: string; content: string; version: ArtifactPlaneVersion; type: string; title: string }
+  // containment-denied and missing are deliberately indistinguishable (ADR-0016 §4)
+  | { ok: false; reason: 'not-found' }
+
+/** vorno:artifacts:relations:list — optionally filtered to relations touching `uri`. */
+export interface ArtifactsRelationsListRequest {
+  uri?: string
+}
+export interface ArtifactsRelationsListResult {
+  relations: ArtifactRelation[]
+}
+
+/** vorno:artifacts:relations:mutate — add/remove a relation edge. */
+export type ArtifactsRelationCommand =
+  | { type: 'add'; from: string; to: string; kind: string; note?: string }
+  | { type: 'remove'; relationId: string }
+export interface ArtifactsRelationsMutateRequest {
+  command: ArtifactsRelationCommand
+}
+export type ArtifactsRelationsMutateResult =
+  | { ok: true; relation?: ArtifactRelation }
+  | { ok: false; reason: 'invalid-payload' | 'duplicate' | 'not-found' | 'write-failed' }
+
+/** vorno:artifacts:lifecycle:set — pin/archive a single artifact by URI. */
+export interface ArtifactsLifecycleSetRequest {
+  uri: string
+  patch: { pinned?: boolean; archived?: boolean }
+}
+export type ArtifactsLifecycleSetResult =
+  | { ok: true }
+  | { ok: false; reason: 'invalid-payload' | 'write-failed' }
+
+/** vorno:artifacts:roots:list — binding ids + kinds only; NEVER absolute paths (ADR-0016 §2). */
+export interface ArtifactsRootsListResult {
+  roots: { id: string; kind: string }[]
+}
+
+/** vorno:artifacts:types:list — the open type registry descriptors. */
+export interface ArtifactsTypesListResult {
+  types: ArtifactTypeDescriptor[]
+}

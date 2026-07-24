@@ -113,11 +113,21 @@ describe('message annotation mutation results', () => {
       .toEqual({ success: true })
   })
 
-  it('remove rejects with annotation-not-found and succeeds when present', () => {
+  it('remove is idempotent: succeeds for a missing annotation and re-syncs the client', () => {
     registerSession([buildAnnotation('a1')])
+    // Removing an already-absent annotation is a no-op that still succeeds (the
+    // desired end state is reached) and re-broadcasts the message's current
+    // annotations so a client holding a stale/phantom copy reconciles.
     expect(sm.removeMessageAnnotation(SESSION_ID, MESSAGE_ID, 'missing'))
-      .toEqual({ success: false, reason: 'annotation-not-found' })
+      .toEqual({ success: true })
+    expect(events.some(e => e.type === 'message_annotations_updated')).toBe(true)
     expect(sm.removeMessageAnnotation(SESSION_ID, MESSAGE_ID, 'a1'))
       .toEqual({ success: true })
+  })
+
+  it('remove still rejects when the message reference is stale', () => {
+    registerSession([buildAnnotation('a1')])
+    expect(sm.removeMessageAnnotation(SESSION_ID, 'stale-msg', 'a1'))
+      .toEqual({ success: false, reason: 'message-not-found' })
   })
 })
