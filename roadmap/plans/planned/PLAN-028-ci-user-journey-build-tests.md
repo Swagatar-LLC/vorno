@@ -5,8 +5,8 @@ status: planned
 direction: null
 owner: jh
 created: 2026-07-22
-updated: 2026-07-22
-related: []
+updated: 2026-07-24
+related: [PLAN-020, PLAN-022]
 blocked-by: []
 ---
 
@@ -24,6 +24,20 @@ signal on "does the built app let a user complete X." This plan closes that gap.
 See LEARNING-035 (idempotent annotation remove / phantom chip) and LEARNING-007
 (silent-void handlers) for the class of bug this is meant to catch.
 
+**Update 2026-07-24 — protocol-tier foundation landed (PR #113).** A headless
+WebUI test tier now exists and is CI-gated: `smoke.e2e.test.ts` boots the real
+WebUI handler+host over TCP (login, cookie auth, `/api/config`, WS proxy splice)
+and `settings.e2e.test.ts` drives the settings IPC → supervisor → persisted
+config path, both under the strict `test-webui` job in `validate-pr.yml`
+(`bun run test:webui`). That subsumes the "boot the WebUI against a throwaway
+`CRAFT_CONFIG_DIR` in CI" groundwork this plan assumed it would build from
+scratch. **This plan's remaining scope is the browser-driven journey layer** —
+rendered-UI flows (annotations, chat turns, console-error assertions) that the
+protocol tier cannot see. Phase 1 should reuse the `test-webui` job's boot
+pattern and extend the CI gate rather than invent a parallel one. Note also
+LEARNING-038 (Bun `node:http` upgrade-socket write gap) when choosing how the
+harness talks WS.
+
 ## Goal
 
 Run a build of the app in CI and exercise a small set of **named user
@@ -37,11 +51,14 @@ proven.
 - **Phase 1 — WebUI journey suite (start here).**
   - Stand up a headless browser E2E harness (Playwright is the likely fit —
     confirm on advance) that boots the WebUI build against a throwaway
-    `CRAFT_CONFIG_DIR` and a seeded/mock session backend.
+    `CRAFT_CONFIG_DIR` and a seeded/mock session backend. Reuse the boot/auth
+    pattern from `apps/electron/src/main/webui/__tests__/smoke.e2e.test.ts`
+    (PR #113) instead of building server bring-up from scratch.
   - Encode the first journeys as the acceptance surface (see below).
-  - Wire as a CI job on PRs; gate by journey pass/fail, not by the ~108
-    pre-existing electron tsc errors (which are NOT CI-gated — keep it that way,
-    gate by diff).
+  - Wire into CI on PRs — extend the existing strict `test-webui` job
+    (added by PR #113) or add a sibling job; gate by journey pass/fail, not by
+    the ~108 pre-existing electron tsc errors (which are NOT CI-gated — keep it
+    that way, gate by diff).
 - **Phase 2 — Electron journeys (layer later).**
   - Reuse the Phase-1 harness/journey definitions where possible; add an
     Electron driver (Playwright-Electron or equivalent) for main-process /
@@ -90,5 +107,6 @@ Pick a thin, high-signal set; the PR #106 bugs argue for annotations up front:
 - Journey failures block merge; the suite runs within an agreed time budget.
 
 > Note: stub captured 2026-07-22 (session 260722-plain-swamp) as a future-plan
-> placeholder — not yet scheduled or bound to a direction. Uncommitted; fold
-> into the roadmap via the normal PR flow.
+> placeholder — not yet scheduled or bound to a direction. Scoped 2026-07-24
+> (session 260724-silver-inlet) to the browser journey layer after PR #113
+> landed the protocol-tier headless suites and the `test-webui` CI gate.
