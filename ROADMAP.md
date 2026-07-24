@@ -44,8 +44,32 @@ Portable improvements are contributed back upstream. The full statement lives in
 
 ## Long-term directions
 
-Three layered bets, each independently shippable, each enabling the next. Full
+Four layered bets, each independently shippable, each enabling the next. Full
 statements are in [`roadmap/directions/`](roadmap/directions/).
+
+### Dynamic Workspaces
+
+The foundational bet the other three project onto: *"a surface is an artifact."*
+Everything a workspace produces — session plans, datasets, governance docs, diagrams,
+and the UI surfaces that render them — is a typed, versioned (content-hash + git SHA),
+related artifact, organized with **zero manual acquisition** through a context-aware
+index (session, project, label, status). Surfaces are then **generated, not
+hand-built**: an agent emits a declarative composition of a trusted block catalog
+(reliability-first), or a sandboxed HTML app speaking the ratified MCP Apps `ui/*`
+contract where expressivity demands it. Because each surface is itself an artifact,
+organization and rendering are one architecture, not two. It ships as a ladder:
+
+| Phase | Delivers |
+|---|---|
+| **C1** | Artifact plane: `vorno:artifacts:*`, open type registry, zero-config context-aware index, relations, Artifact Home; JSON Canvas + frontmatter as native formats; Obsidian projection *(shipped to `main` behind a flag)* |
+| **C2** | Composed surfaces: a versioned declarative spec over the block catalog, one generic host page, surfaces persisted as artifacts |
+| **C3** | Interactive surfaces: an `allow-scripts` sandbox class + postMessage bridge aligned to MCP Apps SEP-1865 |
+| **C4** | Opportunistic: external first-class integrations, DIR-02 skill contributions targeting the surface spec, canvas projection |
+
+The Canvas Session becomes a projection of this plane, Skill Contributions get concrete
+surface targets, and the Observatory becomes one composed surface over live session
+artifacts. See
+[`roadmap/directions/04-dynamic-workspaces.md`](roadmap/directions/04-dynamic-workspaces.md).
 
 ### The Canvas Session
 
@@ -113,6 +137,10 @@ folder for detail.
 
 ## In progress / next
 
+- **Artifact plane** — the first rung of Dynamic Workspaces (C1): a typed, versioned,
+  context-aware index of everything a workspace produces, with an Artifact Home surface
+  and native JSON Canvas / frontmatter formats. Shipped to `main` behind a feature flag;
+  composed surfaces (C2) are next. Tracked as PLAN-025.
 - **Hosted workspace server** — a self-hosted server instance that hosts workspaces
   centrally, with the desktop app acting as a thin client and phones connecting via the
   WebUI. Includes server-side source authentication and a non-technical, one-command

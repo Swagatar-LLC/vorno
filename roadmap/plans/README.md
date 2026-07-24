@@ -41,6 +41,11 @@ The terminal `done → documented` step has its own skill that also refreshes us
 
 `PLAN-NNN-short-kebab-title.md` — three-digit zero-padded ID, then kebab-case slug.
 
+> **Numbering gaps are expected.** Some IDs (e.g. PLAN-004, 008, 009, 010, 016) have no
+> file in this public tree — they are the paused orchestration-era plans that live in the
+> private `vorno-internal` corpus per ADR-0006 / ADR-0011. A missing ID is not a broken
+> link.
+
 Find the next ID:
 
 ```bash
