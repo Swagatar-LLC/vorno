@@ -6,23 +6,38 @@ This document specifies the `StorageProvider` contract — the one path from a
 `vorno-artifact://` URI to bytes — the containment invariant every backend must
 honor, and the pure `isAdmissible` policy predicate that sits in front of it. It
 is the reference for authoring a **future** backend (object store, in-memory,
-presign-capable, …). It does **not** describe a second built-in provider: as of
-C2 the only implementation is `FilesystemStorageProvider`, and the optional
-capability interfaces ship as *types only*.
+presign-capable, …). It does **not** describe a second built-in provider: the
+first and only implementation is `FilesystemStorageProvider`, and the optional
+capability interfaces are specified as *types only*.
 
-**Governance:** the seam is [ADR-0018](../roadmap/decisions/0018-storage-provider-seam-and-pure-admissibility.md)
-(provider seam + pure admissibility). The config shape that lets a new kind be
-declared without a migration is [ADR-0019](../roadmap/decisions/0019-storage-root-config-schema-and-provider-kind-namespace.md)
+> **Status — forward specification, not yet on `main`.** This is the *design*
+> contract, ahead of the code. The provider seam (ADR-0018) is **proposed** in
+> **PR #114 (C2)** and has not merged; the config surface (ADR-0019) is
+> **proposed** and unsigned; PLAN-029 is **planned** and `blocked-by` PR #114.
+> The `storage/` module, `admissibility.ts`, and the provider factory described
+> below **land with C2** — they do not exist on `main` today. Treat the file
+> paths under "Where this lives" as the *agreed destinations*, and this doc as
+> the spec they must match on arrival. Sections tagged **(C2 status)** call out
+> what is real now vs. planned.
+
+**Governance:** the seam is **ADR-0018** (provider seam + pure admissibility;
+proposed in PR #114). The config shape that lets a new kind be declared without a
+migration is [ADR-0019](../roadmap/decisions/0019-storage-root-config-schema-and-provider-kind-namespace.md)
 / [PLAN-029](../roadmap/plans/planned/PLAN-029-storage-provider-config-and-management-surfaces.md).
 The URI scheme and open namespaces are [ADR-0016](../roadmap/decisions/0016-artifact-uri-scheme-and-open-type-registry.md).
 
-**Source of truth (do not let this doc drift from it):**
+**Where this lives (destinations — this doc is the source of truth until the code exists):**
 
-- Interfaces — [`packages/shared/src/artifacts/storage/provider.ts`](../packages/shared/src/artifacts/storage/provider.ts)
-- Filesystem impl — [`packages/shared/src/artifacts/storage/filesystem.ts`](../packages/shared/src/artifacts/storage/filesystem.ts)
-- Admissibility — [`packages/shared/src/artifacts/admissibility.ts`](../packages/shared/src/artifacts/admissibility.ts)
-- Root registry / factory — [`packages/shared/src/artifacts/roots.ts`](../packages/shared/src/artifacts/roots.ts)
-- Capability descriptor — `StorageCapabilities` in [`packages/core/src/types/artifacts.ts`](../packages/core/src/types/artifacts.ts)
+| Concern | Path | On `main` today? |
+|---------|------|------------------|
+| Interfaces | `packages/shared/src/artifacts/storage/provider.ts` | ❌ lands with C2 (PR #114) |
+| Filesystem impl | `packages/shared/src/artifacts/storage/filesystem.ts` | ❌ lands with C2 (PR #114) |
+| Admissibility | `packages/shared/src/artifacts/admissibility.ts` | ❌ lands with C2 (PR #114) |
+| Root registry / factory | [`packages/shared/src/artifacts/roots.ts`](../packages/shared/src/artifacts/roots.ts) | ✅ (factory arm added by PLAN-029) |
+| Capability descriptor | `StorageCapabilities` in [`packages/core/src/types/artifacts.ts`](../packages/core/src/types/artifacts.ts) | ✅ (type added by PLAN-029) |
+
+Once C2 merges, replace this table's planned rows with direct links and keep the
+doc in lockstep with the code.
 
 ---
 
@@ -179,9 +194,9 @@ Same invariant, evaluated **inside** the provider, on **every** `stat`/`read`/
 - Apply the size cap (`ReadOpts.maxBytes`) at read time inside the provider, not
   in a caller.
 
-`FilesystemStorageProvider` is the worked example; its containment tests live in
-`packages/shared/src/artifacts/__tests__/storage.test.ts` (symlink escape,
-sibling-prefix, `..` traversal, TOCTOU). A new backend brings its own
+`FilesystemStorageProvider` is the worked example; its containment tests land
+with C2 in `packages/shared/src/artifacts/__tests__/storage.test.ts` (symlink
+escape, sibling-prefix, `..` traversal, TOCTOU). A new backend brings its own
 equivalent behavioral tests.
 
 ---
@@ -292,7 +307,7 @@ kind happens server-side on *save*, not at resolution — see PLAN-029.)
 
 ## See also
 
-- [ADR-0018](../roadmap/decisions/0018-storage-provider-seam-and-pure-admissibility.md) — provider seam + pure admissibility (the two doors this doc formalizes)
+- **ADR-0018** — provider seam + pure admissibility, the two doors this doc formalizes (*proposed in PR #114; not yet on `main`* — link goes live when C2 merges)
 - [ADR-0019](../roadmap/decisions/0019-storage-root-config-schema-and-provider-kind-namespace.md) — config schema + provider-kind namespace
 - [ADR-0016](../roadmap/decisions/0016-artifact-uri-scheme-and-open-type-registry.md) — URI scheme, canonicalization, open registries, root-binding trust boundary
 - [PLAN-029](../roadmap/plans/planned/PLAN-029-storage-provider-config-and-management-surfaces.md) — config / management / documentation surfaces

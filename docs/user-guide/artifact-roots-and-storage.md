@@ -5,11 +5,16 @@ your agents can find, read, and organize documents, notes, and generated work
 across a project. This guide explains what a root is, how to add one, and how to
 read the storage panel in Settings.
 
-> **Advanced feature.** Artifact roots live behind the **Artifacts** surface,
-> which is off by default. Turn it on in **Settings → Workspace → Artifacts**
-> before the panel described here appears. Most day-to-day work doesn't require
-> it — reach for roots when you want Vorno to treat a whole folder as a
-> searchable, organizable corpus.
+> **Advanced feature, rolling out.** Artifact roots live behind the **Artifacts**
+> surface, which is off by default. Turn it on in **Settings → Workspace →
+> Artifacts** before the panel described here appears. Most day-to-day work
+> doesn't require it — reach for roots when you want Vorno to treat a whole folder
+> as a searchable, organizable corpus.
+>
+> The storage-management panel described below (kind badge, capability chips,
+> health dot, and the **Add root** menu) is the **planned** shape of this surface
+> and is landing incrementally — some elements may not yet appear in your build.
+> This guide documents the intended experience so it's ready as the panel ships.
 
 ---
 
