@@ -159,7 +159,26 @@ export class WebUiSupervisor {
 
   /** Sanitized-but-password-bearing config for the renderer (LOCAL_ONLY IPC). */
   getConfig(): WebUiRemoteConfig {
+    // fork(BUG-2): NEVER return a null password. Ensure one is generated +
+    // persisted first so the settings/tray view always shows a real password
+    // (a null here rendered as "–" and made WebUI login impossible until
+    // Regenerate rewrote the config).
+    this.ensurePassword();
     return toWebUiRemoteConfig(loadServerConfig());
+  }
+
+  /**
+   * fork(BUG-2): ensure a login password exists on disk, generating + persisting
+   * one on first use. Returns the (possibly newly-persisted) password. Shared by
+   * startInternal() and getConfig() so neither ever sees a null password.
+   */
+  private ensurePassword(): string {
+    const config = loadServerConfig();
+    if (config.webui.password) return config.webui.password;
+    const password = generatePassword();
+    saveServerConfig({ ...config, webui: { ...config.webui, password } });
+    this.log.info('[webui] generated login password on first start');
+    return password;
   }
 
   /**
@@ -168,7 +187,7 @@ export class WebUiSupervisor {
    */
   updateConfig(
     updates: Partial<Pick<WebUiConfig, 'enabled' | 'port' | 'host'>> & {
-      tunnel?: { provider: TunnelProvider };
+      tunnel?: { provider?: TunnelProvider; httpsPort?: number };
     },
   ): WebUiRemoteConfig {
     const current = loadServerConfig();
@@ -180,15 +199,24 @@ export class WebUiSupervisor {
     // restart to rebind, so it surfaces configStale exactly like a port change.
     if (typeof updates.host === 'string') nextWebui.host = updates.host;
 
-    // fork(PLAN-022): tunnel provider changes apply LIVE (no listener restart) —
-    // the tunnel fronts the port from outside the process, so switching provider
-    // just tears down the old serve rule and brings up the new one. That is why a
-    // provider change does NOT set configStale.
+    // fork(PLAN-022): tunnel provider/httpsPort changes apply LIVE (no listener
+    // restart) — the tunnel fronts the port from outside the process, so
+    // switching provider (or the tailnet HTTPS port) just tears down the old
+    // serve rule and brings up the new one. That is why these do NOT set
+    // configStale.
     const prevProvider = current.webui.tunnel.provider;
-    let providerChanged = false;
-    if (updates.tunnel?.provider !== undefined) {
-      nextWebui.tunnel = { provider: updates.tunnel.provider };
-      providerChanged = updates.tunnel.provider !== prevProvider;
+    const prevHttpsPort = current.webui.tunnel.httpsPort ?? 443;
+    let tunnelChanged = false;
+    if (updates.tunnel !== undefined) {
+      if (updates.tunnel.provider !== undefined) {
+        nextWebui.tunnel.provider = updates.tunnel.provider;
+      }
+      if (updates.tunnel.httpsPort !== undefined) {
+        nextWebui.tunnel.httpsPort = updates.tunnel.httpsPort;
+      }
+      const nextHttpsPort = nextWebui.tunnel.httpsPort ?? 443;
+      tunnelChanged =
+        nextWebui.tunnel.provider !== prevProvider || nextHttpsPort !== prevHttpsPort;
     }
 
     const next: ServerConfig = { ...current, webui: nextWebui };
@@ -202,11 +230,18 @@ export class WebUiSupervisor {
       this.emit();
     }
 
-    // Apply a live tunnel provider change only when the listener is up (the port
-    // must exist to front). Fire-and-forget: the tunnel's own status drives the
-    // UI, and an emit() on completion re-renders it.
-    if (providerChanged && this.state === 'running' && this.boundPort !== undefined) {
-      void this.applyTunnel(prevProvider, nextWebui.tunnel.provider, this.boundPort);
+    // Apply a live tunnel provider/port change only when the listener is up (the
+    // port must exist to front). Fire-and-forget: the tunnel's own status drives
+    // the UI, and an emit() on completion re-renders it. On an httpsPort-only
+    // change (same provider) the tunnel's own up() best-effort clears the old
+    // served port before serving the new one.
+    if (tunnelChanged && this.state === 'running' && this.boundPort !== undefined) {
+      void this.applyTunnel(
+        prevProvider,
+        nextWebui.tunnel.provider,
+        this.boundPort,
+        nextWebui.tunnel.httpsPort ?? 443,
+      );
     }
 
     return toWebUiRemoteConfig(next);
@@ -217,10 +252,15 @@ export class WebUiSupervisor {
    * Tears down the old serve rule (best-effort) then brings the new one up.
    * Re-emits so the settings UI picks up the new tunnel status.
    */
-  private async applyTunnel(from: TunnelProvider, to: TunnelProvider, port: number): Promise<void> {
+  private async applyTunnel(
+    from: TunnelProvider,
+    to: TunnelProvider,
+    port: number,
+    httpsPort: number,
+  ): Promise<void> {
     try {
       if (from !== 'none') await this.tunnel.down(from);
-      if (to !== 'none') await this.tunnel.up(to, port);
+      if (to !== 'none') await this.tunnel.up(to, port, httpsPort);
       this.activeTunnelProvider = to;
     } catch (err) {
       this.log.error('[webui] tunnel apply error', err);
@@ -234,6 +274,22 @@ export class WebUiSupervisor {
     const password = generatePassword();
     saveServerConfig({ ...config, webui: { ...config.webui, password } });
     return password;
+  }
+
+  /**
+   * fork(BUG-2): set a user-chosen stable login password (8–128 chars). Persists
+   * it and returns the updated config DTO. Live JWT sessions are unaffected
+   * (mirrors regeneratePassword).
+   */
+  setPassword(password: string): WebUiRemoteConfig {
+    const p = password.trim();
+    if (p.length < 8 || p.length > 128) {
+      throw new Error('Password must be 8–128 characters');
+    }
+    const config = loadServerConfig();
+    const next: ServerConfig = { ...config, webui: { ...config.webui, password: p } };
+    saveServerConfig(next);
+    return toWebUiRemoteConfig(next);
   }
 
   /**
@@ -306,13 +362,8 @@ export class WebUiSupervisor {
     }
 
     // Ensure a password exists (generate + persist on first start).
-    let config = loadServerConfig();
-    if (!config.webui.password) {
-      const password = generatePassword();
-      config = { ...config, webui: { ...config.webui, password } };
-      saveServerConfig(config);
-      this.log.info('[webui] generated login password on first start');
-    }
+    this.ensurePassword();
+    const config = loadServerConfig();
 
     const password = config.webui.password;
     const host = config.webui.host;
@@ -377,7 +428,7 @@ export class WebUiSupervisor {
     // when it settles so the UI re-renders.
     const provider = config.webui.tunnel.provider;
     if (provider !== 'none') {
-      void this.applyTunnel('none', provider, boundPort);
+      void this.applyTunnel('none', provider, boundPort, config.webui.tunnel.httpsPort ?? 443);
     } else {
       this.activeTunnelProvider = 'none';
     }
@@ -501,7 +552,10 @@ function toWebUiRemoteConfig(config: ServerConfig): WebUiRemoteConfig {
     host: config.webui.host,
     // The password IS intentionally exposed over LOCAL_ONLY IPC (settings/tray).
     password: config.webui.password,
-    // fork(PLAN-022): secure-tunnel provider selection.
-    tunnel: { provider: config.webui.tunnel.provider },
+    // fork(PLAN-022): secure-tunnel provider selection + tailnet HTTPS port.
+    tunnel: {
+      provider: config.webui.tunnel.provider,
+      httpsPort: config.webui.tunnel.httpsPort,
+    },
   };
 }

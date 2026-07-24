@@ -36,6 +36,10 @@ export default function WebUiSection() {
   const [copiedPassword, setCopiedPassword] = useState(false)
   const [copiedUrl, setCopiedUrl] = useState(false)
   const [copiedTunnelUrl, setCopiedTunnelUrl] = useState(false)
+  // fork(BUG-2): the password is now an editable field. Draft state mirrors the
+  // on-disk password; a Save button commits it via setWebUiPassword.
+  const [draftPassword, setDraftPassword] = useState('')
+  const [passwordError, setPasswordError] = useState<string | null>(null)
 
   // Load config + status on mount.
   useEffect(() => {
@@ -48,6 +52,7 @@ export default function WebUiSection() {
         ])
         setConfig(cfg)
         setStatus(sts)
+        setDraftPassword(cfg.password ?? '')
       } catch (error) {
         console.error('Failed to load WebUI config:', error)
       }
@@ -139,22 +144,44 @@ export default function WebUiSection() {
   }, [config])
 
   const handleCopyPassword = useCallback(() => {
-    if (config?.password) {
-      navigator.clipboard.writeText(config.password)
+    if (draftPassword) {
+      navigator.clipboard.writeText(draftPassword)
       setCopiedPassword(true)
       setTimeout(() => setCopiedPassword(false), 2000)
     }
-  }, [config?.password])
+  }, [draftPassword])
 
   const handleRegeneratePassword = useCallback(async () => {
     if (!window.electronAPI) return
     try {
       const password = await window.electronAPI.regenerateWebUiPassword()
       setConfig(prev => (prev ? { ...prev, password } : prev))
+      setDraftPassword(password)
+      setPasswordError(null)
     } catch (error) {
       console.error('Failed to regenerate WebUI password:', error)
     }
   }, [])
+
+  // fork(BUG-2): commit a user-chosen stable password. Validates client-side
+  // (>=8 chars) before the IPC round-trip; the main process enforces 8–128.
+  const handleSavePassword = useCallback(async () => {
+    if (!window.electronAPI) return
+    const draft = draftPassword.trim()
+    if (draft.length < 8) {
+      setPasswordError(t('settings.remoteAccess.webui.passwordTooShort'))
+      return
+    }
+    try {
+      const updated = await window.electronAPI.setWebUiPassword(draft)
+      setConfig(updated)
+      setDraftPassword(updated.password ?? draft)
+      setPasswordError(null)
+    } catch (error) {
+      console.error('Failed to save WebUI password:', error)
+      setPasswordError(error instanceof Error ? error.message : String(error))
+    }
+  }, [draftPassword, t])
 
   const handleCopyUrl = useCallback(() => {
     if (status.url) {
@@ -179,6 +206,26 @@ export default function WebUiSection() {
       setStatus(sts)
     } catch (error) {
       console.error('Failed to update WebUI tunnel provider:', error)
+      setConfig(prev) // Revert on error
+    }
+  }, [config])
+
+  // fork(BUG-3): tailnet HTTPS port change (tailscale only). Applies live when
+  // running — the supervisor re-serves on the new port; status polling surfaces
+  // the result.
+  const handleUpdateTunnelHttpsPort = useCallback(async (httpsPort: number) => {
+    if (!window.electronAPI || !config) return
+    const prev = config
+    setConfig({ ...config, tunnel: { ...config.tunnel, httpsPort } })
+    try {
+      const updated = await window.electronAPI.updateWebUiConfig({
+        tunnel: { provider: 'tailscale', httpsPort },
+      })
+      setConfig(updated)
+      const sts = await window.electronAPI.getWebUiStatus()
+      setStatus(sts)
+    } catch (error) {
+      console.error('Failed to update WebUI tunnel HTTPS port:', error)
       setConfig(prev) // Revert on error
     }
   }, [config])
@@ -325,12 +372,23 @@ export default function WebUiSection() {
             {t('settings.remoteAccess.webui.passwordHint')}
           </p>
           <div className="flex gap-2 items-center">
-            <code className="flex-1 text-xs font-mono bg-muted p-2 rounded overflow-x-auto">
-              {config.password ?? '—'}
-            </code>
+            <input
+              type="text"
+              value={draftPassword}
+              onChange={e => { setDraftPassword(e.target.value); setPasswordError(null) }}
+              placeholder={t('settings.remoteAccess.webui.passwordPlaceholder')}
+              aria-label={t('settings.remoteAccess.webui.passwordLabel')}
+              className="flex-1 text-xs font-mono bg-muted p-2 rounded overflow-x-auto"
+            />
+            <button
+              onClick={handleSavePassword}
+              className="px-2 py-1 text-xs rounded bg-muted hover:bg-muted/80"
+            >
+              {t('common.save')}
+            </button>
             <button
               onClick={handleCopyPassword}
-              disabled={!config.password}
+              disabled={!draftPassword}
               className="px-2 py-1 text-xs rounded bg-muted hover:bg-muted/80 disabled:opacity-50"
             >
               {copiedPassword
@@ -344,6 +402,9 @@ export default function WebUiSection() {
               {t('settings.remoteAccess.webui.regenerate')}
             </button>
           </div>
+          {passwordError && (
+            <p className="text-xs text-red-500">{passwordError}</p>
+          )}
         </div>
       </SettingsCard>
 
@@ -379,6 +440,22 @@ export default function WebUiSection() {
             <option value="tailscale">{t('settings.remoteAccess.webui.tunnelProviderTailscale')}</option>
           </select>
         </SettingsRow>
+
+        {/* fork(BUG-3): tailnet HTTPS port (tailscale only). */}
+        {tunnelProvider === 'tailscale' && (
+          <SettingsRow
+            label={t('settings.remoteAccess.webui.tunnelHttpsPortLabel')}
+            description={t('settings.remoteAccess.webui.tunnelHttpsPortDescription')}
+          >
+            <SettingsNumberInput
+              aria-label={t('settings.remoteAccess.webui.tunnelHttpsPortLabel')}
+              value={config.tunnel?.httpsPort ?? 443}
+              onCommit={handleUpdateTunnelHttpsPort}
+              min={1}
+              max={65535}
+            />
+          </SettingsRow>
+        )}
 
         {/* Status line */}
         {tunnelProvider !== 'none' && (

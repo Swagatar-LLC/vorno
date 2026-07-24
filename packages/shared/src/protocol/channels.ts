@@ -387,6 +387,7 @@ export const RPC_CHANNELS = {
     START: 'craft-fork:webui:start',
     STOP: 'craft-fork:webui:stop',
     REGENERATE_PASSWORD: 'craft-fork:webui:regeneratePassword',
+    SET_PASSWORD: 'craft-fork:webui:setPassword',
   },
   // fork(PLAN-018 / ADR-0009): runtime-configurable auto-update feed. LOCAL_ONLY
   // — the feed override lives in the local machine's main process and is applied
