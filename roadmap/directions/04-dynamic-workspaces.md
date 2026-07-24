@@ -6,10 +6,13 @@ opened: 2026-07-21
 related-decisions:
   - 0015-two-plane-artifact-surface-architecture.md
   - 0017-standards-stack-artifact-packaging-distribution.md
+  - 0018-storage-provider-seam-and-pure-admissibility.md
+  - 0019-storage-root-config-schema-and-capability-surfacing.md
 related-plans:
   - PLAN-025-artifact-plane-v1.md
   - PLAN-026-composed-surfaces-v1.md
   - PLAN-027-interactive-surfaces-mcp-apps-bridge.md
+  - PLAN-029-storage-provider-config-management-surfaces.md
 ---
 
 # Direction 4 — Dynamic Workspaces: the artifact plane and the surface plane
