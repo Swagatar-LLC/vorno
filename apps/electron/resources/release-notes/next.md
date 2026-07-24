@@ -8,8 +8,4 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Bug Fixes
 
-- Web UI over an HTTPS reverse proxy (e.g. Tailscale) no longer fails to log in or connect — the WebSocket now uses `wss://` to match the page, avoiding mixed-content blocking
-- Web UI login password now persists reliably across restarts, and you can set your own password in Settings → Remote Access instead of only regenerating one
-- Web UI Tailscale secure tunnel now supports a configurable HTTPS port (not just 443) and reliably removes its serve rule on stop/quit
-
 ## Breaking Changes
