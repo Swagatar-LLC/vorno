@@ -122,6 +122,26 @@ describe('readArtifactByUri gate', () => {
     expect(result!.uri).toBe(canonical); // echoes the canonical form
   });
 
+  // Regression for SEC-2 (ADR-0018 door 1): the volume cap bounds the LISTING,
+  // never readability. A file that loses the scan-order race under
+  // GLOBAL_FILE_CAP must still be admissible and readable.
+  it('reads a file the volume cap dropped from the listing (SEC-2 probe)', async () => {
+    const total = 2001; // GLOBAL_FILE_CAP + 1
+    const uris = new Set<string>();
+    for (let i = 0; i < total; i++) {
+      const rel = `sessions/s1/data/f${String(i).padStart(4, '0')}.md`;
+      write(rel, `doc ${i}`);
+      uris.add(wsUri(rel));
+    }
+    const { artifacts, skippedRoots } = await indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const listed = new Set(artifacts.map((a) => a.uri));
+    const dropped = [...uris].filter((u) => !listed.has(u));
+    expect(dropped.length).toBe(1);
+    expect(skippedRoots.some((r) => r.reason === 'truncated')).toBe(true);
+    const result = await readArtifactByUri({ workspaceRootPath: workspaceRoot, uri: dropped[0]! });
+    expect(result?.content).toStartWith('doc ');
+  });
+
   it('serves an archived indexed artifact (archival is lifecycle, not a read restriction)', async () => {
     write('sessions/s1/plans/old.md', '# Old plan');
     const uri = wsUri('sessions/s1/plans/old.md');
