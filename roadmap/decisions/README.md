@@ -40,4 +40,4 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0010](0010-independent-vorno-versioning.md) | Vorno versions independently of upstream from 0.11.2 onward | accepted |
 | [0011](0011-public-repo-rename-and-internal-corpus-split.md) | Public source repo, rename to `Swagatar-LLC/vorno`, private internal corpus split | accepted |
 | [0012](0012-additive-vorno-protocol-namespace.md) | Additive `vorno:*` protocol namespace atop maintained Craft wire compatibility | accepted |
-| [0013](0013-hosted-workspace-authn-authz-architecture.md) | Hosted workspace server AuthN/AuthZ — single-principal now, multi-user-ready seams, three trust zones | proposed |
+| [0013](0013-hosted-workspace-authn-authz-architecture.md) | Hosted workspace server AuthN/AuthZ — single-principal now, multi-user-ready seams, three trust zones | accepted |

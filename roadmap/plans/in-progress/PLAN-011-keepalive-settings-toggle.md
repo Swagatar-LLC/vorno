@@ -216,3 +216,11 @@ Deliberately **not** touched: `persistent-input.ts` (upstream's resolver + tests
 ---
 
 **Bottom line:** app-level boolean in the app config (default ON), env var wins when explicitly set, two surgical hot-file edits (per-turn snapshot + teardown guard in `ClaudeAgent`; live getter with test-preserving setter in `SessionManager`), everything else additive under a `craft-fork:*` namespace. Effect timing: **next message per session, no restart**.
+
+---
+
+## Status log
+
+- `2026-07-08` — created in `plans/in-progress/` (design for a Settings toggle over upstream v0.11.0's env-only keep-alive opt-out).
+- `2026-07-18` — carried through the public-flip prep pass (de-Craft docs / roadmap split); design unchanged.
+- `2026-07-24` — `## Status log` section backfilled during roadmap review (this plan predated the template convention). Disposition open: `isKeepBackgroundTasksAliveEnabled()` shipped and survived the v0.11.2 upstream sync (see `roadmap/upstream/compatibility.md`); pending owner confirmation of what remains before moving to `done/` (roadmap-review F4/F12).
