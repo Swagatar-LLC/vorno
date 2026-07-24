@@ -338,6 +338,7 @@ export const CHANNEL_MAP = {
   startWebUi: invoke(RPC_CHANNELS.webui.START),
   stopWebUi: invoke(RPC_CHANNELS.webui.STOP),
   regenerateWebUiPassword: invoke(RPC_CHANNELS.webui.REGENERATE_PASSWORD),
+  setWebUiPassword: invoke(RPC_CHANNELS.webui.SET_PASSWORD),
 
   // fork(PLAN-015): production logging control
   getLoggingState: invoke(RPC_CHANNELS.logging.GET_STATE),

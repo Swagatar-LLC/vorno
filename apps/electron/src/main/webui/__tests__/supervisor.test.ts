@@ -64,12 +64,17 @@ const getWsEndpoint = () => ({ port: 5555, protocol: 'ws' as const });
 
 /** fork(PLAN-022): a fake TunnelManager recording up/down calls. */
 function makeFakeTunnel() {
-  const calls = { up: [] as Array<[string, number]>, down: [] as string[] };
+  const calls = {
+    up: [] as Array<[string, number]>,
+    upHttpsPort: [] as Array<number | undefined>,
+    down: [] as string[],
+  };
   let status = { provider: 'none' as 'none' | 'tailscale', state: 'stopped' as string };
   const tunnel = {
     getStatus() { return status; },
-    async up(provider: 'none' | 'tailscale', port: number) {
+    async up(provider: 'none' | 'tailscale', port: number, httpsPort?: number) {
       calls.up.push([provider, port]);
+      calls.upHttpsPort.push(httpsPort);
       status = { provider, state: provider === 'none' ? 'stopped' : 'running' };
       return status;
     },
@@ -438,5 +443,91 @@ describe('WebUiSupervisor state machine', () => {
     }));
     active = sup;
     expect(sup.getConfig().tunnel.provider).toBe('tailscale');
+  });
+
+  // fork(BUG-2): user-settable stable password + no-null-password invariant.
+  test('setPassword persists a stable password that survives a reload', async () => {
+    writeConfig(true, 3999, 'seed-password');
+    const { host } = makeFakeHost();
+    const sup = new WebUiSupervisor(baseOpts({ hostFactory: () => host }));
+    active = sup;
+
+    const returned = sup.setPassword('my-stable-pw-123');
+    expect(returned.password).toBe('my-stable-pw-123');
+    // Survives a fresh loadServerConfig round-trip.
+    expect(readConfig().webui.password).toBe('my-stable-pw-123');
+  });
+
+  test('setPassword rejects too-short / too-long passwords', async () => {
+    writeConfig(true, 3999, 'seed-password');
+    const { host } = makeFakeHost();
+    const sup = new WebUiSupervisor(baseOpts({ hostFactory: () => host }));
+    active = sup;
+    expect(() => sup.setPassword('short')).toThrow();
+    expect(() => sup.setPassword('x'.repeat(129))).toThrow();
+  });
+
+  test('getConfig NEVER returns a null password (ensurePassword generates one)', async () => {
+    writeConfig(true, 3999, null); // no password on disk
+    const { host } = makeFakeHost();
+    const sup = new WebUiSupervisor(baseOpts({ hostFactory: () => host }));
+    active = sup;
+
+    const cfg = sup.getConfig();
+    expect(cfg.password).toBeTruthy();
+    expect(cfg.password).not.toBeNull();
+    // And it was persisted, not just returned.
+    expect(readConfig().webui.password).toBe(cfg.password);
+  });
+
+  // fork(BUG-3): custom tailnet HTTPS port is plumbed through to the tunnel.
+  test('startInternal plumbs the configured httpsPort into tunnel.up', async () => {
+    saveServerConfig({
+      enabled: true, port: 3847, host: '127.0.0.1', apiKeys: [],
+      rateLimits: { requestsPerMinute: 30, concurrentSessions: 5 },
+      webui: { enabled: true, port: 3999, host: '127.0.0.1', password: 'seed-password', tunnel: { provider: 'tailscale', httpsPort: 8443 } },
+    });
+    const { host } = makeFakeHost();
+    const { tunnel, calls } = makeFakeTunnel();
+    const sup = new WebUiSupervisor(baseOpts({
+      hostFactory: () => host,
+      tunnelManager: tunnel as unknown as import('../tunnel').TunnelManager,
+    }));
+    active = sup;
+
+    await sup.start();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(calls.up).toEqual([['tailscale', 3999]]);
+    expect(calls.upHttpsPort).toEqual([8443]);
+  });
+
+  test('updateConfig live httpsPort change re-applies the tunnel (same provider)', async () => {
+    saveServerConfig({
+      enabled: true, port: 3847, host: '127.0.0.1', apiKeys: [],
+      rateLimits: { requestsPerMinute: 30, concurrentSessions: 5 },
+      webui: { enabled: true, port: 3999, host: '127.0.0.1', password: 'seed-password', tunnel: { provider: 'tailscale', httpsPort: 443 } },
+    });
+    const { host } = makeFakeHost();
+    const { tunnel, calls } = makeFakeTunnel();
+    const sup = new WebUiSupervisor(baseOpts({
+      hostFactory: () => host,
+      tunnelManager: tunnel as unknown as import('../tunnel').TunnelManager,
+    }));
+    active = sup;
+
+    await sup.start();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls.upHttpsPort).toEqual([443]);
+
+    const returned = sup.updateConfig({ tunnel: { httpsPort: 8443 } });
+    expect(returned.tunnel.httpsPort).toBe(8443);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Re-applied live: down old, up on the new port; no configStale.
+    expect(calls.down).toContain('tailscale');
+    expect(calls.upHttpsPort).toEqual([443, 8443]);
+    expect(sup.getStatus().configStale).toBeUndefined();
+    expect(readConfig().webui.tunnel.httpsPort).toBe(8443);
   });
 });

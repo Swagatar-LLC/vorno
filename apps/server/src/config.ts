@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { randomBytes, createHash } from 'crypto';
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths';
@@ -58,6 +58,8 @@ export interface RateLimits {
 export interface WebUiTunnelConfig {
   /** default 'none' — 'tailscale' fronts the WebUI port with `tailscale serve`. */
   provider: 'none' | 'tailscale';
+  /** fork(PLAN-022): tailnet HTTPS port for `tailscale serve` (default 443). */
+  httpsPort?: number;
 }
 
 export interface WebUiConfig {
@@ -91,6 +93,7 @@ export interface ServerConfig {
 // fork(PLAN-022): default tunnel config — no tunnel until the user opts in.
 const DEFAULT_WEBUI_TUNNEL_CONFIG: WebUiTunnelConfig = {
   provider: 'none',
+  httpsPort: 443,
 };
 
 // fork(PLAN-020): default WebUI config — zero-config autostart on loopback.
@@ -206,8 +209,8 @@ export function applyEnvOverrides(config: ServerConfig): ServerConfig {
  */
 export function loadServerConfig(): ServerConfig {
   let config: ServerConfig = { ...DEFAULT_CONFIG };
-  try {
-    if (existsSync(CONFIG_PATH)) {
+  if (existsSync(CONFIG_PATH)) {
+    try {
       const raw = readFileSync(CONFIG_PATH, 'utf-8');
       const parsed = JSON.parse(raw);
       config = { ...DEFAULT_CONFIG, ...parsed };
@@ -221,9 +224,16 @@ export function loadServerConfig(): ServerConfig {
         ...DEFAULT_WEBUI_TUNNEL_CONFIG,
         ...(parsed.webui?.tunnel ?? {}),
       };
+    } catch (err) {
+      // fork(BUG-2): the file EXISTS but is unreadable/torn (bad JSON). Warn
+      // loudly and fall back to defaults, but DO NOT overwrite the file on this
+      // path — a torn write may be recoverable, and silently clobbering it would
+      // destroy the persisted password (surfaced as "–" + login failure).
+      console.warn(
+        `[config] server-config.json unreadable — using defaults (file left intact): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      config = { ...DEFAULT_CONFIG };
     }
-  } catch {
-    // Fall through to defaults
   }
   return applyEnvOverrides(config);
 }
@@ -233,7 +243,19 @@ export function loadServerConfig(): ServerConfig {
  */
 export function saveServerConfig(config: ServerConfig): void {
   mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+  // fork(BUG-2): atomic write — a crash/power-loss mid-write must never leave a
+  // torn server-config.json (which loadServerConfig would fall back to defaults
+  // on, nulling the WebUI password). Write to a temp file in the SAME directory
+  // (rename is atomic only on the same filesystem) then rename over the target.
+  const tmpPath = `${CONFIG_PATH}.tmp-${process.pid}`;
+  try {
+    writeFileSync(tmpPath, JSON.stringify(config, null, 2), 'utf-8');
+    renameSync(tmpPath, CONFIG_PATH);
+  } catch (err) {
+    // Best-effort cleanup of the temp file so a failed write leaves no litter.
+    try { rmSync(tmpPath, { force: true }); } catch { /* ignore */ }
+    throw err;
+  }
 }
 
 /**

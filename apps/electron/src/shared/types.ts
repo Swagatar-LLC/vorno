@@ -374,7 +374,11 @@ export interface WebUiRemoteConfig {
   host: string
   password: string | null
   /** fork(PLAN-022): secure-tunnel provider selection ({ provider: 'none' } default). */
-  tunnel: { provider: TunnelProvider }
+  tunnel: {
+    provider: TunnelProvider
+    /** fork(BUG-3): tailnet HTTPS port for `tailscale serve` (default 443). */
+    httpsPort?: number
+  }
 }
 
 export interface WebUiStatus {
@@ -849,6 +853,7 @@ export interface ElectronAPI {
   startWebUi(): Promise<RemoteAccessStartResult>
   stopWebUi(): Promise<void>
   regenerateWebUiPassword(): Promise<string>
+  setWebUiPassword(password: string): Promise<WebUiRemoteConfig>
 
   // fork(PLAN-015): production logging control
   getLoggingState(): Promise<LoggingState>

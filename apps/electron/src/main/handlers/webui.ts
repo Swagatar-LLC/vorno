@@ -20,6 +20,7 @@ export const WEBUI_HANDLED_CHANNELS = [
   RPC_CHANNELS.webui.START,
   RPC_CHANNELS.webui.STOP,
   RPC_CHANNELS.webui.REGENERATE_PASSWORD,
+  RPC_CHANNELS.webui.SET_PASSWORD,
 ] as const;
 
 export function registerWebUiHandlers(
@@ -55,8 +56,13 @@ export function registerWebUiHandlers(
       // only the closed union ('none' | 'tailscale') is accepted.
       if (updates?.tunnel !== undefined) {
         const provider = updates.tunnel?.provider;
-        if (provider !== 'none' && provider !== 'tailscale') {
+        if (provider !== undefined && provider !== 'none' && provider !== 'tailscale') {
           throw new Error(`Unknown tunnel provider: ${String(provider)}`);
+        }
+        // fork(BUG-3): validate the tailnet HTTPS port at the IPC boundary.
+        const httpsPort = updates.tunnel?.httpsPort;
+        if (httpsPort !== undefined && (!Number.isInteger(httpsPort) || httpsPort < 1 || httpsPort > 65535)) {
+          throw new Error(`Tunnel HTTPS port must be an integer between 1 and 65535, got ${httpsPort}`);
         }
       }
       return supervisor.updateConfig(updates ?? {});
@@ -78,4 +84,16 @@ export function registerWebUiHandlers(
   server.handle(RPC_CHANNELS.webui.REGENERATE_PASSWORD, async () => {
     return supervisor.regeneratePassword();
   });
+
+  server.handle(
+    RPC_CHANNELS.webui.SET_PASSWORD,
+    async (_ctx, password: unknown) => {
+      // fork(BUG-2): validate the type at the IPC boundary; supervisor.setPassword
+      // enforces the 8–128 length rule.
+      if (typeof password !== 'string') {
+        throw new Error('Password must be a string');
+      }
+      return supervisor.setPassword(password);
+    },
+  );
 }
