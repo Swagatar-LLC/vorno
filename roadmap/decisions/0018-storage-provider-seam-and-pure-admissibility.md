@@ -79,6 +79,7 @@ Exact interface member names and the `Result<T>`/`StorageError` error-shape, the
 - `WriteCapable`/`CopyCapable`/`PresignCapable` exist as unimplemented interfaces — watch that nothing implements them without a plan.
 - The capability descriptor rides `roots:list` additively; compatibility.md's vorno-surface section records it.
 - With per-root enumeration, a configured root nested inside the workspace scan surface yields its own URIs (previously the longest-matching root won via `absPathToUri`); overlapping roots are a config edge case, noted here for the record.
+- Pre-existing residual (not changed here): a `LIFECYCLE_SET` pin admits any contained URI regardless of shape/extension — ADR-0016 door 4's deliberate escape hatch. SEC-1's closure is specifically the read-vs-export divergence; the pin surface remains gated by containment only.
 
 ## Alternatives considered
 
