@@ -10,6 +10,7 @@ related-plans:
   - PLAN-025-artifact-plane-v1.md
   - PLAN-026-composed-surfaces-v1.md
   - PLAN-027-interactive-surfaces-mcp-apps-bridge.md
+  - PLAN-029-storage-provider-config-and-management-surfaces.md
 ---
 
 # Direction 4 — Dynamic Workspaces: the artifact plane and the surface plane
