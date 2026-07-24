@@ -151,9 +151,11 @@ Merge upstream releases <list> into our fork.
 - [ ] CI green on PR
 ```
 
+> **Merge method matters:** the sync PR MUST be merged with **"Create a merge commit"** — never squash or rebase. Squashing flattens the branch's `git merge upstream/main` commit into a single-parent commit, so upstream's tip never becomes an ancestor of `main`: the repo keeps reading "behind", the next sync re-merges the same commit with re-conflicts, and the delta report's triple-dot diff misclassifies that release's files as fork-owned (`vorno-internal` LEARNING-036, PR #110). If it happens anyway, repair with `git merge -s ours upstream/main` on a branch and merge *that* PR with a merge commit.
+
 ### Step 6 — Update upstream tracking
 
-After CI passes and PR merges, update:
+After CI passes and PR merges, verify ancestry landed (`git rev-list --count main..upstream/main` must be `0` — if not, see the merge-method note above), then update:
 
 - `INTERNAL_DIR/upstream/HEAD.md` — last merged tag, commit, merge PR link, date. `INTERNAL_DIR` is the local checkout of the private `Swagatar-LLC/vorno-internal` repo (maintainer convention: `~/dev/vorno-internal`) — the sync logs moved there when the main repo went public (2026-07-17). Commit and push `vorno-internal` after updating.
 - `INTERNAL_DIR/upstream/delta.md` — refresh via `[skill:upstream-delta-report]` (same repo)
