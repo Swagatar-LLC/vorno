@@ -13,6 +13,9 @@
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+// fork: route the product name through the branding module (VOR-3 gate). Import
+// from @craft-agent/core/branding — not /shared, which depends on this package.
+import { PRODUCT_NAME_SINGULAR } from '@craft-agent/core/branding';
 import type { SessionToolContext } from './context.ts';
 import type { ToolResult } from './types.ts';
 
@@ -480,7 +483,7 @@ Omit sessionId to target the current session.
 
 IMPORTANT: never move a task into a closed status (such as "done" or "cancelled") yourself — closing a task is the user's decision, made on the board. You may prepare and hand off work by setting an open status like "needs-review"; the user reviews and closes it. Closed-status calls are rejected.`,
 
-  create_task: `Create a Craft Agents Task on the kanban board — writes tasks/<slug>/task.yaml and creates its orchestrator session. CREATION ONLY: the task lands in "todo" and is NOT run; starting it is the user's (or an automation's) decision.
+  create_task: `Create a ${PRODUCT_NAME_SINGULAR} Task on the kanban board — writes tasks/<slug>/task.yaml and creates its orchestrator session. CREATION ONLY: the task lands in "todo" and is NOT run; starting it is the user's (or an automation's) decision.
 
 Provide title + description (the description becomes the task goal and the initial node prompt). Optional: acceptanceCriteria (verification rubric), sources / skills (workspace slugs), llmConnection + model, workingDirectory, projectId. When projectId is omitted, the task inherits the invoking session's project.
 

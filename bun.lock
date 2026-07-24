@@ -348,6 +348,7 @@
       "name": "@craft-agent/session-tools-core",
       "version": "0.12.1",
       "dependencies": {
+        "@craft-agent/core": "workspace:*",
         "beautiful-mermaid": "*",
         "gray-matter": "^4.0.3",
         "zod": "^3.23.0",
