@@ -55,6 +55,8 @@ import {
   getAssistantTurnUiKey,
   asRecord,
   normalizeFollowUpText,
+  getAnnotationNoteText,
+  extractAnnotationSelectedText,
   type Turn,
   type AssistantTurn,
   type UserTurn,
@@ -1330,7 +1332,6 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     // that update and drops the just-saved follow-up from the sent message.
     // Wait for `target` to actually appear in the derived pending list before
     // sending so the send is deterministic (cf. LEARNING-007: don't assume the
-    // async state caught up — act on the data you hold). Bounded so a follow-up
     // async state caught up — act on the data you hold).
     //
     // The wait is bounded, and running out of frames now ABORTS rather than
