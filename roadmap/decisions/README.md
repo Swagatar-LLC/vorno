@@ -41,3 +41,8 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0011](0011-public-repo-rename-and-internal-corpus-split.md) | Public source repo, rename to `Swagatar-LLC/vorno`, private internal corpus split | accepted |
 | [0012](0012-additive-vorno-protocol-namespace.md) | Additive `vorno:*` protocol namespace atop maintained Craft wire compatibility | accepted |
 | [0013](0013-hosted-workspace-authn-authz-architecture.md) | Hosted workspace server AuthN/AuthZ — single-principal now, multi-user-ready seams, three trust zones | accepted |
+| [0014](0014-review-workbench-store-anchors-and-vorno-workbench-namespace.md) | Review workbench — workspace review store, quote+hash anchors, `vorno:workbench:*` namespace | accepted |
+| [0015](0015-two-plane-artifact-surface-architecture.md) | Two-plane architecture — artifact plane + surface plane | accepted |
+| [0016](0016-artifact-uri-scheme-and-open-type-registry.md) | Artifact plane addressing — `vorno-artifact://` URI scheme and open type registry | accepted |
+| [0017](0017-standards-stack-artifact-packaging-distribution.md) | Standards stack — Agent Skills + OCI/ORAS + Sigstore | accepted |
+| [0018](0018-storage-provider-seam-and-pure-admissibility.md) | Artifact storage-provider seam and pure admissibility predicate | proposed |

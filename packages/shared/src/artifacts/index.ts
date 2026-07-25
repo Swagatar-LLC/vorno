@@ -17,13 +17,33 @@ export {
   canonicalizeArtifactUri,
 } from './uri.ts';
 
-// Root registry + containment
+// Root registry (rootId → StorageProvider, ADR-0018)
+export { resolveRootBindings } from './roots.ts';
+
+// Storage-provider seam (ADR-0018): the only path from a URI to bytes.
 export {
-  resolveRootBindings,
-  resolveArtifactPath,
-  absPathToUri,
-} from './roots.ts';
-export type { RootBinding } from './roots.ts';
+  StorageOpError,
+  isWriteCapable,
+  isCopyCapable,
+  isPresignCapable,
+} from './storage/provider.ts';
+export type {
+  ArtifactMeta,
+  ListOpts,
+  ReadOpts,
+  Result,
+  StorageCapabilities,
+  StorageError,
+  StorageErrorKind,
+  StorageProvider,
+  WriteCapable,
+  CopyCapable,
+  PresignCapable,
+} from './storage/provider.ts';
+export { FilesystemStorageProvider } from './storage/filesystem.ts';
+
+// The one admissibility gate (ADR-0018 door 1)
+export { isAdmissible, isIndexedLocation } from './admissibility.ts';
 
 // Type registry
 export {
@@ -66,7 +86,7 @@ export { readArtifactByUri, MAX_ARTIFACT_BYTES } from './read.ts';
 export type { ReadArtifactOptions, ReadArtifactByUriResult } from './read.ts';
 
 // Content hashing / versioning
-export { computeContentHash, hashString, getGitSha } from './content.ts';
+export { hashString, getGitSha } from './content.ts';
 
 // JSON Canvas
 export { parseJsonCanvas, emitJsonCanvas } from './canvas.ts';

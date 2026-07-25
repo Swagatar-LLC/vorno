@@ -83,7 +83,7 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
       const configuredRoots = await loadConfiguredRoots(workspaceRoot)
       const { indexArtifacts } = await import('@craft-agent/shared/artifacts')
       const filters = req?.filters
-      const { artifacts, skippedRoots } = indexArtifacts({
+      const { artifacts, skippedRoots } = await indexArtifacts({
         workspaceRootPath: workspaceRoot,
         configuredRoots,
         includeArchived: filters?.includeArchived,
@@ -104,7 +104,9 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
       if (!req || typeof req.uri !== 'string' || !req.uri) return { ok: false, reason: 'not-found' }
 
       const configuredRoots = await loadConfiguredRoots(workspaceRoot)
-      const { readArtifactByUri, getArtifactTypeForPath } = await import('@craft-agent/shared/artifacts')
+      const { readArtifactByUri, getArtifactTypeForPath, parseArtifactUri } = await import(
+        '@craft-agent/shared/artifacts'
+      )
       const result = await readArtifactByUri({
         workspaceRootPath: workspaceRoot,
         configuredRoots,
@@ -112,12 +114,13 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
       })
       if (!result) return { ok: false, reason: 'not-found' }
 
-      // Stamp type + title. Type resolves off the resolved path's extension;
-      // title is the basename here.
+      // Stamp type + title off the canonical URI's relPath — the physical path
+      // never leaves the storage provider (ADR-0018 door 2).
       // ponytail: full title extraction (frontmatter/first-heading) lives in the
       // index — read serves the cheap basename to stay allocation-light.
-      const type = getArtifactTypeForPath(result.absPath || req.uri)
-      const title = basename(result.absPath || req.uri)
+      const relPath = parseArtifactUri(result.uri)?.relPath ?? req.uri
+      const type = getArtifactTypeForPath(relPath)
+      const title = basename(relPath)
       return {
         ok: true,
         uri: result.uri,
@@ -235,7 +238,10 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
     },
   )
 
-  // List root binding ids + kinds only — NEVER absolute paths (ADR-0016 §2).
+  // List root binding ids + kinds + serializable capability descriptors —
+  // NEVER absolute paths (ADR-0016 §2). `capabilities` is the wire half of the
+  // hybrid capability negotiation (ADR-0018): remote clients cannot
+  // type-assert a server-side provider.
   server.handle(
     RPC_CHANNELS.artifacts.ROOTS_LIST,
     async (ctx): Promise<ArtifactsRootsListResult> => {
@@ -243,10 +249,11 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
       if (!workspaceRoot) return { roots: [] }
       const configuredRoots = await loadConfiguredRoots(workspaceRoot)
       const { resolveRootBindings } = await import('@craft-agent/shared/artifacts')
-      const bindings = resolveRootBindings(workspaceRoot, configuredRoots)
-      const roots = Array.from(bindings.entries()).map(([id, binding]) => ({
+      const providers = resolveRootBindings(workspaceRoot, configuredRoots)
+      const roots = Array.from(providers.entries()).map(([id, provider]) => ({
         id,
-        kind: binding.kind,
+        kind: provider.kind,
+        capabilities: provider.capabilities,
       }))
       return { roots }
     },

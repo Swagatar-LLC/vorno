@@ -951,6 +951,7 @@ import type {
   ArtifactSkippedRoot,
   ArtifactTypeDescriptor,
   ArtifactVersion as ArtifactPlaneVersion,
+  StorageCapabilities,
 } from '@craft-agent/core/types'
 
 /** vorno:artifacts:index — zero-config, context-aware index (server applies filters). */
@@ -1007,9 +1008,13 @@ export type ArtifactsLifecycleSetResult =
   | { ok: true }
   | { ok: false; reason: 'invalid-payload' | 'write-failed' }
 
-/** vorno:artifacts:roots:list — binding ids + kinds only; NEVER absolute paths (ADR-0016 §2). */
+/** vorno:artifacts:roots:list — binding ids + kinds + capability descriptors
+ * only; NEVER absolute paths (ADR-0016 §2). `capabilities` is additive
+ * (ADR-0018, ADR-0012): a remote client learns what a root's provider can do
+ * from the serializable descriptor, since it cannot type-assert a server-side
+ * provider. */
 export interface ArtifactsRootsListResult {
-  roots: { id: string; kind: string }[]
+  roots: { id: string; kind: string; capabilities?: StorageCapabilities }[]
 }
 
 /** vorno:artifacts:types:list — the open type registry descriptors. */

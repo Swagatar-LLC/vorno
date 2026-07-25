@@ -1,5 +1,5 @@
 /**
- * Zero-config, context-aware artifact index (ADR-0016, PLAN-025 C1).
+ * Zero-config, context-aware artifact index (ADR-0016, ADR-0018, PLAN-025 C1).
  *
  * Generalizes the workbench markdown scan. Sources:
  *   (1) the `workspace` root: sessions/<id>/plans/** and sessions/<id>/data/**
@@ -7,18 +7,20 @@
  *       (and joined session context).
  *   (2) each configured root, scanned recursively → origin kind 'corpus'.
  *
+ * All enumeration and reads go through each root's StorageProvider (ADR-0018
+ * door 2) — this module never touches an absolute path. The shape bounds
+ * (depth caps, skipped dir names) are imported from admissibility.ts so the
+ * scan surface and the read gate agree by construction. `GLOBAL_FILE_CAP` is
+ * a LISTING bound only — it never gates readability (ADR-0018 door 1).
+ *
  * The file filter is the registered-extension set (not `.md`-only). Markdown
  * frontmatter contributes title/tags/metadata (never type). Session context
  * (projectId, labels, status) is joined once per call from listSessions().
- *
- * Caps carry over from workbench/artifacts.ts: recursion depth caps, SKIP_DIRS,
- * GLOBAL_FILE_CAP. Roots the scan cannot (fully) serve are surfaced as
- * `ArtifactSkippedRoot` — rootId + reason only, never absolute paths
- * (ADR-0016 §2 door 2).
+ * Roots the scan cannot (fully) serve are surfaced as `ArtifactSkippedRoot` —
+ * rootId + reason only, never absolute paths (ADR-0016 §2 door 2).
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { basename, extname, join } from 'path';
+import { basename, extname } from 'path';
 import matter from 'gray-matter';
 import { debug } from '../utils/debug.ts';
 import { listSessions } from '../sessions/storage.ts';
@@ -29,68 +31,23 @@ import type {
   ArtifactSkippedRoot,
 } from '@craft-agent/core/types';
 import { getArtifactTypeForPath, getRegisteredExtensions } from './registry.ts';
-import { resolveRootBindings, absPathToUri, type RootBinding } from './roots.ts';
-import { RESERVED_WORKSPACE_ROOT_ID } from './uri.ts';
+import { resolveRootBindings } from './roots.ts';
+import { RESERVED_WORKSPACE_ROOT_ID, parseArtifactUri } from './uri.ts';
 import { getArtifactState } from './store.ts';
+import {
+  CORPUS_DEPTH_CAP,
+  SESSION_DATA_DEPTH_CAP,
+  isSkippedDirName,
+} from './admissibility.ts';
+import { StorageOpError, type ArtifactMeta, type StorageProvider } from './storage/provider.ts';
 
-// Recursion / volume caps — keep an index scan bounded and cheap.
-const CORPUS_DEPTH_CAP = 6;
-const SESSION_DATA_DEPTH_CAP = 3;
+/** Listing volume bound (per walk unit) — never gates readability (ADR-0018). */
 const GLOBAL_FILE_CAP = 2000;
-const SKIP_DIRS = new Set(['node_modules', '.git']);
-
-interface ScanState {
-  files: string[];
-  truncated: boolean;
-}
 
 export interface IndexArtifactsOptions {
   workspaceRootPath: string;
   configuredRoots?: Record<string, string>;
   includeArchived?: boolean;
-}
-
-/**
- * Recursively collect files whose extension is registered, honoring the depth
- * cap, skipping node_modules/.git/dotdirs, and stopping at the global file cap
- * (sets `state.truncated`). Throws only if the top-level dir cannot be read —
- * callers treat that as a skipped root.
- */
-function scanFiles(
-  dir: string,
-  depth: number,
-  depthCap: number,
-  extensions: Set<string>,
-  state: ScanState,
-): void {
-  if (depth > depthCap) return;
-  if (state.files.length >= GLOBAL_FILE_CAP) {
-    state.truncated = true;
-    return;
-  }
-
-  let entries: import('fs').Dirent[];
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch (error) {
-    if (depth === 0) throw error;
-    debug('[artifacts] Skipping unreadable dir:', dir, error);
-    return;
-  }
-
-  for (const entry of entries) {
-    if (state.files.length >= GLOBAL_FILE_CAP) {
-      state.truncated = true;
-      return;
-    }
-    const name = entry.name;
-    if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(name) || name.startsWith('.')) continue;
-      scanFiles(join(dir, name), depth + 1, depthCap, extensions, state);
-    } else if (entry.isFile() && extensions.has(extname(name).toLowerCase())) {
-      state.files.push(join(dir, name));
-    }
-  }
 }
 
 /** Session context joined onto origins that carry a sessionId. */
@@ -178,65 +135,63 @@ interface ParsedDoc {
 }
 
 /**
- * Derive title/tags/metadata for a file. Markdown gets frontmatter parsing
- * (title precedence: frontmatter `title` > first heading > basename); other
- * registered types use the basename. gray-matter is wrapped in try/catch and
+ * Derive title/tags/metadata for a markdown body (title precedence: frontmatter
+ * `title` > first heading > basename). gray-matter is wrapped in try/catch and
  * never throws — parse failure is treated as no frontmatter.
  */
-function parseDoc(filePath: string, content: string): ParsedDoc {
-  const ext = extname(filePath).toLowerCase();
-  const base = basename(filePath);
-
-  if (ext === '.md' || ext === '.markdown') {
-    try {
-      const parsed = matter(content);
-      const data = (parsed.data ?? {}) as Record<string, unknown>;
-      const fmTitle = typeof data.title === 'string' && data.title.trim() ? data.title.trim() : null;
-      const title = fmTitle ?? firstHeading(parsed.content) ?? firstHeading(content) ?? base;
-      return { title, tags: extractTags(data), metadata: extractMetadata(data) };
-    } catch (error) {
-      debug('[artifacts] Frontmatter parse failed — treating as none:', filePath, error);
-      return { title: firstHeading(content) ?? base };
-    }
+function parseMarkdownDoc(relPath: string, content: string): ParsedDoc {
+  const base = basename(relPath);
+  try {
+    const parsed = matter(content);
+    const data = (parsed.data ?? {}) as Record<string, unknown>;
+    const fmTitle = typeof data.title === 'string' && data.title.trim() ? data.title.trim() : null;
+    const title = fmTitle ?? firstHeading(parsed.content) ?? firstHeading(content) ?? base;
+    return { title, tags: extractTags(data), metadata: extractMetadata(data) };
+  } catch (error) {
+    debug('[artifacts] Frontmatter parse failed — treating as none:', relPath, error);
+    return { title: firstHeading(content) ?? base };
   }
+}
 
-  // .canvas / .json / other registered types: basename title, no frontmatter.
-  return { title: base };
+/** A file surfaced by the scan, before entry construction. */
+interface ScannedFile {
+  uri: string;
+  relPath: string;
+  originKind: ArtifactOriginKind;
+  sessionId?: string;
+  sizeBytes: number;
+  mtimeMs?: number;
 }
 
 /**
- * Build an ArtifactEntry for a scanned absolute path. Returns null when the file
- * cannot be statted/read or has no addressable URI under the given bindings.
+ * Build an ArtifactEntry for a scanned file. Markdown content is read through
+ * the provider for title/frontmatter (other registered types use the basename
+ * — no content read). Returns null when a markdown read fails.
  */
-function makeEntry(
-  absPath: string,
-  originKind: ArtifactOriginKind,
-  bindings: Map<string, RootBinding>,
-  sessionId: string | undefined,
+async function makeEntry(
+  f: ScannedFile,
+  provider: StorageProvider,
   sessionCtx: Map<string, SessionContext>,
   state: Record<string, import('./store.ts').ArtifactStateEntry>,
-): ArtifactEntry | null {
-  let stats: import('fs').Stats;
-  let content: string;
-  try {
-    stats = statSync(absPath);
-    if (!stats.isFile()) return null;
-    // Scanned files are text-type by extension registration in C1.
-    content = readFileSync(absPath, 'utf-8');
-  } catch (error) {
-    debug('[artifacts] Failed to read scanned file:', absPath, error);
-    return null;
+): Promise<ArtifactEntry | null> {
+  const ext = extname(f.relPath).toLowerCase();
+  let doc: ParsedDoc;
+  if (ext === '.md' || ext === '.markdown') {
+    const read = await provider.read(f.uri);
+    if (!read.ok) {
+      debug('[artifacts] Failed to read scanned file:', f.uri, read.error.kind);
+      return null;
+    }
+    doc = parseMarkdownDoc(f.relPath, read.value.bytes.toString('utf-8'));
+  } else {
+    // .canvas / .json / other registered types: basename title, no frontmatter.
+    doc = { title: basename(f.relPath) };
   }
 
-  const uri = absPathToUri(absPath, bindings);
-  if (!uri) return null;
-
-  const { title, tags, metadata } = parseDoc(absPath, content);
-
-  const origin: ArtifactOrigin = { kind: originKind };
-  if (sessionId) {
-    origin.sessionId = sessionId;
-    const ctx = sessionCtx.get(sessionId);
+  const origin: ArtifactOrigin = { kind: f.originKind };
+  if (f.sessionId) {
+    origin.sessionId = f.sessionId;
+    const ctx = sessionCtx.get(f.sessionId);
     if (ctx) {
       if (ctx.projectId) origin.projectId = ctx.projectId;
       if (ctx.labels) origin.labels = ctx.labels;
@@ -244,111 +199,141 @@ function makeEntry(
     }
   }
 
-  const lifecycle = state[uri];
+  const lifecycle = state[f.uri];
   const entry: ArtifactEntry = {
-    uri,
-    type: getArtifactTypeForPath(absPath),
+    uri: f.uri,
+    type: getArtifactTypeForPath(f.relPath),
     origin,
-    title,
-    mtimeMs: stats.mtimeMs,
-    sizeBytes: stats.size,
+    title: doc.title,
+    mtimeMs: f.mtimeMs ?? 0,
+    sizeBytes: f.sizeBytes,
   };
-  if (tags) entry.tags = tags;
-  if (metadata) entry.metadata = metadata;
+  if (doc.tags) entry.tags = doc.tags;
+  if (doc.metadata) entry.metadata = doc.metadata;
   if (lifecycle?.pinned) entry.pinned = true;
   if (lifecycle?.archived) entry.archived = true;
   return entry;
 }
 
-/** A file surfaced by the scan, before entry construction. */
-interface ScannedFile {
-  absPath: string;
-  originKind: ArtifactOriginKind;
-  sessionId?: string;
+/** Prune predicate for the workspace walk (rooted at `sessions/`). */
+function workspaceSkipDir(relPath: string): boolean {
+  const segments = relPath.split('/');
+  // sessions/<id> — session ids are not name-filtered.
+  if (segments.length === 2) return false;
+  // sessions/<id>/<sub> — only plans/ and data/ are scan surface.
+  if (segments.length === 3) return segments[2] !== 'plans' && segments[2] !== 'data';
+  return isSkippedDirName(segments[segments.length - 1]!);
 }
 
+/** Prune predicate for a corpus-root walk. */
+function corpusSkipDir(relPath: string): boolean {
+  return isSkippedDirName(relPath.slice(relPath.lastIndexOf('/') + 1));
+}
+
+const SESSION_FILE_RE = /^sessions\/([^/]+)\/(plans|data)\//;
+
 /**
- * The shared scan stage: walk session plans/data + configured roots and collect
- * candidate files. No content reads — `indexArtifacts` builds full entries from
- * this, and `indexArtifactUris` builds the read-gate URI set (ADR-0016 §4).
- * Skips are per rootId + reason, deduped, never absolute paths.
+ * The shared scan stage: walk session plans/data + configured roots through
+ * each root's provider and collect candidate files. Markdown content is not
+ * read here — `indexArtifacts` builds full entries from this, and
+ * `indexArtifactUris` builds the read-surface URI set. Skips are per rootId +
+ * reason, deduped, never absolute paths.
  */
-function collectScannedFiles(
+async function collectScannedFiles(
   workspaceRootPath: string,
   configuredRoots?: Record<string, string>,
-): {
+): Promise<{
   files: ScannedFile[];
   skippedRoots: ArtifactSkippedRoot[];
-  bindings: Map<string, RootBinding>;
-} {
-  const bindings = resolveRootBindings(workspaceRootPath, configuredRoots);
+  providers: Map<string, StorageProvider>;
+}> {
+  const providers = resolveRootBindings(workspaceRootPath, configuredRoots);
   const extensions = getRegisteredExtensions();
   const files: ScannedFile[] = [];
   const skipped = new Map<string, ArtifactSkippedRoot>();
   const skip = (rootId: string, reason: ArtifactSkippedRoot['reason']) => {
     skipped.set(`${rootId}:${reason}`, { rootId, reason });
   };
+  const registered = (meta: ArtifactMeta) => {
+    const relPath = parseArtifactUri(meta.uri)?.relPath;
+    if (!relPath) return null;
+    return extensions.has(extname(relPath).toLowerCase()) ? relPath : null;
+  };
 
-  // (1) workspace root — session plans + data.
-  const sessionsDir = join(workspaceRootPath, 'sessions');
-  if (existsSync(sessionsDir)) {
-    let sessionEntries: import('fs').Dirent[] = [];
-    try {
-      sessionEntries = readdirSync(sessionsDir, { withFileTypes: true });
-    } catch (error) {
-      debug('[artifacts] Skipping sessions dir:', sessionsDir, error);
-      skip(RESERVED_WORKSPACE_ROOT_ID, 'unreadable');
-    }
-    for (const sessionEntry of sessionEntries) {
-      if (!sessionEntry.isDirectory()) continue;
-      const sessionId = sessionEntry.name;
-      const sessionDir = join(sessionsDir, sessionId);
-
-      const subdirs = [
-        { name: 'plans', originKind: 'session-plan' as const },
-        { name: 'data', originKind: 'session-data' as const },
-      ];
-      for (const { name, originKind } of subdirs) {
-        const dir = join(sessionDir, name);
-        if (!existsSync(dir)) continue;
-        const st: ScanState = { files: [], truncated: false };
-        try {
-          scanFiles(dir, 0, SESSION_DATA_DEPTH_CAP, extensions, st);
-        } catch (error) {
-          debug('[artifacts] Skipping session subdir:', dir, error);
-          st.files = [];
-        }
-        if (st.truncated) skip(RESERVED_WORKSPACE_ROOT_ID, 'truncated');
-        for (const absPath of st.files) {
-          files.push({ absPath, originKind, sessionId });
-        }
+  // (1) workspace root — session plans + data. Volume cap applies per
+  // session subdir (walk unit), as in the C1 scanner.
+  const ws = providers.get(RESERVED_WORKSPACE_ROOT_ID)!;
+  const unitCounts = new Map<string, number>();
+  try {
+    for await (const meta of ws.list({
+      prefix: 'sessions',
+      maxDepth: 2 + SESSION_DATA_DEPTH_CAP,
+      skipDir: workspaceSkipDir,
+    })) {
+      const relPath = registered(meta);
+      if (!relPath) continue;
+      const match = relPath.match(SESSION_FILE_RE);
+      if (!match) continue;
+      const [, sessionId, sub] = match as unknown as [string, string, 'plans' | 'data'];
+      const unit = `${sessionId}/${sub}`;
+      const count = unitCounts.get(unit) ?? 0;
+      if (count >= GLOBAL_FILE_CAP) {
+        skip(RESERVED_WORKSPACE_ROOT_ID, 'truncated');
+        continue;
       }
+      unitCounts.set(unit, count + 1);
+      files.push({
+        uri: meta.uri,
+        relPath,
+        originKind: sub === 'plans' ? 'session-plan' : 'session-data',
+        sessionId,
+        sizeBytes: meta.sizeBytes,
+        mtimeMs: meta.mtimeMs,
+      });
+    }
+  } catch (error) {
+    // A missing sessions dir is an empty workspace, not a skipped root.
+    if (!(error instanceof StorageOpError && error.kind === 'not-found')) {
+      debug('[artifacts] Skipping sessions walk:', error);
+      skip(RESERVED_WORKSPACE_ROOT_ID, 'unreadable');
     }
   }
 
   // (2) configured (non-workspace) roots — corpus.
-  for (const [rootId, binding] of bindings) {
+  for (const [rootId, provider] of providers) {
     if (rootId === RESERVED_WORKSPACE_ROOT_ID) continue;
-    if (binding.kind !== 'filesystem') continue;
-    if (!existsSync(binding.path)) {
-      skip(rootId, 'missing');
-      continue;
-    }
-    const st: ScanState = { files: [], truncated: false };
+    let count = 0;
     try {
-      scanFiles(binding.path, 0, CORPUS_DEPTH_CAP, extensions, st);
+      for await (const meta of provider.list({
+        maxDepth: CORPUS_DEPTH_CAP,
+        skipDir: corpusSkipDir,
+      })) {
+        const relPath = registered(meta);
+        if (!relPath) continue;
+        if (count >= GLOBAL_FILE_CAP) {
+          skip(rootId, 'truncated');
+          break;
+        }
+        count++;
+        files.push({
+          uri: meta.uri,
+          relPath,
+          originKind: 'corpus',
+          sizeBytes: meta.sizeBytes,
+          mtimeMs: meta.mtimeMs,
+        });
+      }
     } catch (error) {
-      debug('[artifacts] Skipping corpus root:', binding.path, error);
-      skip(rootId, 'unreadable');
-      continue;
-    }
-    if (st.truncated) skip(rootId, 'truncated');
-    for (const absPath of st.files) {
-      files.push({ absPath, originKind: 'corpus' });
+      if (error instanceof StorageOpError && error.kind === 'not-found') {
+        skip(rootId, 'missing');
+      } else {
+        debug('[artifacts] Skipping corpus root:', rootId, error);
+        skip(rootId, 'unreadable');
+      }
     }
   }
 
-  return { files, skippedRoots: Array.from(skipped.values()), bindings };
+  return { files, skippedRoots: Array.from(skipped.values()), providers };
 }
 
 /**
@@ -357,19 +342,24 @@ function collectScannedFiles(
  * never absolute paths (ADR-0016 §2). Archived artifacts are excluded unless
  * `includeArchived` is set.
  */
-export function indexArtifacts(options: IndexArtifactsOptions): {
+export async function indexArtifacts(options: IndexArtifactsOptions): Promise<{
   artifacts: ArtifactEntry[];
   skippedRoots: ArtifactSkippedRoot[];
-} {
+}> {
   const { workspaceRootPath, configuredRoots, includeArchived } = options;
-  const { files, skippedRoots, bindings } = collectScannedFiles(workspaceRootPath, configuredRoots);
+  const { files, skippedRoots, providers } = await collectScannedFiles(
+    workspaceRootPath,
+    configuredRoots,
+  );
   const sessionCtx = buildSessionContext(workspaceRootPath);
   const state = getArtifactState(workspaceRootPath);
 
   const artifacts: ArtifactEntry[] = [];
   const seen = new Set<string>();
   for (const f of files) {
-    const entry = makeEntry(f.absPath, f.originKind, bindings, f.sessionId, sessionCtx, state);
+    const provider = providers.get(parseArtifactUri(f.uri)!.rootId);
+    if (!provider) continue;
+    const entry = await makeEntry(f, provider, sessionCtx, state);
     if (!entry) continue;
     if (seen.has(entry.uri)) continue;
     if (entry.archived && !includeArchived) continue;
@@ -380,19 +370,15 @@ export function indexArtifacts(options: IndexArtifactsOptions): {
 }
 
 /**
- * The read-gate membership set (ADR-0016 §4 door 4): the URIs the index scan
- * surfaces, computed without any content reads. Archived artifacts are
- * included — archival is a lifecycle flag, not a read restriction.
+ * The scan-surface URI set, computed without any content reads. Archived
+ * artifacts are included — archival is a lifecycle flag, not a read
+ * restriction. NOTE (ADR-0018): this is a listing, not the read gate — the
+ * gate is the pure `isAdmissible` predicate in admissibility.ts.
  */
-export function indexArtifactUris(options: {
+export async function indexArtifactUris(options: {
   workspaceRootPath: string;
   configuredRoots?: Record<string, string>;
-}): Set<string> {
-  const { files, bindings } = collectScannedFiles(options.workspaceRootPath, options.configuredRoots);
-  const uris = new Set<string>();
-  for (const f of files) {
-    const uri = absPathToUri(f.absPath, bindings);
-    if (uri) uris.add(uri);
-  }
-  return uris;
+}): Promise<Set<string>> {
+  const { files } = await collectScannedFiles(options.workspaceRootPath, options.configuredRoots);
+  return new Set(files.map((f) => f.uri));
 }
