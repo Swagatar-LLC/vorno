@@ -774,8 +774,13 @@ export interface WorkspaceSettings {
   workbenchEnabled?: boolean
   /** Feature flag for the Artifact Home surface (ADR-0016, PLAN-025). Default off. */
   artifactsEnabled?: boolean
-  /** Named artifact root bindings (rootId → absolute path), ADR-0016 §2. 'workspace' is reserved and implicit. */
-  artifactRoots?: Record<string, string>
+  /**
+   * Named artifact root bindings (ADR-0016 §2). 'workspace' is reserved and
+   * implicit. The value widens additively (ADR-0019 §1): a bare `string` is the
+   * filesystem shorthand (an absolute path), or a `RootBindingConfig` object
+   * discriminated by `kind`. Existing string-map configs parse unchanged.
+   */
+  artifactRoots?: Record<string, string | RootBindingConfig>
 }
 
 // ---------------------------------------------------------------------------
@@ -952,6 +957,8 @@ import type {
   ArtifactTypeDescriptor,
   ArtifactVersion as ArtifactPlaneVersion,
   StorageCapabilities,
+  RootHealth,
+  RootBindingConfig,
 } from '@craft-agent/core/types'
 
 /** vorno:artifacts:index — zero-config, context-aware index (server applies filters). */
@@ -1012,9 +1019,16 @@ export type ArtifactsLifecycleSetResult =
  * only; NEVER absolute paths (ADR-0016 §2). `capabilities` is additive
  * (ADR-0018, ADR-0012): a remote client learns what a root's provider can do
  * from the serializable descriptor, since it cannot type-assert a server-side
- * provider. */
+ * provider. `status` is additive per ADR-0019 §4 (door 3): a bounded per-root
+ * health probe (`ok | missing | unreadable | truncated`), no path on the wire;
+ * its semantics freeze on ship. */
 export interface ArtifactsRootsListResult {
-  roots: { id: string; kind: string; capabilities?: StorageCapabilities }[]
+  roots: {
+    id: string
+    kind: string
+    capabilities?: StorageCapabilities
+    status?: RootHealth
+  }[]
 }
 
 /** vorno:artifacts:types:list — the open type registry descriptors. */

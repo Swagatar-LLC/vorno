@@ -17,8 +17,13 @@ export {
   canonicalizeArtifactUri,
 } from './uri.ts';
 
-// Root registry (rootId → StorageProvider, ADR-0018)
-export { resolveRootBindings } from './roots.ts';
+// Root registry (rootId → StorageProvider, ADR-0018; config schema ADR-0019)
+export {
+  resolveRootBindings,
+  normalizeRootConfig,
+  createProvider,
+  probeRootHealth,
+} from './roots.ts';
 
 // Storage-provider seam (ADR-0018): the only path from a URI to bytes.
 export {

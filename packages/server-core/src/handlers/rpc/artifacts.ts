@@ -28,7 +28,7 @@ import type {
   ArtifactsRootsListResult,
   ArtifactsTypesListResult,
 } from '@craft-agent/shared/protocol'
-import type { ArtifactEntry } from '@craft-agent/core/types'
+import type { ArtifactEntry, ArtifactRootsConfig } from '@craft-agent/core/types'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import type { RpcServer, RequestContext } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -64,7 +64,7 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
   /** Load the configured (non-workspace) root bindings from workspace config. */
   async function loadConfiguredRoots(
     workspaceRoot: string,
-  ): Promise<Record<string, string> | undefined> {
+  ): Promise<ArtifactRootsConfig | undefined> {
     const { loadWorkspaceConfig } = await import('@craft-agent/shared/workspaces')
     const config = loadWorkspaceConfig(workspaceRoot)
     return config?.defaults?.artifactRoots
@@ -248,13 +248,20 @@ export function registerArtifactsHandlers(server: RpcServer, deps: HandlerDeps):
       const workspaceRoot = resolveWorkspaceRoot(ctx)
       if (!workspaceRoot) return { roots: [] }
       const configuredRoots = await loadConfiguredRoots(workspaceRoot)
-      const { resolveRootBindings } = await import('@craft-agent/shared/artifacts')
+      const { resolveRootBindings, probeRootHealth } = await import(
+        '@craft-agent/shared/artifacts'
+      )
       const providers = resolveRootBindings(workspaceRoot, configuredRoots)
-      const roots = Array.from(providers.entries()).map(([id, provider]) => ({
-        id,
-        kind: provider.kind,
-        capabilities: provider.capabilities,
-      }))
+      // Bounded per-root health probe (ADR-0019 §4). Absolute paths still never
+      // leave the server (ADR-0016 §2) — only id/kind/capabilities/status ride.
+      const roots = await Promise.all(
+        Array.from(providers.entries()).map(async ([id, provider]) => ({
+          id,
+          kind: provider.kind,
+          capabilities: provider.capabilities,
+          status: await probeRootHealth(provider),
+        })),
+      )
       return { roots }
     },
   )

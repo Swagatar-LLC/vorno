@@ -13,7 +13,7 @@ capability interfaces ship as *types only*.
 **Governance:** the seam is [ADR-0018](../roadmap/decisions/0018-storage-provider-seam-and-pure-admissibility.md)
 (provider seam + pure admissibility). The config shape that lets a new kind be
 declared without a migration is [ADR-0019](../roadmap/decisions/0019-storage-root-config-schema-and-provider-kind-namespace.md)
-/ [PLAN-029](../roadmap/plans/planned/PLAN-029-storage-provider-config-and-management-surfaces.md).
+/ [PLAN-029](../roadmap/plans/in-progress/PLAN-029-storage-provider-config-and-management-surfaces.md).
 The URI scheme and open namespaces are [ADR-0016](../roadmap/decisions/0016-artifact-uri-scheme-and-open-type-registry.md).
 
 **Source of truth (do not let this doc drift from it):**
@@ -295,5 +295,5 @@ kind happens server-side on *save*, not at resolution — see PLAN-029.)
 - [ADR-0018](../roadmap/decisions/0018-storage-provider-seam-and-pure-admissibility.md) — provider seam + pure admissibility (the two doors this doc formalizes)
 - [ADR-0019](../roadmap/decisions/0019-storage-root-config-schema-and-provider-kind-namespace.md) — config schema + provider-kind namespace
 - [ADR-0016](../roadmap/decisions/0016-artifact-uri-scheme-and-open-type-registry.md) — URI scheme, canonicalization, open registries, root-binding trust boundary
-- [PLAN-029](../roadmap/plans/planned/PLAN-029-storage-provider-config-and-management-surfaces.md) — config / management / documentation surfaces
+- [PLAN-029](../roadmap/plans/in-progress/PLAN-029-storage-provider-config-and-management-surfaces.md) — config / management / documentation surfaces
 - User-facing help: [Artifact Roots and Storage](user-guide/artifact-roots-and-storage.md)

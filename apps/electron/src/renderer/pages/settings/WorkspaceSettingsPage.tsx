@@ -29,7 +29,19 @@ import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
 import { PERMISSION_MODE_CONFIG } from '@craft-agent/shared/agent/mode-types'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import { SourceAvatar } from '@/components/ui/source-avatar'
+import { Badge } from '@/components/ui/badge'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu'
 import { toast } from 'sonner'
+import type {
+  RootBindingConfig,
+  StorageCapabilities,
+  RootHealth,
+} from '@craft-agent/core'
 
 import {
   SettingsSection,
@@ -69,7 +81,10 @@ export default function WorkspaceSettingsPage() {
   const [workbenchEnabled, setWorkbenchEnabled] = useState(false)
   // fork(PLAN-025 C1): Artifact plane feature flag + registered roots
   const [artifactsEnabled, setArtifactsEnabled] = useState(false)
-  const [artifactRoots, setArtifactRoots] = useState<Record<string, string>>({})
+  const [artifactRoots, setArtifactRoots] = useState<Record<string, string | RootBindingConfig>>({})
+  // fork(PLAN-029): per-root kind/capabilities/health from `roots:list` (no
+  // absolute paths on the wire), keyed by rootId. Lazily (re)loaded.
+  const [rootDescriptors, setRootDescriptors] = useState<Record<string, RootDescriptor>>({})
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true)
 
   // Default sources state
@@ -100,6 +115,7 @@ export default function WorkspaceSettingsPage() {
           setWorkbenchEnabled(settings.workbenchEnabled ?? false)
           setArtifactsEnabled(settings.artifactsEnabled ?? false)
           setArtifactRoots(settings.artifactRoots ?? {})
+          if (settings.artifactsEnabled) void refreshRootDescriptors()
           // Load cyclable permission modes from workspace settings
           if (settings.cyclablePermissionModes && settings.cyclablePermissionModes.length >= 2) {
             setEnabledModes(settings.cyclablePermissionModes)
@@ -320,15 +336,35 @@ export default function WorkspaceSettingsPage() {
     [updateWorkspaceSetting, activeWorkspaceId]
   )
 
+  // fork(PLAN-029): (re)load per-root kind/capabilities/health descriptors from
+  // `roots:list`. The server omits absolute paths (ADR-0016 §2) — only
+  // id/kind/capabilities/status ride the wire. Keyed by rootId for the editor.
+  const refreshRootDescriptors = useCallback(async () => {
+    try {
+      const result = await window.electronAPI.artifactsRootsList()
+      const byId: Record<string, RootDescriptor> = {}
+      for (const r of result.roots) {
+        byId[r.id] = { kind: r.kind, capabilities: r.capabilities, status: r.status }
+      }
+      setRootDescriptors(byId)
+    } catch {
+      // Non-fatal: the editor falls back to a neutral display without health.
+    }
+  }, [])
+
   // Persist the artifact-roots map. Server validates (root-id syntax, reserved
-  // 'workspace' id, absolute paths); validation errors surface via the shared
-  // updateWorkspaceSetting toast. On success, adopt the saved map locally.
+  // 'workspace' id, absolute paths / binding kind); validation errors surface
+  // via the shared updateWorkspaceSetting toast. On success, adopt the saved
+  // map locally and refresh the per-root descriptors (kind/caps/health).
   const saveArtifactRoots = useCallback(
-    async (next: Record<string, string>) => {
+    async (next: Record<string, string | RootBindingConfig>) => {
       const saved = await updateWorkspaceSetting('artifactRoots', next)
-      if (saved) setArtifactRoots(next)
+      if (saved) {
+        setArtifactRoots(next)
+        void refreshRootDescriptors()
+      }
     },
-    [updateWorkspaceSetting]
+    [updateWorkspaceSetting, refreshRootDescriptors]
   )
 
   // Route directory-picker selections: a rootId re-picks that row's path; null
@@ -639,6 +675,7 @@ export default function WorkspaceSettingsPage() {
                 <div className="mt-3">
                   <ArtifactRootsEditor
                     roots={artifactRoots}
+                    descriptors={rootDescriptors}
                     onSave={saveArtifactRoots}
                     onBrowse={(rootId) => {
                       // null rootId = add-new (id derived from the picked folder)
@@ -692,20 +729,104 @@ function deriveRootId(path: string, taken: Set<string>): string {
   }
 }
 
+/** Per-root descriptor from `roots:list` (no absolute paths — ADR-0016 §2). */
+interface RootDescriptor {
+  kind: string
+  capabilities?: StorageCapabilities
+  status?: RootHealth
+}
+
+/** Display path for a root value: string shorthand, filesystem `path`, or —. */
+function rootDisplayPath(value: string | RootBindingConfig): string {
+  if (typeof value === 'string') return value
+  if (value.kind === 'filesystem' && typeof (value as { path?: unknown }).path === 'string') {
+    return (value as { path: string }).path
+  }
+  return '—'
+}
+
+/** A root value is filesystem when it is a bare string or `{kind:'filesystem'}`. */
+function isFilesystemRoot(value: string | RootBindingConfig): boolean {
+  return typeof value === 'string' || value.kind === 'filesystem'
+}
+
+/** Kind smart-chip (DIR-04 tenet 6). */
+function KindBadge({ kind }: { kind: string }) {
+  const { t } = useTranslation()
+  const label =
+    kind === 'filesystem'
+      ? t('settings.workspace.rootKindFilesystem')
+      : kind === 'object-store'
+        ? t('settings.workspace.rootKindObjectStore')
+        : kind
+  return (
+    <Badge variant="secondary" className="shrink-0 font-normal">
+      {label}
+    </Badge>
+  )
+}
+
+/** Health dot fed by the `roots:list` `status` probe (green/amber/red). */
+function HealthDot({ status }: { status?: RootHealth }) {
+  const { t } = useTranslation()
+  const map: Record<RootHealth, { cls: string; label: string }> = {
+    ok: { cls: 'bg-emerald-500', label: t('settings.workspace.rootHealthOk') },
+    missing: { cls: 'bg-red-500', label: t('settings.workspace.rootHealthMissing') },
+    unreadable: { cls: 'bg-red-500', label: t('settings.workspace.rootHealthUnreadable') },
+    truncated: { cls: 'bg-amber-500', label: t('settings.workspace.rootHealthTruncated') },
+  }
+  const shown = status ? map[status] : { cls: 'bg-foreground/20', label: t('settings.workspace.rootHealthUnknown') }
+  return (
+    <span
+      className={cn('h-2 w-2 shrink-0 rounded-full', shown.cls)}
+      title={shown.label}
+      aria-label={shown.label}
+    />
+  )
+}
+
+/** Read-only capability chips from the provider's `StorageCapabilities`. */
+function CapabilityChips({ capabilities }: { capabilities?: StorageCapabilities }) {
+  const { t } = useTranslation()
+  if (!capabilities) return null
+  const chips: string[] = []
+  if (capabilities.read) chips.push(t('settings.workspace.capRead'))
+  if (capabilities.list) chips.push(t('settings.workspace.capList'))
+  if (capabilities.write) chips.push(t('settings.workspace.capWrite'))
+  if (capabilities.presign) chips.push(t('settings.workspace.capPresign'))
+  // All C2 roots are read-only; make that explicit when no write path exists.
+  if (!capabilities.write) chips.push(t('settings.workspace.capReadOnly'))
+  return (
+    <span className="hidden shrink-0 items-center gap-1 sm:flex" title={chips.join(' · ')}>
+      {chips.map((c) => (
+        <span key={c} className="rounded bg-foreground/[0.04] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {c}
+        </span>
+      ))}
+    </span>
+  )
+}
+
 /**
- * Advanced artifact-roots editor, pick-directory-first (ADR-0015 §7; QA
- * G2c-2): "Add folder" opens the directory picker immediately, the root id is
- * derived from the folder name, and id + path save together in one write —
- * no empty-path intermediate state. Rows re-pick their path or remove.
- * Server validates on save (ADR-0016 §2).
+ * Advanced artifact-roots editor (PLAN-025 C1; provider-aware PLAN-029).
+ * Pick-directory-first (ADR-0015 §7; QA G2c-2): "Local folder…" opens the
+ * directory picker immediately, the root id is derived from the folder name,
+ * and id + path save together in one write. Each row shows a kind badge,
+ * capability chips, and a health dot fed by `roots:list` (ADR-0019 §4) — the
+ * absolute path is shown only for local filesystem rows (the server never puts
+ * paths on the wire). "Add root" is a kind-first menu; only "Local folder…" is
+ * live — "Object storage…" is the seam for the hosted track. Server validates
+ * on save (ADR-0016 §2, ADR-0019).
  */
 function ArtifactRootsEditor({
   roots,
+  descriptors,
   onSave,
   onBrowse,
 }: {
-  roots: Record<string, string>
-  onSave: (next: Record<string, string>) => void
+  roots: Record<string, string | RootBindingConfig>
+  descriptors: Record<string, RootDescriptor>
+  onSave: (next: Record<string, string | RootBindingConfig>) => void
   onBrowse: (rootId: string | null) => void
 }) {
   const { t } = useTranslation()
@@ -729,38 +850,62 @@ function ArtifactRootsEditor({
         <p className="mb-3 text-xs text-muted-foreground">{t("settings.workspace.noArtifactRoots")}</p>
       ) : (
         <div className="mb-3 flex flex-col gap-2">
-          {entries.map(([rootId, path]) => (
-            <div key={rootId} className="flex items-center gap-2">
-              <span className="w-32 shrink-0 truncate font-mono text-xs" title={rootId}>
-                {rootId}
-              </span>
-              <button
-                type="button"
-                onClick={() => onBrowse(rootId)}
-                className="min-w-0 flex-1 truncate rounded-lg bg-foreground/[0.03] px-2 py-1.5 text-left text-xs shadow-minimal hover:bg-foreground/[0.06] transition-colors"
-                title={path || t("settings.workspace.chooseArtifactRootDir")}
-              >
-                {path || t("settings.workspace.chooseArtifactRootDir")}
-              </button>
-              <button
-                type="button"
-                onClick={() => removeRoot(rootId)}
-                className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-foreground/60 hover:text-destructive transition-colors"
-              >
-                {t("common.remove")}
-              </button>
-            </div>
-          ))}
+          {entries.map(([rootId, value]) => {
+            const descriptor = descriptors[rootId]
+            const kind = descriptor?.kind ?? (typeof value === 'string' ? 'filesystem' : value.kind)
+            const filesystem = isFilesystemRoot(value)
+            const displayPath = rootDisplayPath(value)
+            return (
+              <div key={rootId} className="flex items-center gap-2">
+                <span className="w-28 shrink-0 truncate font-mono text-xs" title={rootId}>
+                  {rootId}
+                </span>
+                <KindBadge kind={kind} />
+                <HealthDot status={descriptor?.status} />
+                <button
+                  type="button"
+                  onClick={() => filesystem && onBrowse(rootId)}
+                  disabled={!filesystem}
+                  className={cn(
+                    'min-w-0 flex-1 truncate rounded-lg bg-foreground/[0.03] px-2 py-1.5 text-left text-xs shadow-minimal transition-colors',
+                    filesystem ? 'hover:bg-foreground/[0.06]' : 'cursor-default opacity-70',
+                  )}
+                  title={filesystem ? displayPath || t("settings.workspace.chooseArtifactRootDir") : displayPath}
+                >
+                  {displayPath || t("settings.workspace.chooseArtifactRootDir")}
+                </button>
+                <CapabilityChips capabilities={descriptor?.capabilities} />
+                <button
+                  type="button"
+                  onClick={() => removeRoot(rootId)}
+                  className="shrink-0 rounded-lg px-2 py-1.5 text-xs text-foreground/60 hover:text-destructive transition-colors"
+                >
+                  {t("common.remove")}
+                </button>
+              </div>
+            )
+          })}
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => onBrowse(null)}
-        className="inline-flex h-8 items-center px-3 text-sm rounded-lg bg-background shadow-minimal hover:bg-foreground/[0.02] transition-colors"
-      >
-        {t("settings.workspace.addArtifactRoot")}
-      </button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="inline-flex h-8 items-center px-3 text-sm rounded-lg bg-background shadow-minimal hover:bg-foreground/[0.02] transition-colors"
+          >
+            {t("settings.workspace.addArtifactRoot")}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          <DropdownMenuItem onSelect={() => onBrowse(null)}>
+            {t("settings.workspace.addRootLocalFolder")}
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled>
+            {t("settings.workspace.addRootObjectStore")}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
 }

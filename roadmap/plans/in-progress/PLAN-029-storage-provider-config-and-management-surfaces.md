@@ -1,18 +1,15 @@
 ---
 id: PLAN-029
 title: Storage-provider config, management, and documentation surfaces
-status: planned
+status: in-progress
 direction: DIR-04
 owner: jh
 created: 2026-07-24
-updated: 2026-07-24
+updated: 2026-07-25
 related:
   - 0019-storage-root-config-schema-and-provider-kind-namespace.md
   - 0018-storage-provider-seam-and-pure-admissibility.md
   - 0016-artifact-uri-scheme-and-open-type-registry.md
-blocked-by:
-  - PR #114 (ADR-0018 StorageProvider seam) must merge first
-  - ADR-0019 doors must be signed (proposed → accepted)
 ---
 
 # PLAN-029 — Storage-provider config, management, and documentation surfaces
@@ -155,17 +152,26 @@ and extend, or the bundled in-app docs set):
 
 ## Acceptance
 
-- [ ] `artifactRoots` accepts `string | RootBindingConfig`; existing string configs resolve unchanged.
-- [ ] `resolveRootBindings` dispatches through a provider factory; unknown kinds skip, never throw.
-- [ ] `kind` documented as a reserved ADR-0016 §3 string space.
-- [ ] `roots:list` emits additive optional `status`; no absolute path on the wire.
-- [ ] Settings UI shows kind badge, capability chips, health dot; kind-first add menu.
-- [ ] Contributor `docs/artifact-storage-providers.md` + user-facing help written.
-- [ ] Tests added/updated; 102 artifact tests + typecheck + build check green.
-- [ ] Behind the existing `artifactsEnabled` flag.
-- [ ] `roadmap/upstream/compatibility.md` + ADR-0019 index row updated.
-- [ ] ADR-0019 accepted (doors signed) before merge.
+- [x] `artifactRoots` accepts `string | RootBindingConfig`; existing string configs resolve unchanged.
+- [x] `resolveRootBindings` dispatches through a provider factory; unknown kinds skip, never throw.
+- [x] `kind` documented as a reserved ADR-0016 §3 string space (contributor doc + ADR-0019 §2).
+- [x] `roots:list` emits additive optional `status`; no absolute path on the wire.
+- [x] Settings UI shows kind badge, capability chips, health dot; kind-first add menu.
+- [x] Contributor `docs/artifact-storage-providers.md` + user-facing help written (merged PRs #117/#122).
+- [x] Tests added/updated; 110 artifact tests + typecheck + build check green.
+- [x] Behind the existing `artifactsEnabled` flag.
+- [x] `roadmap/upstream/compatibility.md` updated (ADR-0019 index row landed with the ADR on PR #117).
+- [x] ADR-0019 accepted (doors signed) before merge.
 
 ## Status log
 
 - `2026-07-24` — created in `planned/` (design session 260724-ready-shark; ADR-0019 drafted proposed).
+- `2026-07-25` — both gates cleared (PR #114 merged, `93a82f32`; ADR-0019 accepted). Implementation
+  built end-to-end on `jh/plan-029-impl` off merged main (session 260724-focal-nova): `RootBindingConfig`
+  /`ArtifactRootsConfig`/`RootHealth` core types; `normalizeRootConfig` + `createProvider` factory +
+  `probeRootHealth` in `roots.ts` (value-union widened, migration-free); consumer signatures
+  (`scan`/`read`/`projection-obsidian`) widened; `roots:list` emits `status`; save-validation accepts
+  string ∪ `{kind:filesystem}` and rejects other kinds + inline secrets (door 4); provider-aware
+  `ArtifactRootsEditor` (KindBadge/HealthDot/CapabilityChips + kind-first add menu) behind
+  `artifactsEnabled`; +14 i18n keys × 7 locales; +8 artifact tests. All seven validate-pr gates green.
+  Moved to `in-progress/`.

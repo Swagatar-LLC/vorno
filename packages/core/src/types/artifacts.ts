@@ -88,6 +88,42 @@ export interface StorageCapabilities {
   presign: boolean;
 }
 
+/**
+ * Filesystem root binding config (ADR-0019 §1). `path` is absolute; the
+ * filesystem kind carries no secret.
+ */
+export interface FilesystemRootConfig {
+  kind: 'filesystem';
+  path: string;
+}
+
+/**
+ * A configured (non-workspace) root binding, discriminated by `kind`
+ * (ADR-0019 §1–2). `kind` is an ADR-0016 §3 open string space: un-prefixed
+ * values are reserved for system built-ins (`filesystem`, future
+ * `object-store`, `memory`); third-party kinds require a registered prefix
+ * (`<prefix>:<name>`). Forward-tolerant — an unknown kind parses and is skipped
+ * at resolution, never throws. Secret-bearing kinds reference a vault key, they
+ * never carry inline secrets (ADR-0019 §4).
+ */
+export type RootBindingConfig =
+  | FilesystemRootConfig
+  | { kind: string; [k: string]: unknown };
+
+/**
+ * Persisted map: rootId → binding. A bare `string` value is the filesystem
+ * shorthand, read as `{ kind: 'filesystem', path: <string> }` (ADR-0019 §1) —
+ * so every pre-existing `Record<string, string>` config parses unchanged.
+ */
+export type ArtifactRootsConfig = Record<string, string | RootBindingConfig>;
+
+/**
+ * Per-root health surfaced additively on `roots:list` (ADR-0019 §4, door 3).
+ * Reuses the `ArtifactSkippedRoot.reason` vocabulary plus `ok`. Derived from a
+ * bounded root-level probe; its semantics freeze on ship.
+ */
+export type RootHealth = 'ok' | 'missing' | 'unreadable' | 'truncated';
+
 /** Type descriptor in the open registry (ADR-0016 §3). */
 export interface ArtifactTypeDescriptor {
   /** Open lowercase-kebab id; un-prefixed = system built-in. */
