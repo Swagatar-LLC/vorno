@@ -12,6 +12,35 @@ export function normalizeFollowUpText(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
+/**
+ * The text an annotation points at: its quote selector, else the slice named by
+ * its position selector, else a placeholder.
+ *
+ * Lives here rather than in `chat/follow-up-helpers` (which re-exports it for
+ * back-compat) so the renderer's pure follow-up module can reach it without
+ * importing the React chat barrel. `chat/follow-up-helpers` is not an exported
+ * subpath of this package.
+ */
+export function extractAnnotationSelectedText(annotation: AnnotationV1, messageContent: string): string {
+  const quoteSelector = annotation.target.selectors.find(
+    (selector): selector is Extract<AnnotationV1['target']['selectors'][number], { type: 'text-quote' }> => selector.type === 'text-quote'
+  )
+  const quoteText = quoteSelector?.exact?.trim() ?? ''
+  if (quoteText.length > 0) return quoteText
+
+  const positionSelector = annotation.target.selectors.find(
+    (selector): selector is Extract<AnnotationV1['target']['selectors'][number], { type: 'text-position' }> => selector.type === 'text-position'
+  )
+  if (positionSelector) {
+    const start = Math.max(0, Math.min(positionSelector.start, messageContent.length))
+    const end = Math.max(start, Math.min(positionSelector.end, messageContent.length))
+    const slice = messageContent.slice(start, end).trim()
+    if (slice.length > 0) return slice
+  }
+
+  return 'Selected text'
+}
+
 export function getAnnotationNoteText(annotation: AnnotationV1): string {
   const noteBody = annotation.body.find((body): body is Extract<AnnotationV1['body'][number], { type: 'note' }> => body.type === 'note')
   const bodyText = noteBody?.text?.trim() ?? ''
