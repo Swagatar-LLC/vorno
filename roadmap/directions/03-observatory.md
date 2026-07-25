@@ -1,7 +1,7 @@
 ---
 id: DIR-03
 title: The Live Observatory
-status: future
+status: active
 opened: 2026-04-28
 related-discussions:
   - 2026-04-28-canvas-paradigm-directions.md
