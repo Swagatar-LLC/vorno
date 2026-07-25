@@ -10,6 +10,7 @@
  */
 
 import {
+  EVENT_BUFFER_TTL_MS,
   PROTOCOL_VERSION,
   REQUEST_TIMEOUT_MS,
   SEQUENCE_ACK_INTERVAL_MS,
@@ -23,6 +24,12 @@ import { serializeEnvelope, deserializeEnvelope } from './codec'
 // ---------------------------------------------------------------------------
 // Pending request state
 // ---------------------------------------------------------------------------
+
+/** Minimal structural shape of a browser event target (no DOM lib in this package). */
+interface LifecycleEventTarget {
+  addEventListener(type: string, listener: (event: any) => void): void
+  removeEventListener(type: string, listener: (event: any) => void): void
+}
 
 interface PendingRequest {
   resolve: (value: any) => void
@@ -118,6 +125,23 @@ export class WsRpcClient implements RpcClient {
   private connected = false
   private reconnectAttempt = 0
   private lastSeenSeq = 0
+  /**
+   * Highest sequence number received with no gap before it — the real
+   * "I have everything up to here" watermark.
+   *
+   * Distinct from `lastSeenSeq` on purpose. Acking `lastSeenSeq` after a gap
+   * tells the server to evict the very events we never received, destroying the
+   * only replayable copy (see the sequence_ack handling in server.ts). We ack
+   * this contiguous watermark instead so a later reconnect can still replay.
+   */
+  private lastContiguousSeq = 0
+  /** Debounce flag so a burst of sequence gaps triggers one recovery pass. */
+  private sequenceGapRecoveryPending = false
+  /** Diagnostic counter — events known to have been lost in flight. */
+  private missedEventCount = 0
+  /** When the page was last hidden (browser only), for resume liveness checks. */
+  private hiddenAt: number | null = null
+  private removeLifecycleWatchers: (() => void) | null = null
   private ackTimer: ReturnType<typeof setInterval> | null = null
   private pendingReconnect: { clientId: string; lastSeq: number } | null = null
   private currentHandshakeWasReconnect = false
@@ -168,6 +192,8 @@ export class WsRpcClient implements RpcClient {
       attempt: 0,
       updatedAt: Date.now(),
     }
+
+    this.installLifecycleWatchers()
   }
 
   // -------------------------------------------------------------------------
@@ -281,7 +307,7 @@ export class WsRpcClient implements RpcClient {
     if (this.clientId) {
       this.pendingReconnect = {
         clientId: this.clientId,
-        lastSeq: this.lastSeenSeq,
+        lastSeq: this.lastContiguousSeq,
       }
     }
 
@@ -450,6 +476,10 @@ export class WsRpcClient implements RpcClient {
 
   destroy(): void {
     this.destroyed = true
+    if (this.removeLifecycleWatchers) {
+      this.removeLifecycleWatchers()
+      this.removeLifecycleWatchers = null
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -531,7 +561,10 @@ export class WsRpcClient implements RpcClient {
         this.scheduleBackoffReset()
 
         if (!serverRecognizedReconnect) {
+          // Fresh connect — the server's sequence numbering restarts for us, so
+          // both watermarks reset together.
           this.lastSeenSeq = 0
+          this.lastContiguousSeq = 0
         }
 
         if (this.connectTimer) {
@@ -613,7 +646,15 @@ export class WsRpcClient implements RpcClient {
         // Track sequence numbers for reliable delivery
         if (typeof envelope.seq === 'number') {
           if (this.lastSeenSeq > 0 && envelope.seq > this.lastSeenSeq + 1) {
+            // Events were lost in flight. Detecting-and-continuing silently
+            // diverges client state from the server forever (a dropped
+            // message_annotations_updated leaves a phantom follow-up chip the
+            // user cannot clear). Leave the contiguous watermark where it is so
+            // the server keeps the missed events, and ask the app to re-hydrate.
             console.warn(`[WsRpc] Sequence gap: expected ${this.lastSeenSeq + 1}, got ${envelope.seq}`)
+            this.handleSequenceGap(this.lastSeenSeq + 1, envelope.seq)
+          } else {
+            this.lastContiguousSeq = envelope.seq
           }
           this.lastSeenSeq = envelope.seq
         }
@@ -696,7 +737,7 @@ export class WsRpcClient implements RpcClient {
     if (this.clientId) {
       this.pendingReconnect = {
         clientId: this.clientId,
-        lastSeq: this.lastSeenSeq,
+        lastSeq: this.lastContiguousSeq,
       }
     }
 
@@ -825,15 +866,128 @@ export class WsRpcClient implements RpcClient {
   private startAckTimer(): void {
     if (this.ackTimer) clearInterval(this.ackTimer)
     this.ackTimer = setInterval(() => {
-      if (this.connected && this.lastSeenSeq > 0) {
+      if (this.connected && this.lastContiguousSeq > 0) {
         const ack: MessageEnvelope = {
           id: crypto.randomUUID(),
           type: 'sequence_ack',
-          lastSeq: this.lastSeenSeq,
+          lastSeq: this.lastContiguousSeq,
         }
         this.trySendEnvelope(this.ws, ack)
       }
     }, SEQUENCE_ACK_INTERVAL_MS)
+  }
+
+  /**
+   * A run of events never arrived. The socket is still up, so no reconnect (and
+   * therefore no `stale` handshake_ack) will fire on its own — signal stale
+   * recovery directly so the app re-fetches authoritative state.
+   *
+   * Debounced per episode: a burst of gaps triggers one recovery pass.
+   */
+  private handleSequenceGap(expectedSeq: number, receivedSeq: number): void {
+    if (this.destroyed || this.sequenceGapRecoveryPending) return
+    this.sequenceGapRecoveryPending = true
+
+    this.missedEventCount += receivedSeq - expectedSeq
+
+    // Defer past the current dispatch so listeners see the event that exposed
+    // the gap before the re-hydration pass runs.
+    setTimeout(() => {
+      this.sequenceGapRecoveryPending = false
+      if (this.destroyed) return
+      this.emitReconnected(true)
+    }, 0)
+  }
+
+  /** Diagnostic: events known to have been lost in flight (sequence gaps). */
+  getMissedEventCount(): number {
+    return this.missedEventCount
+  }
+
+  // -------------------------------------------------------------------------
+  // Page lifecycle (browser only)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Browsers — mobile Safari especially — freeze backgrounded tabs: timers stop
+   * and the socket is torn down by the OS without necessarily delivering a
+   * `close` event. Nothing else in this client detects that (the heartbeat is
+   * server->client only, and `readyState` keeps reporting OPEN), so a resumed
+   * tab can sit indefinitely believing it is connected while missing every push
+   * event. Hook the page lifecycle to verify liveness on resume.
+   */
+  private installLifecycleWatchers(): void {
+    // Reached from Node contexts too, and this package is deliberately built
+    // without the DOM lib — so the browser globals are read structurally.
+    const globals = globalThis as unknown as {
+      document?: LifecycleEventTarget & { visibilityState?: string }
+      window?: LifecycleEventTarget
+    }
+    const doc = globals.document
+    const win = globals.window
+    if (!doc || !win) return
+    if (typeof doc.addEventListener !== 'function' || typeof win.addEventListener !== 'function') return
+
+    const onVisibilityChange = () => {
+      if (doc.visibilityState === 'hidden') {
+        this.hiddenAt = Date.now()
+        return
+      }
+      const hiddenMs = this.hiddenAt == null ? 0 : Date.now() - this.hiddenAt
+      this.hiddenAt = null
+      this.checkLivenessAfterResume(hiddenMs)
+    }
+
+    // bfcache restore: the socket is always gone, so force a resync.
+    const onPageShow = (event: { persisted?: boolean }) => {
+      this.checkLivenessAfterResume(event?.persisted ? Number.POSITIVE_INFINITY : 0)
+    }
+
+    // Network came back — we cannot know what was missed while offline.
+    const onOnline = () => this.checkLivenessAfterResume(Number.POSITIVE_INFINITY)
+
+    doc.addEventListener('visibilitychange', onVisibilityChange)
+    win.addEventListener('pageshow', onPageShow)
+    win.addEventListener('online', onOnline)
+
+    this.removeLifecycleWatchers = () => {
+      doc.removeEventListener('visibilitychange', onVisibilityChange)
+      win.removeEventListener('pageshow', onPageShow)
+      win.removeEventListener('online', onOnline)
+    }
+  }
+
+  /**
+   * Decide whether a resumed page can trust its connection.
+   *
+   * A hide longer than the server's event-buffer TTL means the events we would
+   * need are already evicted, so a socket that merely *looks* OPEN is not good
+   * enough — force a reconnect to get an authoritative `stale` verdict and the
+   * re-hydration that follows it.
+   */
+  private checkLivenessAfterResume(hiddenMs: number): void {
+    if (this.destroyed || this.permanentlyClosed || !this.autoReconnect) return
+    if (!this.connectStarted) return
+
+    const ws = this.ws
+    const socketDown = !ws || ws.readyState !== ws.OPEN
+    const beyondReplayWindow = hiddenMs > EVENT_BUFFER_TTL_MS
+
+    if (socketDown || beyondReplayWindow) {
+      this.reconnectNow()
+      return
+    }
+
+    // Inside the replay window: probe with a cheap ack. A failed send means the
+    // socket is half-open (suspended underneath us) despite readyState OPEN.
+    const probe: MessageEnvelope = {
+      id: crypto.randomUUID(),
+      type: 'sequence_ack',
+      lastSeq: this.lastContiguousSeq,
+    }
+    if (!this.trySendEnvelope(ws, probe)) {
+      this.reconnectNow()
+    }
   }
 
   private createReadyPromise(): void {
