@@ -1,7 +1,7 @@
 ---
 id: PLAN-011
 title: Settings toggle for background-agent keep-alive
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-08
@@ -224,3 +224,5 @@ Deliberately **not** touched: `persistent-input.ts` (upstream's resolver + tests
 - `2026-07-08` — created in `plans/in-progress/` (design for a Settings toggle over upstream v0.11.0's env-only keep-alive opt-out).
 - `2026-07-18` — carried through the public-flip prep pass (de-Craft docs / roadmap split); design unchanged.
 - `2026-07-24` — `## Status log` section backfilled during roadmap review (this plan predated the template convention). Disposition open: `isKeepBackgroundTasksAliveEnabled()` shipped and survived the v0.11.2 upstream sync (see `roadmap/upstream/compatibility.md`); pending owner confirmation of what remains before moving to `done/` (roadmap-review F4/F12).
+
+- 2026-07-25 — Shipped and in production; folder-state reconciled `in-progress` → `done` (roadmap status review, session 260724-light-delta).

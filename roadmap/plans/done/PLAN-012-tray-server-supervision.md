@@ -1,7 +1,7 @@
 ---
 id: PLAN-012
 title: Tray-based server supervision (embedded trigger-server host)
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-08
@@ -351,3 +351,5 @@ None. The packaged build behaved correctly across every automatable check; no co
 - 2026-07-08 — created in `planned/` (design doc, tracked internally); ADR-0007 drafted in the same PR.
 - 2026-07-09 — packaged-build verification complete (§10). Built the canonical arm64 DMG (Electron 39.2.7 / Node 22.21.1, SDK 0.3.197 + native binary staged, no OOM, no missing-module crash). Every automatable §8 item passed against a throwaway `CRAFT_CONFIG_DIR` + isolated `--user-data-dir`: autostart reconcile, `/health` fork fingerprint, 401→200 auth (CLI key applied live), 429 rate limit, WS `handshake_ack`, SSE no-hang, port-conflict error-without-crash + recovery, `closeAllConnections` present, clean quit (no orphans, port freed), fork features shipped in the bundle. No code fixes needed. Two non-obvious verification gotchas captured in `vorno-internal:learnings/LEARNING-015-*` (private) (single-instance lock keyed on userData; production builds disable all electron-log transports). Visual items (tray glyph/menu, FORK badge, Remote Access page walk-through, full SSE stream) flagged for the maintainer.
 - 2026-07-08 — moved from planned to in-progress: PR-1 implemented — runtime-neutral `createTriggerServer` core + `WsProtocol`/`WsSocketAdapter` split (WS adapter PORTED, not deferred; standalone Bun path byte-identical, strict tests green), embedded node:http + `ws` host, `TriggerServerSupervisor` (state machine + autostart + port-conflict + `/health` fork fingerprint), macOS tray, `craft-fork:triggerServer:*` IPC, completed `RemoteAccessSettingsPage`, deleted `server-lifecycle.ts`. ADR-0007 flipped proposed → accepted. Rebased onto main @ 09f9ee27 (absorbed PLAN-013 provisioning + standalone host — both compose on the new core). Packaged DMG verification remains.
+
+- 2026-07-25 — Shipped and in production; folder-state reconciled `in-progress` → `done` (roadmap status review, session 260724-light-delta).
