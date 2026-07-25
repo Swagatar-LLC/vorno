@@ -8,7 +8,7 @@ Per [ADR-0001](../decisions/0001-fork-relationship-with-upstream.md), we commit 
 |----------|-----------------|---------------------------|
 | `MessageEnvelope` | [`packages/shared/src/protocol/types.ts`](../../packages/shared/src/protocol/types.ts) | Wire-compatible. We add fields only via additive changes. |
 | `AgentEvent` union | [`packages/core/src/types/message.ts`](../../packages/core/src/types/message.ts) | Wire-compatible. New event types must round-trip through upstream parsers (unknown types ignored, not errored). |
-| RPC channel names (`sessions:*`, `messaging:*`, etc.) | `packages/shared/src/protocol/channels.ts` | We do not rename or remove existing channels. We may add new ones under our own namespace prefix (e.g., `craft-fork:*`) to avoid collisions. |
+| RPC channel names (`sessions:*`, `messaging:*`, etc.) | `packages/shared/src/protocol/channels.ts` | We do not rename or remove existing channels. We may add new ones under our own namespace prefix (`vorno:*` for new families per [ADR-0012](../decisions/0012-additive-vorno-protocol-namespace.md); existing `craft-fork:*` groups grandfathered) to avoid collisions. |
 | Source schema (`config.json` + `guide.md`) | `packages/shared/src/sources/` | Fully compatible. Our additions are skill-side only. |
 | Skill schema (`SKILL.md` frontmatter) | Convention | **Will extend additively** in [DIR-02](../directions/02-skill-contributions.md). New `contributes:` block is opt-in; existing skills behave unchanged. |
 | API key format (`craft_sk_*`) | `apps/server/src/config.ts` | Owned by us; upstream doesn't have an equivalent. No conflict. |
@@ -46,7 +46,7 @@ Reserved by ADR-0013 (design, not yet in code): `vorno:server:info` (instance me
 
 - New client of existing dual-transport server. Speaks `MessageEnvelope` 1.0.
 - Subscribes to existing `sessions:event` channel via `pushToWorkspace` targeting.
-- May add new RPC channels under `craft-fork:observatory:*` for layout sync — namespace-scoped, no collision with upstream.
+- May add new RPC channels under `vorno:observatory:*` for layout sync (new families use `vorno:*` per [ADR-0012](../decisions/0012-additive-vorno-protocol-namespace.md); existing `craft-fork:*` groups grandfathered) — namespace-scoped, no collision with upstream.
 - Automerge sync state is local to the Observatory, not on the wire.
 - ✅ Fully compatible.
 

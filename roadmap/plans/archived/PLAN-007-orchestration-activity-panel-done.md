@@ -3,7 +3,7 @@
 ---
 id: PLAN-007
 title: Persistent orchestration/activity panel (mini-Observatory)
-status: done
+status: archived
 direction: DIR-03
 owner: jh
 created: 2026-06-08
