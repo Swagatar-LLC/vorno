@@ -1,7 +1,7 @@
 ---
 id: ADR-0019
 title: Storage-root config schema and provider-kind namespace
-status: proposed
+status: accepted
 date: 2026-07-24
 supersedes: []
 superseded-by: []
@@ -73,6 +73,8 @@ Root config names **what to bind** (`kind` + connection target) — it never ass
 2. **Provider `kind` becomes a reserved ADR-0016 §3 string space** — un-prefixed = system built-in, third-party kinds prefixed. Binds every future backend's naming.
 3. **Per-root `status` field on `roots:list`** (additive, optional) — the wire shape for health; its semantics freeze on ship.
 4. **Forward constraint (design-only here): no inline secrets in root config;** secret-bearing kinds reference the ADR-0013 vault and are gated on the hosted track. Accept the constraint now so no interim schema bakes in a plaintext-secret field.
+
+> **Accepted 2026-07-24** (Jeff, session 260724-light-delta). All four doors above signed off. The dependency doors on ADR-0018 were signed the same day — pure-predicate admissibility; provider-owns-containment (no artifact-plane code path may obtain a raw physical path); hybrid capability negotiation on the REMOTE_ELIGIBLE wire. ADR-0018 to be flipped `proposed → accepted` on PR #114 to match; this ADR's acceptance is contingent on that seal, which is now signed.
 
 ## Consequences
 
