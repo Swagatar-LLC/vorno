@@ -142,24 +142,52 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
     }
 
-    // Validate artifactRoots: plain object of rootId(string) → absolutePath(string).
-    // Root ids must be syntactically valid and not shadow the reserved 'workspace'
-    // id; paths must be absolute (ADR-0016 §2).
+    // Validate artifactRoots (ADR-0016 §2, ADR-0019). The value is a map of
+    // rootId → (absolute-path string | RootBindingConfig). Root ids must be
+    // syntactically valid and not shadow the reserved 'workspace' id. A bare
+    // string is the filesystem shorthand (absolute path). An object must carry
+    // a string `kind`; only 'filesystem' (absolute `path`) is supported for
+    // saving today — other kinds (object-store) arrive with the hosted track
+    // and are rejected here so no interim config bakes in an inline secret
+    // (ADR-0019 §4, door 4). Resolution itself stays tolerant (unknown kinds
+    // are skipped, never thrown) so a newer config never bricks an older Vorno.
     if (key === 'artifactRoots' && normalizedValue !== undefined && normalizedValue !== null) {
       if (typeof normalizedValue !== 'object' || Array.isArray(normalizedValue)) {
-        throw new Error('artifactRoots must be an object map of rootId → absolute path')
+        throw new Error('artifactRoots must be an object map of rootId → root binding')
       }
       const { isValidRootId, RESERVED_WORKSPACE_ROOT_ID } = await import('@craft-agent/shared/artifacts')
-      for (const [rootId, rawPath] of Object.entries(normalizedValue as Record<string, unknown>)) {
+      for (const [rootId, rawValue] of Object.entries(normalizedValue as Record<string, unknown>)) {
         if (rootId === RESERVED_WORKSPACE_ROOT_ID) {
           throw new Error(`artifactRoots: '${RESERVED_WORKSPACE_ROOT_ID}' is a reserved, implicit root id`)
         }
         if (!isValidRootId(rootId)) {
           throw new Error(`artifactRoots: invalid root id "${rootId}" (must be lowercase kebab, 1–64 chars)`)
         }
-        if (typeof rawPath !== 'string' || !isAbsolute(rawPath)) {
-          throw new Error(`artifactRoots."${rootId}": value must be an absolute path`)
+        // Bare string = filesystem shorthand.
+        if (typeof rawValue === 'string') {
+          if (!isAbsolute(rawValue)) {
+            throw new Error(`artifactRoots."${rootId}": value must be an absolute path`)
+          }
+          continue
         }
+        // Object form: discriminated by `kind`.
+        if (typeof rawValue !== 'object' || rawValue === null || Array.isArray(rawValue)) {
+          throw new Error(`artifactRoots."${rootId}": value must be an absolute path or a { kind, … } binding`)
+        }
+        const kind = (rawValue as { kind?: unknown }).kind
+        if (typeof kind !== 'string') {
+          throw new Error(`artifactRoots."${rootId}": binding must have a string "kind"`)
+        }
+        if (kind === 'filesystem') {
+          const path = (rawValue as { path?: unknown }).path
+          if (typeof path !== 'string' || !isAbsolute(path)) {
+            throw new Error(`artifactRoots."${rootId}": filesystem kind requires an absolute "path"`)
+          }
+          continue
+        }
+        throw new Error(
+          `artifactRoots."${rootId}": kind "${kind}" is not supported yet. Object-store roots and their credentials arrive with hosted workspaces (via the vault, never inline).`,
+        )
       }
     }
 

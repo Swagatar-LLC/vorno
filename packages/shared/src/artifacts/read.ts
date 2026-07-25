@@ -14,7 +14,7 @@
  * cannot distinguish denied from not-found, by design.
  */
 
-import type { ArtifactVersion } from '@craft-agent/core/types';
+import type { ArtifactVersion, ArtifactRootsConfig } from '@craft-agent/core/types';
 import { resolveRootBindings } from './roots.ts';
 import { canonicalizeArtifactUri, parseArtifactUri } from './uri.ts';
 import { isAdmissible } from './admissibility.ts';
@@ -26,7 +26,7 @@ export const MAX_ARTIFACT_BYTES = 2 * 1024 * 1024; // 2 MB
 
 export interface ReadArtifactOptions {
   workspaceRootPath: string;
-  configuredRoots?: Record<string, string>;
+  configuredRoots?: ArtifactRootsConfig;
   uri: string;
 }
 

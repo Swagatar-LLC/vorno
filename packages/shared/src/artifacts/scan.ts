@@ -28,6 +28,7 @@ import type {
   ArtifactEntry,
   ArtifactOrigin,
   ArtifactOriginKind,
+  ArtifactRootsConfig,
   ArtifactSkippedRoot,
 } from '@craft-agent/core/types';
 import { getArtifactTypeForPath, getRegisteredExtensions } from './registry.ts';
@@ -46,7 +47,7 @@ const GLOBAL_FILE_CAP = 2000;
 
 export interface IndexArtifactsOptions {
   workspaceRootPath: string;
-  configuredRoots?: Record<string, string>;
+  configuredRoots?: ArtifactRootsConfig;
   includeArchived?: boolean;
 }
 
@@ -241,7 +242,7 @@ const SESSION_FILE_RE = /^sessions\/([^/]+)\/(plans|data)\//;
  */
 async function collectScannedFiles(
   workspaceRootPath: string,
-  configuredRoots?: Record<string, string>,
+  configuredRoots?: ArtifactRootsConfig,
 ): Promise<{
   files: ScannedFile[];
   skippedRoots: ArtifactSkippedRoot[];
@@ -377,7 +378,7 @@ export async function indexArtifacts(options: IndexArtifactsOptions): Promise<{
  */
 export async function indexArtifactUris(options: {
   workspaceRootPath: string;
-  configuredRoots?: Record<string, string>;
+  configuredRoots?: ArtifactRootsConfig;
 }): Promise<Set<string>> {
   const { files } = await collectScannedFiles(options.workspaceRootPath, options.configuredRoots);
   return new Set(files.map((f) => f.uri));

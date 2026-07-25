@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { resolveRootBindings } from '../roots.ts';
+import {
+  resolveRootBindings,
+  normalizeRootConfig,
+  createProvider,
+  probeRootHealth,
+} from '../roots.ts';
 import { FilesystemStorageProvider } from '../storage/filesystem.ts';
 import { isWriteCapable } from '../storage/provider.ts';
 import { formatArtifactUri } from '../uri.ts';
@@ -68,6 +73,96 @@ describe('resolveRootBindings', () => {
     });
     // In-process half of the hybrid negotiation agrees with the descriptor.
     expect(isWriteCapable(ws)).toBe(false);
+  });
+});
+
+describe('root config schema (ADR-0019)', () => {
+  it('normalizeRootConfig: string is the filesystem shorthand', () => {
+    expect(normalizeRootConfig('/abs/path')).toEqual({ kind: 'filesystem', path: '/abs/path' });
+  });
+
+  it('normalizeRootConfig: object with string kind passes through; else null', () => {
+    const cfg = { kind: 'filesystem', path: '/x' };
+    expect(normalizeRootConfig(cfg)).toBe(cfg);
+    expect(normalizeRootConfig({ kind: 'object-store', bucket: 'b' })).toEqual({
+      kind: 'object-store',
+      bucket: 'b',
+    });
+    // Malformed (no string kind) → null.
+    expect(normalizeRootConfig({ path: '/x' } as never)).toBeNull();
+  });
+
+  it('createProvider: filesystem builds; non-absolute path and unknown kind → null', () => {
+    expect(createProvider('r', { kind: 'filesystem', path: join(tempDir, 'r') })).toBeInstanceOf(
+      FilesystemStorageProvider,
+    );
+    expect(createProvider('r', { kind: 'filesystem', path: 'relative' })).toBeNull();
+    expect(createProvider('r', { kind: 'object-store', bucket: 'b' })).toBeNull();
+  });
+
+  it('resolveRootBindings: a string value ≡ {kind:filesystem, path} (migration-free)', () => {
+    const roadmap = join(tempDir, 'roadmap');
+    const asString = resolveRootBindings(workspaceRoot, { roadmap });
+    const asObject = resolveRootBindings(workspaceRoot, {
+      roadmap: { kind: 'filesystem', path: roadmap },
+    });
+    const s = asString.get('roadmap');
+    const o = asObject.get('roadmap');
+    expect(s).toBeInstanceOf(FilesystemStorageProvider);
+    expect(o).toBeInstanceOf(FilesystemStorageProvider);
+    expect(s!.kind).toBe('filesystem');
+    expect(o!.kind).toBe('filesystem');
+  });
+
+  it('resolveRootBindings: unknown kind and malformed config are skipped, never thrown', () => {
+    const b = resolveRootBindings(workspaceRoot, {
+      good: { kind: 'filesystem', path: join(tempDir, 'good') },
+      future: { kind: 'object-store', bucket: 'b' }, // unsupported kind → skipped
+      'prefixed:x': { kind: 'acme:blob', endpoint: 'e' }, // third-party kind → skipped
+      broken: { nope: true } as never, // no string kind → skipped
+    });
+    expect(b.get('good')).toBeInstanceOf(FilesystemStorageProvider);
+    expect(b.has('future')).toBe(false);
+    expect(b.has('prefixed:x')).toBe(false);
+    expect(b.has('broken')).toBe(false);
+  });
+
+  it('probeRootHealth: ok for a reachable root, missing for a non-existent one', async () => {
+    const present = join(tempDir, 'present');
+    mkdirSync(present, { recursive: true });
+    write(join(present, 'note.md'), '# note');
+    const okProvider = new FilesystemStorageProvider('present', present);
+    expect(await probeRootHealth(okProvider)).toBe('ok');
+
+    const gone = new FilesystemStorageProvider('gone', join(tempDir, 'does-not-exist'));
+    expect(await probeRootHealth(gone)).toBe('missing');
+  });
+
+  it('roots:list payload projection carries status and leaks no absolute path (ADR-0016 §2)', async () => {
+    write(join(workspaceRoot, 'a.md'), '# a');
+    const roadmap = join(tempDir, 'roadmap');
+    mkdirSync(roadmap, { recursive: true });
+    const providers = resolveRootBindings(workspaceRoot, { roadmap });
+    // Exactly the mapping the ROOTS_LIST handler performs.
+    const roots = await Promise.all(
+      Array.from(providers.entries()).map(async ([id, provider]) => ({
+        id,
+        kind: provider.kind,
+        capabilities: provider.capabilities,
+        status: await probeRootHealth(provider),
+      })),
+    );
+    for (const r of roots) {
+      expect(Object.keys(r).sort()).toEqual(['capabilities', 'id', 'kind', 'status']);
+      expect(['ok', 'missing', 'unreadable', 'truncated']).toContain(r.status);
+      // No absolute path anywhere in the serialized payload.
+      const serialized = JSON.stringify(r);
+      expect(serialized).not.toContain(workspaceRoot);
+      expect(serialized).not.toContain(roadmap);
+      expect(serialized).not.toContain(tempDir);
+    }
+    expect(roots.find((r) => r.id === 'workspace')!.status).toBe('ok');
+    expect(roots.find((r) => r.id === 'roadmap')!.status).toBe('ok');
   });
 });
 

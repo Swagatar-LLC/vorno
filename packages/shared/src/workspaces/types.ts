@@ -13,6 +13,7 @@
 
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
+import type { RootBindingConfig } from '@craft-agent/core/types';
 
 /**
  * Local MCP server configuration
@@ -83,8 +84,14 @@ export interface WorkspaceConfig {
     /** Feature flag for the Artifact Home surface (ADR-0016, PLAN-025). Default off. */
     artifactsEnabled?: boolean;
 
-    /** Named artifact root bindings (rootId → absolute path), ADR-0016 §2. Advanced override; 'workspace' is reserved and implicit. */
-    artifactRoots?: Record<string, string>;
+    /**
+     * Named artifact root bindings (ADR-0016 §2). Advanced override;
+     * 'workspace' is reserved and implicit. Value widens additively
+     * (ADR-0019 §1): a bare `string` is the filesystem shorthand (absolute
+     * path), or a `RootBindingConfig` object keyed by `kind`. Existing
+     * string-map configs parse unchanged.
+     */
+    artifactRoots?: Record<string, string | RootBindingConfig>;
   };
 
   /**
