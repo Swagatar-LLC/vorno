@@ -33,6 +33,7 @@ export type {
   CoreBackendConfig,
   BackendConfig,
   BackendHostRuntimeContext,
+  BackendRuntimeUpdate,
   PermissionCallback,
   PlanCallback,
   AuthCallback,

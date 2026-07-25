@@ -5,7 +5,7 @@ import { join } from 'path'
 import { resolveBackendContext } from '@craft-agent/shared/agent/backend'
 import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
-import { buildRestartRequiredSignature } from './runtime-config.ts'
+import { buildRestartRequiredSignature, buildRuntimeEnvelope } from './runtime-config.ts'
 
 // Regression coverage for the stale-Pi-subprocess bug where toggling
 // `supportsImages` on a custom-endpoint model wrote to disk but never reached
@@ -197,11 +197,13 @@ describe('refreshConnectionRuntime', () => {
     expect(agent.updateRuntimeConfig).toHaveBeenCalledTimes(1)
   })
 
-  it('records customModels with the per-model supportsImages flag in the IPC payload', async () => {
-    // End-to-end shape check: when the session's connection resolves to a
-    // pi_compat connection with explicit per-model `supportsImages`, the
-    // helper must forward that field on `customModels` so the Pi subprocess
-    // can re-register the model with `input: ['text', 'image']`.
+  it('sends an IPC payload whose runtime envelope matches the pure builder for the resolved connection', async () => {
+    // Environment-independent end-to-end check: whatever connection this
+    // machine resolves for the session (a real one on a dev box, none in a
+    // clean CI environment), the payload's `runtime` must be exactly what
+    // `buildRuntimeEnvelope` produces for it. The customModels *shape* itself
+    // is covered hermetically below — asserting `runtime: Any<Object>` here
+    // silently depended on the host's own llmConnections config.
     const agent = createAgentStub()
     injectSession(sm, 'shape-check', tmpRoot, 'slug-A', agent)
 
@@ -210,21 +212,59 @@ describe('refreshConnectionRuntime', () => {
     expect(agent.updateRuntimeConfig).toHaveBeenCalledTimes(1)
     const payload = agent.updateRuntimeConfig.mock.calls[0]?.[0]
     expect(payload).toBeDefined()
-    expect(payload).toMatchObject({
-      model: expect.any(String),
-      runtime: expect.any(Object),
+    expect(typeof payload.model).toBe('string')
+
+    const workspaceConfig = loadWorkspaceConfig(tmpRoot)
+    const ctx = resolveBackendContext({
+      sessionConnectionSlug: 'slug-A',
+      workspaceDefaultConnectionSlug: workspaceConfig?.defaults?.defaultLlmConnection,
     })
-    // The runtime envelope mirrors what `pi-agent.ts:requestRuntimeConfigUpdate`
-    // unpacks — `customModels` shape preserves `supportsImages` when set.
-    if (payload.runtime?.customModels) {
-      for (const m of payload.runtime.customModels) {
-        if (typeof m === 'object') {
-          expect(typeof m.id).toBe('string')
-          if ('supportsImages' in m) {
-            expect(typeof m.supportsImages).toBe('boolean')
-          }
-        }
+    expect(payload.runtime).toEqual(buildRuntimeEnvelope(ctx.connection))
+  })
+
+  it('buildRuntimeEnvelope forwards per-model supportsImages on customModels (pi_compat)', () => {
+    // Hermetic shape check for the stale-Pi-subprocess regression: when a
+    // pi_compat connection carries explicit per-model `supportsImages`, the
+    // envelope must forward it so the subprocess re-registers the model with
+    // `input: ['text', 'image']`. Plain strings and capability-less entries
+    // stay plain strings on the wire.
+    const connection = {
+      slug: 'slug-A',
+      name: 'Compat',
+      providerType: 'pi_compat',
+      authType: 'api_key',
+      baseUrl: 'http://localhost:11434/v1',
+      piAuthProvider: 'openai',
+      customEndpoint: { api: 'openai-completions' },
+      models: [
+        'plain-model',
+        { id: 'bare-object-model' },
+        { id: 'vision-model', supportsImages: true },
+        { id: 'blind-model', supportsImages: false },
+        { id: 'big-model', contextWindow: 200000 },
+      ],
+    } as never
+
+    const envelope = buildRuntimeEnvelope(connection)
+    expect(envelope).toBeDefined()
+    expect(envelope?.baseUrl).toBe('http://localhost:11434/v1')
+    expect(envelope?.piAuthProvider).toBe('openai')
+    expect(envelope?.customModels).toEqual([
+      'plain-model',
+      'bare-object-model',
+      { id: 'vision-model', supportsImages: true },
+      { id: 'blind-model', supportsImages: false },
+      { id: 'big-model', contextWindow: 200000 },
+    ])
+    for (const m of envelope?.customModels ?? []) {
+      if (typeof m === 'object' && 'supportsImages' in m) {
+        expect(typeof m.supportsImages).toBe('boolean')
       }
     }
+  })
+
+  it('buildRuntimeEnvelope returns undefined when no connection resolves', () => {
+    expect(buildRuntimeEnvelope(null)).toBeUndefined()
+    expect(buildRuntimeEnvelope(undefined)).toBeUndefined()
   })
 })
