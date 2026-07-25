@@ -1,7 +1,7 @@
 ---
 id: PLAN-020
 title: Desktop WebUI — zero-config autostart, tray control, configurable port
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-13
@@ -462,3 +462,5 @@ assumptions to reconcile on receipt:
   `apps/electron/src/shared/__tests__/ipc-channels.test.ts` (EXPECTED_CHANNELS entries)
   — plus the `host.listen()` alignment above. Branding scan of the PR diff came back
   clean (no hardcoded product strings); PLAN-019 needs no renames on our side.
+
+- 2026-07-25 — Shipped and in production; folder-state reconciled `in-progress` → `done` (roadmap status review, session 260724-light-delta).

@@ -1,7 +1,7 @@
 ---
 id: PLAN-021
 title: Projects as first-class citizens — real session route, filter hygiene, session project picker
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-14
@@ -105,3 +105,5 @@ Mirror the `label` filter end-to-end:
 - `2026-07-14` — moved to `in-progress/`.
 - `2026-07-14` — implemented: `project/{id}` filter route end-to-end (types, routes, parser, session-list filtering, titles, sidebar highlight), All Sessions clears residual project chips, ProjectBadge + `chat.assignProject` (mod+shift+p) in the input badges row, parser round-trip tests (16 pass). PR #90.
 - `2026-07-14` — PR #90 merged to main (all 7 gates green, rebased over #89's release-notes conflict). Remaining: the maintainer verifies acceptance in the next point-release build, then move to done/.
+
+- 2026-07-25 — Shipped and in production; folder-state reconciled `in-progress` → `done` (roadmap status review, session 260724-light-delta).

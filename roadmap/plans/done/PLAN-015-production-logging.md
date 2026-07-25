@@ -1,7 +1,7 @@
 ---
 id: PLAN-015
 title: Production file logging with runtime level control and Advanced settings
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-07-09
@@ -80,3 +80,5 @@ Additive new files: `packages/shared/src/logging/*`, `handlers/logging.ts`, `Adv
 
 - `2026-07-09` — created in `planned/`
 - `2026-07-09` — moved from planned to in-progress: implemented + verified in the same PR (design-and-implement task)
+
+- 2026-07-25 — Shipped and in production; folder-state reconciled `in-progress` → `done` (roadmap status review, session 260724-light-delta).
