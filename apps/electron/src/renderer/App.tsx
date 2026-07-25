@@ -31,7 +31,7 @@ import { navigate, routes } from './lib/navigate'
 import { attachmentFromContentRef, toDraftRef } from './lib/drafts'
 import { stripMarkdown } from './utils/text'
 import { coerceInputText } from './lib/input-text'
-import { getSessionsToRefreshAfterStaleReconnect } from './lib/reconnect-recovery'
+import { getSessionsToRefreshAfterReconnect } from './lib/reconnect-recovery'
 import { formatSessionLoadFailure, shouldTreatSessionLoadFailureAsTransportFallback } from './lib/session-load'
 import { extractWorkspaceSlugFromPath } from '@craft-agent/shared/utils/workspace-slug'
 import { DEFAULT_THINKING_LEVEL } from '@craft-agent/shared/agent/thinking-levels'
@@ -1116,26 +1116,33 @@ export default function App() {
   // session content after stale reconnects.
   useEffect(() => {
     const cleanup = window.electronAPI.onReconnected(async (isStale: boolean) => {
-      if (!isStale) {
-        // Server replayed buffered events — we're caught up, nothing to do
-        console.info('[App] Reconnected with event replay — no refresh needed')
+      // A stale verdict sweeps session metadata + every processing session. A
+      // non-stale recovery reconnect (read-idle liveness probe, resume) still
+      // re-hydrates the currently displayed session — the event stream replayed,
+      // but a lost echo outside the replay window can leave its annotations
+      // diverged. The metadata sweep is reserved for the stale case.
+      let metaMap = store.get(sessionMetaMapAtom)
+      if (isStale) {
+        console.warn('[App] Stale reconnect — refreshing session metadata and active/processing sessions')
+        const refreshedMetaMap = await refreshSessionListMetadataFromServer({
+          removeMissing: false,
+          reason: 'stale-reconnect',
+          selectedSessionId: sessionSelection.selected,
+        })
+        metaMap = refreshedMetaMap ?? store.get(sessionMetaMapAtom)
+      } else {
+        console.info('[App] Non-stale recovery reconnect — re-hydrating the displayed session')
+      }
+
+      const refreshIds = getSessionsToRefreshAfterReconnect(metaMap, sessionSelection.selected, isStale)
+      if (refreshIds.length === 0) {
         return
       }
 
-      console.warn('[App] Stale reconnect — refreshing session metadata and active/processing sessions')
+      console.info(`[App] Reconnect recovery — refreshing ${refreshIds.length} session(s):`, refreshIds)
 
-      const refreshedMetaMap = await refreshSessionListMetadataFromServer({
-        removeMissing: false,
-        reason: 'stale-reconnect',
-        selectedSessionId: sessionSelection.selected,
-      })
-      const metaMap = refreshedMetaMap ?? store.get(sessionMetaMapAtom)
-      const refreshIds = getSessionsToRefreshAfterStaleReconnect(metaMap, sessionSelection.selected)
-
-      console.info(`[App] Stale reconnect — refreshing ${refreshIds.length} session(s):`, refreshIds)
-
-      // Refresh full message content only for the active session plus any
-      // session still marked processing after the metadata refresh.
+      // Refresh full message content for the displayed session plus, on a stale
+      // reconnect, any session still marked processing after the metadata refresh.
       for (const sessionId of refreshIds) {
         let refreshResult = await refreshSessionFromServer(sessionId)
         if (refreshResult !== 'refreshed') {

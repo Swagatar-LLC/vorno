@@ -11,6 +11,8 @@
 
 import {
   EVENT_BUFFER_TTL_MS,
+  HEARTBEAT_INTERVAL_MS,
+  HEARTBEAT_MAX_MISSED,
   PROTOCOL_VERSION,
   REQUEST_TIMEOUT_MS,
   SEQUENCE_ACK_INTERVAL_MS,
@@ -20,6 +22,19 @@ import {
 } from '@craft-agent/shared/protocol'
 import type { RpcClient } from './types'
 import { serializeEnvelope, deserializeEnvelope } from './codec'
+
+/**
+ * How long the client tolerates zero inbound reads before it treats the socket
+ * as suspect and runs a client-initiated liveness probe.
+ *
+ * The server heartbeat is a WS-level ping frame the browser auto-pongs without
+ * ever surfacing to JS, so a genuinely idle-but-healthy socket produces no
+ * reads at all — silence is not proof of death. We wait the full span in which
+ * the server would have pinged and then given up on an unresponsive peer
+ * (interval × missed-limit) plus one interval of slack before probing, so this
+ * never fires ahead of the server's own liveness verdict on a healthy link.
+ */
+const READ_IDLE_THRESHOLD_MS = HEARTBEAT_INTERVAL_MS * (HEARTBEAT_MAX_MISSED + 1)
 
 // ---------------------------------------------------------------------------
 // Pending request state
@@ -107,6 +122,11 @@ export interface WsRpcClientOptions {
   mode?: TransportMode
   /** Accept self-signed TLS certificates for wss:// connections. Default: false. Only works in Node.js (main process). */
   tlsRejectUnauthorized?: boolean
+  /**
+   * Injectable clock (ms). Default: `Date.now`. Lets tests drive the read-idle
+   * liveness timer deterministically without a real wall-clock wait.
+   */
+  now?: () => number
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +163,10 @@ export class WsRpcClient implements RpcClient {
   private hiddenAt: number | null = null
   private removeLifecycleWatchers: (() => void) | null = null
   private ackTimer: ReturnType<typeof setInterval> | null = null
+  /** Periodic read-idle liveness timer (client-initiated half-open detection). */
+  private readIdleTimer: ReturnType<typeof setInterval> | null = null
+  /** Clock reading (via injected `now`) of the last inbound read. */
+  private lastInboundAt = 0
   private pendingReconnect: { clientId: string; lastSeq: number } | null = null
   private currentHandshakeWasReconnect = false
   private manualReconnectRequested = false
@@ -171,6 +195,7 @@ export class WsRpcClient implements RpcClient {
   private readonly connectTimeout: number
   private readonly mode: TransportMode
   private readonly tlsRejectUnauthorized: boolean
+  private readonly now: () => number
 
   constructor(url: string, opts?: WsRpcClientOptions) {
     this.url = url
@@ -184,13 +209,14 @@ export class WsRpcClient implements RpcClient {
     this.connectTimeout = opts?.connectTimeout ?? 10_000
     this.mode = opts?.mode ?? this.inferMode(url)
     this.tlsRejectUnauthorized = opts?.tlsRejectUnauthorized ?? true
+    this.now = opts?.now ?? Date.now
 
     this.connectionState = {
       mode: this.mode,
       status: 'idle',
       url: this.url,
       attempt: 0,
-      updatedAt: Date.now(),
+      updatedAt: this.now(),
     }
 
     this.installLifecycleWatchers()
@@ -492,6 +518,10 @@ export class WsRpcClient implements RpcClient {
       clearInterval(this.ackTimer)
       this.ackTimer = null
     }
+    if (this.readIdleTimer) {
+      clearInterval(this.readIdleTimer)
+      this.readIdleTimer = null
+    }
     if (this.backoffResetTimer) {
       clearTimeout(this.backoffResetTimer)
       this.backoffResetTimer = null
@@ -541,6 +571,12 @@ export class WsRpcClient implements RpcClient {
       return
     }
 
+    // Any inbound envelope proves the socket was alive a moment ago — reset the
+    // read-idle liveness clock. Server WS-level ping frames never reach here
+    // (the browser auto-pongs them without a JS callback), so this only
+    // advances on real traffic; the read-idle timer probes whenever it stalls.
+    this.lastInboundAt = this.now()
+
     switch (envelope.type) {
       case 'handshake_ack': {
         const wasReconnectAttempt = this.currentHandshakeWasReconnect
@@ -579,6 +615,7 @@ export class WsRpcClient implements RpcClient {
           lastClose: undefined,
         })
         this.startAckTimer()
+        this.startReadIdleTimer()
         this.resolveReady?.()
         this.resolveReady = null
         this.rejectReady = null
@@ -749,10 +786,14 @@ export class WsRpcClient implements RpcClient {
     this.clientId = null
     this.ws = null
 
-    // Stop ack timer
+    // Stop ack + read-idle timers
     if (this.ackTimer) {
       clearInterval(this.ackTimer)
       this.ackTimer = null
+    }
+    if (this.readIdleTimer) {
+      clearInterval(this.readIdleTimer)
+      this.readIdleTimer = null
     }
 
     if (this.connectTimer) {
@@ -878,6 +919,47 @@ export class WsRpcClient implements RpcClient {
   }
 
   /**
+   * Client-initiated half-open detection for a *visible* tab that simply went
+   * quiet.
+   *
+   * The heartbeat is server→client only and `readyState` keeps reporting OPEN
+   * across an OS-level socket teardown, so a steady-state half-open socket goes
+   * undetected until the user acts (LEARNING-042). A read-idle timer closes
+   * that gap: if no inbound read has landed within READ_IDLE_THRESHOLD_MS we run
+   * the same liveness check the page-resume path uses. Note the check is
+   * unconditional — unlike `startAckTimer` it must not inherit the
+   * `lastContiguousSeq > 0` gate, or a connection that never received an event
+   * would never be probed.
+   */
+  private startReadIdleTimer(): void {
+    if (this.readIdleTimer) clearInterval(this.readIdleTimer)
+    // Seed so a connection that is quiet from the outset is not flagged early.
+    this.lastInboundAt = this.now()
+    this.readIdleTimer = setInterval(() => {
+      this.checkReadIdle()
+    }, SEQUENCE_ACK_INTERVAL_MS)
+  }
+
+  /**
+   * One read-idle tick. When the read gap exceeds the threshold, reuse the
+   * resume-path liveness check: `checkLivenessAfterResume(0)` probes the socket
+   * and reconnects through the SAME path (`reconnectNow`) only if the probe
+   * reveals it dead — so a healthy-but-quiet socket just sends a cheap ack and
+   * is left alone, while a half-open one (send throws despite readyState OPEN)
+   * or an already-closed one triggers gap-resync + stale-recovery. hiddenMs=0
+   * keeps us on the probe path: unlike a long hide, a quiet visible tab has not
+   * missed any evicted events, so we must not force a blind reconnect.
+   */
+  private checkReadIdle(): void {
+    if (this.destroyed || !this.connected) return
+    if (this.now() - this.lastInboundAt < READ_IDLE_THRESHOLD_MS) return
+    // Reset before probing so a healthy probe (or the reconnect it triggers)
+    // does not immediately re-fire on the next tick.
+    this.lastInboundAt = this.now()
+    this.checkLivenessAfterResume(0)
+  }
+
+  /**
    * A run of events never arrived. The socket is still up, so no reconnect (and
    * therefore no `stale` handshake_ack) will fire on its own — signal stale
    * recovery directly so the app re-fetches authoritative state.
@@ -930,10 +1012,10 @@ export class WsRpcClient implements RpcClient {
 
     const onVisibilityChange = () => {
       if (doc.visibilityState === 'hidden') {
-        this.hiddenAt = Date.now()
+        this.hiddenAt = this.now()
         return
       }
-      const hiddenMs = this.hiddenAt == null ? 0 : Date.now() - this.hiddenAt
+      const hiddenMs = this.hiddenAt == null ? 0 : this.now() - this.hiddenAt
       this.hiddenAt = null
       this.checkLivenessAfterResume(hiddenMs)
     }
@@ -1075,7 +1157,7 @@ export class WsRpcClient implements RpcClient {
       ...partial,
       mode: this.mode,
       url: this.url,
-      updatedAt: Date.now(),
+      updatedAt: this.now(),
     }
 
     const snapshot = this.getConnectionState()
