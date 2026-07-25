@@ -16,8 +16,15 @@
  *     accidentally reused it.
  */
 
-import { normalizeFollowUpText } from '@craft-agent/ui/annotations/follow-up-state'
+import {
+  normalizeFollowUpText,
+  getAnnotationNoteText,
+  isAnnotationFollowUpSent,
+  asRecord,
+  extractAnnotationSelectedText,
+} from '@craft-agent/ui/annotations/follow-up-state'
 import type { AnnotationMutationFailureReason } from '@craft-agent/core/types'
+import type { Message } from '../../../shared/types'
 
 /**
  * Human-readable explanation for a rejected annotation mutation, shown as the
@@ -61,6 +68,48 @@ export type PendingFollowUpAnnotation = {
   createdAt: number
   color?: string
   meta?: Record<string, unknown>
+}
+
+/**
+ * Derive the pending follow-up chips shown above the composer from the local
+ * message mirror.
+ *
+ * This is the *only* source of the chips, so it is also the assertion point for
+ * "the chip cleared": once the annotation leaves `messages[].annotations`, the
+ * chip is gone. Extracted from `ChatDisplay`'s `useMemo` so convergence can be
+ * tested without React — do not duplicate the logic there.
+ *
+ * A follow-up is pending when it carries a note and has no sent-marker
+ * (`meta.followUp.lastSentAt/lastSentText` matching the current note). Sorted
+ * oldest-first so chip numbering is stable across renders.
+ */
+export function derivePendingFollowUps(messages: Message[] | undefined): PendingFollowUpAnnotation[] {
+  if (!messages?.length) return []
+
+  const pending: PendingFollowUpAnnotation[] = []
+
+  for (const message of messages) {
+    if (message.role !== 'assistant' && message.role !== 'plan') continue
+    if (!message.annotations?.length) continue
+
+    for (const annotation of message.annotations) {
+      const note = getAnnotationNoteText(annotation)
+      if (!note) continue
+      if (isAnnotationFollowUpSent(annotation)) continue
+
+      pending.push({
+        messageId: message.id,
+        annotationId: annotation.id,
+        note,
+        selectedText: extractAnnotationSelectedText(annotation, message.content),
+        createdAt: annotation.updatedAt ?? annotation.createdAt,
+        color: annotation.style?.color,
+        meta: asRecord(annotation.meta) ?? undefined,
+      })
+    }
+  }
+
+  return pending.sort((a, b) => a.createdAt - b.createdAt)
 }
 
 /**

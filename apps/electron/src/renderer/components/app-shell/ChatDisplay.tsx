@@ -53,9 +53,6 @@ import {
   formatActivityAsMarkdown,
   getAssistantTurnUiKey,
   asRecord,
-  getAnnotationNoteText,
-  isAnnotationFollowUpSent,
-  extractAnnotationSelectedText,
   normalizeFollowUpText,
   type Turn,
   type AssistantTurn,
@@ -251,8 +248,15 @@ import {
   normalizeFollowUpsMarkdown,
   truncateForChipTooltip,
   describeAnnotationMutationFailure,
+  derivePendingFollowUps,
   type PendingFollowUpAnnotation,
 } from './ChatDisplay.follow-ups'
+import {
+  shouldConvergeRemoveLocally,
+  removeAnnotationFromMessages,
+} from './ChatDisplay.annotation-sync'
+import { useSetAtom } from 'jotai'
+import { updateSessionAtom } from '../../atoms/sessions'
 
 /**
  * Imperative handle exposed via forwardRef for navigation between matches
@@ -506,6 +510,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   connectionUnavailable = false,
 }, ref) {
   const { t } = useTranslation()
+
+  // Lets annotation mutations converge the local message mirror on their command
+  // result rather than depending on the `message_annotations_updated` event.
+  const updateSession = useSetAtom(updateSessionAtom)
 
   // Panel focus state (for multi-panel auto-scroll behavior)
   const appShellContext = useAppShellContext()
@@ -1061,34 +1069,10 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   const lastMessageId = lastMessage?.id
   const lastMessageRole = lastMessage?.role
 
-  const pendingFollowUpAnnotations = useMemo<PendingFollowUpAnnotation[]>(() => {
-    if (!session?.messages?.length) return []
-
-    const pending: PendingFollowUpAnnotation[] = []
-
-    for (const message of session.messages) {
-      if (message.role !== 'assistant' && message.role !== 'plan') continue
-      if (!message.annotations?.length) continue
-
-      for (const annotation of message.annotations) {
-        const note = getAnnotationNoteText(annotation)
-        if (!note) continue
-        if (isAnnotationFollowUpSent(annotation)) continue
-
-        pending.push({
-          messageId: message.id,
-          annotationId: annotation.id,
-          note,
-          selectedText: extractAnnotationSelectedText(annotation, message.content),
-          createdAt: annotation.updatedAt ?? annotation.createdAt,
-          color: annotation.style?.color,
-          meta: asRecord(annotation.meta) ?? undefined,
-        })
-      }
-    }
-
-    return pending.sort((a, b) => a.createdAt - b.createdAt)
-  }, [session?.messages])
+  const pendingFollowUpAnnotations = useMemo<PendingFollowUpAnnotation[]>(
+    () => derivePendingFollowUps(session?.messages),
+    [session?.messages],
+  )
 
   // Latest-value ref so async send flows (Save & Send) can read the current
   // pending follow-ups without capturing a stale render's closure.
@@ -1825,6 +1809,26 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             toast.error(t('toast.couldNotRemoveHighlight'), {
                               description: error instanceof Error ? error.message : 'Unknown error',
                             })
+                            return
+                          }
+                          // Converge locally on the command result instead of waiting
+                          // for `message_annotations_updated`. If that event never
+                          // arrives (reconnect outside the replay window, suspended
+                          // mobile Safari tab, dropped sequence) the annotation would
+                          // otherwise stay in the local mirror forever and the pending
+                          // follow-up chip could never be deleted — every retry hits the
+                          // server's idempotent no-op and reconciles over the same broken
+                          // channel. See ChatDisplay.annotation-sync.ts.
+                          if (shouldConvergeRemoveLocally(result)) {
+                            const sessionId = session.id
+                            updateSession(sessionId, (prev) => {
+                              if (!prev) return prev
+                              const messages = removeAnnotationFromMessages(prev.messages, messageId, annotationId)
+                              return messages ? { ...prev, messages } : prev
+                            })
+                            // `annotation-not-found` reaches here too: the annotation is
+                            // gone, which is what the user asked for. Toasting an error
+                            // for a delete that converged is the phantom-chip UX.
                             return
                           }
                           if (result && 'success' in result && result.success === false && 'reason' in result) {
