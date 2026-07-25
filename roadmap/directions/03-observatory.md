@@ -1,7 +1,7 @@
 ---
 id: DIR-03
 title: The Live Observatory
-status: future
+status: active
 opened: 2026-04-28
 related-discussions:
   - 2026-04-28-canvas-paradigm-directions.md
@@ -9,6 +9,7 @@ related-plans:
   - PLAN-005-webui-tailscale-launcher.md
   - PLAN-007-orchestration-activity-panel-done.md
   - PLAN-013-server-only-deployment.md
+  - PLAN-023-hosted-workspace-server.md
   # The paused richer-progress / phase-1.5 orchestration plans are archived in
   # the private vorno-internal repo (see ADR-0006).
 ---

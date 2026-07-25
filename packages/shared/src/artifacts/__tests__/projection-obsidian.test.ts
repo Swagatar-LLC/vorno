@@ -27,7 +27,7 @@ function write(base: string, relPath: string, content: string): void {
 }
 
 describe('exportObsidianVault', () => {
-  it('copies artifacts preserving <rootId>/<relPath> structure', () => {
+  it('copies artifacts preserving <rootId>/<relPath> structure', async () => {
     write(workspaceRoot, 'sessions/s1/plans/p.md', '# P\n[[q]]');
     const roadmap = join(tempDir, 'roadmap');
     write(roadmap, 'decisions/adr.md', '# ADR');
@@ -36,7 +36,7 @@ describe('exportObsidianVault', () => {
       formatArtifactUri({ rootId: 'workspace', relPath: 'sessions/s1/plans/p.md' }),
       formatArtifactUri({ rootId: 'roadmap', relPath: 'decisions/adr.md' }),
     ];
-    const result = exportObsidianVault({
+    const result = await exportObsidianVault({
       workspaceRootPath: workspaceRoot,
       configuredRoots: { roadmap },
       uris,
@@ -49,17 +49,33 @@ describe('exportObsidianVault', () => {
     expect(readFileSync(join(destDir, 'roadmap', 'decisions/adr.md'), 'utf-8')).toBe('# ADR');
   });
 
-  it('skips denied URIs with a reason (containment + unregistered)', () => {
+  it('skips denied URIs with a reason (containment + unregistered)', async () => {
     write(workspaceRoot, 'sessions/s1/data/notes.txt', 'plain'); // unregistered, unpinned
     const uris = [
       formatArtifactUri({ rootId: 'ghost', relPath: 'x.md' }), // containment
       formatArtifactUri({ rootId: 'workspace', relPath: 'sessions/s1/data/notes.txt' }), // unregistered
       'not a valid uri',
     ];
-    const result = exportObsidianVault({ workspaceRootPath: workspaceRoot, uris, destDir });
+    const result = await exportObsidianVault({ workspaceRootPath: workspaceRoot, uris, destDir });
     expect(result.exported).toEqual([]);
     expect(result.skipped.some((s) => s.includes('containment-denied'))).toBe(true);
     expect(result.skipped.some((s) => s.includes('unregistered-type'))).toBe(true);
     expect(result.skipped.some((s) => s.includes('invalid-uri'))).toBe(true);
+  });
+
+  // ADR-0018 (SEC-1 closure): export and read share ONE admissibility gate. A
+  // contained, registered-extension file OUTSIDE the indexed shape must be
+  // denied by export exactly as read denies it — extension alone is not enough.
+  it('denies a contained registered-extension file outside the indexed shape (same gate as read)', async () => {
+    write(workspaceRoot, 'README.md', '# Not scan surface');
+    write(workspaceRoot, 'sessions/s1/notes.md', '# In session, outside plans/data');
+    const uris = [
+      formatArtifactUri({ rootId: 'workspace', relPath: 'README.md' }),
+      formatArtifactUri({ rootId: 'workspace', relPath: 'sessions/s1/notes.md' }),
+    ];
+    const result = await exportObsidianVault({ workspaceRootPath: workspaceRoot, uris, destDir });
+    expect(result.exported).toEqual([]);
+    expect(result.skipped).toHaveLength(2);
+    expect(result.skipped.every((s) => s.includes('not-indexed'))).toBe(true);
   });
 });

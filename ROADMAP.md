@@ -10,7 +10,7 @@ That folder is the source of truth; this file distills it.
 Dates and ordering here are **directional, not commitments**. Priorities shift as we
 learn. Items move between sections as work ships.
 
-Vorno is a fork of [Craft Agents](https://github.com/craft-ai-agents/craft-agents-oss).
+Vorno is a fork of [Craft Agents](https://github.com/lukilabs/craft-agents-oss).
 It stays wire-compatible with upstream and versions independently. See
 [Relationship to upstream](#relationship-to-upstream) below.
 
@@ -130,7 +130,7 @@ folder for detail.
 
 ## Relationship to upstream
 
-Vorno tracks [craft-ai-agents/craft-agents-oss](https://github.com/craft-ai-agents/craft-agents-oss)
+Vorno tracks [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss)
 as its upstream. Upstream syncs bring features in, not version numbers; the mapping
 between a Vorno version and the last-merged upstream tag is recorded in
 [`roadmap/upstream/`](roadmap/upstream/).

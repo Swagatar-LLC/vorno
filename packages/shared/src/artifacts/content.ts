@@ -8,13 +8,6 @@
 
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { readFileSync } from 'fs';
-
-/** SHA-256 hex of a file's bytes. */
-export function computeContentHash(filePath: string): string {
-  const bytes = readFileSync(filePath);
-  return createHash('sha256').update(bytes).digest('hex');
-}
 
 /** SHA-256 hex of an in-memory string (utf-8). */
 export function hashString(content: string): string {

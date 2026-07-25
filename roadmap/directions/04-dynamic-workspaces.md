@@ -6,6 +6,8 @@ opened: 2026-07-21
 related-decisions:
   - 0015-two-plane-artifact-surface-architecture.md
   - 0017-standards-stack-artifact-packaging-distribution.md
+  - 0018-storage-provider-seam-and-pure-admissibility.md
+  - 0019-storage-root-config-schema-and-provider-kind-namespace.md
 related-plans:
   - PLAN-025-artifact-plane-v1.md
   - PLAN-026-composed-surfaces-v1.md
