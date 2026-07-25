@@ -56,9 +56,49 @@ function normalizeWhitespaceWithMap(input: string): NormalizedText {
   return { text: outChars.join(''), map }
 }
 
+/**
+ * Last-resort match: the quote itself, ignoring the recorded neighbours.
+ *
+ * Prefix/suffix are 24-character windows captured at selection time. Any nested
+ * block that mounts or unmounts text next to the selection (a file-backed doc
+ * block resolving, a collapsible section toggling) rewrites those neighbours,
+ * and the anchored passes above then fail even though the quoted text is still
+ * present. Dropping the anchors recovers those cases; when the quote occurs more
+ * than once we keep the occurrence nearest the recorded position so the choice
+ * stays deterministic rather than "first wins".
+ */
+function findQuoteRangeIgnoringAnchors(
+  fullText: string,
+  exact: string,
+  hintStart: number | null,
+): { start: number; end: number } | null {
+  const normalizedFull = normalizeWhitespaceWithMap(fullText)
+  const normalizedExact = normalizeWhitespaceWithMap(exact).text.trim()
+  if (!normalizedExact) return null
+
+  const candidates: Array<{ start: number; end: number }> = []
+  let index = normalizedFull.text.indexOf(normalizedExact)
+  while (index !== -1) {
+    const originalStart = normalizedFull.map[index]
+    const originalLast = normalizedFull.map[index + normalizedExact.length - 1]
+    if (originalStart != null && originalLast != null) {
+      candidates.push({ start: originalStart, end: originalLast + 1 })
+    }
+    index = normalizedFull.text.indexOf(normalizedExact, index + 1)
+  }
+
+  if (candidates.length === 0) return null
+  if (candidates.length === 1 || hintStart == null) return candidates[0]!
+
+  return candidates.reduce((best, candidate) =>
+    Math.abs(candidate.start - hintStart) < Math.abs(best.start - hintStart) ? candidate : best
+  )
+}
+
 function findQuoteRange(
   fullText: string,
   quote: Extract<AnnotationV1['target']['selectors'][number], { type: 'text-quote' }>,
+  hintStart: number | null = null,
 ): { start: number; end: number } | null {
   if (!quote.exact) return null
 
@@ -107,7 +147,29 @@ function findQuoteRange(
     normalizedIndex = normalizedFull.text.indexOf(normalizedExact, normalizedIndex + 1)
   }
 
-  return null
+  return findQuoteRangeIgnoringAnchors(fullText, quote.exact, hintStart)
+}
+
+function normalizeForCompare(input: string): string {
+  return normalizeWhitespaceWithMap(input).text.trim()
+}
+
+/**
+ * A stored text-position range is only trustworthy while the rendered text it
+ * was measured against is unchanged. Nested markdown blocks break that
+ * assumption: file-backed doc/datatable blocks mount their text after the
+ * annotation was created, and collapsible sections add/remove text on toggle,
+ * so the same offsets now cover different characters. Verify the range still
+ * yields the quoted text before trusting it; otherwise fall back to quote
+ * search, which re-finds the real range.
+ */
+function positionMatchesQuote(
+  fullText: string,
+  range: { start: number; end: number },
+  quote: Extract<AnnotationV1['target']['selectors'][number], { type: 'text-quote' }> | undefined,
+): boolean {
+  if (!quote?.exact) return true
+  return normalizeForCompare(fullText.slice(range.start, range.end)) === normalizeForCompare(quote.exact)
 }
 
 export function resolveTextAnnotations(
@@ -133,13 +195,19 @@ export function resolveTextAnnotations(
       { type: 'text-position' }
     > | undefined
 
+    const quote = selectors.find(s => s.type === 'text-quote') as Extract<
+      AnnotationV1['target']['selectors'][number],
+      { type: 'text-quote' }
+    > | undefined
+
     if (
       position &&
       Number.isInteger(position.start) &&
       Number.isInteger(position.end) &&
       position.start >= 0 &&
       position.end > position.start &&
-      position.end <= fullText.length
+      position.end <= fullText.length &&
+      positionMatchesQuote(fullText, { start: position.start, end: position.end }, quote)
     ) {
       resolved.push({
         annotation,
@@ -149,17 +217,16 @@ export function resolveTextAnnotations(
       continue
     }
 
-    const quote = selectors.find(s => s.type === 'text-quote') as Extract<
-      AnnotationV1['target']['selectors'][number],
-      { type: 'text-quote' }
-    > | undefined
-
     if (!quote?.exact) {
       unresolved.push({ annotation, reason: 'invalid-position' })
       continue
     }
 
-    const range = findQuoteRange(fullText, quote)
+    const range = findQuoteRange(
+      fullText,
+      quote,
+      position && Number.isInteger(position.start) && position.start >= 0 ? position.start : null,
+    )
     if (!range) {
       unresolved.push({ annotation, reason: 'quote-not-found' })
       continue

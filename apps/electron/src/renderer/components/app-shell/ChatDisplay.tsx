@@ -49,6 +49,7 @@ import {
   TurnCard,
   UserMessageBubble,
   groupMessagesByTurn,
+  buildAnnotatableTurnIndex,
   formatTurnAsMarkdown,
   formatActivityAsMarkdown,
   getAssistantTurnUiKey,
@@ -1428,14 +1429,11 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   const turns = allTurns.slice(startIndex)
   const hasMoreAbove = startIndex > 0
 
+  // Covers plan activities as well as turn responses: both render as
+  // annotatable ResponseCards, and a follow-up chip for a plan message could
+  // otherwise never widen the paginated window far enough to reach it.
   const assistantTurnIndexByMessageId = useMemo(() => {
-    const map = new Map<string, number>()
-    allTurns.forEach((turn, index) => {
-      if (turn.type !== 'assistant') return
-      const messageId = turn.response?.messageId
-      if (messageId) map.set(messageId, index)
-    })
-    return map
+    return buildAnnotatableTurnIndex(allTurns)
   }, [allTurns])
 
   const scrollToFollowUpTurn = useCallback((item: {
