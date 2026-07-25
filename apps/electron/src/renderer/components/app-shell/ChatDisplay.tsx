@@ -245,8 +245,6 @@ interface ChatDisplayProps {
 }
 
 import {
-  formatFollowUpSection,
-  normalizeFollowUpsMarkdown,
   truncateForChipTooltip,
   describeAnnotationMutationFailure,
   derivePendingFollowUps,
@@ -258,6 +256,14 @@ import {
 } from './ChatDisplay.annotation-sync'
 import { useSetAtom } from 'jotai'
 import { updateSessionAtom } from '../../atoms/sessions'
+import {
+  buildServerAnnotationIdIndex,
+  composeOutgoingMessage,
+  mergePendingFollowUps,
+  pruneEchoPendingFollowUps,
+  resolveSaveAndSendDecision,
+  type EchoPendingFollowUp,
+} from './follow-up-send-queue'
 
 /**
  * Imperative handle exposed via forwardRef for navigation between matches
@@ -1070,10 +1076,43 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   const lastMessageId = lastMessage?.id
   const lastMessageRole = lastMessage?.role
 
-  const pendingFollowUpAnnotations = useMemo<PendingFollowUpAnnotation[]>(
+  // Follow-ups the server has ACKed but whose `message_annotations_updated`
+  // echo has not been applied to `session.messages` yet. Without this, a send
+  // issued inside the add round-trip composes from an empty pending list and
+  // silently defers the just-saved follow-up to the next turn. See
+  // `follow-up-send-queue.ts` for the full rationale and the prune rules.
+  const [echoPendingFollowUps, setEchoPendingFollowUps] = React.useState<EchoPendingFollowUp[]>([])
+
+  const serverDerivedFollowUps = useMemo<PendingFollowUpAnnotation[]>(
     () => derivePendingFollowUps(session?.messages),
     [session?.messages],
   )
+
+  const serverAnnotationIdIndex = useMemo(
+    () => buildServerAnnotationIdIndex(session?.messages ?? []),
+    [session?.messages],
+  )
+
+  const pendingFollowUpAnnotations = useMemo<PendingFollowUpAnnotation[]>(() => (
+    mergePendingFollowUps({
+      serverDerived: serverDerivedFollowUps,
+      echoPending: echoPendingFollowUps,
+      serverAnnotationIdsByMessage: serverAnnotationIdIndex,
+      now: Date.now(),
+    })
+  ), [serverDerivedFollowUps, echoPendingFollowUps, serverAnnotationIdIndex])
+
+  // Retire echo-pending entries once the server echo catches up (or they
+  // expire) so the list cannot accumulate stale chips.
+  React.useEffect(() => {
+    if (echoPendingFollowUps.length === 0) return
+    const remaining = pruneEchoPendingFollowUps({
+      echoPending: echoPendingFollowUps,
+      serverAnnotationIdsByMessage: serverAnnotationIdIndex,
+      now: Date.now(),
+    })
+    if (remaining.length !== echoPendingFollowUps.length) setEchoPendingFollowUps(remaining)
+  }, [echoPendingFollowUps, serverAnnotationIdIndex])
 
   // Latest-value ref so async send flows (Save & Send) can read the current
   // pending follow-ups without capturing a stale render's closure.
@@ -1221,14 +1260,12 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   // Handle message submission from InputContainer
   // Backend handles interruption and queueing if currently processing
   const handleSubmit = (message: string, attachments?: FileAttachment[], skillSlugs?: string[]) => {
-    const hasBaseMessage = message.trim().length > 0
-    const followUpSection = formatFollowUpSection(pendingFollowUpAnnotations, {
-      includeTopSeparator: hasBaseMessage,
-    })
-    const messageWithFollowUps = followUpSection.length > 0
-      ? (hasBaseMessage ? `${message}\n\n${followUpSection}` : followUpSection)
-      : message
-    const normalizedMessage = normalizeFollowUpsMarkdown(messageWithFollowUps)
+    // Read through the ref, not the render closure. A send can be dispatched
+    // from a rAF/window-event callback (Save & Send) that fires between a
+    // render and its commit, in which case this closure's copy is one step
+    // behind and would drop the follow-up the user just saved.
+    const pendingFollowUps = pendingFollowUpAnnotationsRef.current
+    const normalizedMessage = composeOutgoingMessage(message, pendingFollowUps)
 
     // Force stick-to-bottom when user sends a message
     isStickToBottomRef.current = true
@@ -1237,9 +1274,9 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     // Persist sent marker on follow-up annotations so TurnCard can distinguish
     // sent vs pending follow-ups. If user edits a follow-up later, TurnCard
     // clears these markers and the annotation becomes pending again.
-    if (session && pendingFollowUpAnnotations.length > 0) {
+    if (session && pendingFollowUps.length > 0) {
       const sentAt = Date.now()
-      void Promise.all(pendingFollowUpAnnotations.map((followUp) => {
+      void Promise.all(pendingFollowUps.map((followUp) => {
         const currentMeta = followUp.meta ?? {}
         const currentFollowUpMeta = asRecord(currentMeta.followUp) ?? {}
 
@@ -1294,19 +1331,35 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
     // Wait for `target` to actually appear in the derived pending list before
     // sending so the send is deterministic (cf. LEARNING-007: don't assume the
     // async state caught up — act on the data you hold). Bounded so a follow-up
-    // that never lands can't hang the send.
+    // async state caught up — act on the data you hold).
+    //
+    // The wait is bounded, and running out of frames now ABORTS rather than
+    // sending anyway: a send that silently omits the follow-up the user pressed
+    // "Save & Send" on leaves it pending, which guarantees it is injected into
+    // the next turn. Failing loudly is strictly better than that.
     let frames = 0
     const trySend = () => {
-      const landed = pendingFollowUpAnnotationsRef.current.some(
-        (f) => f.annotationId === target.annotationId && f.messageId === target.messageId,
-      )
-      if (landed || frames++ > 60) {
-        window.dispatchEvent(new CustomEvent('craft:submit-input', {
-          detail: { sessionId: session.id },
-        }))
+      const decision = resolveSaveAndSendDecision({
+        target,
+        pending: pendingFollowUpAnnotationsRef.current,
+        frames: frames++,
+      })
+
+      if (decision.action === 'wait') {
+        requestAnimationFrame(trySend)
         return
       }
-      requestAnimationFrame(trySend)
+
+      if (decision.action === 'abort') {
+        toast.error(t('toast.cannotSendRightNow'), {
+          description: 'The follow-up was saved but did not sync in time. Send your message again.',
+        })
+        return
+      }
+
+      window.dispatchEvent(new CustomEvent('craft:submit-input', {
+        detail: { sessionId: session.id },
+      }))
     }
     requestAnimationFrame(trySend)
   }, [session, isInputDisabled, disableSend, connectionUnavailable, t])
@@ -1793,9 +1846,36 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
                             })
                             throw new Error(`addAnnotation rejected: ${result.reason}`)
                           }
+
+                          // The add is durable now, but `session.messages` only
+                          // learns about it when the server echo arrives. Hold
+                          // it locally until then so a send issued inside that
+                          // window still carries the follow-up.
+                          const note = getAnnotationNoteText(annotation)
+                          if (!note) return
+                          const annotatedMessage = session.messages.find(m => m.id === messageId)
+                          setEchoPendingFollowUps(prev => (
+                            prev.some(e => e.annotationId === annotation.id && e.messageId === messageId)
+                              ? prev
+                              : [...prev, {
+                                  messageId,
+                                  annotationId: annotation.id,
+                                  note,
+                                  selectedText: extractAnnotationSelectedText(annotation, annotatedMessage?.content ?? ''),
+                                  createdAt: annotation.updatedAt ?? annotation.createdAt,
+                                  color: annotation.style?.color,
+                                  meta: asRecord(annotation.meta) ?? undefined,
+                                  recordedAt: Date.now(),
+                                }]
+                          ))
                         }}
                         onRemoveAnnotation={async (messageId, annotationId) => {
                           if (!session) return
+                          // Drop any echo-pending copy up front — a remove must
+                          // never be outlived by our local hold-over copy.
+                          setEchoPendingFollowUps(prev => prev.filter(
+                            e => !(e.annotationId === annotationId && e.messageId === messageId),
+                          ))
                           let result: Awaited<ReturnType<typeof window.electronAPI.sessionCommand>>
                           try {
                             result = await window.electronAPI.sessionCommand(session.id, {
