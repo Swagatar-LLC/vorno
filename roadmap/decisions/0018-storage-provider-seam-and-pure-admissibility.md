@@ -1,7 +1,7 @@
 ---
 id: ADR-0018
 title: Artifact storage-provider seam and pure admissibility predicate
-status: proposed
+status: accepted
 date: 2026-07-24
 supersedes: []
 superseded-by: []
@@ -60,6 +60,8 @@ Exact interface member names and the `Result<T>`/`StorageError` error-shape, the
 
 1. **Admissibility-predicate redefinition** — "indexed" = pure shape predicate (location shape ∧ registered extension); `GLOBAL_FILE_CAP` demoted to a listing bound that never gates reads. This is a behavior change at the signed read-gate boundary: files inside indexed locations that a *full* capped scan previously missed become readable (correct per door 4's intent, but a real widening relative to shipped behavior).
 2. **Provider-owns-containment contract** — no artifact-plane code path may obtain a raw physical path; all I/O and containment live behind `StorageProvider`, with the serializable-capability hybrid on the REMOTE_ELIGIBLE wire. This constrains every future backend and C2/C3 consumer.
+
+> **Accepted 2026-07-24** (Jeff, session 260724-light-delta). Both doors signed off: (1) admissibility-predicate redefinition — pure shape predicate, `GLOBAL_FILE_CAP` demoted to a listing bound that never gates reads; (2) provider-owns-containment — no artifact-plane code path obtains a raw physical path. The hybrid capability negotiation on the REMOTE_ELIGIBLE wire is accepted as part of door 2. ADR-0019 (config schema + provider-kind namespace) accepted the same day, contingent on this seal.
 
 ## Consequences
 
