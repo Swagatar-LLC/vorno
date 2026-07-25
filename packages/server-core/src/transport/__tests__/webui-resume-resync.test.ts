@@ -25,7 +25,17 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
-import { EVENT_BUFFER_TTL_MS, PROTOCOL_VERSION, type MessageEnvelope } from '@craft-agent/shared/protocol'
+import {
+  EVENT_BUFFER_TTL_MS,
+  HEARTBEAT_INTERVAL_MS,
+  HEARTBEAT_MAX_MISSED,
+  PROTOCOL_VERSION,
+  type MessageEnvelope,
+} from '@craft-agent/shared/protocol'
+
+// Mirrors the derived constant in client.ts — the read-idle timer fires after
+// this much time with no inbound read.
+const READ_IDLE_THRESHOLD_MS = HEARTBEAT_INTERVAL_MS * (HEARTBEAT_MAX_MISSED + 1)
 
 // ---------------------------------------------------------------------------
 // Fake WebSocket
@@ -165,12 +175,13 @@ async function loadClientClass() {
 
 const CLIENT_ID = 'client-under-test'
 
-async function connectedClient(opts?: { autoReconnect?: boolean }) {
+async function connectedClient(opts?: { autoReconnect?: boolean; now?: () => number }) {
   const WsRpcClient = await loadClientClass()
   const client = new WsRpcClient('ws://127.0.0.1:1/ws', {
     workspaceId: 'ws-a',
     autoReconnect: opts?.autoReconnect ?? true,
     mode: 'remote',
+    now: opts?.now,
   })
 
   client.connect()
@@ -429,6 +440,77 @@ describe('WsRpcClient — page lifecycle liveness (mobile Safari suspension)', (
     // No connect() yet — resume must not spin up a socket on its own.
     fakeWindow.dispatch('online')
     expect(FakeWebSocket.instances.length).toBe(0)
+
+    client.destroy()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3. Steady-state read-idle liveness (no lifecycle event at all)
+// ---------------------------------------------------------------------------
+
+describe('WsRpcClient — read-idle liveness (steady-state half-open socket)', () => {
+  it('reconnects purely via the idle timer when the socket goes half-open with no close/visibility event', async () => {
+    // Injected clock so the read-idle threshold is crossed deterministically
+    // without a real wall-clock wait.
+    let clock = 1_000_000
+    const { client, ws } = await connectedClient({ now: () => clock })
+
+    ws.deliverEvent(1) // an inbound read — resets the read-idle clock
+
+    const socketsBefore = FakeWebSocket.instances.length
+
+    // The OS tore the connection down underneath us: readyState still reports
+    // OPEN and no `close`/`visibilitychange`/`online` event ever fires. This is
+    // the steady-state case the page-lifecycle watchers cannot see — the only
+    // signal is the absence of inbound reads.
+    ws.sendThrows = true
+    expect(ws.readyState).toBe(ws.OPEN)
+
+    // Advance past the read-idle threshold with zero inbound reads, then let one
+    // idle tick run. The tick probes the socket; the probe send throws, so the
+    // client reconnects through the same path PR #127 added.
+    clock += READ_IDLE_THRESHOLD_MS + 1
+    ;(client as any).checkReadIdle()
+
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(socketsBefore)
+
+    client.destroy()
+  })
+
+  it('does not reconnect a healthy-but-quiet socket — it only probes', async () => {
+    let clock = 1_000_000
+    const { client, ws } = await connectedClient({ now: () => clock })
+
+    ws.deliverEvent(1)
+    const socketsBefore = FakeWebSocket.instances.length
+    const sentBefore = ws.sent.length
+
+    // Idle past the threshold, but the socket is genuinely healthy: the probe
+    // send succeeds, so no reconnect — just a cheap keepalive ack.
+    clock += READ_IDLE_THRESHOLD_MS + 1
+    ;(client as any).checkReadIdle()
+
+    expect(FakeWebSocket.instances.length).toBe(socketsBefore)
+    expect(ws.sent.length).toBe(sentBefore + 1)
+    expect(ws.sentOfType('sequence_ack').at(-1)?.lastSeq).toBe(1)
+
+    client.destroy()
+  })
+
+  it('does not fire before the read-idle threshold elapses', async () => {
+    let clock = 1_000_000
+    const { client, ws } = await connectedClient({ now: () => clock })
+
+    ws.deliverEvent(1)
+    ws.sendThrows = true // would reconnect if a probe ran
+    const socketsBefore = FakeWebSocket.instances.length
+
+    // Just short of the threshold — the tick must be a no-op.
+    clock += READ_IDLE_THRESHOLD_MS - 1
+    ;(client as any).checkReadIdle()
+
+    expect(FakeWebSocket.instances.length).toBe(socketsBefore)
 
     client.destroy()
   })
