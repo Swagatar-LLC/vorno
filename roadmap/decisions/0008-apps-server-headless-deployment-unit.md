@@ -1,7 +1,7 @@
 ---
 id: ADR-0008
 title: apps/server is the fork's headless deployment unit; Docker primary
-status: proposed
+status: accepted
 date: 2026-07-08
 supersedes: []
 superseded-by: []
@@ -149,3 +149,11 @@ subprocess out of `node_modules`.
 - `roadmap/upstream/compatibility.md` — no protocol surface changes; `craft_sk_*`
   and REST/SSE are fork-owned.
 - `deploy/` + `docs/server-deployment.md` — the artifacts and PoC walkthrough.
+
+## Resolution
+
+**Accepted 2026-07-24.** The standalone/headless composition decided here was
+implemented as part of the per-workspace webhooks work (PLAN-014): the
+`apps/server` standalone mode composes the in-process `server-core`
+`SessionManager` and the host-layer `onWebhookEvent` seam, with webhooks riding
+the same trigger port and deployment recipe. Status moved `proposed → accepted`.
