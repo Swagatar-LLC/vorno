@@ -1,21 +1,23 @@
 /**
- * Obsidian-vault projection (ADR-0016; PLAN-025 C1).
+ * Obsidian-vault projection (ADR-0016, ADR-0018; PLAN-025 C1).
  *
  * Copies a selected set of artifacts (by URI) into a destination directory,
  * preserving `<rootId>/<relPath>` structure so relative links between exported
- * notes keep resolving. Each URI passes the same containment + admissibility gate
- * as read.ts. Denials are collected in `skipped` with a reason string.
+ * notes keep resolving. Each URI passes the SAME `isAdmissible` predicate +
+ * provider read as read.ts (ADR-0018: one gate, closes SEC-1). Denials are
+ * collected in `skipped` with a reason string. The destination is an export
+ * target outside the artifact plane — it is written with plain fs.
  *
  * // ponytail: plain copy is the v1 projection; frontmatter enrichment when a
  * // consumer demands it.
  */
 
-import { copyFileSync, mkdirSync, statSync } from 'fs';
-import { dirname, extname, join } from 'path';
+import { mkdirSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
 import { debug } from '../utils/debug.ts';
-import { parseArtifactUri } from './uri.ts';
-import { resolveArtifactPath, resolveRootBindings } from './roots.ts';
-import { getRegisteredExtensions } from './registry.ts';
+import { canonicalizeArtifactUri, parseArtifactUri } from './uri.ts';
+import { resolveRootBindings } from './roots.ts';
+import { isAdmissible, isIndexedLocation } from './admissibility.ts';
 import { getArtifactState } from './store.ts';
 // A projection is a batch of reads — share read.ts's cap (single definition).
 import { MAX_ARTIFACT_BYTES } from './read.ts';
@@ -39,51 +41,53 @@ export interface ExportObsidianVaultResult {
  * is copied verbatim (no transformation). Never throws — per-URI failures land
  * in `skipped`.
  */
-export function exportObsidianVault(
+export async function exportObsidianVault(
   options: ExportObsidianVaultOptions,
-): ExportObsidianVaultResult {
+): Promise<ExportObsidianVaultResult> {
   const { workspaceRootPath, configuredRoots, uris, destDir } = options;
-  const bindings = resolveRootBindings(workspaceRootPath, configuredRoots);
-  const registeredExtensions = getRegisteredExtensions();
+  const providers = resolveRootBindings(workspaceRootPath, configuredRoots);
   const state = getArtifactState(workspaceRootPath);
+  const pinned = (u: string) => state[u]?.pinned === true;
 
   const exported: string[] = [];
   const skipped: string[] = [];
 
-  for (const uri of uris) {
-    const parsed = parseArtifactUri(uri);
-    if (!parsed) {
-      skipped.push(`${uri}: invalid-uri`);
+  for (const rawUri of uris) {
+    const uri = canonicalizeArtifactUri(rawUri);
+    if (!uri) {
+      skipped.push(`${rawUri}: invalid-uri`);
       continue;
     }
+    const parsed = parseArtifactUri(uri)!;
 
-    const resolved = resolveArtifactPath(uri, bindings);
-    if (!resolved) {
+    const provider = providers.get(parsed.rootId);
+    if (!provider) {
       skipped.push(`${uri}: containment-denied`);
       continue;
     }
-    const { absPath } = resolved;
 
-    // Same admissibility gate as read.ts: registered extension OR pinned.
-    const ext = extname(absPath).toLowerCase();
-    if (!registeredExtensions.has(ext) && state[uri]?.pinned !== true) {
-      skipped.push(`${uri}: unregistered-type`);
+    // The read gate (ADR-0018 door 1) — identical predicate to read.ts.
+    if (!isAdmissible(uri, providers, pinned)) {
+      skipped.push(
+        isIndexedLocation(parsed.rootId, parsed.relPath)
+          ? `${uri}: unregistered-type`
+          : `${uri}: not-indexed`,
+      );
+      continue;
+    }
+
+    const read = await provider.read(uri, { maxBytes: MAX_ARTIFACT_BYTES });
+    if (!read.ok) {
+      skipped.push(
+        `${uri}: ${read.error.kind === 'too-large' ? 'too-large' : 'not-found'}`,
+      );
       continue;
     }
 
     try {
-      const stats = statSync(absPath);
-      if (!stats.isFile()) {
-        skipped.push(`${uri}: not-a-file`);
-        continue;
-      }
-      if (stats.size > MAX_ARTIFACT_BYTES) {
-        skipped.push(`${uri}: too-large`);
-        continue;
-      }
       const target = join(destDir, parsed.rootId, parsed.relPath);
       mkdirSync(dirname(target), { recursive: true });
-      copyFileSync(absPath, target);
+      writeFileSync(target, read.value.bytes);
       exported.push(uri);
     } catch (error) {
       debug('[artifacts] Failed to export artifact:', uri, error);

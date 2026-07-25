@@ -71,6 +71,23 @@ export interface ArtifactEntry {
   archived?: boolean;
 }
 
+/**
+ * Serializable storage-capability descriptor (ADR-0018). Wire-safe — the
+ * artifacts channels are REMOTE_ELIGIBLE, so a remote client learns what a
+ * root's provider can do from this descriptor (it cannot type-assert a
+ * server-side provider). Rides `vorno:artifacts:roots:list` additively.
+ */
+export interface StorageCapabilities {
+  read: boolean;
+  stat: boolean;
+  list: boolean;
+  contentHash: boolean;
+  write: boolean;
+  delete: boolean;
+  copy: boolean;
+  presign: boolean;
+}
+
 /** Type descriptor in the open registry (ADR-0016 §3). */
 export interface ArtifactTypeDescriptor {
   /** Open lowercase-kebab id; un-prefixed = system built-in. */

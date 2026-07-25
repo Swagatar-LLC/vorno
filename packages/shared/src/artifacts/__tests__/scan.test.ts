@@ -46,12 +46,12 @@ function byUri(artifacts: ArtifactEntry[]): Record<string, ArtifactEntry> {
 }
 
 describe('indexArtifacts', () => {
-  it('indexes session plans and data with origin kind + sessionId', () => {
+  it('indexes session plans and data with origin kind + sessionId', async () => {
     writeSession('s1', {});
     write(join(workspaceRoot, 'sessions', 's1', 'plans', 'plan.md'), '# The Plan');
     write(join(workspaceRoot, 'sessions', 's1', 'data', 'nested', 'out.md'), '# Data Out');
 
-    const { artifacts } = indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const { artifacts } = await indexArtifacts({ workspaceRootPath: workspaceRoot });
     const plan = artifacts.find((a) => a.origin.kind === 'session-plan');
     const data = artifacts.find((a) => a.origin.kind === 'session-data');
     expect(plan?.origin.sessionId).toBe('s1');
@@ -61,12 +61,12 @@ describe('indexArtifacts', () => {
     expect(data?.title).toBe('Data Out');
   });
 
-  it('picks up non-markdown registered types (.canvas) — no longer .md-only', () => {
+  it('picks up non-markdown registered types (.canvas) — no longer .md-only', async () => {
     writeSession('s1', {});
     write(join(workspaceRoot, 'sessions', 's1', 'data', 'board.canvas'), '{"nodes":[]}');
     write(join(workspaceRoot, 'sessions', 's1', 'data', 'skip.png'), 'binary-ish');
 
-    const { artifacts } = indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const { artifacts } = await indexArtifacts({ workspaceRootPath: workspaceRoot });
     const uris = artifacts.map((a) => a.uri);
     expect(uris.some((u) => u.endsWith('board.canvas'))).toBe(true);
     const canvas = artifacts.find((a) => a.uri.endsWith('board.canvas'));
@@ -76,7 +76,7 @@ describe('indexArtifacts', () => {
     expect(uris.some((u) => u.endsWith('skip.png'))).toBe(false);
   });
 
-  it('reads frontmatter title/tags/metadata; title precedence FM > heading > basename', () => {
+  it('reads frontmatter title/tags/metadata; title precedence FM > heading > basename', async () => {
     writeSession('s1', {});
     write(
       join(workspaceRoot, 'sessions', 's1', 'plans', 'fm.md'),
@@ -85,7 +85,7 @@ describe('indexArtifacts', () => {
     write(join(workspaceRoot, 'sessions', 's1', 'plans', 'heading.md'), '# Just Heading');
     write(join(workspaceRoot, 'sessions', 's1', 'plans', 'plain.md'), 'no heading, no fm');
 
-    const { artifacts } = indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const { artifacts } = await indexArtifacts({ workspaceRootPath: workspaceRoot });
     const map = byUri(artifacts);
     const fm = map[formatArtifactUri({ rootId: 'workspace', relPath: 'sessions/s1/plans/fm.md' })]!;
     expect(fm.title).toBe('Front Title');
@@ -98,10 +98,10 @@ describe('indexArtifacts', () => {
     expect(plain.title).toBe('plain.md');
   });
 
-  it('scans a configured corpus root with origin kind corpus', () => {
+  it('scans a configured corpus root with origin kind corpus', async () => {
     const roadmap = join(tempDir, 'roadmap');
     write(join(roadmap, 'decisions', 'adr.md'), '# ADR');
-    const { artifacts, skippedRoots } = indexArtifacts({
+    const { artifacts, skippedRoots } = await indexArtifacts({
       workspaceRootPath: workspaceRoot,
       configuredRoots: { roadmap },
     });
@@ -111,7 +111,7 @@ describe('indexArtifacts', () => {
     expect(adr?.uri).toBe(formatArtifactUri({ rootId: 'roadmap', relPath: 'decisions/adr.md' }));
   });
 
-  it('joins session context (projectId, labels, status) onto origins', () => {
+  it('joins session context (projectId, labels, status) onto origins', async () => {
     writeSession('s1', {
       projectId: 'proj_123',
       labels: ['label-a'],
@@ -119,7 +119,7 @@ describe('indexArtifacts', () => {
     });
     write(join(workspaceRoot, 'sessions', 's1', 'plans', 'p.md'), '# P');
 
-    const { artifacts } = indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const { artifacts } = await indexArtifacts({ workspaceRootPath: workspaceRoot });
     const p = artifacts.find((a) => a.origin.kind === 'session-plan');
     expect(p?.origin.projectId).toBe('proj_123');
     expect(p?.origin.labels).toEqual(['label-a']);
@@ -127,41 +127,41 @@ describe('indexArtifacts', () => {
     expect(p?.origin.sessionStatus).toBe('todo');
   });
 
-  it('tolerates a corrupt session header (keeps artifact, skips the join)', () => {
+  it('tolerates a corrupt session header (keeps artifact, skips the join)', async () => {
     write(join(workspaceRoot, 'sessions', 's1', 'session.jsonl'), '{ not valid json\n');
     write(join(workspaceRoot, 'sessions', 's1', 'plans', 'p.md'), '# P');
-    const { artifacts } = indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const { artifacts } = await indexArtifacts({ workspaceRootPath: workspaceRoot });
     const p = artifacts.find((a) => a.origin.kind === 'session-plan');
     expect(p).toBeDefined();
     expect(p?.origin.projectId).toBeUndefined();
   });
 
-  it('excludes archived artifacts unless includeArchived is set', () => {
+  it('excludes archived artifacts unless includeArchived is set', async () => {
     writeSession('s1', {});
     write(join(workspaceRoot, 'sessions', 's1', 'plans', 'p.md'), '# P');
     const uri = formatArtifactUri({ rootId: 'workspace', relPath: 'sessions/s1/plans/p.md' });
     setArtifactState(workspaceRoot, uri, { archived: true });
 
-    const excluded = indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const excluded = await indexArtifacts({ workspaceRootPath: workspaceRoot });
     expect(excluded.artifacts.some((a) => a.uri === uri)).toBe(false);
 
-    const included = indexArtifacts({ workspaceRootPath: workspaceRoot, includeArchived: true });
+    const included = await indexArtifacts({ workspaceRootPath: workspaceRoot, includeArchived: true });
     const found = included.artifacts.find((a) => a.uri === uri);
     expect(found?.archived).toBe(true);
   });
 
-  it('stamps pinned state onto entries', () => {
+  it('stamps pinned state onto entries', async () => {
     writeSession('s1', {});
     write(join(workspaceRoot, 'sessions', 's1', 'plans', 'p.md'), '# P');
     const uri = formatArtifactUri({ rootId: 'workspace', relPath: 'sessions/s1/plans/p.md' });
     setArtifactState(workspaceRoot, uri, { pinned: true });
-    const { artifacts } = indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const { artifacts } = await indexArtifacts({ workspaceRootPath: workspaceRoot });
     expect(artifacts.find((a) => a.uri === uri)?.pinned).toBe(true);
   });
 
   // F2 (G2b review): skipped roots are rootId + reason — never absolute paths.
-  it('reports a missing configured root as {rootId, reason} with no absolute path', () => {
-    const { skippedRoots } = indexArtifacts({
+  it('reports a missing configured root as {rootId, reason} with no absolute path', async () => {
+    const { skippedRoots } = await indexArtifacts({
       workspaceRootPath: workspaceRoot,
       configuredRoots: { ghost: join(tempDir, 'does-not-exist') },
     });
@@ -172,10 +172,10 @@ describe('indexArtifacts', () => {
   });
 
   // A3 (G2b review): a bare #hashtag line is not a heading.
-  it('does not mistake a #hashtag line for a heading title', () => {
+  it('does not mistake a #hashtag line for a heading title', async () => {
     write(join(workspaceRoot, 'sessions', 's1', 'plans', 'tagged.md'), '#todo\n\n# Real Title\nbody');
     write(join(workspaceRoot, 'sessions', 's1', 'plans', 'only-tag.md'), '#todo\nbody');
-    const { artifacts } = indexArtifacts({ workspaceRootPath: workspaceRoot });
+    const { artifacts } = await indexArtifacts({ workspaceRootPath: workspaceRoot });
     const byRel = (rel: string) =>
       artifacts.find((a) => a.uri === formatArtifactUri({ rootId: 'workspace', relPath: rel }));
     expect(byRel('sessions/s1/plans/tagged.md')?.title).toBe('Real Title');
@@ -183,7 +183,7 @@ describe('indexArtifacts', () => {
   });
 
   // F1 support: the URI-set variant matches the full index's surface.
-  it('indexArtifactUris matches the URIs indexArtifacts surfaces (archived included)', () => {
+  it('indexArtifactUris matches the URIs indexArtifacts surfaces (archived included)', async () => {
     writeSession('s1', {});
     write(join(workspaceRoot, 'sessions', 's1', 'plans', 'p.md'), '# P');
     write(join(workspaceRoot, 'sessions', 's1', 'data', 'd.json'), '{}');
@@ -191,8 +191,8 @@ describe('indexArtifacts', () => {
     const archivedUri = formatArtifactUri({ rootId: 'workspace', relPath: 'sessions/s1/plans/p.md' });
     setArtifactState(workspaceRoot, archivedUri, { archived: true });
 
-    const uris = indexArtifactUris({ workspaceRootPath: workspaceRoot });
-    const full = indexArtifacts({ workspaceRootPath: workspaceRoot, includeArchived: true });
+    const uris = await indexArtifactUris({ workspaceRootPath: workspaceRoot });
+    const full = await indexArtifacts({ workspaceRootPath: workspaceRoot, includeArchived: true });
     expect(uris).toEqual(new Set(full.artifacts.map((a) => a.uri)));
     expect(uris.has(formatArtifactUri({ rootId: 'workspace', relPath: 'unindexed.md' }))).toBe(false);
   });
