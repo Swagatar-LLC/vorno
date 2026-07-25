@@ -18,7 +18,7 @@ roadmap/
 ├── decisions/                     # ADRs (Architecture Decision Records)
 │   └── _template.md
 ├── discussions/                   # Captured conversations, dossiers, research
-└── upstream/                      # Tracking lukilabs/craft-agents-oss
+└── upstream/                      # Tracking craft-ai-agents/craft-agents-oss
     ├── compatibility.md           # Wire/protocol commitments (public)
     └── README.md                  # How upstream tracking works
 ```
@@ -75,7 +75,7 @@ A plan **must** have frontmatter (id, title, status, direction, owner, created).
 
 ## Upstream relationship
 
-We are a fork of [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss) at [Swagatar-LLC/vorno](https://github.com/Swagatar-LLC/vorno). We aim to:
+We are a fork of [craft-ai-agents/craft-agents-oss](https://github.com/craft-ai-agents/craft-agents-oss) at [Swagatar-LLC/vorno](https://github.com/Swagatar-LLC/vorno). We aim to:
 
 1. Stay **wire/protocol compatible** with upstream as long as feasible (`MessageEnvelope`, `AgentEvent`, source/skill conventions).
 2. Contribute portable improvements back upstream when valuable.

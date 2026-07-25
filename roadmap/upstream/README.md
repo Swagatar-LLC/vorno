@@ -1,6 +1,6 @@
 # Upstream tracking
 
-Our relationship with [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss). Posture is fixed by [ADR-0001](../decisions/0001-fork-relationship-with-upstream.md): wire-compatible, deliberately divergent.
+Our relationship with [craft-ai-agents/craft-agents-oss](https://github.com/craft-ai-agents/craft-agents-oss). Posture is fixed by [ADR-0001](../decisions/0001-fork-relationship-with-upstream.md): wire-compatible, deliberately divergent.
 
 ## Public / private split
 

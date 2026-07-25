@@ -11,7 +11,7 @@ superseded-by: []
 
 ## Context
 
-We are a fork of [lukilabs/craft-agents-oss](https://github.com/lukilabs/craft-agents-oss) hosted at [Swagatar-LLC/vorno](https://github.com/Swagatar-LLC/vorno). Upstream is actively developed (releases roughly weekly). We have non-trivial original work landed (HTTP trigger server, dual-transport WebSocket, governance system, canvas paradigm direction).
+We are a fork of [craft-ai-agents/craft-agents-oss](https://github.com/craft-ai-agents/craft-agents-oss) hosted at [Swagatar-LLC/vorno](https://github.com/Swagatar-LLC/vorno). Upstream is actively developed (releases roughly weekly). We have non-trivial original work landed (HTTP trigger server, dual-transport WebSocket, governance system, canvas paradigm direction).
 
 We need a clear posture toward upstream so future merges, contributions, and divergences are deliberate rather than accidental.
 
