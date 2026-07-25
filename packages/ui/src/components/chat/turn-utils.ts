@@ -417,6 +417,14 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
             text: lastTextActivity.content,
             isStreaming: false,
             messageId: lastTextActivity.id,
+            // Carry the source message's annotations. Without them the promoted
+            // response renders with `annotations: undefined`, so highlights and
+            // follow-up chips for that message never appear in the transcript,
+            // the composer chip can't open the island (the external open request
+            // is dropped for an empty annotation list), and the duplicate guard
+            // always passes — a follow-up saved there becomes invisible and
+            // permanently pending.
+            annotations: lastTextActivity.annotations,
           }
         }
       }
@@ -600,6 +608,8 @@ export function groupMessagesByTurn(messages: Message[], options: GroupTurnsOpti
           content: message.content,
           timestamp: message.timestamp,
           parentId: message.parentToolUseId,
+          messageId: message.id,
+          annotations: message.annotations,
         }
         // Calculate depth for intermediate messages too
         if (intermediateActivity.parentId) {
@@ -901,6 +911,38 @@ export function formatActivityAsMarkdown(activity: ActivityItem): string {
   }
 
   return lines.join('\n')
+}
+
+/**
+ * Map every annotatable message id in a turn list to its turn index.
+ *
+ * Annotatable surfaces are the turn response *and* every plan activity — both
+ * render as ResponseCards with their own messageId. Callers use this to widen a
+ * windowed transcript (reverse pagination) until the target turn is mounted,
+ * which is the only way a follow-up chip in the composer can reach its
+ * annotation once the turn has scrolled out of the rendered window.
+ */
+export function buildAnnotatableTurnIndex(turns: Turn[]): Map<string, number> {
+  const map = new Map<string, number>()
+
+  turns.forEach((turn, index) => {
+    if (turn.type !== 'assistant') return
+
+    const responseMessageId = turn.response?.messageId
+    if (responseMessageId && !map.has(responseMessageId)) {
+      map.set(responseMessageId, index)
+    }
+
+    for (const activity of turn.activities) {
+      if (activity.type !== 'plan') continue
+      const messageId = activity.messageId
+      if (messageId && !map.has(messageId)) {
+        map.set(messageId, index)
+      }
+    }
+  })
+
+  return map
 }
 
 // ============================================================================

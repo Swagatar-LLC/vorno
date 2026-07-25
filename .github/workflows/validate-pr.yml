@@ -110,7 +110,9 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # WebUI tests — headless smoke suite (real HTTP host + login + WS proxy) plus
-  # the fork-owned main-process webui unit suites and the webui adapter tests.
+  # the fork-owned main-process webui unit suites, the webui adapter tests,
+  # the electron app-shell renderer suites, packages/ui (all annotation/
+  # follow-up logic lives there), and packages/server-core (transport client).
   # These were previously un-gated (local-only); strict — 0 failures allowed.
   # ---------------------------------------------------------------------------
   test-webui:

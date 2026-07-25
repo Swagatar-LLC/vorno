@@ -1,4 +1,4 @@
-import type { AgentProvider, LlmAuthType } from '@craft-agent/shared/agent/backend'
+import type { AgentProvider, BackendRuntimeUpdate, LlmAuthType } from '@craft-agent/shared/agent/backend'
 import { isCompatProvider, modelSupportsImages, type LlmConnection } from '@craft-agent/shared/config'
 import type { FileAttachment } from '@craft-agent/shared/protocol'
 
@@ -31,6 +31,39 @@ function normalizeCustomModels(connection: LlmConnection): Array<Record<string, 
       })
     })
     .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+}
+
+/**
+ * Build the `runtime` envelope for the `update_runtime_config` IPC payload.
+ * Mirrors what `pi-agent.ts:requestRuntimeConfigUpdate` unpacks: `customModels`
+ * entries stay plain strings unless the model carries `contextWindow` or an
+ * explicit boolean `supportsImages`, in which case those fields are forwarded
+ * so the Pi subprocess can re-register the model with the right capabilities.
+ *
+ * Kept pure (connection in, envelope out) so the shape is testable without
+ * resolving a connection from host disk config — an end-to-end test that
+ * depended on the machine's own llmConnections passed on dev machines and
+ * failed in clean CI environments.
+ */
+export function buildRuntimeEnvelope(connection: LlmConnection | null | undefined): BackendRuntimeUpdate['runtime'] {
+  if (!connection) return undefined
+  return {
+    baseUrl: connection.baseUrl,
+    piAuthProvider: connection.piAuthProvider,
+    customEndpoint: connection.customEndpoint,
+    customModels: connection.models?.map(model => {
+      if (typeof model === 'string') return model
+      const supportsImages = typeof model.supportsImages === 'boolean' ? model.supportsImages : undefined
+      if (model.contextWindow || supportsImages !== undefined) {
+        return {
+          id: model.id,
+          ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+          ...(supportsImages !== undefined ? { supportsImages } : {}),
+        }
+      }
+      return model.id
+    }),
+  }
 }
 
 /**

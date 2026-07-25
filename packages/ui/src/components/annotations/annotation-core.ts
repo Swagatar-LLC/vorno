@@ -15,6 +15,15 @@ export function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
 
+/**
+ * NOTE: matches on the text-position range only. When the rendered text of a
+ * message changes underneath a stored annotation (a file-backed markdown block
+ * finishing its load, a collapsible section toggling), a fresh selection of the
+ * *same* text produces different offsets, so this reports "no existing
+ * annotation" and the user can end up with a duplicate follow-up. Quote-based
+ * matching would close that hole but would also suppress the selection menu for
+ * a legitimately repeated phrase — see LEARNING-040 before changing this.
+ */
 export function hasExistingTextRangeAnnotation(
   annotations: AnnotationV1[] | undefined,
   start: number,
