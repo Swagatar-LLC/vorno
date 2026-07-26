@@ -26,7 +26,7 @@
     "test": "bun run test:shared && bun run test:server",
     "test:shared": "cd packages/shared && bun test",
     "test:server": "cd apps/server && bun test",
-    "test:webui": "cd apps/electron && bun test src/main/webui src/renderer/components/app-shell && cd ../webui && bun test && cd ../../packages/ui && bun test && cd ../server-core && bun test",
+    "test:webui": "cd apps/electron && bun test src/main/webui src/renderer/components/app-shell src/renderer/lib && cd ../webui && bun test && cd ../../packages/ui && bun test && cd ../server-core && bun test",
     "test:all": "bun test && for f in $(find . -name '*.isolated.ts' -not -path './node_modules/*'); do bun test \"$f\" || exit 1; done",
     "typecheck": "bun run typecheck:ci",
     "typecheck:ci": "bun run typecheck:packages && bun run typecheck:server",
