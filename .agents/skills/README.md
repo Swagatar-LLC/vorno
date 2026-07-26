@@ -16,6 +16,7 @@ These are different from upstream's `apps/electron/resources/skills/` (which shi
 | [electron-prod-build](electron-prod-build/SKILL.md) | Produce a local production-mode Electron build for hands-on QA |
 | [upstream-sync](upstream-sync/SKILL.md) | Merge the latest upstream release |
 | [upstream-delta-report](upstream-delta-report/SKILL.md) | Refresh `roadmap/upstream/delta.md` |
+| [release-and-version](release-and-version/SKILL.md) | Cut a Vorno release: SemVer bump across workspace packages, release notes, tag-triggered `release.yml` |
 
 ## How agents invoke these
 

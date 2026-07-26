@@ -29,6 +29,7 @@ The [`.agents/skills/`](.agents/skills/) directory contains skills that drive th
 - `electron-prod-build` — produce a local production-mode Electron build for hands-on QA
 - `upstream-sync` — merge the latest upstream release
 - `upstream-delta-report` — refresh the upstream delta report
+- `release-and-version` — cut a Vorno release: SemVer bump across workspace packages, release notes, tag-triggered `release.yml`
 
 When the user asks for any of those, read the matching `SKILL.md` first.
 

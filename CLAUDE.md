@@ -26,6 +26,7 @@ Project skills live at [`.agents/skills/`](.agents/skills/). Reference with `[sk
 - `electron-prod-build`
 - `upstream-sync`
 - `upstream-delta-report`
+- `release-and-version`
 
 When the user references one, read its `SKILL.md` *first* — tool calls are blocked until you do, and the procedures contain non-obvious details (especially around git state and conflict resolution).
 
