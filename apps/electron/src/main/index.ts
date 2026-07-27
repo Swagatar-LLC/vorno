@@ -222,9 +222,14 @@ registerPiModelResolver((piAuthProvider) =>
   piAuthProvider ? getPiModelsForAuthProvider(piAuthProvider) : getAllPiModels()
 )
 
-// Custom URL scheme for deeplinks (e.g., craftagents://auth-complete)
+// Custom URL schemes for deeplinks (e.g., craftagents://auth-complete)
+// fork(ADR-0020): vorno:// registered additively alongside frozen craftagents://
+// so side-by-side upstream installs get a deterministic Launch Services target.
 // Supports multi-instance dev: CRAFT_DEEPLINK_SCHEME env var (craftagents1, craftagents2, etc.)
-const DEEPLINK_SCHEME = process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'
+// replaces the default list with that single scheme.
+const DEEPLINK_SCHEMES = process.env.CRAFT_DEEPLINK_SCHEME
+  ? [process.env.CRAFT_DEEPLINK_SCHEME]
+  : ['craftagents', 'vorno']
 
 let windowManager: WindowManager | null = null
 let sessionManager: SessionManager | null = null
@@ -268,16 +273,18 @@ if (process.env.CRAFT_APP_NAME) {
   app.setPath('userData', join(app.getPath('appData'), process.env.CRAFT_APP_NAME))
 }
 
-// Register as default protocol client for craftagents:// URLs
+// Register as default protocol client for craftagents:// and vorno:// URLs (ADR-0020)
 // This must be done before app.whenReady() on some platforms
-if (process.defaultApp) {
-  // Development mode: need to pass the app path
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient(DEEPLINK_SCHEME, process.execPath, [process.argv[1]])
+for (const scheme of DEEPLINK_SCHEMES) {
+  if (process.defaultApp) {
+    // Development mode: need to pass the app path
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(scheme, process.execPath, [process.argv[1]])
+    }
+  } else {
+    // Production mode
+    app.setAsDefaultProtocolClient(scheme)
   }
-} else {
-  // Production mode
-  app.setAsDefaultProtocolClient(DEEPLINK_SCHEME)
 }
 
 // Apply network proxy settings early (Node-level only — Electron sessions require app.whenReady)
@@ -348,7 +355,7 @@ if (!gotTheLock) {
   app.on('second-instance', (_event, commandLine, _workingDirectory) => {
     // Someone tried to run a second instance, we should focus our window.
     // On Windows/Linux, the deeplink is in commandLine
-    const url = commandLine.find(arg => arg.startsWith(`${DEEPLINK_SCHEME}://`))
+    const url = commandLine.find(arg => DEEPLINK_SCHEMES.some(scheme => arg.startsWith(`${scheme}://`)))
     if (url && windowManager) {
       mainLog.info('Received deeplink from second instance:', url)
       handleDeepLink(url, windowManager, moduleSink ?? undefined, moduleClientResolver ?? undefined).catch(err => {

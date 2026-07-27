@@ -68,7 +68,8 @@ function collectDeepLinkParams(parsed: URL, pathId?: string): Record<string, str
 }
 
 function parseInternalCraftAgentsDeepLink(parsed: URL): ParsedInternalDeepLink | null {
-  if (parsed.protocol !== 'craftagents:') return null
+  // fork(ADR-0020): vorno:// accepted additively; identical route grammar.
+  if (parsed.protocol !== 'craftagents:' && parsed.protocol !== 'vorno:') return null
 
   const host = parsed.hostname
   const pathParts = parsed.pathname.split('/').filter(Boolean)

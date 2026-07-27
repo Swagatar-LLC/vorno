@@ -47,6 +47,15 @@ describe('classifyExternalUrl — internal deep links', () => {
   it('is case-insensitive for the scheme', () => {
     expect(classifyExternalUrl('CRAFTAGENTS://settings').kind).toBe('internal-deeplink')
   })
+
+  // fork(ADR-0020): vorno:// is an additive second deep-link scheme
+  it('classifies vorno:// as internal-deeplink', () => {
+    expect(classifyExternalUrl('vorno://settings').kind).toBe('internal-deeplink')
+  })
+
+  it('is case-insensitive for the vorno scheme', () => {
+    expect(classifyExternalUrl('VORNO://settings').kind).toBe('internal-deeplink')
+  })
 })
 
 describe('classifyExternalUrl — dangerous schemes', () => {
