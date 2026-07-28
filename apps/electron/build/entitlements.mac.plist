@@ -10,5 +10,10 @@
     <!-- https://github.com/electron-userland/electron-builder/issues/3940 -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
+    <!-- EventKit access for calendar-backed sources. Paired with
+         NSCalendarsFullAccessUsageDescription in electron-builder.yml extendInfo;
+         required for any hardened process in the bundle to touch EventKit. -->
+    <key>com.apple.security.personal-information.calendars</key>
+    <true/>
   </dict>
 </plist>
