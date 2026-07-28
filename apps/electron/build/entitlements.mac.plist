@@ -10,9 +10,14 @@
     <!-- https://github.com/electron-userland/electron-builder/issues/3940 -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
-    <!-- EventKit access for calendar-backed sources. Paired with
-         NSCalendarsFullAccessUsageDescription in electron-builder.yml extendInfo;
-         required for any hardened process in the bundle to touch EventKit. -->
+    <!-- EventKit access for calendar-backed sources. NOTE: this is an App Sandbox
+         entitlement and is INERT today — this app is not sandboxed (no
+         com.apple.security.app-sandbox above), and for a non-sandboxed hardened
+         runtime app EventKit is gated purely by TCC via the
+         NSCalendars*UsageDescription keys in electron-builder.yml extendInfo.
+         Kept as the documented pairing so the grant survives if the bundle is
+         ever sandboxed; verified harmless (notarization passes with it). It is
+         NOT what makes calendar access work — the Info.plist keys are. -->
     <key>com.apple.security.personal-information.calendars</key>
     <true/>
   </dict>
