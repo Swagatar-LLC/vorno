@@ -100,6 +100,15 @@ mac:
     # and prompt for permission. Without it the app is silently denied LAN access
     # and never appears in the privacy pane (craft-agents-oss#938).
     NSLocalNetworkUsageDescription: "Vorno uses your local network to reach LAN addresses and devices you ask an agent to access, such as local servers or APIs."
+    # Required for macOS to list the app under Privacy & Security > Calendars and
+    # prompt for permission. EventKit-backed sources (e.g. a local calendar MCP
+    # server) run as child processes, so TCC attributes their request to the
+    # responsible process — Vorno — and reads these keys from *this* Info.plist.
+    # Without them the request is silently denied and no prompt ever appears.
+    # NSCalendarsFullAccessUsageDescription is the macOS 14+ key; the legacy
+    # NSCalendarsUsageDescription is kept for older systems.
+    NSCalendarsFullAccessUsageDescription: "Vorno reads and edits your calendar events when you ask an agent to check your schedule or create, update, or delete events."
+    NSCalendarsUsageDescription: "Vorno reads and edits your calendar events when you ask an agent to check your schedule or create, update, or delete events."
   target:
     # macOS arm64 only — upstream discontinued Intel at v0.10.1 (ADR-0009).
     - target: dmg
