@@ -31,6 +31,9 @@ const DANGEROUS_SCHEMES: ReadonlyMap<string, string> = new Map([
 ])
 
 const INTERNAL_DEEPLINK_SCHEME = 'craftagents:'
+// fork(ADR-0020): vorno:// is an additive second deep-link scheme with an
+// identical route grammar; craftagents:// stays frozen per upstream compat.
+const VORNO_DEEPLINK_SCHEME = 'vorno:'
 
 export function classifyExternalUrl(rawUrl: string): UrlClassification {
   if (typeof rawUrl !== 'string' || rawUrl.trim() === '') {
@@ -51,7 +54,7 @@ export function classifyExternalUrl(rawUrl: string): UrlClassification {
     return { kind: 'dangerous', scheme: protocol, reason: blockedReason }
   }
 
-  if (protocol === INTERNAL_DEEPLINK_SCHEME) {
+  if (protocol === INTERNAL_DEEPLINK_SCHEME || protocol === VORNO_DEEPLINK_SCHEME) {
     return { kind: 'internal-deeplink' }
   }
 

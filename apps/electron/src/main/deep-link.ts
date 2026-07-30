@@ -1,7 +1,9 @@
 /**
  * Deep Link Handler
  *
- * Parses craftagents:// URLs and routes to appropriate actions.
+ * Parses craftagents:// and vorno:// URLs and routes to appropriate actions.
+ * fork(ADR-0020): vorno:// is an additive second scheme with an identical route
+ * grammar; craftagents:// stays handled forever (frozen upstream compat).
  *
  * URL Formats (workspace is optional - uses active window if omitted):
  *
@@ -39,6 +41,9 @@ import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
 import { RPC_CHANNELS } from '../shared/types'
 import type { EventSink } from '@craft-agent/server-core/transport'
+
+// fork(ADR-0020): both schemes are accepted everywhere; route grammar is identical.
+export const DEEP_LINK_PROTOCOLS = new Set(['craftagents:', 'vorno:'])
 
 export interface DeepLinkTarget {
   /** Workspace ID - undefined means use active window */
@@ -96,7 +101,7 @@ export function parseDeepLink(url: string): DeepLinkTarget | null {
   try {
     const parsed = new URL(url)
 
-    if (parsed.protocol !== 'craftagents:') {
+    if (!DEEP_LINK_PROTOCOLS.has(parsed.protocol)) {
       return null
     }
 

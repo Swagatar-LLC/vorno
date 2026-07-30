@@ -27,6 +27,8 @@ Additive protocol surface owned by the fork. Every entry is optional for peers: 
 
 Reserved by ADR-0013 (design, not yet in code): `vorno:server:info` (instance metadata). Naming rule for future workbench types: `vorno:workbench:<type>:<action>`, instance ids in payloads only.
 
+OS deep-link scheme (ADR-0020, 2026-07-26): `vorno://` is registered additively alongside `craftagents://` with a byte-for-byte identical route grammar. `craftagents://` stays handled forever (frozen surface above); `vorno://` exists so Launch Services routing is deterministic when upstream stable runs side-by-side. New deep-link routes always ship on both schemes.
+
 ## Direction-specific notes
 
 ### Direction 1 (Canvas Session)

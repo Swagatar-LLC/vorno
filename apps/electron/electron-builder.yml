@@ -7,6 +7,16 @@ electronVersion: "39.2.7"
 # Hook to compile macOS 26+ Liquid Glass icon after packaging
 afterPack: scripts/afterPack.cjs
 
+# Deep-link URL schemes (ADR-0020): declares CFBundleURLTypes in Info.plist so
+# packaged builds carry the claim statically. vorno:// is Vorno-only (deterministic
+# Launch Services routing in side-by-side installs); craftagents:// stays handled
+# forever per the frozen upstream-compat contract.
+protocols:
+  - name: Vorno Deep Link
+    schemes:
+      - vorno
+      - craftagents
+
 directories:
   output: release
   buildResources: resources
