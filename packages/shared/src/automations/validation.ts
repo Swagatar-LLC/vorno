@@ -9,7 +9,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveAutomationsConfigPath } from './resolve-config-path.ts';
 import { AUTOMATIONS_CONFIG_FILE } from './constants.ts';
-import { AutomationsConfigSchema, zodErrorToIssues, DEPRECATED_EVENT_ALIASES } from './schemas.ts';
+import { AutomationsConfigSchema, AutomationMatcherSchema, KNOWN_ACTION_TYPES, zodErrorToIssues, DEPRECATED_EVENT_ALIASES } from './schemas.ts';
 import { isValidLabelId } from '../labels/storage.ts';
 import { extractLabelId } from '../labels/values.ts';
 import { getLlmConnection } from '../config/storage.ts';
@@ -26,6 +26,236 @@ const WEBHOOK_ONLY_ACTION_TYPES = new Set(['set-status', 'set-labels', 'send-mes
 
 /** fork(PLAN-017): action types permitted inside a matcher's `onFailure` list. */
 const ONFAILURE_ALLOWED_ACTION_TYPES = new Set(['prompt', 'webhook']);
+
+/**
+ * fork(PLAN-030): invented action types seen in the wild, mapped to the real
+ * type — or to `null` where no equivalent exists yet.
+ *
+ * Keys are normalized (lowercase, separators stripped) so `setSessionStatus`,
+ * `set_session_status`, and `SetSessionStatus` all resolve to one entry. These
+ * are hallucination patterns: plausible-reading names an agent or a human
+ * reaches for when the docs don't list the real vocabulary. Naming the right
+ * type is what turns a silent no-op into a one-line fix.
+ */
+const ACTION_TYPE_ALIASES: Record<string, string | null> = {
+  setsessionstatus: 'set-status',
+  setstatus: 'set-status',
+  updatestatus: 'set-status',
+  setsessionlabels: 'set-labels',
+  setlabels: 'set-labels',
+  addlabel: 'set-labels',
+  addlabels: 'set-labels',
+  sendmessage: 'send-message',
+  message: 'send-message',
+  // No equivalent today — session context activation is PLAN-030 Phase 3.
+  addworkingdirectory: null,
+  setworkingdirectory: null,
+  enableskill: null,
+  enablesource: null,
+  applycontext: null,
+};
+
+/**
+ * fork(PLAN-030): invented matcher keys mapped to the real key.
+ *
+ * `labelId` is the load-bearing entry: it reads like a filter, so a rule using
+ * it looks filtered while `matcher` stays unset — and an unset `matcher` means
+ * *match everything* (`matchesBasePredicate`). The rule fires on every event of
+ * its type instead of none, which is the more dangerous of the two failures.
+ */
+const MATCHER_KEY_ALIASES: Record<string, string | null> = {
+  labelid: 'matcher',
+  label: 'matcher',
+  labelname: 'matcher',
+  status: 'matcher',
+  statusid: 'matcher',
+  toolname: 'matcher',
+  pattern: 'matcher',
+  regex: 'matcher',
+  schedule: 'cron',
+  crontab: 'cron',
+  tz: 'timezone',
+  disabled: 'enabled',
+  mode: 'permissionMode',
+};
+
+/**
+ * Keys treated as deliberate inline documentation rather than mistakes.
+ *
+ * JSON has no comment syntax, so annotating a rule means adding a key the
+ * schema will strip. That is intentional and harmless — warning about it every
+ * validation is noise that trains people to ignore the warnings that matter.
+ */
+const ANNOTATION_KEYS = new Set(['comment', '_comment', 'note', 'notes', 'reason', 'description', 'doc', '$schema']);
+
+/** Normalize a type/key name for alias and token comparison. */
+function normalizeName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Split a camelCase / kebab / snake name into lowercase tokens. */
+function nameTokens(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((t) => t.toLowerCase());
+}
+
+/**
+ * Best-effort "did you mean" for an unrecognized name.
+ *
+ * Alias table first (exact, highest confidence), then token containment — the
+ * candidate whose tokens are all present in the offending name, preferring the
+ * most specific. `setSessionStatus` → tokens {set, session, status} ⊇ {set,
+ * status} → `set-status`.
+ *
+ * Single-token candidates are never suggested for a multi-token name: `labelId`
+ * tokenizes to {label, id}, which contains the key `id`, but steering someone
+ * from a mis-keyed filter to the matcher's own identifier is worse than saying
+ * nothing. A wrong suggestion costs more than no suggestion — when in doubt,
+ * return undefined and list the valid names instead.
+ */
+function suggestName(
+  name: string,
+  candidates: readonly string[],
+  aliases: Record<string, string | null>,
+): string | undefined {
+  const normalized = normalizeName(name);
+  if (normalized in aliases) {
+    return aliases[normalized] ?? undefined;
+  }
+  const tokens = nameTokens(name);
+  const tokenSet = new Set(tokens);
+  let best: string | undefined;
+  let bestScore = 0;
+  for (const candidate of candidates) {
+    const candidateTokens = nameTokens(candidate);
+    // Require a multi-token overlap unless the name is itself a single token
+    // (so `crontab` → `cron` still works, but `labelId` → `id` does not).
+    if (candidateTokens.length < 2 && tokens.length > 1) continue;
+    if (!candidateTokens.every((t) => tokenSet.has(t))) continue;
+    if (candidateTokens.length > bestScore) {
+      best = candidate;
+      bestScore = candidateTokens.length;
+    }
+  }
+  return best;
+}
+
+/** Matcher keys the schema actually understands — derived, so it can't drift. */
+function knownMatcherKeys(): string[] {
+  return Object.keys(AutomationMatcherSchema.shape);
+}
+
+/**
+ * fork(PLAN-030): walk raw config content, invoking `visit` for each matcher.
+ *
+ * Operates on raw (pre-schema) content because Zod has already stripped unknown
+ * matcher keys by the time a parsed config exists — the stripping is exactly
+ * what we need to report. Best-effort and defensive: malformed shapes are
+ * skipped, never thrown on.
+ */
+function forEachRawMatcher(
+  content: unknown,
+  visit: (matcher: Record<string, unknown>, event: string, index: number) => void,
+): void {
+  const automations = (content as { automations?: unknown } | null)?.automations;
+  if (!automations || typeof automations !== 'object') return;
+  for (const [event, matchers] of Object.entries(automations as Record<string, unknown>)) {
+    if (!Array.isArray(matchers)) continue;
+    for (let i = 0; i < matchers.length; i++) {
+      const matcher = matchers[i];
+      if (matcher && typeof matcher === 'object' && !Array.isArray(matcher)) {
+        visit(matcher as Record<string, unknown>, event, i);
+      }
+    }
+  }
+}
+
+/**
+ * fork(PLAN-030): report action types no handler will ever dispatch.
+ *
+ * The schema's `.passthrough()` member cannot reject these (see
+ * `ActionDefinitionSchema`), so without this scan an invented type validates
+ * clean and silently never runs.
+ */
+export function scanUnknownActionTypes(content: unknown, file: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  forEachRawMatcher(content, (matcher, event, i) => {
+    const actions = matcher.actions;
+    if (!Array.isArray(actions)) return;
+    for (let j = 0; j < actions.length; j++) {
+      const action = actions[j] as { type?: unknown } | null;
+      const type = action && typeof action === 'object' ? action.type : undefined;
+      if (typeof type !== 'string' || (KNOWN_ACTION_TYPES as readonly string[]).includes(type)) continue;
+      const suggestion = suggestName(type, KNOWN_ACTION_TYPES, ACTION_TYPE_ALIASES);
+      issues.push({
+        file,
+        path: `automations.${event}[${i}].actions[${j}].type`,
+        message: `Unknown action type "${type}" — no handler will run this action`,
+        severity: 'error',
+        suggestion: suggestion
+          ? `Did you mean "${suggestion}"?`
+          : `Valid action types are: ${KNOWN_ACTION_TYPES.join(', ')}`,
+      });
+    }
+  });
+  return issues;
+}
+
+/**
+ * fork(PLAN-030): report matcher keys the schema will silently strip.
+ *
+ * Warning, not error — an unknown key is inert on its own. It is dangerous in
+ * one specific way, called out in the suggestion: a mis-keyed filter (e.g.
+ * `labelId` instead of `matcher`) leaves `matcher` unset, and
+ * `matchesBasePredicate` treats an unset `matcher` as *match everything*. The
+ * rule doesn't fail closed, it fires on every event.
+ */
+export function scanUnknownMatcherKeys(content: unknown, file: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const known = knownMatcherKeys();
+  forEachRawMatcher(content, (matcher, event, i) => {
+    for (const key of Object.keys(matcher)) {
+      if (known.includes(key) || ANNOTATION_KEYS.has(key.toLowerCase())) continue;
+      const suggestion = suggestName(key, known, MATCHER_KEY_ALIASES);
+      issues.push({
+        file,
+        path: `automations.${event}[${i}].${key}`,
+        message: `Unknown matcher key "${key}" — it is ignored, not applied`,
+        severity: 'warning',
+        suggestion: suggestion === 'matcher'
+          ? 'Filtering is done with "matcher" (a regex), e.g. "matcher": "^auto-close$". Without it the rule matches EVERY event of this type.'
+          : suggestion
+            ? `Did you mean "${suggestion}"?`
+            : `Valid keys are: ${known.join(', ')}`,
+      });
+    }
+  });
+  return issues;
+}
+
+/**
+ * fork(PLAN-030): matcher ids whose actions include an unrecognized type.
+ *
+ * Used at load time to record dead rules in history — a rule that cannot run
+ * must be visible somewhere, and history is where operators look.
+ */
+export function findMatchersWithUnknownActions(content: unknown): Array<{ id: string; event: string; types: string[] }> {
+  const dead: Array<{ id: string; event: string; types: string[] }> = [];
+  forEachRawMatcher(content, (matcher, event, i) => {
+    const actions = matcher.actions;
+    if (!Array.isArray(actions)) return;
+    const types = actions
+      .map((a) => (a && typeof a === 'object' ? (a as { type?: unknown }).type : undefined))
+      .filter((t): t is string => typeof t === 'string' && !(KNOWN_ACTION_TYPES as readonly string[]).includes(t));
+    if (types.length > 0) {
+      dead.push({ id: typeof matcher.id === 'string' ? matcher.id : `${event}[${i}]`, event, types });
+    }
+  });
+  return dead;
+}
 
 /**
  * Validate automations config (internal - returns parsed config)
@@ -436,6 +666,16 @@ export function validateAutomationsContent(jsonString: string, fileName?: string
   }
 
   runMatcherSemanticValidations(config, file, errors, warnings);
+
+  // fork(PLAN-030): raw-content scans for things the schema cannot reject —
+  // unknown action types (swallowed by the ActionDefinitionSchema catch-all)
+  // and unknown matcher keys (stripped by non-strict parsing). These run on the
+  // inspection path only. The load path (validateAutomationsConfig) must stay
+  // lenient: it zeroes the entire automations map on any error, so reporting a
+  // single dead rule there would take every working automation down with it.
+  // See ADR-0021 §4.
+  errors.push(...scanUnknownActionTypes(content, file));
+  warnings.push(...scanUnknownMatcherKeys(content, file));
 
   return {
     valid: errors.length === 0,

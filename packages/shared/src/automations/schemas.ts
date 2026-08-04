@@ -104,7 +104,36 @@ export const SendMessageActionSchema = z.object({
   message: z.string().min(1),
 });
 
-/** Accepts prompt and webhook actions strictly; passes through legacy/unknown action types without erroring */
+/**
+ * fork(PLAN-030): every action type the runtime has a handler for.
+ *
+ * Kept beside the union it describes — the `.passthrough()` member below means
+ * the union itself can never reject an unknown type, so this list is the only
+ * thing that knows what is actually dispatchable. `automation-schemas.test.ts`
+ * asserts the two stay in sync.
+ */
+export const KNOWN_ACTION_TYPES = [
+  'prompt',
+  'webhook',
+  'set-status',
+  'set-labels',
+  'send-message',
+] as const;
+
+export type KnownActionType = (typeof KNOWN_ACTION_TYPES)[number];
+
+/**
+ * Accepts known actions strictly; passes through legacy/unknown action types
+ * without erroring.
+ *
+ * fork(PLAN-030): the trailing `.passthrough()` is deliberate — a config written
+ * by a newer build must still load on an older one rather than taking every
+ * automation in the file down with it (`loadConfig` zeroes `automations` on any
+ * validation error). The cost is that an invented type validates clean here, so
+ * unknown types are surfaced out-of-band by `scanUnknownActionTypes` in
+ * `validation.ts` and recorded as skipped at load time. Do not "fix" this by
+ * dropping the catch-all; see ADR-0021 §4.
+ */
 export const ActionDefinitionSchema = z.union([
   PromptActionSchema,
   WebhookActionSchema,

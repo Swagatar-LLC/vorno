@@ -27,7 +27,9 @@ import { WorkspaceEventBus, type EventPayloadMap } from './event-bus.ts';
 import { PromptHandler, EventLogHandler, WebhookHandler, type AutomationsConfigProvider } from './handlers/index.ts';
 import { SessionActionHandler } from './handlers/session-action-handler.ts';
 import { type AutomationsConfig, type AutomationEvent, type AutomationMatcher, type PendingPrompt, type PendingSessionAction, type WebhookActionResult, type AppEvent, type AgentEvent, type SdkAutomationCallbackMatcher, type SdkAutomationInput } from './types.ts';
-import { validateAutomationsConfig } from './validation.ts';
+import { validateAutomationsConfig, findMatchersWithUnknownActions } from './validation.ts';
+import { KNOWN_ACTION_TYPES } from './schemas.ts';
+import { createConfigDiagnosticHistoryEntry } from './webhook-utils.ts';
 import { matcherMatchesSdk } from './utils.ts';
 import { SchedulerService, type SchedulerTickPayload } from '../scheduler/scheduler-service.ts';
 
@@ -156,12 +158,51 @@ export class AutomationSystem implements AutomationsConfigProvider {
       this.config = validation.config;
       this.backfillIds(configPath, raw);
       this.rotateHistory();
+      this.reportDeadMatchers(raw);
       const actionCount = this.getActionCount();
       log.debug(`[AutomationSystem] Loaded ${actionCount} actions from ${configPath}`);
     } catch (e) {
       const error = e instanceof Error ? e.message : 'Unknown error';
       console.warn('[AutomationSystem] Failed to load automations config:', error);
       this.config = { automations: {} };
+    }
+  }
+
+  /**
+   * fork(PLAN-030): record matchers that loaded but can never run.
+   *
+   * A matcher whose action type has no handler passes the schema (the
+   * ActionDefinitionSchema catch-all cannot reject it) and then does nothing,
+   * forever, with no history entry — indistinguishable from a rule that simply
+   * hasn't been triggered yet. Log it and write one diagnostic per load so the
+   * failure is visible in the surface operators actually check.
+   *
+   * Fail-soft: a diagnostic must never take down config loading.
+   */
+  private reportDeadMatchers(raw: unknown): void {
+    let dead: Array<{ id: string; event: string; types: string[] }>;
+    try {
+      dead = findMatchersWithUnknownActions(raw);
+    } catch {
+      return;
+    }
+    for (const { id, event, types } of dead) {
+      console.warn(
+        `[AutomationSystem] Automation "${id}" (${event}) will never run: ` +
+        `unknown action type(s) ${types.map((t) => `"${t}"`).join(', ')}. ` +
+        `Valid types are: ${KNOWN_ACTION_TYPES.join(', ')}.`
+      );
+      void appendAutomationHistoryEntry(
+        this.options.workspaceRootPath,
+        createConfigDiagnosticHistoryEntry({
+          matcherId: id,
+          event,
+          reason: 'unknown-action-type',
+          detail: types.join(', '),
+        }),
+      ).catch(() => {
+        // History is best-effort — never fail a load on a logging error.
+      });
     }
   }
 

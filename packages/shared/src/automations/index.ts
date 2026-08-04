@@ -67,6 +67,10 @@ export {
   validateAutomationsConfig,
   validateAutomationsContent,
   validateAutomations,
+  // fork(PLAN-030)
+  scanUnknownActionTypes,
+  scanUnknownMatcherKeys,
+  findMatchersWithUnknownActions,
 } from './validation.ts';
 
 // ============================================================================
@@ -89,7 +93,7 @@ export { parsePromptReferences } from './utils.ts';
 export { AutomationEventLogger, type LoggedAutomationEvent, type LoggedAutomationEventInput } from './event-logger.ts';
 
 // Schemas
-export { AutomationsConfigSchema, AutomationConditionSchema, TimeConditionSchema, StateConditionSchema, zodErrorToIssues, VALID_EVENTS } from './schemas.ts';
+export { AutomationsConfigSchema, AutomationConditionSchema, TimeConditionSchema, StateConditionSchema, zodErrorToIssues, VALID_EVENTS, KNOWN_ACTION_TYPES, type KnownActionType } from './schemas.ts';
 
 // Condition evaluator
 export { evaluateConditions, type ConditionContext } from './conditions.ts';
@@ -98,7 +102,7 @@ export { evaluateConditions, type ConditionContext } from './conditions.ts';
 export { sanitizeForShell } from './security.ts';
 
 // Webhook execution utilities
-export { executeWebhookRequest, executeWithRetry, createWebhookHistoryEntry, createPromptHistoryEntry, createOutcomeHistoryEntry, createMissedHistoryEntry, type ExecuteWebhookOptions, type RetryConfig } from './webhook-utils.ts';
+export { executeWebhookRequest, executeWithRetry, createWebhookHistoryEntry, createPromptHistoryEntry, createOutcomeHistoryEntry, createMissedHistoryEntry, createConfigDiagnosticHistoryEntry, type ExecuteWebhookOptions, type RetryConfig } from './webhook-utils.ts';
 
 // fork(PLAN-017): missed-fire detection + onFailure execution
 export { detectMissedFires, type DetectMissedFiresInput } from './missed-fire.ts';
