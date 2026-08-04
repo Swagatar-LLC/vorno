@@ -70,7 +70,11 @@ export {
   // fork(PLAN-030)
   scanUnknownActionTypes,
   scanUnknownMatcherKeys,
+  scanMalformedKnownActions,
+  scanUnknownEventNames,
   findMatchersWithUnknownActions,
+  collectConfigDiagnostics,
+  type ConfigDiagnostic,
 } from './validation.ts';
 
 // ============================================================================

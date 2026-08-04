@@ -109,8 +109,10 @@ export const SendMessageActionSchema = z.object({
  *
  * Kept beside the union it describes — the `.passthrough()` member below means
  * the union itself can never reject an unknown type, so this list is the only
- * thing that knows what is actually dispatchable. `automation-schemas.test.ts`
- * asserts the two stay in sync.
+ * thing that knows what is actually dispatchable. The drift guard in
+ * `dead-rule-diagnostics.test.ts` reads the union's literal members back out of
+ * the schema and asserts set equality with this list, so adding a member to the
+ * union without adding it here fails the suite.
  */
 export const KNOWN_ACTION_TYPES = [
   'prompt',
@@ -121,6 +123,24 @@ export const KNOWN_ACTION_TYPES = [
 ] as const;
 
 export type KnownActionType = (typeof KNOWN_ACTION_TYPES)[number];
+
+/**
+ * fork(PLAN-030): the strict schema for each dispatchable action type.
+ *
+ * The union below cannot be used to validate a *known* type's shape — a
+ * `set-status` action missing `session`/`status` fails `SetStatusActionSchema`
+ * and then falls through to the catch-all, validating clean. That rule is as
+ * dead as one with an invented type, and worse at runtime (it throws where the
+ * invented type is merely ignored). `scanMalformedKnownActions` uses this map to
+ * check each action against the schema its own `type` names, with no fallback.
+ */
+export const KNOWN_ACTION_SCHEMAS: Record<KnownActionType, z.ZodType> = {
+  'prompt': PromptActionSchema,
+  'webhook': WebhookActionSchema,
+  'set-status': SetStatusActionSchema,
+  'set-labels': SetLabelsActionSchema,
+  'send-message': SendMessageActionSchema,
+};
 
 /**
  * Accepts known actions strictly; passes through legacy/unknown action types

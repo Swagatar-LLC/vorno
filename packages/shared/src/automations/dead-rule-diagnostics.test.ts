@@ -12,9 +12,12 @@ import {
   validateAutomationsConfig,
   scanUnknownActionTypes,
   scanUnknownMatcherKeys,
+  scanMalformedKnownActions,
+  scanUnknownEventNames,
   findMatchersWithUnknownActions,
+  collectConfigDiagnostics,
 } from './validation.ts';
-import { ActionDefinitionSchema, AutomationMatcherSchema, KNOWN_ACTION_TYPES } from './schemas.ts';
+import { ActionDefinitionSchema, AutomationMatcherSchema, KNOWN_ACTION_TYPES, KNOWN_ACTION_SCHEMAS, VALID_EVENTS } from './schemas.ts';
 
 /** The exact shape that shipped broken in a real workspace. */
 const DEAD_CONFIG = {
@@ -119,6 +122,202 @@ describe('PLAN-030 Phase 0 — dead-rule diagnostics', () => {
     });
   });
 
+  describe('malformed known action types', () => {
+    // The second dead-rule class: the type name is real, the shape is not. The
+    // union's catch-all swallows it exactly the way it swallows an invented
+    // type, so the type-name scan is blind to it.
+    const MALFORMED = {
+      automations: {
+        WebhookReceived: [
+          { id: 'no-target', hook: { slug: 'h' }, actions: [{ type: 'set-status', status: 'done' }] },
+        ],
+      },
+    };
+
+    it('is invisible to the type-name scan', () => {
+      expect(scanUnknownActionTypes(MALFORMED, 'f')).toHaveLength(0);
+      expect(findMatchersWithUnknownActions(MALFORMED)).toHaveLength(0);
+    });
+
+    it('is reported as an error naming the type and the offending field', () => {
+      const issues = scanMalformedKnownActions(MALFORMED, 'automations.json');
+      expect(issues).toHaveLength(1);
+      expect(issues[0]!.severity).toBe('error');
+      expect(issues[0]!.message).toContain('set-status');
+      expect(issues[0]!.path).toBe('automations.WebhookReceived[0].actions[0]');
+    });
+
+    it('catches every known type, not just set-status', () => {
+      const config = {
+        automations: {
+          WebhookReceived: [
+            { actions: [{ type: 'prompt' }] },                                   // no prompt text
+            { actions: [{ type: 'webhook' }] },                                  // no url
+            { actions: [{ type: 'set-labels', session: { id: 's' } }] },         // neither add nor remove
+            { actions: [{ type: 'send-message', session: { id: 's' } }] },       // no message
+            { actions: [{ type: 'set-status', session: { id: 's', label: 'l' }, status: 'x' }] }, // both selectors
+          ],
+        },
+      };
+      expect(scanMalformedKnownActions(config, 'f')).toHaveLength(5);
+    });
+
+    it('is silent on well-formed actions, including $ENV and $.jsonpath templates', () => {
+      const config = {
+        automations: {
+          WebhookReceived: [{
+            actions: [
+              { type: 'set-status', session: { label: '$.body.label' }, status: '$TARGET_STATUS' },
+              { type: 'webhook', url: '$CRAFT_WH_ENDPOINT' },
+            ],
+          }],
+        },
+      };
+      expect(scanMalformedKnownActions(config, 'f')).toHaveLength(0);
+    });
+
+    it('is silent on a healthy config and skips disabled rules', () => {
+      expect(scanMalformedKnownActions(HEALTHY_CONFIG, 'f')).toHaveLength(0);
+      const disabled = { automations: { WebhookReceived: [{ ...MALFORMED.automations.WebhookReceived[0], enabled: false }] } };
+      expect(scanMalformedKnownActions(disabled, 'f')).toHaveLength(0);
+    });
+
+    it('surfaces through validateAutomationsContent as invalid', () => {
+      const result = validateAutomationsContent(JSON.stringify(MALFORMED));
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.message.includes('set-status'))).toBe(true);
+    });
+
+    it('never throws on malformed input', () => {
+      for (const input of [null, undefined, 42, [], {}, { automations: { X: [{ actions: [null, 7, 'x'] }] } }]) {
+        expect(() => scanMalformedKnownActions(input, 'f')).not.toThrow();
+      }
+    });
+  });
+
+  describe('unknown event names', () => {
+    // The third class, one level up: the transform drops the whole block and
+    // emits a single lumped console.warn. Every matcher under it is gone.
+    const TYPO_EVENT = {
+      automations: {
+        LabelAdded: [{ id: 'never-runs', matcher: '^x$', actions: [{ type: 'prompt', prompt: 'hi' }] }],
+      },
+    };
+
+    it('reports the block as discarded, counting the matchers lost with it', () => {
+      const issues = scanUnknownEventNames(TYPO_EVENT, 'automations.json');
+      expect(issues).toHaveLength(1);
+      expect(issues[0]!.severity).toBe('error');
+      expect(issues[0]!.path).toBe('automations.LabelAdded');
+      expect(issues[0]!.message).toContain('1 matcher');
+    });
+
+    it('suggests the real event for a near-miss the token matcher would miss', () => {
+      // `LabelAdded` → tokens {label, added}, which does not contain `add` —
+      // only the prefix pass finds this one.
+      expect(scanUnknownEventNames(TYPO_EVENT, 'f')[0]!.suggestion).toContain('LabelAdd');
+    });
+
+    it('corrects casing', () => {
+      const issues = scanUnknownEventNames({ automations: { labeladd: [] } }, 'f');
+      expect(issues[0]!.suggestion).toContain('LabelAdd');
+    });
+
+    it('lists valid events when nothing is close', () => {
+      const issues = scanUnknownEventNames({ automations: { Bananas: [] } }, 'f');
+      expect(issues[0]!.suggestion).toContain('SessionStatusChange');
+    });
+
+    it('accepts every canonical and deprecated event name', () => {
+      const config = { automations: Object.fromEntries(VALID_EVENTS.map((e) => [e, []])) };
+      expect(scanUnknownEventNames(config, 'f')).toHaveLength(0);
+    });
+
+    it('exempts a block whose matchers are all disabled', () => {
+      const parked = { automations: { LabelAdded: [{ enabled: false, actions: [] }] } };
+      expect(scanUnknownEventNames(parked, 'f')).toHaveLength(0);
+    });
+
+    it('replaces the misleading "no automations configured" warning', () => {
+      // Every rule lives under the typo, so the post-transform count is zero and
+      // the old warning claimed the file was empty — the opposite of the truth.
+      const result = validateAutomationsContent(JSON.stringify(TYPO_EVENT));
+      expect(result.valid).toBe(false);
+      expect(result.warnings.some((w) => w.message.includes('No automations configured'))).toBe(false);
+      expect(result.errors.some((e) => e.message.includes('LabelAdded'))).toBe(true);
+    });
+
+    it('never throws on malformed input', () => {
+      for (const input of [null, undefined, 42, 'x', [], { automations: null }, { automations: [] }]) {
+        expect(() => scanUnknownEventNames(input, 'f')).not.toThrow();
+      }
+    });
+  });
+
+  describe('"disabled" suggestion does not invert intent', () => {
+    // Following `Did you mean "enabled"?` literally turns `"disabled": true`
+    // into `"enabled": true` — the opposite of what the author wanted, on a rule
+    // that is still firing (an invented `disabled` key is inert).
+    const config = {
+      automations: { LabelAdd: [{ disabled: true, matcher: '^x$', actions: [{ type: 'prompt', prompt: 'p' }] }] },
+    };
+
+    it('tells the user the value flips, not just the key', () => {
+      const issue = scanUnknownMatcherKeys(config, 'f').find((i) => i.path.endsWith('.disabled'))!;
+      expect(issue.suggestion).toContain('"enabled": false');
+      expect(issue.suggestion).not.toBe('Did you mean "enabled"?');
+    });
+
+    it('says the rule is still running', () => {
+      const issue = scanUnknownMatcherKeys(config, 'f').find((i) => i.path.endsWith('.disabled'))!;
+      expect(issue.suggestion).toContain('still running');
+    });
+
+    it('confirms the premise — an invented `disabled` key does not park the rule', () => {
+      // If it did, the scans would (correctly) skip it and this warning would
+      // never be reachable.
+      expect(scanUnknownMatcherKeys(config, 'f').length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('collectConfigDiagnostics', () => {
+    it('reports every dead-rule class from one call', () => {
+      const config = {
+        automations: {
+          LabelAdd: [
+            { id: 'invented', actions: [{ type: 'setSessionStatus' }] },
+            { id: 'malformed', actions: [{ type: 'set-status', status: 'done' }] },
+          ],
+          LabelAdded: [{ id: 'typo-event', actions: [{ type: 'prompt', prompt: 'x' }] }],
+        },
+      };
+      const reasons = collectConfigDiagnostics(config).map((d) => d.reason).sort();
+      expect(reasons).toEqual(['invalid-action-shape', 'unknown-action-type', 'unknown-event']);
+    });
+
+    it('keys a diagnostic to the matcher id so history can group it', () => {
+      const diagnostics = collectConfigDiagnostics(DEAD_CONFIG);
+      expect(diagnostics).toEqual([
+        { id: 'auto-close-set-done', event: 'LabelAdd', reason: 'unknown-action-type', detail: 'setSessionStatus' },
+      ]);
+    });
+
+    it('returns nothing for a healthy config', () => {
+      expect(collectConfigDiagnostics(HEALTHY_CONFIG)).toHaveLength(0);
+    });
+
+    it('is stable across calls, so reload dedupe can compare signatures', () => {
+      expect(JSON.stringify(collectConfigDiagnostics(DEAD_CONFIG)))
+        .toBe(JSON.stringify(collectConfigDiagnostics(DEAD_CONFIG)));
+    });
+
+    it('never throws on malformed input', () => {
+      for (const input of [null, undefined, 42, 'x', [], {}, { automations: { X: 'nope' } }]) {
+        expect(() => collectConfigDiagnostics(input)).not.toThrow();
+      }
+    });
+  });
+
   describe('load path stays lenient (ADR-0021 §4)', () => {
     // loadConfig() zeroes the entire automations map on any validation error,
     // so a single dead rule must not be reported as a load-blocking error —
@@ -139,6 +338,27 @@ describe('PLAN-030 Phase 0 — dead-rule diagnostics', () => {
       };
       const result = validateAutomationsConfig(mixed);
       expect(result.valid).toBe(true);
+      expect(result.config!.automations.SchedulerTick).toHaveLength(1);
+    });
+
+    it('loads a config containing a malformed known action', () => {
+      // Same rule as unknown types: the new scan is an inspection-path error
+      // only. Blocking the load would zero every working automation in the file.
+      const result = validateAutomationsConfig({
+        automations: { WebhookReceived: [{ hook: { slug: 'h' }, actions: [{ type: 'set-status', status: 'done' }] }] },
+      });
+      expect(result.valid).toBe(true);
+    });
+
+    it('loads a config containing a typo\'d event name', () => {
+      const result = validateAutomationsConfig({
+        automations: {
+          LabelAdded: [{ actions: [{ type: 'prompt', prompt: 'x' }] }],
+          SchedulerTick: [{ cron: '0 7 * * *', actions: [{ type: 'prompt', prompt: 'daily' }] }],
+        },
+      });
+      expect(result.valid).toBe(true);
+      // The healthy sibling survives; only the typo'd block is dropped.
       expect(result.config!.automations.SchedulerTick).toHaveLength(1);
     });
 
@@ -215,16 +435,61 @@ describe('PLAN-030 Phase 0 — dead-rule diagnostics', () => {
   });
 
   describe('drift guards', () => {
-    it('KNOWN_ACTION_TYPES matches the schema union members', () => {
+    // Reads the union's literal `type` members back out of the schema.
+    // Deliberately does NOT go through safeParse: the union's `.passthrough()`
+    // catch-all accepts any `{type: string}`, so a parse-based check passes for
+    // every input and guards nothing at all.
+    function unionLiteralTypes(): { literals: string[]; catchAlls: number } {
+      const options = (ActionDefinitionSchema as unknown as { _def: { options: unknown[] } })._def.options;
+      const literals: string[] = [];
+      let catchAlls = 0;
+      for (const option of options) {
+        // `.refine()`-wrapped members (set-labels) keep their object shape in
+        // Zod 4, but unwrap defensively so a wrapper change fails loudly in the
+        // guard-the-guard test rather than silently dropping a member.
+        const def = (option as { _def: { schema?: unknown } })._def;
+        const inner = (def.schema ?? option) as {
+          shape?: Record<string, { _def?: { type?: string; values?: unknown[] } }>;
+        };
+        const typeField = inner.shape?.type?._def;
+        const value = typeField?.type === 'literal' ? typeField.values?.[0] : undefined;
+        if (typeof value === 'string') literals.push(value);
+        else catchAlls++;
+      }
+      return { literals, catchAlls };
+    }
+
+    it('extracts union members structurally (guards the guard)', () => {
+      // If a Zod upgrade changes the internals this reads, the assertions below
+      // would silently degrade to comparing two empty sets. Fail here instead.
+      const { literals, catchAlls } = unionLiteralTypes();
+      expect(literals.length).toBeGreaterThan(0);
+      expect(catchAlls).toBe(1); // exactly one `{type: string}.passthrough()` member
+    });
+
+    it('KNOWN_ACTION_TYPES matches the schema union members exactly', () => {
       // The union's catch-all cannot reject unknown types, so KNOWN_ACTION_TYPES
-      // is the only source of truth for what dispatches. If someone adds a
-      // member to the union without adding it here, its actions get reported as
-      // dead — this test fails first.
+      // is the only source of truth for what dispatches. Adding a member to the
+      // union without adding it here would silently report every rule using it
+      // as dead; adding it here without a union member would let a malformed
+      // action of that type through. Set equality catches both directions.
+      const { literals } = unionLiteralTypes();
+      expect([...literals].sort()).toEqual([...KNOWN_ACTION_TYPES].sort());
+      expect(new Set(KNOWN_ACTION_TYPES).size).toBe(KNOWN_ACTION_TYPES.length);
+    });
+
+    it('every known type has a strict schema for shape checking', () => {
+      // scanMalformedKnownActions is a no-op for any type missing from this map,
+      // so a gap here is a silent hole in the shape check.
+      expect(Object.keys(KNOWN_ACTION_SCHEMAS).sort()).toEqual([...KNOWN_ACTION_TYPES].sort());
+    });
+
+    it('a well-formed action of every known type passes both the union and its own schema', () => {
       for (const type of KNOWN_ACTION_TYPES) {
         const probe = { type, prompt: 'x', url: 'https://e.com', session: { id: 's' }, status: 'todo', add: ['l'], message: 'm' };
         expect(ActionDefinitionSchema.safeParse(probe).success).toBe(true);
+        expect(KNOWN_ACTION_SCHEMAS[type].safeParse(probe).success).toBe(true);
       }
-      expect(new Set(KNOWN_ACTION_TYPES).size).toBe(KNOWN_ACTION_TYPES.length);
     });
 
     it('matcher key list is derived from the schema, not hardcoded', () => {

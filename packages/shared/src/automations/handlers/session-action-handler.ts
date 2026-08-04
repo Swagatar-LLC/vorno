@@ -99,38 +99,53 @@ export class SessionActionHandler implements AutomationHandler {
 
           const automationName = deriveAutomationName(event, matcher);
 
-          if (action.type === 'set-status') {
-            pending.push({
-              matcherId: matcher.id,
-              automationName,
-              type: 'set-status',
-              target: expandSelector(action.session, env, body),
-              status: expandActionString(action.status, env, body),
-              allowClosed: action.allowClosed,
-              hookId,
-              eventId,
-            });
-          } else if (action.type === 'set-labels') {
-            pending.push({
-              matcherId: matcher.id,
-              automationName,
-              type: 'set-labels',
-              target: expandSelector(action.session, env, body),
-              add: action.add?.map((l) => expandActionString(l, env, body)),
-              remove: action.remove?.map((l) => expandActionString(l, env, body)),
-              hookId,
-              eventId,
-            });
-          } else if (action.type === 'send-message') {
-            pending.push({
-              matcherId: matcher.id,
-              automationName,
-              type: 'send-message',
-              target: expandSelector(action.session, env, body),
-              message: expandActionString(action.message, env, body),
-              hookId,
-              eventId,
-            });
+          // fork(PLAN-030): one malformed action must not cost the others.
+          // A `set-status` with no `session` validates clean (the schema union's
+          // catch-all swallows it — see ADR-0021 §4) and then throws here on the
+          // missing selector. Before this scope, that single throw unwound the
+          // whole loop and discarded every action already queued, including
+          // healthy ones from unrelated matchers that had nothing to do with the
+          // bad rule. Skip the offending action, keep the rest.
+          try {
+            if (action.type === 'set-status') {
+              pending.push({
+                matcherId: matcher.id,
+                automationName,
+                type: 'set-status',
+                target: expandSelector(action.session, env, body),
+                status: expandActionString(action.status, env, body),
+                allowClosed: action.allowClosed,
+                hookId,
+                eventId,
+              });
+            } else if (action.type === 'set-labels') {
+              pending.push({
+                matcherId: matcher.id,
+                automationName,
+                type: 'set-labels',
+                target: expandSelector(action.session, env, body),
+                add: action.add?.map((l) => expandActionString(l, env, body)),
+                remove: action.remove?.map((l) => expandActionString(l, env, body)),
+                hookId,
+                eventId,
+              });
+            } else if (action.type === 'send-message') {
+              pending.push({
+                matcherId: matcher.id,
+                automationName,
+                type: 'send-message',
+                target: expandSelector(action.session, env, body),
+                message: expandActionString(action.message, env, body),
+                hookId,
+                eventId,
+              });
+            }
+          } catch (error) {
+            const err = error instanceof Error ? error : new Error(String(error));
+            log.error(
+              `[SessionActionHandler] Skipping malformed "${action.type}" action on matcher `
+              + `"${matcher.id ?? deriveAutomationName(event, matcher)}": ${err.message}`,
+            );
           }
         }
       }

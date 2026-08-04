@@ -9,7 +9,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveAutomationsConfigPath } from './resolve-config-path.ts';
 import { AUTOMATIONS_CONFIG_FILE } from './constants.ts';
-import { AutomationsConfigSchema, AutomationMatcherSchema, KNOWN_ACTION_TYPES, zodErrorToIssues, DEPRECATED_EVENT_ALIASES } from './schemas.ts';
+import { AutomationsConfigSchema, AutomationMatcherSchema, KNOWN_ACTION_TYPES, KNOWN_ACTION_SCHEMAS, zodErrorToIssues, DEPRECATED_EVENT_ALIASES, VALID_EVENTS } from './schemas.ts';
 import { isValidLabelId } from '../labels/storage.ts';
 import { extractLabelId } from '../labels/values.ts';
 import { getLlmConnection } from '../config/storage.ts';
@@ -77,6 +77,23 @@ const MATCHER_KEY_ALIASES: Record<string, string | null> = {
   tz: 'timezone',
   disabled: 'enabled',
   mode: 'permissionMode',
+};
+
+/**
+ * fork(PLAN-030): suggestions that must say more than "did you mean X".
+ *
+ * `disabled` is the dangerous one. The real key is `enabled`, but the *value*
+ * has to flip with it: someone who wrote `"disabled": true` wants the rule off,
+ * and following a bare `Did you mean "enabled"?` gets them `"enabled": true` —
+ * the exact opposite of their intent, on a rule that is currently still firing
+ * (an invented `disabled` key is inert; only a real `enabled: false` parks a
+ * rule, and only a parked rule is exempt from these scans).
+ */
+const KEY_SUGGESTION_OVERRIDES: Record<string, string> = {
+  matcher:
+    'Filtering is done with "matcher" (a regex), e.g. "matcher": "^auto-close$". Without it the rule matches EVERY event of this type.',
+  disabled:
+    'Use "enabled": false to turn a rule off — note the value flips. "disabled" is ignored, so this rule is still running.',
 };
 
 /**
@@ -226,20 +243,146 @@ export function scanUnknownMatcherKeys(content: unknown, file: string): Validati
     for (const key of Object.keys(matcher)) {
       if (known.includes(key) || ANNOTATION_KEYS.has(key.toLowerCase())) continue;
       const suggestion = suggestName(key, known, MATCHER_KEY_ALIASES);
+      // Keyed on the offending key first (so `disabled` gets the value-flip
+      // warning), then on the suggested key (so any mis-keyed filter gets the
+      // matches-everything warning).
+      const override = KEY_SUGGESTION_OVERRIDES[normalizeName(key)] ?? (suggestion ? KEY_SUGGESTION_OVERRIDES[suggestion] : undefined);
       issues.push({
         file,
         path: `automations.${event}[${i}].${key}`,
         message: `Unknown matcher key "${key}" — it is ignored, not applied`,
         severity: 'warning',
-        suggestion: suggestion === 'matcher'
-          ? 'Filtering is done with "matcher" (a regex), e.g. "matcher": "^auto-close$". Without it the rule matches EVERY event of this type.'
-          : suggestion
-            ? `Did you mean "${suggestion}"?`
-            : `Valid keys are: ${known.join(', ')}`,
+        suggestion: override
+          ?? (suggestion ? `Did you mean "${suggestion}"?` : `Valid keys are: ${known.join(', ')}`),
       });
     }
   });
   return issues;
+}
+
+/**
+ * fork(PLAN-030): report actions whose `type` is real but whose shape is not.
+ *
+ * The second dead-rule class, and the nastier one. `{"type": "set-status"}` with
+ * no `session`/`status` fails `SetStatusActionSchema`, falls through to the
+ * union's catch-all, and validates clean — `scanUnknownActionTypes` can't see it
+ * because it only checks the type *name*. At runtime it doesn't quietly no-op
+ * the way an invented type does: the handler dereferences the missing selector
+ * and throws, which used to discard every action queued for that event,
+ * including healthy ones from unrelated matchers (see the per-action isolation
+ * in `session-action-handler.ts`).
+ *
+ * Checked against the schema the action's own `type` names, with no fallback —
+ * that is the whole point.
+ */
+export function scanMalformedKnownActions(content: unknown, file: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  forEachRawMatcher(content, (matcher, event, i) => {
+    const actions = matcher.actions;
+    if (!Array.isArray(actions)) return;
+    for (let j = 0; j < actions.length; j++) {
+      const detail = describeMalformedAction(actions[j]);
+      if (!detail) continue;
+      issues.push({
+        file,
+        path: `automations.${event}[${i}].actions[${j}]`,
+        message: `Action "${detail.type}" is missing or misusing required fields — it cannot run (${detail.reason})`,
+        severity: 'error',
+        suggestion: `Fix the highlighted field(s) on this ${detail.type} action`,
+      });
+    }
+  });
+  return issues;
+}
+
+/**
+ * Validate one raw action against the schema its own `type` names.
+ * Returns `null` for anything that isn't a malformed *known* action (unknown
+ * types are `scanUnknownActionTypes`' job, not this one).
+ */
+function describeMalformedAction(action: unknown): { type: string; reason: string } | null {
+  if (!action || typeof action !== 'object' || Array.isArray(action)) return null;
+  const type = (action as { type?: unknown }).type;
+  if (typeof type !== 'string') return null;
+  const schema = KNOWN_ACTION_SCHEMAS[type as keyof typeof KNOWN_ACTION_SCHEMAS];
+  if (!schema) return null;
+  const parsed = schema.safeParse(action);
+  if (parsed.success) return null;
+  const first = parsed.error.issues[0];
+  const path = first?.path.join('.');
+  const reason = first ? (path ? `${path}: ${first.message}` : first.message) : 'invalid shape';
+  return { type, reason };
+}
+
+/**
+ * fork(PLAN-030): report event names the config schema silently drops.
+ *
+ * `AutomationsConfigSchema`'s transform discards any key that isn't a known
+ * event and emits one lumped `console.warn`. Every matcher underneath it is
+ * gone — same "validates clean, can never run" failure the other scans exist to
+ * close, just at the level above them. A near-miss against `VALID_EVENTS`
+ * usually names the fix outright (`LabelAdded` → `LabelAdd`).
+ *
+ * Matched against the canonical event list case-insensitively for the
+ * suggestion only; the config itself remains case-sensitive.
+ */
+export function scanUnknownEventNames(content: unknown, file: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const automations = (content as { automations?: unknown } | null)?.automations;
+  if (!automations || typeof automations !== 'object' || Array.isArray(automations)) return issues;
+
+  for (const [event, matchers] of Object.entries(automations as Record<string, unknown>)) {
+    if (VALID_EVENTS.includes(event)) continue;
+    // Mirror the per-matcher exemption: a block of parked rules isn't claiming
+    // to do anything, so don't hold the config hostage to it.
+    if (Array.isArray(matchers) && matchers.length > 0 && matchers.every(
+      (m) => m && typeof m === 'object' && (m as Record<string, unknown>).enabled === false,
+    )) continue;
+
+    const count = Array.isArray(matchers) ? matchers.length : 0;
+    const suggestion = suggestEventName(event);
+    issues.push({
+      file,
+      path: `automations.${event}`,
+      message: `Unknown event "${event}" — the whole block is discarded at load${count > 0 ? `, taking ${count} matcher(s) with it` : ''}`,
+      severity: 'error',
+      suggestion: suggestion
+        ? `Did you mean "${suggestion}"?`
+        : `Valid events are: ${VALID_EVENTS.join(', ')}`,
+    });
+  }
+  return issues;
+}
+
+/**
+ * Case-insensitive exact match, then prefix containment, then token overlap.
+ *
+ * The prefix pass is what catches the common shape: `LabelAdded` normalizes to
+ * `labeladded`, which token matching misses (`added` ≠ `add`) but which has
+ * `labeladd` as a prefix. Requires a substantial overlap so short events can't
+ * be suggested for unrelated names.
+ */
+function suggestEventName(event: string): string | undefined {
+  const normalized = normalizeName(event);
+  if (!normalized) return undefined;
+
+  const exact = VALID_EVENTS.find((e) => normalizeName(e) === normalized);
+  if (exact) return exact;
+
+  let best: string | undefined;
+  for (const candidate of VALID_EVENTS) {
+    const c = normalizeName(candidate);
+    const shorter = Math.min(c.length, normalized.length);
+    if (shorter < 5) continue;
+    if (!c.startsWith(normalized) && !normalized.startsWith(c)) continue;
+    // Prefer the closest-length candidate — `LabelAdd` over `LabelAddX`.
+    if (!best || Math.abs(c.length - normalized.length) < Math.abs(normalizeName(best).length - normalized.length)) {
+      best = candidate;
+    }
+  }
+  if (best) return best;
+
+  return suggestName(event, VALID_EVENTS, {});
 }
 
 /**
@@ -261,6 +404,58 @@ export function findMatchersWithUnknownActions(content: unknown): Array<{ id: st
     }
   });
   return dead;
+}
+
+/**
+ * fork(PLAN-030): one diagnostic per rule that loaded but can never run.
+ *
+ * The load path stays lenient (ADR-0021 §4), so "can never run" has to be
+ * reported out-of-band rather than as a validation error. This is the single
+ * collector behind those reports — every dead-rule class the scans know about,
+ * flattened into a shape the history writer can record verbatim.
+ *
+ * Purely derived from raw content and never throws; callers treat it as
+ * best-effort telemetry, not a gate.
+ */
+export interface ConfigDiagnostic {
+  /** Matcher id, or `Event[index]` when the matcher has none. Event name for event-level problems. */
+  id: string;
+  event: string;
+  reason: 'unknown-action-type' | 'invalid-action-shape' | 'unknown-event';
+  detail: string;
+}
+
+export function collectConfigDiagnostics(content: unknown): ConfigDiagnostic[] {
+  const diagnostics: ConfigDiagnostic[] = [];
+
+  for (const { id, event, types } of findMatchersWithUnknownActions(content)) {
+    diagnostics.push({ id, event, reason: 'unknown-action-type', detail: types.join(', ') });
+  }
+
+  forEachRawMatcher(content, (matcher, event, i) => {
+    const actions = matcher.actions;
+    if (!Array.isArray(actions)) return;
+    const reasons = actions
+      .map((a) => describeMalformedAction(a))
+      .filter((d): d is { type: string; reason: string } => d !== null)
+      .map((d) => `${d.type} (${d.reason})`);
+    if (reasons.length > 0) {
+      diagnostics.push({
+        id: typeof matcher.id === 'string' ? matcher.id : `${event}[${i}]`,
+        event,
+        reason: 'invalid-action-shape',
+        detail: reasons.join('; '),
+      });
+    }
+  });
+
+  for (const issue of scanUnknownEventNames(content, '')) {
+    // `automations.<Event>` → `<Event>`; the block has no matcher id to key on.
+    const event = issue.path.replace(/^automations\./, '');
+    diagnostics.push({ id: event, event, reason: 'unknown-event', detail: issue.message });
+  }
+
+  return diagnostics;
 }
 
 /**
@@ -640,7 +835,12 @@ export function validateAutomationsContent(jsonString: string, fileName?: string
     (sum, matchers) => sum + (matchers?.length ?? 0),
     0
   );
-  if (matcherCount === 0) {
+  // fork(PLAN-030): "no automations configured" is actively misleading when the
+  // file is full of rules under a typo'd event name — the transform discarded
+  // them, so the count is legitimately zero. Let the unknown-event error below
+  // be the whole story in that case.
+  const unknownEventIssues = scanUnknownEventNames(content, file);
+  if (matcherCount === 0 && unknownEventIssues.length === 0) {
     warnings.push({
       file,
       path: 'automations',
@@ -681,6 +881,8 @@ export function validateAutomationsContent(jsonString: string, fileName?: string
   // single dead rule there would take every working automation down with it.
   // See ADR-0021 §4.
   errors.push(...scanUnknownActionTypes(content, file));
+  errors.push(...scanMalformedKnownActions(content, file));
+  errors.push(...unknownEventIssues);
   warnings.push(...scanUnknownMatcherKeys(content, file));
 
   return {
