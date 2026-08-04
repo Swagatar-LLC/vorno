@@ -71,8 +71,14 @@ vorno-cli automation validate
 | `FlagChange` | Session flagged/unflagged | `true` or `false` |
 | `SessionStatusChange` | Session status changed | New status (e.g., `done`, `in_progress`) |
 | `SchedulerTick` | Runs every minute | Uses cron matching |
+| `WebhookReceived` | An inbound HTTP request hit a registered hook | Configurable via `matchField` (default: the whole body) |
 
 > **Note:** `TodoStateChange` is a deprecated alias for `SessionStatusChange`. Existing configs using the old name will continue to work but will show a deprecation warning during validation.
+
+> **Event names are case-sensitive and exact.** A block filed under a name that
+> isn't in these tables — `LabelAdded` instead of `LabelAdd`, say — is discarded
+> in full at load, taking every matcher inside it with it. Validation reports
+> this as an error naming the block and how many matchers were lost.
 
 ### Agent Events (passed to Claude SDK)
 
@@ -93,6 +99,18 @@ vorno-cli automation validate
 | `Setup` | Initial setup | - |
 
 ## Action Types
+
+There are exactly **five** action types. Anything else is not a valid action —
+see [Session Actions](#session-actions) below for the three that were previously
+undocumented, and [Validation](#validation) for what happens if you invent one.
+
+| `type` | Does | Valid on |
+|--------|------|----------|
+| `prompt` | Creates a session and sends it a prompt | Any event |
+| `webhook` | Sends an outbound HTTP request | Any event |
+| `set-status` | Changes a session's status | `WebhookReceived` only |
+| `set-labels` | Adds/removes labels on a session | `WebhookReceived` only |
+| `send-message` | Injects a message into a live session | `WebhookReceived` only |
 
 ### Prompt Actions
 
@@ -210,6 +228,125 @@ The `auth` field is applied before custom `headers`, so you can override the gen
 **Variable expansion:** The `url`, `headers` values, `body`, and `auth` fields all support `$VAR` and `${VAR}` syntax for environment variable expansion. See [Environment Variables](#environment-variables) below.
 
 **Security:** Webhook actions only have access to `CRAFT_*` system variables and `CRAFT_WH_*` user-defined secrets. They do **not** have access to your full system environment (e.g., `$HOME`, `$PATH`, or other process variables).
+
+### Session Actions
+
+Three action types mutate an existing session rather than creating one:
+`set-status`, `set-labels`, and `send-message`.
+
+> **These are `WebhookReceived`-only.** Using one on `LabelAdd`,
+> `SessionStatusChange`, or any other event is a validation error, not a silent
+> no-op. Lifting that restriction requires loop-safety guards that do not exist
+> yet — a status change emits `SessionStatusChange`, which would re-enter the
+> same rule.
+
+All three take a `session` selector naming the session to act on. Set **exactly
+one** of `id` or `label`:
+
+```json
+{ "session": { "id": "260804-deft-leaf" } }
+{ "session": { "label": "deploy-target" } }
+```
+
+Both fields support `$VAR` environment expansion and `$.jsonpath` extraction
+from the webhook body, so the target can come from the request itself:
+
+```json
+{ "session": { "id": "$.body.session_id" } }
+```
+
+#### set-status
+
+```json
+{
+  "type": "set-status",
+  "session": { "label": "release-watch" },
+  "status": "needs-review"
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `type` | `"set-status"` | Required | Action type |
+| `session` | selector | Required | Exactly one of `id` / `label` |
+| `status` | string | Required | A status ID from `statuses/config.json` |
+| `allowClosed` | boolean | `false` | Permit moving into a **closed**-category status |
+
+**`allowClosed` is the closure gate, and it is deliberate.** Moving a session
+into a closed status (`done`, `cancelled`) is refused unless `allowClosed: true`
+is written in the config. The refusal is recorded in history as
+`rejected:closed-status:<status>`.
+
+The rule behind it: **a model may never close a task from inside a turn.** The
+agent-facing `set_session_status` tool refuses closed statuses unconditionally
+and no flag changes that. `allowClosed` is not a way around it — it is a
+*human* declaring, at registration time, that this specific rule closes tasks.
+The distinction is who decided: a person editing a config file, not a model
+mid-turn.
+
+```json
+{
+  "type": "set-status",
+  "session": { "id": "$.body.session_id" },
+  "status": "done",
+  "allowClosed": true
+}
+```
+
+#### set-labels
+
+```json
+{
+  "type": "set-labels",
+  "session": { "id": "$.body.session_id" },
+  "add": ["deployed"],
+  "remove": ["deploying"]
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `type` | `"set-labels"` | Required | Action type |
+| `session` | selector | Required | Exactly one of `id` / `label` |
+| `add` | string[] | — | Label IDs to add |
+| `remove` | string[] | — | Label IDs to remove |
+
+At least one of `add` / `remove` is required. Labels that don't exist in the
+workspace are dropped silently — create them in `labels/config.json` first.
+Valued labels use the `id::value` form (e.g. `priority::3`).
+
+#### send-message
+
+```json
+{
+  "type": "send-message",
+  "session": { "label": "ops-inbox" },
+  "message": "Deploy $.body.version finished with status $.body.result"
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `type` | `"send-message"` | Required | Action type |
+| `session` | selector | Required | Exactly one of `id` / `label` |
+| `message` | string | Required | Message text (supports `$VAR` and `$.jsonpath`) |
+
+> **Desktop only.** The standalone trigger server cannot inject into a session it
+> does not host; it records `deferred:host-unreachable` and moves on.
+
+#### Outcomes
+
+Session actions record what actually happened, not merely that they were
+attempted:
+
+| History outcome | Meaning |
+|-----------------|---------|
+| `set-status:<status>` / `set-labels` / `send-message` | Applied |
+| `deferred:target-not-found` | The selector matched no session |
+| `rejected:invalid-status:<status>` | No such status in `statuses/config.json` |
+| `rejected:closed-status:<status>` | Closed status without `allowClosed: true` |
+| `deferred:host-unreachable` | `send-message` on the standalone server |
+| `error:<message>` | The mutation threw |
 
 ## Environment Variables
 
@@ -491,13 +628,14 @@ action type is rejected at validation time.
 ## Execution History Records
 
 Automation runs are recorded in `automations-history.jsonl` at the workspace
-root. Records come in three kinds, distinguished by an optional `kind` field:
+root. Records come in four kinds, distinguished by an optional `kind` field:
 
 | `kind` | Meaning | Example fields |
 |--------|---------|----------------|
 | *(absent)* | **Dispatch** — an automation actually fired (a prompt session was created or a webhook was sent). This is what the "Recent Activity" run list shows and what "last executed" is based on. | `ok`, `sessionId?`, `prompt?`, `webhook?` |
 | `"outcome"` | **Outcome reconciliation** — written right after a prompt dispatch record once the spawned session's turn completes. `ok` is `true` only if the turn produced **no** error-role messages. | `ok`, `sessionId`, `errorCount` |
 | `"missed"` | **Missed fire** — written on scheduler startup when an enabled cron matcher's most recent expected fire (within the last 24h) has no dispatch record. Always `ok: false`. | `ok: false`, `expectedTs` |
+| `"config-diagnostic"` | **Dead rule** — written at load/reload when a rule is structurally unable to run at all (see [Validation](#validation)). Not a failed run; nothing was attempted. Shown in the run history with a warning treatment. | `ok: false`, `reason`, `detail`, `event` |
 
 **Notes:**
 
@@ -506,7 +644,15 @@ root. Records come in three kinds, distinguished by an optional `kind` field:
   the session was created and the turn threw no unhandled exception.
 - Only dispatch records (no `kind`) count toward "last executed" and appear in
   the Recent Activity run list. Outcome/missed records are reconciliation
-  metadata and are filtered out of the run list.
+  metadata and are filtered out of the run list. Config diagnostics **are**
+  shown — a rule that can never run is exactly what you need to see when you go
+  looking for why it never ran — but they are marked as blocked rather than
+  counted as runs.
+- **A dispatch record with `ok: true` means the action was dispatched, not that
+  it achieved anything.** A prompt action records `ok: true` as soon as the
+  session is created; if the model's tool call is then rejected, that shows up in
+  the `outcome` record (or not at all, for a rejection the session swallows).
+  When checking whether a rule is working, read the outcome, not the dispatch.
 - Retention is per-kind: outcome and missed records never evict dispatch records
   (each kind keeps its own last-20-per-automation window).
 - Test runs (the **Test** button) and `onFailure`-spawned sessions produce **no**
@@ -875,6 +1021,51 @@ Or use the `config_validate` tool directly with `target: "automations"`.
 - Invalid timezone
 - Invalid regex pattern
 - Potentially unsafe regex patterns (nested quantifiers)
+- Unknown action type (see below)
+- A known action type missing its required fields (see below)
+
+### Rules that validate but can never run
+
+Config parsing is deliberately lenient so that a file written by a newer build
+still opens on an older one. The cost is that a few mistakes used to parse
+cleanly and then do nothing, forever, with no error and no history — a rule that
+looked healthy and wasn't. Those are now reported explicitly, both as validation
+errors and as `config-diagnostic` history records written at load and on every
+reload.
+
+Three ways a rule can be dead:
+
+| Mistake | Example | What actually happens |
+|---------|---------|-----------------------|
+| **Invented action type** | `"type": "setSessionStatus"` | No handler exists; the action is skipped silently |
+| **Malformed known action** | `{"type": "set-status", "status": "done"}` with no `session` | Fails its own schema, then throws when the rule fires |
+| **Typo'd event name** | `"LabelAdded": [...]` | The entire block is discarded at load |
+
+Validation names the offending value and suggests the real one where it can
+(`setSessionStatus` → `set-status`, `LabelAdded` → `LabelAdd`).
+
+**Unknown *matcher keys* are warnings, not errors** — but read them. The
+dangerous case is a mis-keyed filter:
+
+```json
+{ "labelId": "auto-close", "actions": [ ... ] }
+```
+
+`labelId` is not a real key, so it is stripped — which leaves `matcher` unset,
+and **an unset `matcher` matches every event of that type**. The rule doesn't
+fail closed; it fires on everything. Filtering is done with `matcher`, a regex:
+
+```json
+{ "matcher": "^auto-close$", "actions": [ ... ] }
+```
+
+Similarly, `"disabled": true` is not a real key and does **not** turn a rule off.
+The real key is `enabled`, and the value flips: use `"enabled": false`.
+
+**Disabled rules are exempt** from all of these checks. A rule you have parked
+with `"enabled": false` isn't claiming to do anything, so it won't hold your
+config in a failing state — but the report comes back the moment you re-enable
+it.
 
 **To validate manually:**
 
@@ -924,10 +1115,30 @@ When a limit is hit, further events of that type are **silently dropped** for th
 
 ### Automation not firing
 
-1. **Check event name** - Must be exact (e.g., `LabelAdd` not `labeladd`)
-2. **Check matcher** - Regex must match the event value
-3. **Check cron** - For SchedulerTick, verify cron expression with an online tool
-4. **Check logs** - Look for `[automations]` or `[Scheduler]` in the logs
+1. **Validate first** — run `config_validate` with `target: "automations"`. If the
+   rule can never run (invented action type, malformed action, typo'd event
+   name), this says so directly and the rest of this list is moot. See
+   [Rules that validate but can never run](#rules-that-validate-but-can-never-run).
+2. **Check the run history** — open the automation's detail page. A blocked entry
+   means the rule is structurally dead, not that it fired and failed.
+3. **Check event name** — must be exact (e.g., `LabelAdd`, not `labeladd` or `LabelAdded`)
+4. **Check matcher** — regex must match the event value. Note an *absent* `matcher`
+   matches everything, so a rule firing too often usually means a mis-keyed filter.
+5. **Check `enabled`** — `"disabled": true` does nothing; the real key is `"enabled": false`
+6. **Check cron** — for SchedulerTick, verify the cron expression with an online tool
+7. **Check logs** — look for `[automations]`, `[AutomationSystem]`, or `[Scheduler]`
+
+### Automation fires but nothing happens
+
+A dispatch record with `ok: true` only means the action was *dispatched*.
+
+- **Prompt actions:** the session was created; whether the model did what you
+  asked is a separate question. Check the `outcome` record and open the spawned
+  session. A common case: the prompt asks the model to close a task, and the
+  `set_session_status` tool refuses — correctly, since models may never close
+  tasks. Use a `set-status` action with `allowClosed: true` instead.
+- **Session actions:** check the recorded outcome (`rejected:closed-status`,
+  `deferred:target-not-found`, …) in [Session Actions → Outcomes](#outcomes).
 
 ### Prompt not creating session
 

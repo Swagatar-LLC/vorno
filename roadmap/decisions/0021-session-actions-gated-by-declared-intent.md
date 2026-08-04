@@ -93,6 +93,23 @@ at registration time — not which event carried it.**
    is a **validation warning** naming the key. A rule that cannot run must never present as
    healthy.
 
+   Three classes of "validates clean, can never run" are in scope, not one. Beyond the invented
+   type, an action whose type is *real* but whose required fields are missing falls through the
+   union's catch-all identically (and throws at runtime rather than no-opping), and a whole
+   block filed under a typo'd event name is discarded by the config transform with a single
+   lumped warning. All three are inspection-path errors and all three write a load-time
+   diagnostic.
+
+   **The inspection path is also the agent write gate.** `validateAutomationsContent` backs both
+   `config_validate` and the PreToolUse gate on agent edits to `automations.json`. Making
+   unknown action types hard errors there means an older build's agent cannot edit *any* part of
+   a config carrying a newer build's action type — a real narrowing of the forward-compatibility
+   promise the load-path leniency is designed to keep. This is deliberate. The failure this ADR
+   exists to prevent was an agent writing an invented action type and reporting success; a gate
+   that lets that through is not a gate. Loading a newer config still works, which is the
+   property that protects a user who downgrades. Only agent-mediated *edits* are blocked, and
+   they fail loudly with the offending type named.
+
 5. **History records effect, not dispatch.** A session action writes its outcome — applied,
    rejected, skipped, and why. Prompt actions whose instructions are rejected downstream are out
    of scope here (the prompt succeeded; the model's tool call failed), but the rejection is
@@ -119,6 +136,9 @@ at registration time — not which event carried it.**
   opt-in, declared, and auditable — but it is sharper.
 - Tightening validation will surface existing broken configs as errors, including two in Jeff's
   live workspace. That is the point, but it is a visible break at upgrade.
+- An older build's agent cannot edit a config carrying a newer build's action type (see §4).
+  Loading is unaffected; only agent-mediated edits are gated. Accepted as the cost of having a
+  gate at all.
 
 ### Neutral
 
