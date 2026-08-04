@@ -1,7 +1,7 @@
 ---
 id: PLAN-030
 title: Session lifecycle automation — loud diagnostics, event-triggered session actions, context profiles
-status: planned
+status: in-progress
 direction: DIR-03
 owner: jh
 created: 2026-08-04
@@ -127,20 +127,25 @@ Phase 3 is separable and may be split into its own plan if Phases 0–2 ship fir
 
 Independent of the phases, three rules in Jeff's workspace need attention now:
 
-| Rule | Defect | Action |
+**Done 2026-08-04.** Backup at `automations.json.bak-20260804-172638`; config now
+validates clean and all 23 working matchers are preserved.
+
+| Rule | Defect | Resolution |
 |---|---|---|
-| `auto-close-set-done` | `setSessionStatus`; `labelId`; webhook-only; `done` is closed | Cannot work before Phase 1. Disable so the board stops implying automation. |
-| `steward-context-activate` | Same, plus status `in_progress` (real id is `in-progress`) and label `steward-mnemos-flywheel` does not exist | Disable; revisit at Phase 3. |
-| `next-step-spawn-followup` | Fires, spawns, but step 4 (`set_session_status done`) is rejected every run | Retarget to `needs-review`, or accept manual closure. |
+| `auto-close-set-done` | `setSessionStatus`; `labelId`; webhook-only; `done` is closed | `enabled: false` + inline `comment`. Revisit at Phase 1. |
+| `steward-context-activate` | Same, plus status `in_progress` (real id is `in-progress`) and label `steward-mnemos-flywheel` does not exist | `enabled: false` + inline `comment`. Revisit at Phase 3. |
+| `next-step-spawn-followup` | Fired 8× with `ok: true`; step 4 (`set_session_status done`) rejected every run | Retargeted to `needs-review`, with an explicit "do NOT attempt done" note in the prompt. |
 
 ## Acceptance
 
-- [ ] Phase 0: an unknown action type produces a validation **error** with a near-miss
-      suggestion; `config_validate` on the current live `automations.json` reports both dead
-      rules instead of passing.
-- [ ] Phase 0: an unknown matcher key produces a **warning** naming the key; `labelId` suggests
-      `matcher`.
-- [ ] Phase 0: a matcher with an unknown action type appears in history as skipped.
+- [x] Phase 0: an unknown action type produces a validation **error** with a near-miss
+      suggestion; `config_validate` on the live `automations.json` reported all four dead
+      actions across both rules instead of passing.
+- [x] Phase 0: an unknown matcher key produces a **warning** naming the key; `labelId` suggests
+      `matcher` *and* states the rule is unfiltered.
+- [x] Phase 0: a matcher with an unknown action type is logged and written to history as a
+      `config-diagnostic` entry, once per load.
+- [x] Phase 0: a disabled matcher is exempt from all three scans.
 - [ ] Phase 1: `WEBHOOK_ONLY_ACTION_TYPES` and the `SessionActionHandler` transport guard are
       both gone, in one commit.
 - [ ] Phase 1: `set-status` under `LabelAdd` with `allowClosed: true` moves a session to `done`;
@@ -160,3 +165,9 @@ Independent of the phases, three rules in Jeff's workspace need attention now:
 ## Status log
 
 - `2026-08-04` — created in `planned/`; ADR-0021 proposed alongside.
+- `2026-08-04` — **Phase 0 implemented**, moved to `in-progress/`. `scanUnknownActionTypes` /
+  `scanUnknownMatcherKeys` / `findMatchersWithUnknownActions` in `validation.ts`,
+  `KNOWN_ACTION_TYPES` in `schemas.ts`, `createConfigDiagnosticHistoryEntry` in
+  `webhook-utils.ts`, `AutomationSystem.reportDeadMatchers`. 22 new tests
+  (`dead-rule-diagnostics.test.ts`); shared suite 3309 pass / 0 fail; `typecheck:ci` clean.
+  Live workspace remediated. Phases 1–3 remain.
