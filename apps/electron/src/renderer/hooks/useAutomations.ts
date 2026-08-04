@@ -15,6 +15,7 @@ import { useSetAtom } from 'jotai'
 import { toast } from 'sonner'
 import { automationsAtom } from '@/atoms/automations'
 import { parseAutomationsConfig, type AutomationListItem, type TestResult, type ExecutionEntry } from '@/components/automations/types'
+import { toExecutionEntries } from '@/lib/automation-history'
 
 async function loadAutomationsFromServer(workspaceId: string): Promise<AutomationListItem[]> {
   const json = await window.electronAPI.getAutomations(workspaceId)
@@ -163,34 +164,10 @@ export function useAutomations(
     try {
       const entries = await window.electronAPI.getAutomationHistory(activeWorkspaceId, automationId, 20)
       const automation = findAutomation(automationId)
-      return entries
-        // fork(PLAN-017): the run list shows actual fires only. Outcome/missed
-        // reconciliation records carry a `kind` field and are filtered out here
-        // so they don't inflate the run count or misrender (they have no
-        // prompt/webhook summary). GET_LAST_EXECUTED already ignores them too.
-        .filter(e => e.kind === undefined)
-        .map(e => ({
-        id: `${e.id}-${e.ts}`,
-        automationId: e.id,
-        event: automation?.event ?? 'LabelAdd',
-        status: e.ok ? 'success' as const : 'error' as const,
-        duration: e.webhook?.durationMs ?? 0,
-        timestamp: e.ts,
-        sessionId: e.sessionId,
-        actionSummary: e.webhook
-          ? `Webhook ${e.webhook.method} ${e.webhook.url}${e.webhook.attempts && e.webhook.attempts > 1 ? ` (${e.webhook.attempts} attempts)` : ''}`
-          : e.prompt,
-        error: e.webhook?.error ?? e.error,
-        webhookDetails: e.webhook ? {
-          method: e.webhook.method,
-          url: e.webhook.url,
-          statusCode: e.webhook.statusCode,
-          durationMs: e.webhook.durationMs,
-          attempts: e.webhook.attempts,
-          error: e.webhook.error,
-          responseBody: e.webhook.responseBody,
-        } : undefined,
-      }))
+      // fork(PLAN-030): filtering rules live in `lib/automation-history` — see
+      // the note there on why config diagnostics must survive the PLAN-017
+      // `kind` filter that outcome/missed records are dropped by.
+      return toExecutionEntries(entries, automation?.event ?? 'LabelAdd')
     } catch {
       return []
     }

@@ -27,8 +27,8 @@ import { WorkspaceEventBus, type EventPayloadMap } from './event-bus.ts';
 import { PromptHandler, EventLogHandler, WebhookHandler, type AutomationsConfigProvider } from './handlers/index.ts';
 import { SessionActionHandler } from './handlers/session-action-handler.ts';
 import { type AutomationsConfig, type AutomationEvent, type AutomationMatcher, type PendingPrompt, type PendingSessionAction, type WebhookActionResult, type AppEvent, type AgentEvent, type SdkAutomationCallbackMatcher, type SdkAutomationInput } from './types.ts';
-import { validateAutomationsConfig, findMatchersWithUnknownActions } from './validation.ts';
-import { KNOWN_ACTION_TYPES } from './schemas.ts';
+import { validateAutomationsConfig, collectConfigDiagnostics, type ConfigDiagnostic } from './validation.ts';
+import { KNOWN_ACTION_TYPES, VALID_EVENTS } from './schemas.ts';
 import { createConfigDiagnosticHistoryEntry } from './webhook-utils.ts';
 import { matcherMatchesSdk } from './utils.ts';
 import { SchedulerService, type SchedulerTickPayload } from '../scheduler/scheduler-service.ts';
@@ -42,6 +42,24 @@ const log = createLogger('automation-system');
  * per workspace regardless of how startScheduler is reached).
  */
 const missedFireDetectedWorkspaces = new Set<string>();
+
+/**
+ * fork(PLAN-030): one-line operator-facing description of a dead rule.
+ * Names the offending value *and* the valid vocabulary — the missing vocabulary
+ * is what produced the invented action types in the first place.
+ */
+function describeDiagnostic(id: string, event: string, reason: ConfigDiagnostic['reason'], detail: string): string {
+  switch (reason) {
+    case 'unknown-action-type':
+      return `Automation "${id}" (${event}) will never run: unknown action type(s) ${detail}. `
+        + `Valid types are: ${KNOWN_ACTION_TYPES.join(', ')}.`;
+    case 'invalid-action-shape':
+      return `Automation "${id}" (${event}) will never run: ${detail}.`;
+    case 'unknown-event':
+      return `Automation block "${event}" is discarded at load: not a known event. `
+        + `Valid events are: ${VALID_EVENTS.join(', ')}.`;
+  }
+}
 
 /** Test-only: reset the per-process missed-fire guard. */
 export function __resetMissedFireGuardForTests(): void {
@@ -98,6 +116,8 @@ export class AutomationSystem implements AutomationsConfigProvider {
   private eventLogHandler: EventLogHandler | null = null;
   private scheduler: SchedulerService | null = null;
   private disposed = false;
+  /** fork(PLAN-030): last reported dead-rule set, to keep reload reports idempotent. */
+  private lastDiagnosticsSignature: string | null = null;
 
   // Session metadata tracking (moved from SessionManager)
   private readonly lastKnownMetadata: Map<string, SessionMetadataSnapshot> = new Map();
@@ -169,37 +189,46 @@ export class AutomationSystem implements AutomationsConfigProvider {
   }
 
   /**
-   * fork(PLAN-030): record matchers that loaded but can never run.
+   * fork(PLAN-030): record rules that loaded but can never run.
    *
    * A matcher whose action type has no handler passes the schema (the
    * ActionDefinitionSchema catch-all cannot reject it) and then does nothing,
    * forever, with no history entry — indistinguishable from a rule that simply
-   * hasn't been triggered yet. Log it and write one diagnostic per load so the
-   * failure is visible in the surface operators actually check.
+   * hasn't been triggered yet. Same for an action whose type is real but whose
+   * required fields are missing, and for a whole block filed under a typo'd
+   * event name. Log each one and write a diagnostic so the failure is visible in
+   * the surface operators actually check.
+   *
+   * Runs on load *and* on every reload. Reload is the path the config watcher
+   * uses, which makes it the moment the diagnostic matters most: someone
+   * hand-editing automations.json is actively looking for feedback, and a
+   * report that only fires on a full app restart arrives far too late to be
+   * connected to the edit that caused it.
+   *
+   * De-duplicated on the set of diagnostics, so a watcher that fires several
+   * times for one save (or a reload that changes something unrelated) doesn't
+   * append a new record each time. Startup always reports, since the signature
+   * starts empty in a fresh process.
    *
    * Fail-soft: a diagnostic must never take down config loading.
    */
   private reportDeadMatchers(raw: unknown): void {
-    let dead: Array<{ id: string; event: string; types: string[] }>;
+    let diagnostics: ConfigDiagnostic[];
     try {
-      dead = findMatchersWithUnknownActions(raw);
+      diagnostics = collectConfigDiagnostics(raw);
     } catch {
       return;
     }
-    for (const { id, event, types } of dead) {
-      console.warn(
-        `[AutomationSystem] Automation "${id}" (${event}) will never run: ` +
-        `unknown action type(s) ${types.map((t) => `"${t}"`).join(', ')}. ` +
-        `Valid types are: ${KNOWN_ACTION_TYPES.join(', ')}.`
-      );
+
+    const signature = JSON.stringify(diagnostics);
+    if (signature === this.lastDiagnosticsSignature) return;
+    this.lastDiagnosticsSignature = signature;
+
+    for (const { id, event, reason, detail } of diagnostics) {
+      console.warn(`[AutomationSystem] ${describeDiagnostic(id, event, reason, detail)}`);
       void appendAutomationHistoryEntry(
         this.options.workspaceRootPath,
-        createConfigDiagnosticHistoryEntry({
-          matcherId: id,
-          event,
-          reason: 'unknown-action-type',
-          detail: types.join(', '),
-        }),
+        createConfigDiagnosticHistoryEntry({ matcherId: id, event, reason, detail }),
       ).catch(() => {
         // History is best-effort — never fail a load on a logging error.
       });
@@ -227,6 +256,10 @@ export class AutomationSystem implements AutomationsConfigProvider {
 
       this.config = validation.config;
       this.backfillIds(configPath, raw);
+      // fork(PLAN-030): the watcher-driven path — see reportDeadMatchers. A
+      // rule that goes dead by hand-edit must be reported now, not on the next
+      // full app restart.
+      this.reportDeadMatchers(raw);
       const actionCount = this.getActionCount();
       log.debug(`[AutomationSystem] Reloaded ${actionCount} actions`);
       return { success: true, automationCount: actionCount, errors: [] };

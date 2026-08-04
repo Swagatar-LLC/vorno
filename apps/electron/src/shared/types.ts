@@ -968,7 +968,10 @@ export interface ElectronAPI {
   setAutomationEnabled(workspaceId: string, eventName: string, matcherIndex: number, enabled: boolean): Promise<void>
   duplicateAutomation(workspaceId: string, eventName: string, matcherIndex: number): Promise<void>
   deleteAutomation(workspaceId: string, eventName: string, matcherIndex: number): Promise<void>
-  getAutomationHistory(workspaceId: string, automationId: string, limit?: number): Promise<Array<{ id: string; ts: number; ok: boolean; kind?: 'outcome' | 'missed'; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }>>
+  // fork(PLAN-030): `config-diagnostic` records report a rule that can never
+  // fire (carrying `reason`/`detail`/`event`), as opposed to one that fired and
+  // failed. Rendered as `blocked`; see `renderer/lib/automation-history.ts`.
+  getAutomationHistory(workspaceId: string, automationId: string, limit?: number): Promise<Array<{ id: string; ts: number; ok: boolean; kind?: 'outcome' | 'missed' | 'config-diagnostic'; reason?: string; detail?: string; event?: string; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }>>
   getAutomationLastExecuted(workspaceId: string): Promise<Record<string, number>>
   replayAutomation(workspaceId: string, automationId: string, eventName: string): Promise<{ results: Array<{ type: string; url: string; statusCode: number; success: boolean; error?: string; duration: number }> }>
 
