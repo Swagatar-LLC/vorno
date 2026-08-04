@@ -5,6 +5,7 @@ import { homedir } from "os";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "fs";
 import { debug } from "../utils/debug";
 import { getProxyEnvVars } from "../config/proxy-env.ts";
+import { getGitBashPath } from "../config/storage.ts";
 
 declare const CRAFT_AGENT_CLI_VERSION: string | undefined;
 
@@ -198,6 +199,15 @@ export function buildClaudeSubprocessEnv(
     // The SDK CLI refuses to start if CLAUDECODE is set, interpreting it as an
     // attempt to nest sessions. We must remove it for standalone server usage.
     delete env.CLAUDECODE;
+
+    // Windows: point the SDK's Bash tool at the user-configured Git Bash if set.
+    // The SDK otherwise falls back to a hardcoded Program Files search that misses
+    // per-user installs (e.g. AppData\Local\Programs\Git) → "No bash shell found"
+    // (#935). Only fill when unset so a live-validated value (startup/CHECK) wins.
+    if (process.platform === 'win32' && !env.CLAUDE_CODE_GIT_BASH_PATH) {
+        const gitBash = getGitBashPath()?.trim();
+        if (gitBash) env.CLAUDE_CODE_GIT_BASH_PATH = gitBash;
+    }
 
     // Bedrock must never be routed through the Claude SDK path.
     // Strip only Claude-specific Bedrock routing vars here; keep generic AWS_*
