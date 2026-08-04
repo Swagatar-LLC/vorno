@@ -504,6 +504,14 @@ export class AutomationSystem implements AutomationsConfigProvider {
    * This replaces the diffing logic that was in SessionManager.
    * Call this whenever session metadata changes.
    *
+   * In practice there is exactly one caller: SessionManager's ConfigWatcher
+   * `onSessionMetadataChange` callback, which hands us a header it just read off
+   * disk. The mutators (`setSessionStatus`, `setSessionLabels`) do not call this —
+   * they persist and let the watcher notice. That round trip is deliberate (it
+   * makes externally-authored edits produce identical events), but it means the
+   * emitted event carries no memory of *what caused* the change. See PLAN-030
+   * Phase 1 before planning anything that needs that.
+   *
    * @param sessionId - The session ID
    * @param next - The new metadata snapshot
    * @returns The events that were emitted

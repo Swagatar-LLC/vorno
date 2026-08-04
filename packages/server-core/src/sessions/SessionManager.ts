@@ -1694,6 +1694,16 @@ export class SessionManager implements ISessionManager {
 
         // Always notify automation system — it does its own diffing and needs
         // to see both self-writes and external changes for event matching.
+        //
+        // NOTE: this is the ONLY caller of `automationSystem.updateSessionMetadata`,
+        // and therefore the only place LabelAdd / LabelRemove / SessionStatusChange /
+        // PermissionModeChange / FlagChange are emitted. `setSessionStatus` and
+        // `setSessionLabels` do NOT call it — they write session.jsonl and poke the
+        // watcher, and we arrive here on a later tick having read the header back off
+        // disk. Any side effect that needs the *diff* belongs here, not in the
+        // mutators. Any causal context held only in the mutator's call stack is gone
+        // by this point; correlate across the boundary (as the self-write check above
+        // does) rather than trying to thread it through. See PLAN-030 Phase 1.
         const automationSystem = this.automationSystems.get(managed.workspace.rootPath)
         if (automationSystem) {
           automationSystem.updateSessionMetadata(sessionId, {
@@ -4661,6 +4671,12 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  /**
+   * Note: this does not emit the `SessionStatusChange` automation event directly.
+   * It persists and notifies the config watcher; the watcher reads the header back
+   * and diffs it (see `onSessionMetadataChange`). The event is therefore emitted on
+   * a later tick, from a different call stack.
+   */
   async setSessionStatus(sessionId: string, sessionStatus: SessionStatus): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
@@ -7131,6 +7147,10 @@ export class SessionManager implements ISessionManager {
   /**
    * Set labels for a session (additive tags, many-per-session).
    * Labels are IDs referencing workspace labels/config.json.
+   */
+  /**
+   * Note: this does not emit the `LabelAdd`/`LabelRemove` automation events directly —
+   * same watcher round-trip as `setSessionStatus`. See `onSessionMetadataChange`.
    */
   async setSessionLabels(sessionId: string, labels: string[]): Promise<void> {
     const managed = this.sessions.get(sessionId)

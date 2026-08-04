@@ -89,6 +89,78 @@ graph LR
 
 `allowClosed` semantics are unchanged and now reachable from `LabelAdd`.
 
+#### ⚠️ Blocked — two findings from the Phase 0 review invalidate the plan above
+
+Both were verified against the code on 2026-08-04, before any Phase 1 work started. Neither is
+a coding difficulty; each changes what Phase 1 has to *be*. **Do not start Phase 1 until these
+are decided.**
+
+**1. Deleting the transport restriction first would re-create the exact failure Phase 0 closes.**
+
+`onSessionActions` is supplied in exactly one place: the webhook dispatcher
+(`webhook-ingest/dispatcher.ts:96`). The `AutomationSystem` that SessionManager constructs
+(`SessionManager.ts:1718-1728`) passes `onPromptsReady` and `onError` — **not**
+`onSessionActions`. So the moment `WEBHOOK_ONLY_ACTION_TYPES` is deleted, a `set-status` under
+`LabelAdd` starts passing validation, gets computed into a `PendingSessionAction`, reaches
+`session-action-handler.ts:153`, finds the callback undefined, and is dropped in silence.
+
+That is a rule that validates clean and can never run — the precise defect Phase 0 exists to
+make impossible. The ADR's "in the same commit" instruction is directionally right but names
+the wrong pair: the deletion must land with **an executor wired into SessionManager's
+AutomationSystem**, not merely with the handler's early-return. Until that executor exists,
+the validation error is the only thing preventing a silent dead rule, and removing it is a
+strict regression.
+
+**2. `causedBy` cannot be threaded through the mutation sites, because the mutation and the
+event are separated by a filesystem watcher.**
+
+The ADR describes provenance as threading through `SessionManager` status/label mutation sites.
+It cannot, because those sites do not emit the events:
+
+```mermaid
+graph LR
+    A[executor calls<br/>sm.setSessionStatus] --> B[persist to<br/>session.jsonl]
+    B --> C[notifyFileChange]
+    C -.fs.watch.-> D[ConfigWatcher<br/>onSessionMetadataChange]
+    D --> E[automationSystem<br/>.updateSessionMetadata]
+    E --> F[diff → emit<br/>SessionStatusChange]
+```
+
+`setSessionStatus` (`SessionManager.ts:4664`) and `setSessionLabels` (`:7135`) write to disk and
+poke the watcher; neither calls `updateSessionMetadata`. The **only** caller of
+`automationSystem.updateSessionMetadata` is the `ConfigWatcher` callback
+`onSessionMetadataChange` (`SessionManager.ts:1663-1709`), which receives a session *header* read
+back off disk and diffs it against the last known snapshot.
+
+By the time the event is emitted, the causal context is gone: different call stack, different
+tick, no shared async context (the repo uses no `AsyncLocalStorage`). There is no parameter to
+thread. The dotted edge above is where provenance dies.
+
+**Proposed amendment (needs Jeff's decision — not implemented).** Correlate rather than thread.
+When an executor performs a mutation, record a short-TTL provenance claim keyed on
+`(sessionId, field, newValue)`; the watcher-driven diff consumes the matching claim as it emits
+and attaches `causedBy`. This mirrors an existing, load-bearing pattern in the same callback:
+self-write detection already correlates across the same disk round-trip via
+`sessionPersistenceQueue.getLastWrittenSignature` + `getHeaderMetadataSignature`
+(`SessionManager.ts:1670-1672`, `sessions/persistence-queue.ts:24,228`).
+
+Consequences to accept if we take it:
+- Provenance becomes **heuristic, not exact**. A coincidental identical change inside the TTL
+  window could claim the wrong marker. Depth capping and self-trigger suppression degrade toward
+  false-positive *suppression* (a rule declines to fire) rather than false-negative loops, which
+  is the safe direction — but it must be a stated property, not an accident.
+- The rate gate is unaffected; it needs no provenance and can ship independently.
+- ADR-0021 §3 needs amending to describe correlation instead of threading. Its *decision* (loop
+  safety replaces transport scoping) survives intact; only the stated mechanism is wrong.
+
+**Suggested re-ordering of Phase 1**, if the amendment is accepted:
+1. Wire a session-action executor into SessionManager's `AutomationSystem` — behind the existing
+   transport restriction, so behavior is unchanged and testable in isolation.
+2. Add the provenance side-channel + depth cap + self-trigger suppression + rate gate.
+3. *Only then* delete `WEBHOOK_ONLY_ACTION_TYPES` and the handler early-return together.
+
+Steps 1 and 2 are independently reviewable and carry no behavior change; step 3 is the flip.
+
 ### Phase 2 — Effect-accurate history
 
 `sessionActionHistoryEntry` already records outcomes (`set-status:done`,
@@ -146,8 +218,21 @@ validates clean and all 23 working matchers are preserved.
 - [x] Phase 0: a matcher with an unknown action type is logged and written to history as a
       `config-diagnostic` entry, once per load.
 - [x] Phase 0: a disabled matcher is exempt from all three scans.
+- [x] Phase 0: a malformed *known* action (`set-status` with no `session`) is reported, not
+      swallowed by the union catch-all; a typo'd event name is reported with the matcher count
+      it discards.
+- [x] Phase 0: the diagnostics are visible in the Automations run history, not only in
+      `console.warn` and the JSONL file.
+- [x] Phase 0: the report fires on `reloadConfig` (config-watcher path), not only on cold load.
+- [x] Phase 0: the `KNOWN_ACTION_TYPES` drift guard fails when the list and the schema union
+      disagree — verified by mutation, not by assertion alone.
+- [ ] **Phase 1 is blocked** pending a decision on the two findings in
+      [Phase 1](#phase-1--event-triggered-session-actions). The checkboxes below assume that
+      decision; the first one is a strict regression if taken in isolation.
+- [ ] Phase 1: a session-action executor is wired into SessionManager's `AutomationSystem`
+      (behind the existing transport restriction, so no behavior change).
 - [ ] Phase 1: `WEBHOOK_ONLY_ACTION_TYPES` and the `SessionActionHandler` transport guard are
-      both gone, in one commit.
+      both gone — **and** the executor above exists, in one commit.
 - [ ] Phase 1: `set-status` under `LabelAdd` with `allowClosed: true` moves a session to `done`;
       without `allowClosed` it is rejected and recorded.
 - [ ] Phase 1: a self-feeding rule (`set-status` on `SessionStatusChange` targeting itself)
@@ -158,9 +243,12 @@ validates clean and all 23 working matchers are preserved.
 - [ ] Phase 3: `apply-context` activates working directory, skills, sources, and permission mode
       from a named profile.
 - [ ] Tests added/updated for each phase.
-- [ ] `~/.craft-agent/docs/automations.md` documents all five action types, `allowClosed`, loop
-      guards, and context profiles. (The docs currently cover only `prompt` and `webhook` — this
-      gap is a root cause of the invented action types, not an afterthought.)
+- [x] `automations.md` documents all five action types, the `session` selector, `allowClosed`
+      (with the models-never-close house rule), `WebhookReceived`, the `config-diagnostic`
+      history kind, the dispatch-vs-effect distinction, and all three dead-rule classes.
+      Source of truth is `apps/electron/resources/docs/automations.md`, which is installed to
+      `~/.craft-agent/docs/`.
+- [ ] `automations.md` documents the loop guards (Phase 1) and context profiles (Phase 3).
 
 ## Status log
 
@@ -171,3 +259,25 @@ validates clean and all 23 working matchers are preserved.
   `webhook-utils.ts`, `AutomationSystem.reportDeadMatchers`. 22 new tests
   (`dead-rule-diagnostics.test.ts`); shared suite 3309 pass / 0 fail; `typecheck:ci` clean.
   Live workspace remediated. Phases 1–3 remain.
+- `2026-08-04` — **Phase 0 hardened** after adversarial review, which found the branch did not
+  deliver its own headline. Two blocking defects: the `config-diagnostic` records were filtered
+  out of the only history UI (`useAutomations.ts` dropped every entry carrying a `kind`), so the
+  net visibility gain over the pre-branch state was one `console.warn`; and `reportDeadMatchers`
+  was never called from `reloadConfig`, so the config-watcher path — the moment an operator is
+  actually looking for feedback — produced no diagnostic at all. Both fixed. The
+  `KNOWN_ACTION_TYPES` drift guard was also a tautology (the union's `.passthrough()` accepts any
+  `{type: string}`, so the parse-based assertion passed unconditionally); it now reads the
+  union's literal members back out of the schema, with a guard-the-guard test, and was verified
+  by mutation.
+
+  Two further dead-rule classes closed in the same pass: malformed *known* actions (which also
+  used to discard every sibling action queued for the same event when they threw — now isolated
+  per action) and typo'd event names. The `disabled` → `enabled` suggestion was inverting user
+  intent and now explains the value flip. `automations.md` written — the acceptance item PLAN-030
+  names as a root cause. Shared 3340 pass, webui 936+246 pass, server 193 pass, branding clean,
+  `typecheck:ci` clean; `apps/electron` type-error count unchanged from baseline (107, all
+  pre-existing).
+
+  **Phase 1 stopped before implementation** — see the blocked section under Phase 1. Two findings
+  verified against the code mean it cannot be built as ADR-0021 §3 specifies. Awaiting a decision
+  on the proposed correlation-based provenance amendment.
