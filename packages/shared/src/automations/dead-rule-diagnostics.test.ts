@@ -174,6 +174,35 @@ describe('PLAN-030 Phase 0 — dead-rule diagnostics', () => {
     });
   });
 
+  describe('disabled matchers are not reported', () => {
+    // A parked rule isn't claiming to work. Reporting it would make the config
+    // permanently invalid and re-log a diagnostic on every load.
+    const disabled = {
+      automations: {
+        LabelAdd: [{ ...DEAD_CONFIG.automations.LabelAdd[0], enabled: false }],
+      },
+    };
+
+    it('skips a disabled rule in every scan', () => {
+      expect(scanUnknownActionTypes(disabled, 'f')).toHaveLength(0);
+      expect(scanUnknownMatcherKeys(disabled, 'f')).toHaveLength(0);
+      expect(findMatchersWithUnknownActions(disabled)).toHaveLength(0);
+    });
+
+    it('reports again as soon as the rule is re-enabled', () => {
+      const reenabled = {
+        automations: {
+          LabelAdd: [{ ...DEAD_CONFIG.automations.LabelAdd[0], enabled: true }],
+        },
+      };
+      expect(scanUnknownActionTypes(reenabled, 'f')).toHaveLength(1);
+    });
+
+    it('treats a rule with no `enabled` key as enabled', () => {
+      expect(scanUnknownActionTypes(DEAD_CONFIG, 'f')).toHaveLength(1);
+    });
+  });
+
   describe('defensive against malformed input', () => {
     const junk: unknown[] = [null, undefined, 42, 'string', [], {}, { automations: null }, { automations: [] }, { automations: { LabelAdd: 'nope' } }, { automations: { LabelAdd: [null, 7] } }];
     it('never throws on malformed content', () => {

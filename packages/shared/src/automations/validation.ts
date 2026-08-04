@@ -155,6 +155,12 @@ function knownMatcherKeys(): string[] {
  * matcher keys by the time a parsed config exists — the stripping is exactly
  * what we need to report. Best-effort and defensive: malformed shapes are
  * skipped, never thrown on.
+ *
+ * `enabled: false` matchers are skipped. These scans answer "will this rule do
+ * what it says?", and a rule the user has deliberately turned off is not
+ * claiming to do anything — flagging it would make a parked rule permanently
+ * fail validation and re-log a diagnostic on every load. The report reappears
+ * the moment it is re-enabled, which is when it matters again.
  */
 function forEachRawMatcher(
   content: unknown,
@@ -166,9 +172,9 @@ function forEachRawMatcher(
     if (!Array.isArray(matchers)) continue;
     for (let i = 0; i < matchers.length; i++) {
       const matcher = matchers[i];
-      if (matcher && typeof matcher === 'object' && !Array.isArray(matcher)) {
-        visit(matcher as Record<string, unknown>, event, i);
-      }
+      if (!matcher || typeof matcher !== 'object' || Array.isArray(matcher)) continue;
+      if ((matcher as Record<string, unknown>).enabled === false) continue;
+      visit(matcher as Record<string, unknown>, event, i);
     }
   }
 }
