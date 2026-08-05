@@ -122,6 +122,9 @@ export class AutomationSystem implements AutomationsConfigProvider {
   // Session metadata tracking (moved from SessionManager)
   private readonly lastKnownMetadata: Map<string, SessionMetadataSnapshot> = new Map();
 
+  /** Per-session serialization of updateSessionMetadata (see its doc comment). */
+  private readonly metadataUpdateChains: Map<string, Promise<void>> = new Map();
+
   constructor(options: AutomationSystemOptions) {
     this.options = options;
     this.eventBus = new WorkspaceEventBus(options.workspaceId);
@@ -504,19 +507,45 @@ export class AutomationSystem implements AutomationsConfigProvider {
    * This replaces the diffing logic that was in SessionManager.
    * Call this whenever session metadata changes.
    *
-   * In practice there is exactly one caller: SessionManager's ConfigWatcher
-   * `onSessionMetadataChange` callback, which hands us a header it just read off
-   * disk. The mutators (`setSessionStatus`, `setSessionLabels`) do not call this —
-   * they persist and let the watcher notice. That round trip is deliberate (it
-   * makes externally-authored edits produce identical events), but it means the
-   * emitted event carries no memory of *what caused* the change. See PLAN-030
-   * Phase 1 before planning anything that needs that.
+   * Two caller classes (ADR-0021 §3, amended 2026-08-05):
+   * - SessionManager's mutators (`setSessionStatus`, `setSessionLabels`, ...) call
+   *   this directly after persisting, with a complete snapshot built from managed
+   *   state. A partial snapshot is a bug: the differ treats absent fields as
+   *   removed, so omitting `labels` would emit LabelRemove for every label.
+   * - The ConfigWatcher `onSessionMetadataChange` callback feeds it headers from
+   *   *external* writes only (self-writes are skipped there — the mutator already
+   *   called us, so the fs-watch echo diffs to empty and must stay a no-op).
+   *
+   * Calls are serialized per session: the body is read-modify-write around an
+   * awaited emit, so two overlapping calls could otherwise read the same `prev`
+   * and double-emit the same diff.
    *
    * @param sessionId - The session ID
    * @param next - The new metadata snapshot
    * @returns The events that were emitted
    */
   async updateSessionMetadata(
+    sessionId: string,
+    next: SessionMetadataSnapshot
+  ): Promise<AppEvent[]> {
+    const prior = this.metadataUpdateChains.get(sessionId) ?? Promise.resolve();
+    const run = prior.then(() => this.applySessionMetadataUpdate(sessionId, next));
+    // The stored chain link swallows rejections so one failed update cannot
+    // poison every later update for the session; callers still see the rejection.
+    const link = run.then(
+      () => undefined,
+      () => undefined
+    );
+    this.metadataUpdateChains.set(sessionId, link);
+    void link.then(() => {
+      if (this.metadataUpdateChains.get(sessionId) === link) {
+        this.metadataUpdateChains.delete(sessionId);
+      }
+    });
+    return run;
+  }
+
+  private async applySessionMetadataUpdate(
     sessionId: string,
     next: SessionMetadataSnapshot
   ): Promise<AppEvent[]> {
@@ -746,6 +775,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
 
     // Clear metadata
     this.lastKnownMetadata.clear();
+    this.metadataUpdateChains.clear();
 
     this.disposed = true;
     log.debug(`[AutomationSystem] Disposed`);

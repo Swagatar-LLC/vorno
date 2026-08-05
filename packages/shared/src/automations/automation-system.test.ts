@@ -438,6 +438,91 @@ describe('AutomationSystem', () => {
 
       await system.dispose();
     });
+
+    // ADR-0021 §3 (amended): the mutation sites call updateSessionMetadata directly, and the
+    // fs-watch echo of that same write arrives later carrying an identical snapshot. The echo
+    // must be a no-op — that property is what makes dual emit paths safe without correlation.
+    it('should treat a repeat call with an identical snapshot as a no-op (fs-watch echo)', async () => {
+      const system = new AutomationSystem({
+        workspaceRootPath: tempDir,
+        workspaceId: 'test-workspace',
+      });
+
+      const snapshot: SessionMetadataSnapshot = {
+        permissionMode: 'execute',
+        labels: ['label-1', 'label-2'],
+        sessionStatus: 'in-progress',
+      };
+
+      const first = await system.updateSessionMetadata('session-1', snapshot);
+      expect(first.length).toBeGreaterThan(0);
+
+      const emitSpy = spyOn(system.eventBus, 'emit');
+      const echo = await system.updateSessionMetadata('session-1', { ...snapshot });
+
+      expect(echo).toEqual([]);
+      expect(emitSpy).not.toHaveBeenCalled();
+
+      await system.dispose();
+    });
+
+    // With two caller classes (direct + watcher-for-external-writes) the body's
+    // read-modify-write around an awaited emit could interleave: both calls read the same
+    // `prev` and double-emit the same diff. Serialization makes the second call wait and
+    // observe the first call's stored snapshot. A slow subscribed handler holds the first
+    // call mid-emit to force the overlap deterministically.
+    it('should serialize overlapping calls per session (no double-emit)', async () => {
+      const system = new AutomationSystem({
+        workspaceRootPath: tempDir,
+        workspaceId: 'test-workspace',
+      });
+
+      let releaseHandler: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { releaseHandler = resolve; });
+      let labelAddCount = 0;
+      system.eventBus.on('LabelAdd', async () => {
+        labelAddCount++;
+        await gate;
+      });
+
+      const snapshot: SessionMetadataSnapshot = { labels: ['label-1'] };
+      const first = system.updateSessionMetadata('session-1', snapshot);
+      const second = system.updateSessionMetadata('session-1', { ...snapshot });
+
+      // Let the first call reach its awaited emit before releasing it.
+      await new Promise((r) => setTimeout(r, 10));
+      releaseHandler();
+
+      const [firstEvents, secondEvents] = await Promise.all([first, second]);
+      expect(firstEvents).toContain('LabelAdd');
+      expect(secondEvents).toEqual([]);
+      expect(labelAddCount).toBe(1);
+
+      await system.dispose();
+    });
+
+    it('should not serialize across different sessions', async () => {
+      const system = new AutomationSystem({
+        workspaceRootPath: tempDir,
+        workspaceId: 'test-workspace',
+      });
+
+      let releaseHandler: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { releaseHandler = resolve; });
+      system.eventBus.on('LabelAdd', async (payload) => {
+        if (payload.sessionId === 'session-slow') await gate;
+      });
+
+      const slow = system.updateSessionMetadata('session-slow', { labels: ['label-1'] });
+      // A different session must not queue behind session-slow's in-flight emit.
+      const fastEvents = await system.updateSessionMetadata('session-fast', { labels: ['label-2'] });
+      expect(fastEvents).toContain('LabelAdd');
+
+      releaseHandler();
+      expect(await slow).toContain('LabelAdd');
+
+      await system.dispose();
+    });
   });
 
   describe('removeSessionMetadata', () => {

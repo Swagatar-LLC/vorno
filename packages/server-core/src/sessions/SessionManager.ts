@@ -1504,6 +1504,31 @@ export class SessionManager implements ISessionManager {
    * Apply external session header metadata to in-memory state and emit UI events.
    * Returns true if any in-memory metadata field changed.
    */
+  /**
+   * Feed the automation differ (`AutomationSystem.updateSessionMetadata`) directly from
+   * in-memory truth. ADR-0021 §3 (amended 2026-08-05): the ConfigWatcher no longer notifies
+   * the automation system on self-writes, so every programmatic mutation of a watched header
+   * field (permissionMode, labels, isFlagged, sessionStatus, name) MUST call this after
+   * persisting — this is the only emit path for LabelAdd / LabelRemove / SessionStatusChange /
+   * PermissionModeChange / FlagChange on programmatic changes. The snapshot is always complete:
+   * the differ treats absent fields as removed, so a partial snapshot would emit phantom
+   * LabelRemoves. Fire-and-forget by design — automation dispatch must never reenter or block
+   * the mutator that triggered it.
+   */
+  private syncAutomationSessionMetadata(managed: ManagedSession): void {
+    const automationSystem = this.automationSystems.get(managed.workspace.rootPath)
+    if (!automationSystem) return
+    automationSystem.updateSessionMetadata(managed.id, {
+      permissionMode: managed.permissionMode,
+      labels: managed.labels,
+      isFlagged: managed.isFlagged,
+      sessionStatus: managed.sessionStatus,
+      sessionName: managed.name,
+    }).catch((error) => {
+      sessionLog.error(`[Automations] Failed to update session metadata:`, error)
+    })
+  }
+
   private applyExternalSessionMetadata(managed: ManagedSession, header: SessionHeader): boolean {
     const sessionId = managed.id
     let changed = false
@@ -1560,6 +1585,12 @@ export class SessionManager implements ISessionManager {
       sessionPersistenceQueue.cancel(sessionId)
       this.persistSession(managed)
     }
+
+    // Feed the automation differ from the just-applied in-memory state (not the raw
+    // header) — this is the external-write leg of the ADR-0021 §3 emit path, and it
+    // fires at apply time so deferred headers can't emit stale events. Unconditional:
+    // when nothing changed the differ no-ops, and the call heals any snapshot drift.
+    this.syncAutomationSessionMetadata(managed)
 
     return changed
   }
@@ -1665,8 +1696,8 @@ export class SessionManager implements ISessionManager {
         if (!managed) return
 
         // Check if this is our own write echoing back via fs.watch().
-        // Self-writes don't need in-memory sync (already up to date), but
-        // still need to notify the automation system for event matching.
+        // Self-writes need nothing here: in-memory state is already up to date,
+        // and the mutator fed the automation differ directly at write time.
         const incomingSignature = getHeaderMetadataSignature(header)
         const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(sessionId)
         const isSelfWrite = !!(lastWrittenSignature && incomingSignature === lastWrittenSignature)
@@ -1692,30 +1723,15 @@ export class SessionManager implements ISessionManager {
           }
         }
 
-        // Always notify automation system — it does its own diffing and needs
-        // to see both self-writes and external changes for event matching.
-        //
-        // NOTE: this is the ONLY caller of `automationSystem.updateSessionMetadata`,
-        // and therefore the only place LabelAdd / LabelRemove / SessionStatusChange /
-        // PermissionModeChange / FlagChange are emitted. `setSessionStatus` and
-        // `setSessionLabels` do NOT call it — they write session.jsonl and poke the
-        // watcher, and we arrive here on a later tick having read the header back off
-        // disk. Any side effect that needs the *diff* belongs here, not in the
-        // mutators. Any causal context held only in the mutator's call stack is gone
-        // by this point; correlate across the boundary (as the self-write check above
-        // does) rather than trying to thread it through. See PLAN-030 Phase 1.
-        const automationSystem = this.automationSystems.get(managed.workspace.rootPath)
-        if (automationSystem) {
-          automationSystem.updateSessionMetadata(sessionId, {
-            permissionMode: header.permissionMode,
-            labels: header.labels,
-            isFlagged: header.isFlagged,
-            sessionStatus: header.sessionStatus,
-            sessionName: header.name,
-          }).catch((error) => {
-            sessionLog.error(`[Automations] Failed to update session metadata:`, error)
-          })
-        }
+        // Self-writes do NOT notify the automation system from here (ADR-0021 §3,
+        // amended): the mutator that performed the write already called
+        // `syncAutomationSessionMetadata`, so the differ's snapshot is current and
+        // this echo would diff to empty anyway. More importantly, fs.watch can read
+        // a stale header mid-atomic-write (unlink+rename); feeding that to the
+        // differ unconditionally could emit a phantom revert/reapply pair. External
+        // writes reach the differ inside `applyExternalSessionMetadata` — at the
+        // moment the header is *applied* (immediately below, or deferred until
+        // processing stops), never at the moment a possibly-stale read fired.
       },
     }
 
@@ -4672,10 +4688,9 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Note: this does not emit the `SessionStatusChange` automation event directly.
-   * It persists and notifies the config watcher; the watcher reads the header back
-   * and diffs it (see `onSessionMetadataChange`). The event is therefore emitted on
-   * a later tick, from a different call stack.
+   * Emits the `SessionStatusChange` automation event directly (after the flush) via
+   * `syncAutomationSessionMetadata` — the watcher no longer forwards self-writes to the
+   * automation differ. ADR-0021 §3 (amended 2026-08-05).
    */
   async setSessionStatus(sessionId: string, sessionStatus: SessionStatus): Promise<void> {
     const managed = this.sessions.get(sessionId)
@@ -4687,6 +4702,7 @@ export class SessionManager implements ISessionManager {
       await this.flushSession(managed.id)
       // Notify all windows for this workspace
       this.sendEvent({ type: 'session_status_changed', sessionId, sessionStatus }, managed.workspace.id)
+      this.syncAutomationSessionMetadata(managed)
       // Workaround: Bun's fs.watch({ recursive: true }) on Linux doesn't track
       // directories created after the watcher started.
       // https://github.com/oven-sh/bun/issues/15939
@@ -5220,6 +5236,9 @@ export class SessionManager implements ISessionManager {
     if (managed) {
       managed.name = name
       this.persistSession(managed)
+      // Keep the automation differ's snapshot fresh (name is event payload, not a diffed
+      // field — no event fires, but later events must carry the current name).
+      this.syncAutomationSessionMetadata(managed)
       // Notify renderer of the name change
       this.sendEvent({ type: 'title_generated', sessionId, title: name }, managed.workspace.id)
       // Workaround: Bun's fs.watch({ recursive: true }) on Linux doesn't track
@@ -7089,6 +7108,7 @@ export class SessionManager implements ISessionManager {
       }, managed.workspace.id)
       // Persist to disk
       this.persistSession(managed)
+      this.syncAutomationSessionMetadata(managed)
     }
   }
 
@@ -7149,8 +7169,8 @@ export class SessionManager implements ISessionManager {
    * Labels are IDs referencing workspace labels/config.json.
    */
   /**
-   * Note: this does not emit the `LabelAdd`/`LabelRemove` automation events directly —
-   * same watcher round-trip as `setSessionStatus`. See `onSessionMetadataChange`.
+   * Emits the `LabelAdd`/`LabelRemove` automation events directly (after the flush) via
+   * `syncAutomationSessionMetadata` — same direct emit path as `setSessionStatus`.
    */
   async setSessionLabels(sessionId: string, labels: string[]): Promise<void> {
     const managed = this.sessions.get(sessionId)
@@ -7166,6 +7186,7 @@ export class SessionManager implements ISessionManager {
       // Persist in-memory state directly to avoid race with pending queue writes
       this.persistSession(managed)
       await this.flushSession(managed.id)
+      this.syncAutomationSessionMetadata(managed)
       // Workaround: Bun's fs.watch({ recursive: true }) on Linux doesn't track
       // directories created after the watcher started.
       // https://github.com/oven-sh/bun/issues/15939
@@ -7352,6 +7373,9 @@ export class SessionManager implements ISessionManager {
     this.setMetadataWriteGuard(managed)
     this.persistSession(managed)
     await this.flushSession(managed.id)
+    // Direct automation-differ sync (ADR-0021 §3): mode changes were synced inside
+    // setSessionPermissionMode above, but the rename writes managed.name directly.
+    this.syncAutomationSessionMetadata(managed)
 
     // One-shot board promotion: clearing taskDraft (sent as `false`, never `undefined` — undefined
     // is dropped over the JSON wire) reveals the already-announced tile; taskSlug/projectId
@@ -7439,6 +7463,9 @@ export class SessionManager implements ISessionManager {
     this.setMetadataWriteGuard(managed)
     this.persistSession(managed)
     await this.flushSession(managed.id)
+    // Direct automation-differ sync (ADR-0021 §3): mode changes were synced inside
+    // setSessionPermissionMode above, but the rename writes managed.name directly.
+    this.syncAutomationSessionMetadata(managed)
 
     const changes: { taskDraft: boolean; taskSlug: string; projectId?: string } = { taskDraft: false, taskSlug }
     if (reconcile?.projectId !== undefined) changes.projectId = reconcile.projectId

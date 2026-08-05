@@ -67,7 +67,11 @@ at registration time — not which event carried it.**
 1. **Lift the transport restriction.** `set-status`, `set-labels`, and `send-message` become
    valid on any app event, not only `WebhookReceived`. `WEBHOOK_ONLY_ACTION_TYPES` and the
    `SessionActionHandler` early-return are removed together, so validation and runtime cannot
-   drift apart.
+   drift apart. *(Amended 2026-08-05:)* the removal must additionally land with **a session-action
+   executor wired into SessionManager's `AutomationSystem`** — `onSessionActions` is currently
+   supplied only by the webhook dispatcher, so deleting the restriction without the executor
+   converts the loud validation error into a silently dead rule, the exact defect §4 exists to
+   prevent.
 
 2. **Keep `allowClosed` as the closure gate, and keep it registration-time only.** Moving a
    session into a `closed`-category status still requires `allowClosed: true` written in
@@ -85,6 +89,20 @@ at registration time — not which event carried it.**
      regardless of depth.
    - **Rate gate.** Per-matcher rate limiting, reusing
      `packages/shared/src/automations/webhook-ingest/rate-gate.ts`.
+
+   *Mechanism (amended 2026-08-05 — see Amendments).* Provenance does **not** thread through the
+   filesystem watcher, because the watcher never sees it: mutation and event were separated by a
+   disk round-trip. Instead, the `SessionManager` mutation sites call
+   `automationSystem.updateSessionMetadata` **directly** with a complete metadata snapshot spread
+   from the managed session, and `causedBy` rides that call. The diff-against-snapshot design
+   makes the fs-watch echo a natural no-op, and the watcher demotes to an external-writes-only
+   fallback (its automation notify skips self-writes via the existing persistence-queue write
+   signature, and fires for external headers at the moment they are *applied*, not read).
+   External writes carry no provenance and are treated as user-origin for depth-capping.
+   `updateSessionMetadata` is serialized per session (it is read-modify-write around an awaited
+   emit), and the executor dispatch is fire-and-forget so a rule can never reenter a mutation
+   call already on the stack. This is the same direct-push-on-self-write idiom
+   `setKanbanColumn`/`setTaskNodeCount` already use.
 
 4. **Unknown action types and unknown matcher keys are diagnostics, never silence.** Parsing
    stays lenient — an unrecognized type must not fail the whole config load, so a config written
@@ -129,8 +147,9 @@ at registration time — not which event carried it.**
 
 ### Negative
 
-- Loop safety is real engineering, not a flag flip. Provenance has to thread through the event
-  bus, which touches emission sites well outside the automations package.
+- Loop safety is real engineering, not a flag flip. The emit path had to be restructured so the
+  mutation sites feed the automation differ directly — a change in `SessionManager`, well outside
+  the automations package (shipped as Phase 1 groundwork; see Amendments).
 - `allowClosed: true` on a `LabelAdd` matcher is a genuinely sharper tool than it was on a
   webhook: applying a label now closes a task. That is the requested behavior, and it is
   opt-in, declared, and auditable — but it is sharper.
@@ -165,6 +184,21 @@ at registration time — not which event carried it.**
   severity: a hard parse failure on one unknown key takes down every automation in the file,
   including on downgrade. Lenient parse plus loud diagnostics gets the same protection without
   the cliff.
+
+## Amendments
+
+- **2026-08-05 — §1, §3: provenance mechanism corrected from "thread through emission sites" to
+  "direct emit at the mutation sites"; §1 pairing widened to include the executor.** The Phase 0
+  review verified two findings against the code: (a) `onSessionActions` is wired only into the
+  webhook dispatcher, so the §1 "removed together" pair named the wrong components; (b) the
+  mutation sites never emitted the events at all — a filesystem watcher did, one disk round-trip
+  later, leaving no parameter to thread. An interim proposal (short-TTL correlation claims
+  matched across the round-trip, making provenance heuristic) was reviewed by Jeff and
+  **withdrawn** in favor of the strictly simpler mechanism now described in §3: the mutation
+  sites call the automation differ directly with a full snapshot and exact `causedBy`; the
+  watcher demotes to an external-writes-only fallback. The *decision* — loop safety replaces
+  transport scoping — is unchanged. PLAN-030's Phase 1 section carries the verified findings
+  and the implementation ordering.
 
 ## References
 

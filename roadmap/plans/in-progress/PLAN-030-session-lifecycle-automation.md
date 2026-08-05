@@ -5,7 +5,7 @@ status: in-progress
 direction: DIR-03
 owner: jh
 created: 2026-08-04
-updated: 2026-08-04
+updated: 2026-08-05
 related:
   - ADR-0021
   - PLAN-014
@@ -89,11 +89,11 @@ graph LR
 
 `allowClosed` semantics are unchanged and now reachable from `LabelAdd`.
 
-#### ⚠️ Blocked — two findings from the Phase 0 review invalidate the plan above
+#### Two findings from the Phase 0 review invalidated the plan above (2026-08-04)
 
 Both were verified against the code on 2026-08-04, before any Phase 1 work started. Neither is
-a coding difficulty; each changes what Phase 1 has to *be*. **Do not start Phase 1 until these
-are decided.**
+a coding difficulty; each changes what Phase 1 has to *be*. Kept as the record; the decision
+that resolves them follows.
 
 **1. Deleting the transport restriction first would re-create the exact failure Phase 0 closes.**
 
@@ -136,27 +136,52 @@ By the time the event is emitted, the causal context is gone: different call sta
 tick, no shared async context (the repo uses no `AsyncLocalStorage`). There is no parameter to
 thread. The dotted edge above is where provenance dies.
 
-**Proposed amendment (needs Jeff's decision — not implemented).** Correlate rather than thread.
-When an executor performs a mutation, record a short-TTL provenance claim keyed on
-`(sessionId, field, newValue)`; the watcher-driven diff consumes the matching claim as it emits
-and attaches `causedBy`. This mirrors an existing, load-bearing pattern in the same callback:
-self-write detection already correlates across the same disk round-trip via
-`sessionPersistenceQueue.getLastWrittenSignature` + `getHeaderMetadataSignature`
-(`SessionManager.ts:1670-1672`, `sessions/persistence-queue.ts:24,228`).
+#### ✅ Decided 2026-08-05 — direct emit with provenance (correlation amendment withdrawn)
 
-Consequences to accept if we take it:
-- Provenance becomes **heuristic, not exact**. A coincidental identical change inside the TTL
-  window could claim the wrong marker. Depth capping and self-trigger suppression degrade toward
-  false-positive *suppression* (a rule declines to fire) rather than false-negative loops, which
-  is the safe direction — but it must be a stated property, not an accident.
-- The rate gate is unaffected; it needs no provenance and can ship independently.
-- ADR-0021 §3 needs amending to describe correlation instead of threading. Its *decision* (loop
-  safety replaces transport scoping) survives intact; only the stated mechanism is wrong.
+An earlier draft of this section proposed a correlation side-channel (short-TTL provenance
+claims matched across the disk round-trip). Jeff's review found the simpler answer: **nothing
+forces the watcher to be `updateSessionMetadata`'s only caller.** The mutation sites can call
+the automation differ directly — the diff-against-snapshot design makes the watcher echo a
+natural no-op (the direct call updates `lastKnownMetadata`, so the echo diffs to empty). The
+codebase already endorses exactly this idiom: `setKanbanColumn` and `setTaskNodeCount` both
+push live events directly because "self-writes don't re-emit through the file watcher"
+(`SessionManager.ts:7256-7276`). Provenance becomes **exact, not heuristic** — the TTL/claim
+machinery, and its stated false-positive-suppression property, are unnecessary.
 
-**Suggested re-ordering of Phase 1**, if the amendment is accepted:
+The mechanism (now also in ADR-0021 §3, amended):
+
+- **Mutation sites emit directly.** `setSessionStatus`, `setSessionLabels`,
+  `setSessionPermissionMode`, `renameSession`, and the task-promotion reconcile paths call
+  `automationSystem.updateSessionMetadata` after their flush, passing a **complete snapshot**
+  spread from `managed` (permissionMode, labels, isFlagged, sessionStatus, sessionName). Full
+  snapshot is load-bearing: the differ treats absent fields as removed, so a partial snapshot
+  would emit phantom `LabelRemove`s.
+- **The watcher demotes to external-writes-only.** `onSessionMetadataChange` skips the
+  automation notify on `isSelfWrite` (signature machinery already existed at
+  `SessionManager.ts:1671-1673`; the notify just ignored it). The external notify moves into
+  `applyExternalSessionMetadata`, so deferred headers (write-guard / processing-active) feed
+  the differ **when applied**, not when the possibly-stale read fired. This also fixes a
+  pre-existing hazard: a stale header read during the atomic unlink+rename was fed to the
+  differ unconditionally and could emit a phantom revert/reapply pair.
+- **Per-session serialization.** `updateSessionMetadata` is read-modify-write with
+  `await eventBus.emit` in the middle; with two caller classes (direct + external), overlapping
+  calls could read the same `prev` and double-emit. Calls are chained per session.
+- **`causedBy` rides the direct call.** The executor passes `{ matcherId, depth }` into
+  `updateSessionMetadata`, which stamps it on the emitted events. External writes carry no
+  provenance and are treated as user-origin for depth-capping — correct, since they genuinely
+  have none.
+- **Dispatch stays deferred.** The Phase 1 executor is fire-and-forget like `onPromptsReady`
+  already is, so a rule can never reenter `setSessionStatus` while it is on the stack.
+
+**Groundwork shipped 2026-08-05 on the Phase 0 branch** (no rule-visible behavior change:
+same events, same diffs, now emitted at the mutation site and immune to stale-read phantoms):
+direct emits at the mutation sites, watcher demotion, per-session serialization, and tests.
+The `causedBy` parameter, executor, guards, and the flip remain Phase 1 proper.
+
+**Phase 1 ordering** (unchanged from the 2026-08-04 proposal, minus the side-channel):
 1. Wire a session-action executor into SessionManager's `AutomationSystem` — behind the existing
    transport restriction, so behavior is unchanged and testable in isolation.
-2. Add the provenance side-channel + depth cap + self-trigger suppression + rate gate.
+2. Add `causedBy` plumbing + depth cap + self-trigger suppression + rate gate.
 3. *Only then* delete `WEBHOOK_ONLY_ACTION_TYPES` and the handler early-return together.
 
 Steps 1 and 2 are independently reviewable and carry no behavior change; step 3 is the flip.
@@ -226,9 +251,10 @@ validates clean and all 23 working matchers are preserved.
 - [x] Phase 0: the report fires on `reloadConfig` (config-watcher path), not only on cold load.
 - [x] Phase 0: the `KNOWN_ACTION_TYPES` drift guard fails when the list and the schema union
       disagree — verified by mutation, not by assertion alone.
-- [ ] **Phase 1 is blocked** pending a decision on the two findings in
-      [Phase 1](#phase-1--event-triggered-session-actions). The checkboxes below assume that
-      decision; the first one is a strict regression if taken in isolation.
+- [x] Phase 1 groundwork: automation metadata events are emitted directly at the
+      `SessionManager` mutation sites (full snapshot), the watcher is demoted to
+      external-writes-only, and `updateSessionMetadata` is serialized per session — no
+      rule-visible behavior change, stale-read phantom events eliminated.
 - [ ] Phase 1: a session-action executor is wired into SessionManager's `AutomationSystem`
       (behind the existing transport restriction, so no behavior change).
 - [ ] Phase 1: `WEBHOOK_ONLY_ACTION_TYPES` and the `SessionActionHandler` transport guard are
@@ -281,3 +307,13 @@ validates clean and all 23 working matchers are preserved.
   **Phase 1 stopped before implementation** — see the blocked section under Phase 1. Two findings
   verified against the code mean it cannot be built as ADR-0021 §3 specifies. Awaiting a decision
   on the proposed correlation-based provenance amendment.
+- `2026-08-05` — **Provenance decided: direct emit, correlation withdrawn.** Jeff's review of the
+  blocked section asked the right question — why not call the automation differ from the mutation
+  sites directly? Verified against the code: the diff-against-snapshot design makes the watcher
+  echo a natural no-op, and `setKanbanColumn`/`setTaskNodeCount` already use the
+  direct-push-on-self-write idiom. ADR-0021 §3 amended (correlation → direct emit; provenance is
+  exact). Groundwork implemented on the Phase 0 branch: direct emits at mutation sites, watcher
+  demoted to external-writes-only via the existing `isSelfWrite` signature, external notify moved
+  to `applyExternalSessionMetadata` (deferred headers feed the differ when applied), per-session
+  serialization in `updateSessionMetadata`. Fixes the pre-existing stale-read phantom-event
+  hazard as a side effect. Phase 1 proper (executor, `causedBy`, guards, flip) still pending.
