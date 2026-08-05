@@ -118,9 +118,6 @@ git log --oneline "$LAST"..origin/main
    `latest-mac.yml` rather than constructing them). So "updates work" is not evidence
    `/dl` works; only this check is. See LEARNING-048 (vorno-internal).
 
-6. **Ntfy Jeff** (topic `jeff-agent-alerts-7c3e9f21`, priority 3, tag
-   `white_check_mark`) with a one-line summary he can base socials/website on, plus a
-   `craftagents://` deep link to the session.
 
 ## Common failure modes
 
