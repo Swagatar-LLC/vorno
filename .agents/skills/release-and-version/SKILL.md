@@ -99,8 +99,8 @@ git log --oneline "$LAST"..origin/main
    valid tag") — a GitHub non-draft create race; `release.yml`'s pre-create-tag step
    guards it (LEARNING-023). If it still 422s, just re-run the failed job.
 
-   Verify over **real HTTP**, not just the API — and note the shell's `curl` is aliased
-   to a missing binary, so use `/usr/bin/curl`:
+   Verify over **real HTTP**, not just the API — and note the shell's `curl` may be aliased
+   to a missing binary, so try `/usr/bin/curl`:
 
    ```bash
    BASE=https://github.com/Swagatar-LLC/vorno-releases/releases/download/v{version}
@@ -118,9 +118,6 @@ git log --oneline "$LAST"..origin/main
    `latest-mac.yml` rather than constructing them). So "updates work" is not evidence
    `/dl` works; only this check is. See LEARNING-048 (vorno-internal).
 
-6. **Ntfy Jeff** (topic `jeff-agent-alerts-7c3e9f21`, priority 3, tag
-   `white_check_mark`) with a one-line summary he can base socials/website on, plus a
-   `craftagents://` deep link to the session.
 
 ## Common failure modes
 
