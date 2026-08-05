@@ -99,9 +99,25 @@ git log --oneline "$LAST"..origin/main
    valid tag") — a GitHub non-draft create race; `release.yml`'s pre-create-tag step
    guards it (LEARNING-023). If it still 422s, just re-run the failed job.
 
-6. **Ntfy Jeff** (topic `jeff-agent-alerts-7c3e9f21`, priority 3, tag
-   `white_check_mark`) with a one-line summary he can base socials/website on, plus a
-   `craftagents://` deep link to the session.
+   Verify over **real HTTP**, not just the API — and note the shell's `curl` may be aliased
+   to a missing binary, so try `/usr/bin/curl`:
+
+   ```bash
+   BASE=https://github.com/Swagatar-LLC/vorno-releases/releases/download/v{version}
+   /usr/bin/curl -sL "$BASE/latest-mac.yml"                 # version: {version}; sizes match assets
+   /usr/bin/curl -sIL "$BASE/Vorno-arm64.dmg" | grep -iE '^(HTTP|content-length)'
+   /usr/bin/curl -sIL https://vrno.io/dl | grep -iE '^(HTTP|location)'   # must end 200 on the NEW version
+   ```
+
+   **The `vrno.io/dl` check is not optional.** That slug redirects to GitHub's
+   `releases/latest/download/Vorno-arm64.dmg`, which resolves only because
+   `apps/electron/electron-builder.yml` sets a **version-free** `artifactName`
+   (`Vorno-${arch}.dmg`). Adding `${version}` — or adding Windows/Linux targets with
+   versioned names — 404s the primary download link with **no CI failure and no release
+   failure**, and the auto-updater keeps working (it reads filenames *out of*
+   `latest-mac.yml` rather than constructing them). So "updates work" is not evidence
+   `/dl` works; only this check is. See LEARNING-048 (vorno-internal).
+
 
 ## Common failure modes
 
@@ -109,6 +125,7 @@ git log --oneline "$LAST"..origin/main
 - **Tag pushed but `release.yml` didn't fire** — check its `on: push: tags: ["v*.*.*"]` filter and the Actions tab.
 - **`release.yml` 422 on publish** — GitHub tag race; re-run the job (see step 5).
 - **A commit you expected isn't in the build** — it wasn't actually on `main` at tag time; see LEARNING-046.
+- **`vrno.io/dl` 404s after a release** — the DMG artifact name picked up a version or arch change; `releases/latest/download/<name>` needs an exact filename match. Fix `artifactName` or repoint the shortener slug (LEARNING-048).
 
 ## References
 

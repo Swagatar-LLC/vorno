@@ -121,6 +121,33 @@ export function createMissedHistoryEntry(opts: {
 }
 
 /**
+ * fork(PLAN-030): Create a config-diagnostic history entry.
+ *
+ * Appended at config load for a matcher that parsed successfully but cannot
+ * run — today, one whose actions reference a type no handler dispatches. Such
+ * a rule is otherwise invisible: it validates, it loads, it appears on the
+ * board, and it produces no history at all, which reads as "hasn't fired yet"
+ * rather than "can never fire". Always `ok: false`. Written once per load, not
+ * per event, so a dead rule doesn't flood history.
+ */
+export function createConfigDiagnosticHistoryEntry(opts: {
+  matcherId: string;
+  event: string;
+  reason: string;
+  detail?: string;
+}): Record<string, unknown> {
+  return {
+    id: opts.matcherId,
+    ts: Date.now(),
+    kind: 'config-diagnostic',
+    ok: false,
+    event: opts.event,
+    reason: opts.reason,
+    ...(opts.detail ? { detail: opts.detail } : {}),
+  };
+}
+
+/**
  * Return a copy of a WebhookAction with all env-expandable string fields resolved.
  * Used before enqueueing for deferred retry so the retry scheduler doesn't need
  * the original event environment.

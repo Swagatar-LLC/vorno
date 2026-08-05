@@ -10,7 +10,10 @@ import type { HandlerDeps } from '../handler-deps'
 // History file name — matches AUTOMATIONS_HISTORY_FILE from @craft-agent/shared/automations/constants
 const HISTORY_FILE = 'automations-history.jsonl'
 // fork(PLAN-017): `kind` distinguishes reconciliation records. Absent = dispatch/webhook.
-interface HistoryEntry { id: string; ts: number; ok: boolean; kind?: 'outcome' | 'missed'; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }
+// fork(PLAN-030): `config-diagnostic` records a rule that can never fire (with
+// `reason`/`detail`); it is not a run, and GET_LAST_EXECUTED skips it like the
+// others, but the history view does render it. See renderer/lib/automation-history.ts.
+interface HistoryEntry { id: string; ts: number; ok: boolean; kind?: 'outcome' | 'missed' | 'config-diagnostic'; reason?: string; detail?: string; event?: string; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }
 
 // Per-workspace config mutex: serializes read-modify-write cycles on automations.json
 // to prevent concurrent IPC calls from clobbering each other's changes.

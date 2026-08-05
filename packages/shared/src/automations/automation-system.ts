@@ -27,7 +27,9 @@ import { WorkspaceEventBus, type EventPayloadMap } from './event-bus.ts';
 import { PromptHandler, EventLogHandler, WebhookHandler, type AutomationsConfigProvider } from './handlers/index.ts';
 import { SessionActionHandler } from './handlers/session-action-handler.ts';
 import { type AutomationsConfig, type AutomationEvent, type AutomationMatcher, type PendingPrompt, type PendingSessionAction, type WebhookActionResult, type AppEvent, type AgentEvent, type SdkAutomationCallbackMatcher, type SdkAutomationInput } from './types.ts';
-import { validateAutomationsConfig } from './validation.ts';
+import { validateAutomationsConfig, collectConfigDiagnostics, type ConfigDiagnostic } from './validation.ts';
+import { KNOWN_ACTION_TYPES, VALID_EVENTS } from './schemas.ts';
+import { createConfigDiagnosticHistoryEntry } from './webhook-utils.ts';
 import { matcherMatchesSdk } from './utils.ts';
 import { SchedulerService, type SchedulerTickPayload } from '../scheduler/scheduler-service.ts';
 
@@ -40,6 +42,24 @@ const log = createLogger('automation-system');
  * per workspace regardless of how startScheduler is reached).
  */
 const missedFireDetectedWorkspaces = new Set<string>();
+
+/**
+ * fork(PLAN-030): one-line operator-facing description of a dead rule.
+ * Names the offending value *and* the valid vocabulary — the missing vocabulary
+ * is what produced the invented action types in the first place.
+ */
+function describeDiagnostic(id: string, event: string, reason: ConfigDiagnostic['reason'], detail: string): string {
+  switch (reason) {
+    case 'unknown-action-type':
+      return `Automation "${id}" (${event}) will never run: unknown action type(s) ${detail}. `
+        + `Valid types are: ${KNOWN_ACTION_TYPES.join(', ')}.`;
+    case 'invalid-action-shape':
+      return `Automation "${id}" (${event}) will never run: ${detail}.`;
+    case 'unknown-event':
+      return `Automation block "${event}" is discarded at load: not a known event. `
+        + `Valid events are: ${VALID_EVENTS.join(', ')}.`;
+  }
+}
 
 /** Test-only: reset the per-process missed-fire guard. */
 export function __resetMissedFireGuardForTests(): void {
@@ -96,9 +116,14 @@ export class AutomationSystem implements AutomationsConfigProvider {
   private eventLogHandler: EventLogHandler | null = null;
   private scheduler: SchedulerService | null = null;
   private disposed = false;
+  /** fork(PLAN-030): last reported dead-rule set, to keep reload reports idempotent. */
+  private lastDiagnosticsSignature: string | null = null;
 
   // Session metadata tracking (moved from SessionManager)
   private readonly lastKnownMetadata: Map<string, SessionMetadataSnapshot> = new Map();
+
+  /** Per-session serialization of updateSessionMetadata (see its doc comment). */
+  private readonly metadataUpdateChains: Map<string, Promise<void>> = new Map();
 
   constructor(options: AutomationSystemOptions) {
     this.options = options;
@@ -156,12 +181,60 @@ export class AutomationSystem implements AutomationsConfigProvider {
       this.config = validation.config;
       this.backfillIds(configPath, raw);
       this.rotateHistory();
+      this.reportDeadMatchers(raw);
       const actionCount = this.getActionCount();
       log.debug(`[AutomationSystem] Loaded ${actionCount} actions from ${configPath}`);
     } catch (e) {
       const error = e instanceof Error ? e.message : 'Unknown error';
       console.warn('[AutomationSystem] Failed to load automations config:', error);
       this.config = { automations: {} };
+    }
+  }
+
+  /**
+   * fork(PLAN-030): record rules that loaded but can never run.
+   *
+   * A matcher whose action type has no handler passes the schema (the
+   * ActionDefinitionSchema catch-all cannot reject it) and then does nothing,
+   * forever, with no history entry — indistinguishable from a rule that simply
+   * hasn't been triggered yet. Same for an action whose type is real but whose
+   * required fields are missing, and for a whole block filed under a typo'd
+   * event name. Log each one and write a diagnostic so the failure is visible in
+   * the surface operators actually check.
+   *
+   * Runs on load *and* on every reload. Reload is the path the config watcher
+   * uses, which makes it the moment the diagnostic matters most: someone
+   * hand-editing automations.json is actively looking for feedback, and a
+   * report that only fires on a full app restart arrives far too late to be
+   * connected to the edit that caused it.
+   *
+   * De-duplicated on the set of diagnostics, so a watcher that fires several
+   * times for one save (or a reload that changes something unrelated) doesn't
+   * append a new record each time. Startup always reports, since the signature
+   * starts empty in a fresh process.
+   *
+   * Fail-soft: a diagnostic must never take down config loading.
+   */
+  private reportDeadMatchers(raw: unknown): void {
+    let diagnostics: ConfigDiagnostic[];
+    try {
+      diagnostics = collectConfigDiagnostics(raw);
+    } catch {
+      return;
+    }
+
+    const signature = JSON.stringify(diagnostics);
+    if (signature === this.lastDiagnosticsSignature) return;
+    this.lastDiagnosticsSignature = signature;
+
+    for (const { id, event, reason, detail } of diagnostics) {
+      console.warn(`[AutomationSystem] ${describeDiagnostic(id, event, reason, detail)}`);
+      void appendAutomationHistoryEntry(
+        this.options.workspaceRootPath,
+        createConfigDiagnosticHistoryEntry({ matcherId: id, event, reason, detail }),
+      ).catch(() => {
+        // History is best-effort — never fail a load on a logging error.
+      });
     }
   }
 
@@ -186,6 +259,10 @@ export class AutomationSystem implements AutomationsConfigProvider {
 
       this.config = validation.config;
       this.backfillIds(configPath, raw);
+      // fork(PLAN-030): the watcher-driven path — see reportDeadMatchers. A
+      // rule that goes dead by hand-edit must be reported now, not on the next
+      // full app restart.
+      this.reportDeadMatchers(raw);
       const actionCount = this.getActionCount();
       log.debug(`[AutomationSystem] Reloaded ${actionCount} actions`);
       return { success: true, automationCount: actionCount, errors: [] };
@@ -430,11 +507,45 @@ export class AutomationSystem implements AutomationsConfigProvider {
    * This replaces the diffing logic that was in SessionManager.
    * Call this whenever session metadata changes.
    *
+   * Two caller classes (ADR-0021 §3, amended 2026-08-05):
+   * - SessionManager's mutators (`setSessionStatus`, `setSessionLabels`, ...) call
+   *   this directly after persisting, with a complete snapshot built from managed
+   *   state. A partial snapshot is a bug: the differ treats absent fields as
+   *   removed, so omitting `labels` would emit LabelRemove for every label.
+   * - The ConfigWatcher `onSessionMetadataChange` callback feeds it headers from
+   *   *external* writes only (self-writes are skipped there — the mutator already
+   *   called us, so the fs-watch echo diffs to empty and must stay a no-op).
+   *
+   * Calls are serialized per session: the body is read-modify-write around an
+   * awaited emit, so two overlapping calls could otherwise read the same `prev`
+   * and double-emit the same diff.
+   *
    * @param sessionId - The session ID
    * @param next - The new metadata snapshot
    * @returns The events that were emitted
    */
   async updateSessionMetadata(
+    sessionId: string,
+    next: SessionMetadataSnapshot
+  ): Promise<AppEvent[]> {
+    const prior = this.metadataUpdateChains.get(sessionId) ?? Promise.resolve();
+    const run = prior.then(() => this.applySessionMetadataUpdate(sessionId, next));
+    // The stored chain link swallows rejections so one failed update cannot
+    // poison every later update for the session; callers still see the rejection.
+    const link = run.then(
+      () => undefined,
+      () => undefined
+    );
+    this.metadataUpdateChains.set(sessionId, link);
+    void link.then(() => {
+      if (this.metadataUpdateChains.get(sessionId) === link) {
+        this.metadataUpdateChains.delete(sessionId);
+      }
+    });
+    return run;
+  }
+
+  private async applySessionMetadataUpdate(
     sessionId: string,
     next: SessionMetadataSnapshot
   ): Promise<AppEvent[]> {
@@ -664,6 +775,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
 
     // Clear metadata
     this.lastKnownMetadata.clear();
+    this.metadataUpdateChains.clear();
 
     this.disposed = true;
     log.debug(`[AutomationSystem] Disposed`);
