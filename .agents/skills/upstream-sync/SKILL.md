@@ -51,6 +51,14 @@ Summarize the new versions/commits to the user before proceeding. If 0 commits b
 
 > **Versioning (ADR-0010):** upstream tags are *their* releases, not ours. A sync brings features in; it never drives a Vorno version bump, and upstream `v*` tags are never pushed to `origin` (nor ours to `upstream`). Record the Vorno-version ⇄ upstream-tag mapping in `INTERNAL_DIR/upstream/HEAD.md` (private `vorno-internal` repo — see Step 6).
 
+> **Tag collisions are EXPECTED — not a failure (confirmed by Jeff 2026-08-04).** Because ADR-0010 versions this fork independently, we and upstream mint the *same version numbers for different commits* (e.g. our `v0.11.2` = `4873d18a` via PR #75; upstream's `v0.11.2` = `a60ebc1a`). Anyone who runs `git fetch upstream --tags` by hand will therefore see:
+>
+> ```
+> ! [rejected]  v0.11.2 -> v0.11.2  (would clobber existing tag)
+> ```
+>
+> **This is git protecting our tags, and it is correct.** Do not force-fetch, do not re-tag, do not report it as a sync failure, and do not open a question about it — it is settled. The collision set only grows as more version numbers overlap. Step 2 deliberately uses a plain `git fetch upstream` (branch refs only), which is unaffected. Decision: leave the default fetch behavior as-is rather than pinning `remote.upstream.tagOpt --no-tags`, so the tags stay visible if we ever need them.
+
 ### Step 3 — Branch and merge
 
 ```bash
@@ -101,18 +109,42 @@ rm -rf packages/{shared,server-core,pi-agent-server}/node_modules/@earendil-work
 bun build packages/pi-agent-server/src/index.ts --target=bun --outdir=/tmp/pi-build --no-splitting 2>&1 | tail -3
 ```
 
-If the merge bumps `@anthropic-ai/claude-agent-sdk`, also verify subagent-launch semantics in the new CLI binary. Context ([LEARNING-008](../../../roadmap/learnings/LEARNING-008-node-modules-sdk-drift-forces-async-subagents.md)): Claude Code ≥ 2.1.197 launches Task subagents async by default behind the remote `tengu_amber_heron` GrowthBook gate; we pin `DISABLE_GROWTHBOOK=1` in `buildClaudeSubprocessEnv()` (`packages/shared/src/agent/options.ts`) so all gates resolve to their compiled-in defaults and the async gate defaults off.
+If the merge bumps `@anthropic-ai/claude-agent-sdk`, also verify subagent-launch semantics in the new CLI binary (LEARNING-008).
 
-```bash
-# 1. The async decision should still be feature-gated (expect >= 1):
-strings -a node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude | grep -c "tengu_amber_heron"
+> **Revised 2026-08-05 (SDK 0.3.220).** The old recipe grepped for the `tengu_amber_heron` GrowthBook gate. **That gate no longer exists** — grepping for it now returns `0`, which is not a failure signal, just a stale check. The async decision is now **ungated and async-by-default**. We stay blocking for a different reason: the SDK always spawns the CLI with piped stdio, so `!process.stdout.isTTY` marks it non-interactive, and the launch path forces synchronous in that mode.
 
-# 2. Inspect the launch decision; confirm it is still ANDed with the
-#    disable flag and gated on the GrowthBook lookup:
-strings -a node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude | grep -o ".\{300\}tengu_amber_heron.\{80\}" | head -2
+The decision to re-verify each bump (minified names change every version — find it by locating the agent-launch function and reading its guard):
+
+```js
+// sync when: explicit sync || DISABLE_BACKGROUND_TASKS || !isInteractive
+if (t || DT() || _n()) return false;
+return e.background ?? true;   // otherwise async-by-default
 ```
 
-The invariant to confirm (minified names change every version): the feature-gate helper returns the passed compiled-in default when `DISABLE_GROWTHBOOK` is set, *before* consulting cached gate values, and the Task launch path only goes async via that gate or an explicit `run_in_background`/`background: true`. If the gate disappears or async becomes unconditional, stop and re-audit blocking semantics before merging — the fork's orchestration and `tool-matching.ts` backgrounded-task detection assume blocking-by-default.
+Practical check — dump the binary once, then search with full context (`grep -o '.\{N\}pattern'` fights `strings` line boundaries; Python over a dumped blob does not):
+
+```bash
+B=node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude
+strings -a "$B" > /tmp/claude-strings.txt
+
+# 1. Locate the interactivity predicate (expect: return !<state>.isInteractive)
+grep -o 'function [A-Za-z_$]*(){return![A-Za-z_$]*\.isInteractive}' /tmp/claude-strings.txt | head -1
+
+# 2. Print context around any launch guard that ORs three terms and then
+#    falls through to `.background ?? true` — that is the decision.
+python3 - <<'PY'
+import re
+blob = open('/tmp/claude-strings.txt', errors='replace').read()
+for m in re.finditer(r'\.background\?\?!0', blob):
+    print(blob[max(0, m.start()-220): m.start()+60].replace('\n', ' | '), '\n')
+PY
+```
+
+**The invariant to confirm:** the launch path still resolves synchronously when the process is non-interactive. **If a future SDK decouples the async decision from interactivity, stop and re-audit before merging** — the fork's orchestration and `tool-matching.ts` backgrounded-task detection assume blocking-by-default. (`tool-matching.ts` does already handle the async-by-default result shape as "launch shape 2", so detection degrades gracefully, but the semantics change.)
+
+**Do not "fix" this by setting `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`** — considered and rejected 2026-08-05. It is far blunter than its name: it also strips `run_in_background` from the **Bash** tool schema (killing background shells and `shell_backgrounded` detection), strips it from the Agent tool, and disables observer agents and MCP auto-backgrounding.
+
+Also re-check the subagent nesting cap on each bump. We pin `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=5` in `buildClaudeSubprocessEnv()`; without it, `DISABLE_GROWTHBOOK=1` resolves `tengu_hazel_trellis` to its compiled-in default (3 as of 0.3.220).
 
 Report counts. If `apps/server` tests fail → abort, don't push.
 

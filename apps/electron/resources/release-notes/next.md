@@ -8,7 +8,8 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Improvements
 
-- **Claude Agent SDK uplifted to 0.3.220** (from 0.3.197) — Claude Code v2.1.220 parity. Fixes an abort-listener leak in streaming queries, adds CLI stderr to process-exit errors, reports correct HTTP status for rate-limit errors, and supports session resume with dash-leading IDs. Note: upstream now caps subagent nesting depth at 1 by default (was 5) — override with `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` (from upstream)
+- **Claude Agent SDK uplifted to 0.3.220** (from 0.3.197) — Claude Code v2.1.220 parity. Fixes an abort-listener leak in streaming queries, adds CLI stderr to process-exit errors, reports correct HTTP status for rate-limit errors, and supports session resume with dash-leading IDs (from upstream)
+- Subagent nesting depth is unchanged at 5. Upstream tightened its cap this release, but Vorno pins the previous limit so agents can keep spawning nested agents as before; set `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` to override
 - If installing a downloaded update fails at the final handoff, the app now restarts cleanly instead of continuing in a half-shut-down state where later work could be lost (from upstream)
 
 ## Bug Fixes
