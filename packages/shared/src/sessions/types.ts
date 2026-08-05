@@ -80,8 +80,12 @@ export type SessionStatus = string;
 /**
  * Built-in status IDs (for TypeScript consumers)
  * These are the default statuses but users can add/remove custom ones
+ *
+ * Re-exported from the single source of truth in `statuses/built-in.ts` — this used to be a
+ * hand-written union and it drifted from the config generator, which never seeded 'in-progress'
+ * (PLAN-031).
  */
-export type BuiltInStatusId = 'todo' | 'in-progress' | 'needs-review' | 'done' | 'cancelled';
+export type { BuiltInStatusId } from '../statuses/built-in.ts';
 
 /**
  * Session token usage tracking

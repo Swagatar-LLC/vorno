@@ -24,6 +24,7 @@ import type {
   ShareResult,
 } from '@craft-agent/shared/protocol'
 import type { SessionBundle, DispatchMode } from '@craft-agent/shared/sessions'
+import type { StatusChangeOrigin } from '@craft-agent/shared/statuses'
 import type { EventSink } from '../transport'
 
 export interface ISessionManager {
@@ -64,7 +65,12 @@ export interface ISessionManager {
   archiveSession(sessionId: string): Promise<void>
   unarchiveSession(sessionId: string): Promise<void>
   renameSession(sessionId: string, name: string): Promise<void>
-  setSessionStatus(sessionId: string, status: SessionStatus): Promise<void>
+  /** `origin` declares who is asking; omitting it cannot close a session (PLAN-031). */
+  setSessionStatus(
+    sessionId: string,
+    status: SessionStatus,
+    origin?: StatusChangeOrigin
+  ): Promise<void>
   markSessionRead(sessionId: string): Promise<void>
   markSessionUnread(sessionId: string): Promise<void>
   markAllSessionsRead(workspaceId: string): Promise<void>

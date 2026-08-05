@@ -79,6 +79,31 @@ at registration time — not which event carried it.**
    guard is unchanged and remains unconditional: a model may never close a task from inside a
    turn, on any event.
 
+   *(Amended 2026-08-05 — third writer, and the choke point.)* This section originally enumerated
+   two writers, agent and automation, and reasoned carefully about both. There is a **third**: the
+   renderer. `sessions.ts`'s `setSessionStatus` RPC — the path Kanban drag-drop and every status
+   menu use — went straight into `SessionManager.setSessionStatus`, which validated nothing. So
+   the invariant this section states was enforced on the agent path only; a human's own mouse, and
+   any future call site, had no gate at all.
+
+   The resolution follows this ADR's own title rather than adding a fourth rule: **the gate moves
+   to the single choke point every writer shares**, and each caller declares an origin
+   (`user | host | automation | agent | unattributed`). Closure authority is a property of the
+   declaration, not of the call site remembering to check. A caller that declares nothing cannot
+   close — new code fails closed.
+
+   **The renderer path is declared intent and stays frictionless.** Dragging a card into a closed
+   column *is* the human declaring the task done; the product's premise is that when a task is
+   done it should be Done. So `user` may close with **no confirmation dialog** — the gate exists
+   to classify callers, not to obstruct the primary way a human closes a task. Adding friction
+   there would be a regression, and was explicitly rejected.
+
+   `host` (TaskRunner's DAG completion, mini-agent auto-complete) may close, formalizing the
+   bypass this ADR's Context already described as legitimate. `automation` may close only with
+   `allowClosed: true` — unchanged. `agent` may never close, and the MCP handler keeps its own
+   unconditional refusal, which produces a better message for a model than the choke point can.
+   Implemented in PLAN-031.
+
 3. **Replace transport-scoping with loop safety**, which is the property the webhook restriction
    was incidentally providing. Session actions mutate session state, and session state changes
    emit events — so `set-status` on `SessionStatusChange` and `set-labels` on `LabelAdd` are
@@ -199,6 +224,18 @@ at registration time — not which event carried it.**
   watcher demotes to an external-writes-only fallback. The *decision* — loop safety replaces
   transport scoping — is unchanged. PLAN-030's Phase 1 section carries the verified findings
   and the implementation ordering.
+
+- **2026-08-05 — §2: the closure gate moves to the choke point, and a third writer is named.**
+  A whole-system review of the Projects/Tasks/Kanban surface found that §2's two-writer model was
+  incomplete: `SessionManager.setSessionStatus` performed no validation at all, and the renderer's
+  status RPC (Kanban drag-drop, status menus) reached it ungated. "The human owns closure" was
+  asserted in three places and enforced in one — the agent-facing MCP handler. Rather than add a
+  fourth per-call-site check, the gate moved into the one choke point all writers share, with each
+  caller declaring a `StatusChangeOrigin`; callers that declare nothing cannot close. Decided at
+  the same time: the human UI path closes **without a confirmation prompt**, because dragging a
+  card into a closed column is itself the declaration of intent and is the product's intended way
+  to close a task. The trust model in §2 is otherwise unchanged — `allowClosed` still gates
+  automations, and models still may never close. Implemented in PLAN-031; no wire change.
 
 ## References
 

@@ -4,6 +4,7 @@ import { RPC_CHANNELS, type FileAttachment, type SendMessageOptions, type Sessio
 import type { StoredAttachment } from '@craft-agent/core/types'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { perf } from '@craft-agent/shared/utils'
+import { USER_ORIGIN } from '@craft-agent/shared/statuses'
 import { isValidThinkingLevel, THINKING_LEVEL_IDS } from '@craft-agent/shared/agent/thinking-levels'
 
 const VALID_THINKING_LEVELS_LIST = THINKING_LEVEL_IDS.map(id => `'${id}'`).join(', ')
@@ -313,7 +314,13 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
       case 'rename':
         return sessionManager.renameSession(sessionId, command.name)
       case 'setSessionStatus':
-        return sessionManager.setSessionStatus(sessionId, command.state)
+        // Everything arriving on this RPC is a human acting in the UI — Kanban drag-drop, the
+        // status badge menu, the session context menu, bulk selection. That IS the declaration of
+        // intent, so this path may close a session with no confirmation prompt: when a task is
+        // done, it should be Done. The origin is supplied here rather than carried on the wire,
+        // so `SessionCommand` is unchanged and no upstream compatibility contract is touched
+        // (PLAN-031, ADR-0021).
+        return sessionManager.setSessionStatus(sessionId, command.state, USER_ORIGIN)
       case 'markRead':
         return sessionManager.markSessionRead(sessionId)
       case 'markUnread':

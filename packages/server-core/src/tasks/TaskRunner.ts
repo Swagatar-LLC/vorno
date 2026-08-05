@@ -19,6 +19,7 @@
  * SessionManager structurally satisfies) so it is unit-testable with a mock.
  */
 import type { CreateSessionOptions } from '@craft-agent/shared/protocol';
+import { type BuiltInStatusId, type StatusChangeOrigin, hostOrigin } from '@craft-agent/shared/statuses';
 import type { SessionCompletionEvent } from '../sessions/SessionManager';
 import {
   type TaskSpec,
@@ -48,7 +49,13 @@ export interface ConductorSessionHost {
    *  session_created by default), so the subtask appears on the board with its real title. */
   createSession(workspaceId: string, options: CreateSessionOptions): Promise<{ id: string }>;
   sendMessage(sessionId: string, message: string): Promise<void>;
-  setSessionStatus(sessionId: string, status: string): Promise<void>;
+  /**
+   * `origin` classifies the caller for the closed-status gate in `SessionManager.setSessionStatus`
+   * (PLAN-031). The Conductor passes a `host` origin: a declarative DAG that ran to completion is
+   * declared intent, which is the bypass the agent-facing MCP guard has always documented.
+   * Omitting it would fail closed and silently leave finished tasks open.
+   */
+  setSessionStatus(sessionId: string, status: string, origin?: StatusChangeOrigin): Promise<void>;
   setKanbanColumn(sessionId: string, column: string | null): Promise<void>;
   /** Records the total DAG node count on the orchestrator session for a stable board progress denominator. */
   setTaskNodeCount(sessionId: string, count: number): Promise<void>;
@@ -114,12 +121,16 @@ const DEFAULT_MAX_PARALLEL = 4;
 // silently produces nothing). The task editor now persists an explicit `defaults.permissionMode`, so
 // this constant only governs hand-authored specs that omit it — and it is never `ask`.
 const AUTONOMOUS_DEFAULT_MODE = 'allow-all' as const;
-const RUNNING_STATUS = 'in-progress';
-const DONE_STATUS = 'done';
-// There is no 'failed' session status (the fixed set is todo|in-progress|needs-review|done|cancelled).
-// We flag a failed child as 'needs-review' (amber, attention needed); the board's 'failed' run-state
-// is derived from the run-log, not from a session status.
-const FAILED_STATUS = 'needs-review';
+// These are typed against BuiltInStatusId rather than being bare strings, so a rename or removal
+// in `statuses/built-in.ts` breaks this file at compile time. It previously asserted the built-in
+// set in a comment of its own, and that assertion was wrong — `in-progress` was never seeded into
+// a default workspace config, so every run here wrote a status that read back as `todo`
+// (PLAN-031).
+const RUNNING_STATUS: BuiltInStatusId = 'in-progress';
+const DONE_STATUS: BuiltInStatusId = 'done';
+// There is no 'failed' session status. We flag a failed child as 'needs-review' (amber, attention
+// needed); the board's 'failed' run-state is derived from the run-log, not from a session status.
+const FAILED_STATUS: BuiltInStatusId = 'needs-review';
 
 // A malformed verdict (no parseable VERDICT line) is re-asked this many times before we give up and
 // fail the run. These re-asks are format-only — they do NOT consume the repair (max_iterations) budget.
@@ -199,7 +210,7 @@ class ActiveRun {
     // Move the task tile to the in-progress column for the duration of the run.
     if (this.opts.orchestratorSessionId) {
       void this.deps.host.setKanbanColumn(this.opts.orchestratorSessionId, 'in-progress');
-      void this.deps.host.setSessionStatus(this.opts.orchestratorSessionId, RUNNING_STATUS);
+      void this.deps.host.setSessionStatus(this.opts.orchestratorSessionId, RUNNING_STATUS, hostOrigin('conductor: run started'));
       // Publish the full node count up front so the board's subtask progress denominator is stable,
       // rather than growing as children are spawned lazily at dispatch.
       void this.deps.host.setTaskNodeCount(this.opts.orchestratorSessionId, this.spec.nodes.length);
@@ -456,7 +467,7 @@ class ActiveRun {
       this.inFlight = Math.max(0, this.inFlight - 1);
       writeNodeOutput(this.deps.workspaceRoot, this.slug, this.runId, nodeId, output);
       this.log({ kind: 'node-finished', nodeId, sessionId: evt.sessionId, state: 'done' });
-      void this.deps.host.setSessionStatus(evt.sessionId, DONE_STATUS);
+      void this.deps.host.setSessionStatus(evt.sessionId, DONE_STATUS, hostOrigin('conductor: node finished'));
       void this.deps.host.setKanbanColumn(evt.sessionId, 'done');
       this.scheduleReady();
     } else if (evt.reason === 'interrupted') {
@@ -496,7 +507,7 @@ class ActiveRun {
     st.state = 'failed';
     const sid = sessionId ?? st.sessionId;
     this.log({ kind: 'node-finished', nodeId, sessionId: sid ?? '', state: 'failed', reason });
-    if (sid) void this.deps.host.setSessionStatus(sid, FAILED_STATUS);
+    if (sid) void this.deps.host.setSessionStatus(sid, FAILED_STATUS, hostOrigin('conductor: node failed'));
     this.scheduleReady();
   }
 
@@ -537,9 +548,9 @@ class ActiveRun {
     if (orchestrator) {
       if (status === 'completed') {
         void this.deps.host.setKanbanColumn(orchestrator, 'done');
-        void this.deps.host.setSessionStatus(orchestrator, DONE_STATUS);
+        void this.deps.host.setSessionStatus(orchestrator, DONE_STATUS, hostOrigin('conductor: run completed'));
       } else {
-        void this.deps.host.setSessionStatus(orchestrator, FAILED_STATUS);
+        void this.deps.host.setSessionStatus(orchestrator, FAILED_STATUS, hostOrigin('conductor: run failed'));
       }
     }
     this.finalize();

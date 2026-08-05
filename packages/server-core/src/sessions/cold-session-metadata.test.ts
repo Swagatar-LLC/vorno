@@ -10,6 +10,10 @@ import {
 } from '@craft-agent/shared/sessions'
 import type { StoredMessage } from '@craft-agent/core/types'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
+// These tests exercise persistence/durability, not closure authority. `done` is a closed status,
+// so they must declare an origin that may close it or the PLAN-031 gate refuses the write and the
+// assertions fail for the wrong reason.
+import { USER_ORIGIN } from '@craft-agent/shared/statuses'
 
 // Regression test for the silent-drop bug in persistSession:
 //
@@ -107,7 +111,7 @@ describe('cold-session metadata persistence', () => {
     const sessionId = 'cold-status'
     seedColdSession(sessionId, { sessionStatus: 'todo' })
 
-    await sm.setSessionStatus(sessionId, 'done')
+    await sm.setSessionStatus(sessionId, 'done', USER_ORIGIN)
 
     const header = readDiskHeader(sessionId)
     expect(header.sessionStatus).toBe('done')
@@ -157,7 +161,7 @@ describe('cold-session metadata persistence', () => {
     // Sanity: messages are on disk before mutation.
     expect(readDiskMessageIds(sessionId)).toEqual(['m1', 'm2', 'm3'])
 
-    await sm.setSessionStatus(sessionId, 'done')
+    await sm.setSessionStatus(sessionId, 'done', USER_ORIGIN)
 
     // Header reflects the new status…
     expect(readDiskHeader(sessionId).sessionStatus).toBe('done')
@@ -173,8 +177,8 @@ describe('cold-session metadata persistence', () => {
     // through the cold-persist path; ensureMessagesLoaded dedupes the load,
     // and the persistence queue debounces enqueues. Both calls must resolve
     // and disk must reflect the second value with no JSONL corruption.
-    const p1 = sm.setSessionStatus(sessionId, 'in-progress')
-    const p2 = sm.setSessionStatus(sessionId, 'done')
+    const p1 = sm.setSessionStatus(sessionId, 'in-progress', USER_ORIGIN)
+    const p2 = sm.setSessionStatus(sessionId, 'done', USER_ORIGIN)
     await Promise.all([p1, p2])
 
     // Disk header has the last value.
