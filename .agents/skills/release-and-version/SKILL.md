@@ -99,8 +99,8 @@ git log --oneline "$LAST"..origin/main
    valid tag") — a GitHub non-draft create race; `release.yml`'s pre-create-tag step
    guards it (LEARNING-023). If it still 422s, just re-run the failed job.
 
-   Verify over **real HTTP**, not just the API — and note the shell's `curl` is aliased
-   to a missing binary, so use `/usr/bin/curl`:
+   Verify over **real HTTP**, not just the API — and note the shell's `curl` may be aliased
+   to a missing binary, so try `/usr/bin/curl`:
 
    ```bash
    BASE=https://github.com/Swagatar-LLC/vorno-releases/releases/download/v{version}
