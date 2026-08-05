@@ -127,7 +127,7 @@ import { setPerfEnabled, enableDebug } from '@craft-agent/shared/utils'
 import { registerPiModelResolver } from '@craft-agent/shared/config'
 import { getPiModelsForAuthProvider, getAllPiModels } from '@craft-agent/shared/config'
 import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeCount } from './notifications'
-import { checkForUpdatesOnLaunch, startPeriodicUpdateChecks, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, applyUpdaterFeedConfig } from './auto-update'
+import { checkForUpdatesOnLaunch, startPeriodicUpdateChecks, setAutoUpdateEventSink, isUpdating, setBeforeUpdateQuitHook, applyUpdaterFeedConfig, setBeforeUpdateInstallHook, setInstallQuitFailedHook } from './auto-update'
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
 
@@ -1274,6 +1274,29 @@ app.whenReady().then(async () => {
     // fork(PLAN-018 / ADR-0009): apply the runtime feed override BEFORE any check
     // so the launch check uses the fork-owned feed, not the packaged app-update.yml.
     applyUpdaterFeedConfig()
+    // Before the installer hands off, run the full quit cleanup and mark the app
+    // as quitting so before-quit's guard returns early instead of cancelling
+    // Squirrel.Mac's quit with preventDefault (#891).
+    setBeforeUpdateInstallHook(async () => {
+      isQuitting = true
+      windowManager?.setAppQuitting(true)
+      await performQuitCleanup()
+    })
+    // If quitAndInstall throws after the cleanup above already ran, the process
+    // is a zombie: sessions flushed but no watchers/messaging/lock, and isQuitting
+    // makes the next quit skip the flush. The only honest recovery is a controlled
+    // relaunch into a fresh process (#891).
+    setInstallQuitFailedHook(() => {
+      mainLog.error('[auto-update] quitAndInstall failed after cleanup — relaunching')
+      dialog.showMessageBoxSync({
+        type: 'error',
+        title: 'Update failed',
+        message: 'The update could not be installed.',
+        detail: `${PRODUCT_NAME} will restart now. The update will be retried on the next launch.`,
+      })
+      app.relaunch()
+      app.exit(0)
+    })
     if (app.isPackaged) {
       checkForUpdatesOnLaunch().catch(err => {
         mainLog.error('[auto-update] Launch check failed:', err)
@@ -1353,6 +1376,91 @@ function captureAndSaveWindowState(reason: 'before-quit' | 'pre-update'): number
   return windows.length
 }
 
+// Flush sessions and release all quit-time resources. Shared by the normal quit
+// path (before-quit) and the update-install handoff (beforeUpdateInstallHook), so
+// the two cleanup sequences can't drift (#891).
+let quitCleanupRan = false
+async function performQuitCleanup(): Promise<void> {
+  // Idempotent: a failed update install may retry, and the update path plus a
+  // subsequent quit must not dispose already-disposed services.
+  if (quitCleanupRan) {
+    mainLog.info('Quit cleanup already ran, skipping')
+    return
+  }
+  quitCleanupRan = true
+
+  if (sessionManager) {
+    try {
+      await sessionManager.flushAllSessions()
+      mainLog.info('Flushed all pending session writes')
+    } catch (error) {
+      mainLog.error('Failed to flush sessions:', error)
+    }
+    // Clean up SessionManager resources (file watchers, timers, etc.)
+    sessionManager.cleanup()
+  }
+
+  // Clean up browser pane instances
+  if (browserPaneManager) {
+    browserPaneManager.destroyAll()
+  }
+
+  // Clean up OAuth flow store (stop periodic cleanup timer)
+  if (oauthFlowStore) {
+    oauthFlowStore.dispose()
+  }
+
+  // Stop all model refresh timers
+  getModelRefreshService().stopAll()
+
+  // Stop messaging gateways so the WhatsApp worker subprocess exits cleanly.
+  if (messagingHandle) {
+    try {
+      await messagingHandle.dispose()
+    } catch (err) {
+      mainLog.error('[messaging] dispose failed:', err)
+    }
+  }
+
+  // fork(PLAN-012): tear down the embedded trigger server (close listener,
+  // drain sessions) and destroy the tray. Preserves desired-state (enabled).
+  if (triggerServerSupervisor) {
+    try {
+      await triggerServerSupervisor.dispose()
+    } catch (err) {
+      mainLog.error('[trigger-server] dispose failed:', err)
+    }
+  }
+  // fork(PLAN-020): tear down the WebUI listener without touching desired-state.
+  if (webUiSupervisorRef) {
+    try {
+      await webUiSupervisorRef.dispose()
+    } catch (err) {
+      mainLog.error('[webui] dispose failed:', err)
+    }
+  }
+  // fork(PLAN-014): tear down the webhook receiver (retry timer) + per-workspace
+  // AutomationSystems built for webhook dispatch. Owned here, not by the
+  // supervisor, so start/stop cycles reuse the same receiver handle.
+  if (embeddedWebhooks) {
+    try {
+      await embeddedWebhooks.dispose()
+    } catch (err) {
+      mainLog.error('[webhooks] dispose failed:', err)
+    }
+  }
+  if (triggerServerTray) {
+    try { triggerServerTray.destroy() } catch { /* ignore */ }
+  }
+
+  // Clean up power manager (release power blocker)
+  const { cleanup: cleanupPowerManager } = await import('./power-manager')
+  cleanupPowerManager()
+
+  // Release the server lock file so the next launch doesn't see a stale PID.
+  releaseServerLock()
+}
+
 // Save window state and clean up resources before quitting
 app.on('before-quit', async (event) => {
   // Avoid re-entry when we call app.exit()
@@ -1390,89 +1498,13 @@ app.on('before-quit', async (event) => {
     }
   }
 
-  // Flush all pending session writes before quitting
+  // Normal quit: flush + clean up, then exit. The update-install path does NOT
+  // reach here — installUpdate's beforeUpdateInstallHook already ran
+  // performQuitCleanup and set isQuitting, so the guard at the top returns early
+  // and Squirrel.Mac's quit proceeds uninterrupted so the update installs (#891).
   if (sessionManager) {
-    // Prevent quit until sessions are flushed
     event.preventDefault()
-    try {
-      await sessionManager.flushAllSessions()
-      mainLog.info('Flushed all pending session writes')
-    } catch (error) {
-      mainLog.error('Failed to flush sessions:', error)
-    }
-    // Clean up SessionManager resources (file watchers, timers, etc.)
-    sessionManager.cleanup()
-
-    // Clean up browser pane instances
-    if (browserPaneManager) {
-      browserPaneManager.destroyAll()
-    }
-
-    // Clean up OAuth flow store (stop periodic cleanup timer)
-    if (oauthFlowStore) {
-      oauthFlowStore.dispose()
-    }
-
-    // Stop all model refresh timers
-    getModelRefreshService().stopAll()
-
-    // Stop messaging gateways so the WhatsApp worker subprocess exits cleanly.
-    if (messagingHandle) {
-      try {
-        await messagingHandle.dispose()
-      } catch (err) {
-        mainLog.error('[messaging] dispose failed:', err)
-      }
-    }
-
-    // fork(PLAN-012): tear down the embedded trigger server (close listener,
-    // drain sessions) and destroy the tray. Preserves desired-state (enabled).
-    if (triggerServerSupervisor) {
-      try {
-        await triggerServerSupervisor.dispose()
-      } catch (err) {
-        mainLog.error('[trigger-server] dispose failed:', err)
-      }
-    }
-    // fork(PLAN-020): tear down the WebUI listener without touching desired-state.
-    if (webUiSupervisorRef) {
-      try {
-        await webUiSupervisorRef.dispose()
-      } catch (err) {
-        mainLog.error('[webui] dispose failed:', err)
-      }
-    }
-    // fork(PLAN-014): tear down the webhook receiver (retry timer) + per-workspace
-    // AutomationSystems built for webhook dispatch. Owned here, not by the
-    // supervisor, so start/stop cycles reuse the same receiver handle.
-    if (embeddedWebhooks) {
-      try {
-        await embeddedWebhooks.dispose()
-      } catch (err) {
-        mainLog.error('[webhooks] dispose failed:', err)
-      }
-    }
-    if (triggerServerTray) {
-      try { triggerServerTray.destroy() } catch { /* ignore */ }
-    }
-
-    // Clean up power manager (release power blocker)
-    const { cleanup: cleanupPowerManager } = await import('./power-manager')
-    cleanupPowerManager()
-
-    // Release the server lock file so the next launch doesn't see a stale PID.
-    // This must happen regardless of the exit path (normal quit or update quit).
-    releaseServerLock()
-
-    // If update is in progress, let electron-updater handle the quit flow
-    // Force exit breaks the NSIS installer on Windows
-    if (isUpdating()) {
-      mainLog.info('Update in progress, letting electron-updater handle quit')
-      app.quit()
-      return
-    }
-
-    // Now actually quit
+    await performQuitCleanup()
     app.exit(0)
   }
 })

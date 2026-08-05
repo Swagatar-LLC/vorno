@@ -5,6 +5,7 @@ import { homedir } from "os";
 import { existsSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "fs";
 import { debug } from "../utils/debug";
 import { getProxyEnvVars } from "../config/proxy-env.ts";
+import { getGitBashPath } from "../config/storage.ts";
 
 declare const CRAFT_AGENT_CLI_VERSION: string | undefined;
 
@@ -199,6 +200,15 @@ export function buildClaudeSubprocessEnv(
     // attempt to nest sessions. We must remove it for standalone server usage.
     delete env.CLAUDECODE;
 
+    // Windows: point the SDK's Bash tool at the user-configured Git Bash if set.
+    // The SDK otherwise falls back to a hardcoded Program Files search that misses
+    // per-user installs (e.g. AppData\Local\Programs\Git) → "No bash shell found"
+    // (#935). Only fill when unset so a live-validated value (startup/CHECK) wins.
+    if (process.platform === 'win32' && !env.CLAUDE_CODE_GIT_BASH_PATH) {
+        const gitBash = getGitBashPath()?.trim();
+        if (gitBash) env.CLAUDE_CODE_GIT_BASH_PATH = gitBash;
+    }
+
     // Bedrock must never be routed through the Claude SDK path.
     // Strip only Claude-specific Bedrock routing vars here; keep generic AWS_*
     // untouched so user shell/tooling behavior inside the subprocess remains intact.
@@ -206,18 +216,40 @@ export function buildClaudeSubprocessEnv(
     delete env.AWS_BEARER_TOKEN_BEDROCK;
     delete env.ANTHROPIC_BEDROCK_BASE_URL;
 
-    // Pin subagent semantics: Claude Code >= 2.1.197 launches Task subagents
-    // async by default when the remote `tengu_amber_heron` GrowthBook gate is
-    // on. Craft requires blocking subagents unless `run_in_background` is
-    // explicitly set — async launches die with the SDK subprocess on agent
-    // dispose/recreate and are invisible to tool-matching.ts backgrounded-task
-    // detection (LEARNING-008). Disabling GrowthBook makes the CLI resolve all
-    // feature gates to their compiled-in defaults (the async gate defaults
-    // off), so behavior cannot flip via remote config mid-flight. Explicit
-    // `run_in_background: true` remains available, unlike the blunter
-    // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS which removes the parameter.
+    // Pin feature-gate resolution: disabling GrowthBook makes the CLI resolve
+    // every gate to its compiled-in default, so behavior cannot flip via remote
+    // config mid-flight. This is why the subagent-nesting cap below is 3 (the
+    // compiled default of `tengu_hazel_trellis`) rather than the 1 upstream's
+    // release notes quote for remote-gated users.
+    //
+    // Subagent blocking semantics (LEARNING-008, revised for SDK 0.3.220):
+    // the `tengu_amber_heron` gate this pin originally defended against no
+    // longer exists — the launch decision is now
+    //   isAsync = explicitSync || DISABLE_BACKGROUND_TASKS || !isInteractive
+    //               ? false : (input.background ?? true)
+    // i.e. async-by-default, ungated. We stay blocking anyway because the SDK
+    // always spawns the CLI with piped stdio, so `!process.stdout.isTTY` makes
+    // it non-interactive and the launch resolves synchronously. Explicit
+    // `run_in_background: true` still works.
+    //
+    // Deliberately NOT setting CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: it would
+    // also strip `run_in_background` from the *Bash* tool schema (killing
+    // background shells and shell_backgrounded detection in tool-matching.ts),
+    // disable observer agents and MCP auto-backgrounding. The non-interactive
+    // path already gives us blocking subagents at zero cost.
+    //
+    // Regression watch: if a future SDK decouples the async decision from
+    // interactivity, subagents flip to async here with no gate to stop it.
     if (env.DISABLE_GROWTHBOOK === undefined) {
         env.DISABLE_GROWTHBOOK = '1';
+    }
+
+    // Restore the pre-0.3.220 subagent nesting depth. Upstream tightened the
+    // cap (compiled default now 3, remote-gated to 1 for their users); our
+    // orchestration relies on agents spawning nested agents, so pin the prior
+    // limit until we have a reason to redesign around a shallower tree.
+    if (env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH === undefined) {
+        env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH = '5';
     }
 
     return env;
