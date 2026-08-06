@@ -178,7 +178,7 @@ same events, same diffs, now emitted at the mutation site and immune to stale-re
 direct emits at the mutation sites, watcher demotion, per-session serialization, and tests.
 The `causedBy` parameter, executor, guards, and the flip remain Phase 1 proper.
 
-**Phase 1 ordering** (unchanged from the 2026-08-04 proposal, minus the side-channel):
+**Phase 1 ordering** (implemented 2026-08-05, see the Status log):
 1. Wire a session-action executor into SessionManager's `AutomationSystem` — behind the existing
    transport restriction, so behavior is unchanged and testable in isolation.
 2. Add `causedBy` plumbing + depth cap + self-trigger suppression + rate gate.
@@ -255,15 +255,17 @@ validates clean and all 23 working matchers are preserved.
       `SessionManager` mutation sites (full snapshot), the watcher is demoted to
       external-writes-only, and `updateSessionMetadata` is serialized per session — no
       rule-visible behavior change, stale-read phantom events eliminated.
-- [ ] Phase 1: a session-action executor is wired into SessionManager's `AutomationSystem`
+- [x] Phase 1: a session-action executor is wired into SessionManager's `AutomationSystem`
       (behind the existing transport restriction, so no behavior change).
-- [ ] Phase 1: `WEBHOOK_ONLY_ACTION_TYPES` and the `SessionActionHandler` transport guard are
-      both gone — **and** the executor above exists, in one commit.
-- [ ] Phase 1: `set-status` under `LabelAdd` with `allowClosed: true` moves a session to `done`;
+- [x] Phase 1: `WEBHOOK_ONLY_ACTION_TYPES` and the `SessionActionHandler` transport guard are
+      both gone — **and** the executor above exists, on the same branch (executor + guards in
+      one commit, both deletions together in the next; neither deletion ever ships without
+      the executor).
+- [x] Phase 1: `set-status` under `LabelAdd` with `allowClosed: true` moves a session to `done`;
       without `allowClosed` it is rejected and recorded.
-- [ ] Phase 1: a self-feeding rule (`set-status` on `SessionStatusChange` targeting itself)
+- [x] Phase 1: a self-feeding rule (`set-status` on `SessionStatusChange` targeting itself)
       terminates — regression test asserts bounded firing, not just "no crash".
-- [ ] Phase 1: the agent-facing MCP closed-status guard is unchanged; a test asserts a model
+- [x] Phase 1: the agent-facing MCP closed-status guard is unchanged; a test asserts a model
       still cannot close a task.
 - [ ] Phase 2: refusal outcomes appear in `automations-history.jsonl` with a reason.
 - [ ] Phase 3: `apply-context` activates working directory, skills, sources, and permission mode
@@ -275,6 +277,7 @@ validates clean and all 23 working matchers are preserved.
       Source of truth is `apps/electron/resources/docs/automations.md`, which is installed to
       `~/.craft-agent/docs/`.
 - [ ] `automations.md` documents the loop guards (Phase 1) and context profiles (Phase 3).
+      *(Phase 1 half done: lifted scoping + all three guards documented; Phase 3 pending.)*
 
 ## Status log
 
@@ -317,3 +320,56 @@ validates clean and all 23 working matchers are preserved.
   to `applyExternalSessionMetadata` (deferred headers feed the differ when applied), per-session
   serialization in `updateSessionMetadata`. Fixes the pre-existing stale-read phantom-event
   hazard as a side effect. Phase 1 proper (executor, `causedBy`, guards, flip) still pending.
+- `2026-08-05` — **Phase 1 implemented** (branch `jh/plan-030-phase1-session-action-executor`).
+  Two commits, in the plan's order.
+
+  *Steps 1–2 (no behavior change, everything behind the transport restriction).*
+  `handleAutomationSessionActions` in `SessionManager` — sibling of
+  `handleAutomationPromptsReady`, resolves the selector, applies the three action types
+  against the live session, records outcomes, fire-and-forget so an action can never reenter
+  the mutator whose event is on the stack. The `set-status` pre-check extracted to a shared
+  `checkStatusAction` so this executor and the desktop webhook executor cannot drift on the
+  history outcome they record for the same rejection; it is the *recording* gate, with
+  enforcement still at the PLAN-031 choke point (called with an `automation` origin carrying
+  the rule's `allowClosed`). `causedBy` rides the direct `updateSessionMetadata` call from
+  PR #136, so provenance is exact. `causation.ts` holds the two pure guards (self-trigger
+  suppression, checked first and unconditionally so the refusal reason stays honest; depth
+  cap of 3) plus the rate-gate constant, and `onSessionActionSkipped` is wired now rather
+  than retrofitted — three of Phase 2's four refusal outcomes come from these guards.
+
+  *Step 3 (the flip).* `WEBHOOK_ONLY_ACTION_TYPES` and the handler's `event !==
+  'WebhookReceived'` early-return deleted together, on the same branch as the executor —
+  which is the pairing the amended ADR-0021 §1 actually requires. `allowClosed` semantics
+  unchanged and now reachable from `LabelAdd`; the agent-facing MCP guard untouched and
+  separately pinned (no `allowClosed` escape hatch, refusal independent of the targeted
+  session).
+
+  **The rate gate was nearly dead code.** It was first set to 30/min per matcher, but
+  `WorkspaceEventBus` already drops app events at `DEFAULT_RATE_LIMIT = 10`/min per type,
+  workspace-wide — so any per-matcher ceiling at or above 10 can never engage. Correct code,
+  fully wired, unreachable. Now 5/min, with `DEFAULT_RATE_LIMIT` exported and a test pinning
+  the ordering so neither constant can move alone. Sitting below the bus limit is also the
+  justification for having a second limiter at all: the bus drops events for *every* rule on
+  that type, silently, so one runaway rule starves the rest with no diagnosable trace; the
+  per-matcher gate refuses the offending rule specifically, with a reason. `LEARNING-051`
+  (vorno-internal) generalizes it — a new limit is only meaningful relative to the limits
+  already on the path. Caught only because the handler test drives the real bus rather than
+  calling `handleEvent` directly.
+
+  The per-matcher gate deliberately does **not** apply to `WebhookReceived`: those deliveries
+  already pass the receiver's per-hook gate, and a second tighter ceiling would silently drop
+  deliveries the hook admitted — a regression on a working path dressed as loop safety. Not
+  transport-as-trust-boundary; the gate is already applied there, upstream.
+
+  Wire compatibility confirmed unaffected: `BaseEventPayload` and `PendingSessionAction` are
+  in-process types in a fork-owned layer with no upstream analog, and no entry in
+  `roadmap/upstream/compatibility.md` is touched.
+
+  Tests: 15 guard cases (mutation-proved — each asserts the predicate actually flips), 17
+  handler cases (self-feeding rule closes the cycle for real and fires exactly **once**;
+  ping-pong terminates at the depth cap, which self-trigger suppression structurally cannot
+  see), 12 executor cases, 3 added MCP-guard cases. All eight CI gates green locally: shared
+  3403, server-core 289, apps/server 193, webui, `typecheck:ci`, branding, three i18n, doc
+  tools.
+
+  Phases 2–3 remain.
