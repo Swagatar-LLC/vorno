@@ -23,12 +23,13 @@
  *   - ok:true  → terminal (success OR logged validation rejection) → tombstoned.
  */
 
-import { isValidStatusId, getStatusCategory } from '@craft-agent/shared/statuses/storage'
 import { isValidLabelId } from '@craft-agent/shared/labels/storage'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import {
   appendAutomationHistoryEntry,
   createPromptHistoryEntry,
+  checkStatusAction,
+  type AutomationCause,
   type PendingPrompt,
   type PendingSessionAction,
   type SessionTargetSelector,
@@ -37,6 +38,7 @@ import {
   type WebhookDispatcherExecutors,
 } from '@craft-agent/shared/automations'
 import type { Session, SessionStatus } from '@craft-agent/shared/protocol'
+import type { StatusChangeOrigin } from '@craft-agent/shared/statuses'
 import type { PermissionMode, ThinkingLevel } from '@craft-agent/shared/agent'
 
 /**
@@ -62,8 +64,13 @@ export interface WebhookSessionManager {
   }): Promise<{ sessionId: string }>
   getSession(sessionId: string): Promise<Session | null>
   getSessions(workspaceId?: string): Session[]
-  setSessionStatus(sessionId: string, status: SessionStatus): Promise<void>
-  setSessionLabels(sessionId: string, labels: string[]): void
+  setSessionStatus(
+    sessionId: string,
+    status: SessionStatus,
+    origin?: StatusChangeOrigin,
+    cause?: AutomationCause,
+  ): Promise<void>
+  setSessionLabels(sessionId: string, labels: string[], cause?: AutomationCause): void
   sendMessage(sessionId: string, message: string): Promise<void>
 }
 
@@ -170,14 +177,13 @@ export function createDesktopWebhookExecutors(sm: WebhookSessionManager): Webhoo
     try {
       if (action.type === 'set-status') {
         const status = action.status ?? ''
-        if (!isValidStatusId(rootPath, status)) {
-          await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `rejected:invalid-status:${status}`, false, { sessionId }))
-          return { ok: true, note: 'invalid-status' }
-        }
-        if (getStatusCategory(rootPath, status) === 'closed' && !action.allowClosed) {
-          // House rule: agents never close tasks unless explicitly allowed at registration.
-          await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `rejected:closed-status:${status}`, false, { sessionId }))
-          return { ok: true, note: 'closed-status-rejected' }
+        // House rule: agents never close tasks unless explicitly allowed at registration.
+        // Shared with SessionManager's app-event executor so both hosts produce identical
+        // history outcomes for identical rejections (fork(PLAN-030)).
+        const rejection = checkStatusAction(rootPath, status, action.allowClosed)
+        if (rejection) {
+          await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, rejection.outcome, false, { sessionId }))
+          return { ok: true, note: rejection.note }
         }
         // The executor's own closed-status check above is the primary, message-producing gate;
         // this origin carries the same declared intent down to the choke point so the two cannot
@@ -187,7 +193,7 @@ export function createDesktopWebhookExecutors(sm: WebhookSessionManager): Webhoo
           kind: 'automation',
           matcherId: action.matcherId ?? 'webhook',
           allowClosed: action.allowClosed === true,
-        })
+        }, action.cause)
         await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `set-status:${status}`, true, { sessionId }))
         return { ok: true, sessionId }
       }
@@ -200,7 +206,7 @@ export function createDesktopWebhookExecutors(sm: WebhookSessionManager): Webhoo
         // Validate: drop labels whose id isn't configured in the workspace
         // (valued `id::value` entries preserved). Mirrors labels/validation.ts.
         const validated = deduped.filter((entry) => isValidLabelId(rootPath, extractLabelId(entry)))
-        sm.setSessionLabels(sessionId, validated)
+        sm.setSessionLabels(sessionId, validated, action.cause)
         await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, 'set-labels', true, { sessionId, labels: validated }))
         return { ok: true, sessionId }
       }

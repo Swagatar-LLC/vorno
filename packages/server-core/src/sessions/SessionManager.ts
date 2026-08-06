@@ -94,7 +94,7 @@ import { getDefaultSummarizationModel } from '@craft-agent/shared/config/models'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
-import { listLabels, loadLabelConfig } from '@craft-agent/shared/labels/storage'
+import { listLabels, loadLabelConfig, isValidLabelId } from '@craft-agent/shared/labels/storage'
 import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
@@ -106,8 +106,8 @@ import {
   mayCloseSession,
   describeOrigin,
 } from '@craft-agent/shared/statuses'
-import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
-import type { PromptAction as AutomationPromptAction } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import type { PromptAction as AutomationPromptAction, PendingSessionAction, AutomationCause, SessionActionSkip } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, buildRuntimeEnvelope, filterAttachmentsForModelInput } from './runtime-config'
 import { validateArchiveTarget } from './archive-guards'
 
@@ -1523,8 +1523,13 @@ export class SessionManager implements ISessionManager {
    * the differ treats absent fields as removed, so a partial snapshot would emit phantom
    * LabelRemoves. Fire-and-forget by design — automation dispatch must never reenter or block
    * the mutator that triggered it.
+   *
+   * `cause` (fork(PLAN-030), ADR-0021 §3) is the automation action responsible for this
+   * mutation, stamped onto the emitted events so the loop guards can bound the chain. Omit it
+   * for user / agent / external writes — those genuinely have no automation ancestor, and
+   * treating them as depth 0 is correct rather than merely convenient.
    */
-  private syncAutomationSessionMetadata(managed: ManagedSession): void {
+  private syncAutomationSessionMetadata(managed: ManagedSession, cause?: AutomationCause): void {
     const automationSystem = this.automationSystems.get(managed.workspace.rootPath)
     if (!automationSystem) return
     automationSystem.updateSessionMetadata(managed.id, {
@@ -1533,7 +1538,7 @@ export class SessionManager implements ISessionManager {
       isFlagged: managed.isFlagged,
       sessionStatus: managed.sessionStatus,
       sessionName: managed.name,
-    }).catch((error) => {
+    }, cause).catch((error) => {
       sessionLog.error(`[Automations] Failed to update session metadata:`, error)
     })
   }
@@ -1756,6 +1761,18 @@ export class SessionManager implements ISessionManager {
         enableScheduler: true,
         onPromptsReady: (prompts) => {
           void this.handleAutomationPromptsReady(workspaceId, workspaceRootPath, prompts)
+        },
+        // fork(PLAN-030) / ADR-0021 §1: the executor the transport restriction was hiding
+        // the absence of. Without it, a `set-status` under `LabelAdd` computes cleanly,
+        // reaches a callback that isn't there, and vanishes — a rule that validates clean
+        // and can never run, which is the exact defect Phase 0 exists to prevent. Deferred
+        // (fire-and-forget, like onPromptsReady) so an action can never reenter the
+        // mutator whose event is still on the stack.
+        onSessionActions: (actions) => {
+          void this.handleAutomationSessionActions(workspaceId, workspaceRootPath, actions)
+        },
+        onSessionActionSkipped: (skips) => {
+          void this.handleAutomationSessionActionsSkipped(workspaceRootPath, skips)
         },
         onError: (event, error) => {
           sessionLog.error(`Automation failed for ${event}:`, error.message)
@@ -4742,7 +4759,8 @@ export class SessionManager implements ISessionManager {
   async setSessionStatus(
     sessionId: string,
     sessionStatus: SessionStatus,
-    origin: StatusChangeOrigin = UNATTRIBUTED_ORIGIN
+    origin: StatusChangeOrigin = UNATTRIBUTED_ORIGIN,
+    cause?: AutomationCause
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
@@ -4756,7 +4774,7 @@ export class SessionManager implements ISessionManager {
       await this.flushSession(managed.id)
       // Notify all windows for this workspace
       this.sendEvent({ type: 'session_status_changed', sessionId, sessionStatus }, managed.workspace.id)
-      this.syncAutomationSessionMetadata(managed)
+      this.syncAutomationSessionMetadata(managed, cause)
       // Workaround: Bun's fs.watch({ recursive: true }) on Linux doesn't track
       // directories created after the watcher started.
       // https://github.com/oven-sh/bun/issues/15939
@@ -7262,8 +7280,13 @@ export class SessionManager implements ISessionManager {
   /**
    * Emits the `LabelAdd`/`LabelRemove` automation events directly (after the flush) via
    * `syncAutomationSessionMetadata` — same direct emit path as `setSessionStatus`.
+   *
+   * `cause` (fork(PLAN-030)) marks the mutation as automation-caused so the emitted
+   * `LabelAdd`/`LabelRemove` carry provenance and the chain stays bounded. Unlike
+   * `setSessionStatus` there is no origin parameter here: labels have no closure gate, so
+   * there is nothing for an origin to authorize.
    */
-  async setSessionLabels(sessionId: string, labels: string[]): Promise<void> {
+  async setSessionLabels(sessionId: string, labels: string[], cause?: AutomationCause): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       managed.labels = labels
@@ -7277,7 +7300,7 @@ export class SessionManager implements ISessionManager {
       // Persist in-memory state directly to avoid race with pending queue writes
       this.persistSession(managed)
       await this.flushSession(managed.id)
-      this.syncAutomationSessionMetadata(managed)
+      this.syncAutomationSessionMetadata(managed, cause)
       // Workaround: Bun's fs.watch({ recursive: true }) on Linux doesn't track
       // directories created after the watcher started.
       // https://github.com/oven-sh/bun/issues/15939
@@ -8587,6 +8610,148 @@ export class SessionManager implements ISessionManager {
       }, workspaceId)
       this.pendingDeltas.delete(sessionId)
     }
+  }
+
+  /**
+   * fork(PLAN-030) / ADR-0021 §1 — the app-event session-action executor.
+   *
+   * Sibling of `handleAutomationPromptsReady`, and the missing half of the seam the
+   * `WebhookReceived` restriction was masking: the shared `SessionActionHandler` computes
+   * (`$ENV` / `$.jsonpath` already expanded), this executes against the live SessionManager.
+   *
+   * Deliberately mirrors the desktop webhook executor's history vocabulary
+   * (`set-status:<id>`, `rejected:closed-status:<id>`, `deferred:target-not-found`) — the
+   * `set-status` pre-check is the shared `checkStatusAction` for exactly that reason. What
+   * it does *not* mirror is the retry contract: there is no durable queue behind an app
+   * event, so a failure is recorded and dropped rather than retried.
+   *
+   * Every mutation carries `action.cause` through, or the event it emits would look
+   * user-originated, reset the chain to depth 0, and defeat the depth cap.
+   */
+  private async handleAutomationSessionActions(
+    workspaceId: string,
+    workspaceRootPath: string,
+    actions: PendingSessionAction[],
+  ): Promise<void> {
+    for (const action of actions) {
+      try {
+        await this.executeAutomationSessionAction(workspaceId, workspaceRootPath, action)
+      } catch (e) {
+        sessionLog.error('[Automations] Session action failed:', e)
+        await this.appendSessionActionHistory(workspaceRootPath, action, `error:${e instanceof Error ? e.message : String(e)}`, false)
+      }
+    }
+  }
+
+  private async executeAutomationSessionAction(
+    workspaceId: string,
+    workspaceRootPath: string,
+    action: PendingSessionAction,
+  ): Promise<void> {
+    const sessionId = this.resolveAutomationTargetSession(workspaceId, action)
+    if (!sessionId) {
+      await this.appendSessionActionHistory(workspaceRootPath, action, 'deferred:target-not-found', false, {
+        target: action.target,
+      })
+      return
+    }
+
+    if (action.type === 'set-status') {
+      const status = action.status ?? ''
+      const rejection = checkStatusAction(workspaceRootPath, status, action.allowClosed)
+      if (rejection) {
+        // Recorded here so the refusal is visible in history; the choke point below would
+        // refuse it too, but only into the log. See `checkStatusAction`.
+        await this.appendSessionActionHistory(workspaceRootPath, action, rejection.outcome, false, { sessionId })
+        return
+      }
+      await this.setSessionStatus(sessionId, status as SessionStatus, {
+        kind: 'automation',
+        matcherId: action.matcherId ?? action.event ?? 'automation',
+        allowClosed: action.allowClosed === true,
+      }, action.cause)
+      await this.appendSessionActionHistory(workspaceRootPath, action, `set-status:${status}`, true, { sessionId })
+      return
+    }
+
+    if (action.type === 'set-labels') {
+      const current = this.sessions.get(sessionId)?.labels ?? []
+      const removeSet = new Set(action.remove ?? [])
+      const merged = [...current.filter((l) => !removeSet.has(l)), ...(action.add ?? [])]
+      // Drop labels whose id isn't configured in the workspace (valued `id::value` entries
+      // preserved). Mirrors the desktop webhook executor and labels/validation.ts.
+      const validated = [...new Set(merged)].filter((entry) => isValidLabelId(workspaceRootPath, extractLabelId(entry)))
+      await this.setSessionLabels(sessionId, validated, action.cause)
+      await this.appendSessionActionHistory(workspaceRootPath, action, 'set-labels', true, { sessionId, labels: validated })
+      return
+    }
+
+    if (action.type === 'send-message') {
+      await this.sendMessage(sessionId, action.message ?? '')
+      await this.appendSessionActionHistory(workspaceRootPath, action, 'send-message', true, { sessionId })
+    }
+  }
+
+  /**
+   * `id` → verify the session exists. `label` → most recently active session in the
+   * workspace carrying that label (exact entry match, so valued `id::value` entries are
+   * included). `getSessions` is sorted most-recent-first.
+   */
+  private resolveAutomationTargetSession(workspaceId: string, action: PendingSessionAction): string | null {
+    if (action.target.id) {
+      return this.sessions.has(action.target.id) ? action.target.id : null
+    }
+    if (action.target.label) {
+      for (const meta of this.getSessions(workspaceId)) {
+        if ((meta.labels ?? []).includes(action.target.label)) return meta.id
+      }
+    }
+    return null
+  }
+
+  /** Session-action history envelope. Matches the desktop webhook executor's shape. */
+  private async appendSessionActionHistory(
+    workspaceRootPath: string,
+    action: PendingSessionAction,
+    outcome: string,
+    ok: boolean,
+    extra?: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      await appendAutomationHistoryEntry(workspaceRootPath, {
+        id: action.matcherId ?? action.hookId ?? 'automation',
+        ts: Date.now(),
+        ok,
+        sessionAction: {
+          type: action.type,
+          outcome,
+          ...(action.event ? { event: action.event } : {}),
+          ...(action.cause ? { depth: action.cause.depth } : {}),
+          ...(extra ?? {}),
+        },
+      })
+    } catch {
+      // History is best-effort — never fail an action on a logging error.
+    }
+  }
+
+  /**
+   * fork(PLAN-030): a matcher whose session actions were refused by a loop guard.
+   *
+   * Phase 1 logs; Phase 2 ("effect-accurate history") turns these into
+   * `skipped:<reason>` history records. The callback exists now so the guards have a
+   * reporting seam from the start rather than needing one retrofitted.
+   */
+  private async handleAutomationSessionActionsSkipped(
+    workspaceRootPath: string,
+    skips: SessionActionSkip[],
+  ): Promise<void> {
+    for (const skip of skips) {
+      sessionLog.warn(
+        `[Automations] Skipped session actions on "${skip.matcherId}" (${skip.event}): ${skip.reason} — ${skip.detail}`,
+      )
+    }
+    void workspaceRootPath
   }
 
   /**

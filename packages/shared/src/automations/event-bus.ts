@@ -14,6 +14,7 @@
 
 import { createLogger } from '../utils/debug.ts';
 import type { AppEvent, AgentEvent, AutomationEvent } from './types.ts';
+import type { AutomationCause } from './causation.ts';
 
 const log = createLogger('event-bus');
 
@@ -28,6 +29,14 @@ export interface BaseEventPayload {
   workspaceId: string;
   timestamp: number;
   labels?: string[];
+  /**
+   * fork(PLAN-030) / ADR-0021 §3: the automation action that caused this event, if any.
+   *
+   * Absent means "no automation ancestor" — a human, an agent, or an external write —
+   * which is the depth-0 case. Set only by the SessionManager mutation sites, which call
+   * the differ directly and therefore know the cause exactly.
+   */
+  causedBy?: AutomationCause;
 }
 
 /** Label events payload */
@@ -147,7 +156,12 @@ interface RateWindow {
   windowStart: number;
 }
 
-const DEFAULT_RATE_LIMIT = 10;
+/**
+ * Per-event-type, workspace-wide ceiling for app events. Exported because
+ * `SESSION_ACTION_RATE_PER_MINUTE` must stay strictly below it — a per-matcher gate above
+ * this ceiling can never engage, since the bus drops the events first.
+ */
+export const DEFAULT_RATE_LIMIT = 10;
 const SCHEDULER_RATE_LIMIT = 60;
 /**
  * fork(PLAN-014): the per-hook receiver rate-gate is the real limiter for

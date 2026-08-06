@@ -60,3 +60,44 @@ describe('handleSetSessionStatus — closed-status guard', () => {
     expect(sets).toHaveLength(0);
   });
 });
+
+/**
+ * fork(PLAN-030) Phase 1 — the guard above is deliberately UNCHANGED by this phase.
+ *
+ * Phase 1 makes closure reachable from a `set-status` rule on any event, and it would be
+ * an easy misreading to conclude that closure is "unlocked now" and relax this to match.
+ * It is a different trust model (ADR-0021 §2): a human writing `allowClosed: true` into
+ * `automations.json` and having it reviewed at registration time is declared intent; a
+ * model deciding mid-turn is not. These assertions exist so the distinction is pinned
+ * rather than assumed.
+ */
+describe('handleSetSessionStatus — PLAN-030 introduces no bypass', () => {
+  it('has no allowClosed escape hatch: an allowClosed-shaped argument is ignored', async () => {
+    // `allowClosed` is registration-time only. If it were ever reachable from a tool call,
+    // "closing a task is the user's decision" would be a suggestion rather than a rule.
+    const { ctx, sets } = createCtx();
+    const result = await handleSetSessionStatus(
+      ctx,
+      { status: 'done', allowClosed: true } as unknown as { status: string }
+    );
+    expect(result.isError).toBe(true);
+    expect(sets).toHaveLength(0);
+  });
+
+  it('the refusal is unconditional across every closed status', async () => {
+    for (const status of STATUSES.filter((s) => s.category === 'closed')) {
+      const { ctx, sets } = createCtx();
+      const result = await handleSetSessionStatus(ctx, { status: status.id });
+      expect(result.isError).toBe(true);
+      expect(sets).toHaveLength(0);
+    }
+  });
+
+  it('the refusal does not depend on which session is targeted', async () => {
+    // No "the agent may close a session other than its own" carve-out crept in.
+    const { ctx, sets } = createCtx();
+    const result = await handleSetSessionStatus(ctx, { sessionId: 'some-other-session', status: 'done' });
+    expect(result.isError).toBe(true);
+    expect(sets).toHaveLength(0);
+  });
+});

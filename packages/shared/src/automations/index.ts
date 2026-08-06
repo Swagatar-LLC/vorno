@@ -166,6 +166,20 @@ export {
 
 // fork(PLAN-014): webhook ingest (verify/dedup/rate/queue/receiver) + session actions
 export { SessionActionHandler, type SessionActionHandlerOptions } from './handlers/session-action-handler.ts';
+
+// fork(PLAN-030): shared `set-status` pre-check (history-outcome parity across hosts)
+export { checkStatusAction, type StatusActionRejection } from './session-action-gate.ts';
+
+// fork(PLAN-030) / ADR-0021 §3: automation provenance + loop-safety guards
+export {
+  evaluateChainGuards,
+  MAX_AUTOMATION_CHAIN_DEPTH,
+  SESSION_ACTION_RATE_PER_MINUTE,
+  type AutomationCause,
+  type ChainGuardDecision,
+  type SessionActionSkip,
+  type SessionActionSkipReason,
+} from './causation.ts';
 export {
   createWebhookReceiver,
   generateHookToken,
