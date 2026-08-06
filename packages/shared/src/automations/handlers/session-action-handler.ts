@@ -8,10 +8,12 @@
  * disk) — identical to the PromptHandler / `onPromptsReady` division of labor,
  * which keeps `packages/shared` free of SessionManager dependencies.
  *
- * v1 scope: only WebhookReceived matchers carry the three session-mutation action types
- * (validator-gated), so this handler is still WebhookReceived-only. fork(PLAN-030) adds the
- * loop-safety guards below ahead of lifting that restriction — they are inert until the
- * next commit removes the early return and the matching validation error together.
+ * fork(PLAN-030) / ADR-0021 §1: session actions now ride ANY app event, not only
+ * WebhookReceived. The `(v1)` transport scoping is gone — it was a scope limitation, never
+ * a security property. What replaces it is loop safety (`causation.ts`), because session
+ * actions mutate session state and session state changes emit events, so `set-status` on
+ * `SessionStatusChange` is self-feeding by construction: self-trigger suppression, a fixed
+ * depth cap, and a per-matcher rate gate, evaluated per matcher below.
  */
 
 import { createLogger } from '../../utils/debug.ts';
@@ -98,10 +100,6 @@ export class SessionActionHandler implements AutomationHandler {
   }
 
   private async handleEvent(event: AutomationEvent, payload: BaseEventPayload): Promise<void> {
-    // v1: session actions ride WebhookReceived only. Removed in the next commit, together
-    // with the validation gate — see ADR-0021 §1.
-    if (event !== 'WebhookReceived') return;
-
     const matchers = this.configProvider.getMatchersForEvent(event);
     if (matchers.length === 0) return;
 

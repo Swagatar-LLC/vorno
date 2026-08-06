@@ -234,11 +234,15 @@ The `auth` field is applied before custom `headers`, so you can override the gen
 Three action types mutate an existing session rather than creating one:
 `set-status`, `set-labels`, and `send-message`.
 
-> **These are `WebhookReceived`-only.** Using one on `LabelAdd`,
-> `SessionStatusChange`, or any other event is a validation error, not a silent
-> no-op. Lifting that restriction requires loop-safety guards that do not exist
-> yet — a status change emits `SessionStatusChange`, which would re-enter the
-> same rule.
+They work on **any** event. Earlier builds restricted them to `WebhookReceived`;
+that restriction was a scope limitation, not a security property, and it is gone.
+Nothing about the webhook transport made a status change safer — what it was
+providing incidentally was loop safety, which is now explicit. See
+[Loop safety](#loop-safety) below.
+
+The closure rule is unchanged: `set-status` still refuses a closed status unless
+the rule declared `allowClosed: true`, and the agent-facing `set_session_status`
+tool still refuses closed statuses unconditionally.
 
 All three take a `session` selector naming the session to act on. Set **exactly
 one** of `id` or `label`:
@@ -347,6 +351,39 @@ attempted:
 | `rejected:closed-status:<status>` | Closed status without `allowClosed: true` |
 | `deferred:host-unreachable` | `send-message` on the standalone server |
 | `error:<message>` | The mutation threw |
+
+#### Loop safety
+
+Session actions mutate session state, and session state changes emit events. So
+a `set-status` action on `SessionStatusChange`, or `set-labels` on `LabelAdd`,
+feeds itself by construction: the rule's own effect looks exactly like the thing
+that triggers it. Three guards keep that bounded. You do not configure any of
+them, and none can be turned off.
+
+**1. Self-trigger suppression.** A matcher never runs again on an event its own
+action caused — at any depth. A rule that flips a session's status on
+`SessionStatusChange` fires once and stops.
+
+**2. Depth cap.** Every event carries provenance: which rule caused it, and how
+many automation hops deep the chain already is. A chain is refused past **3**
+hops. This catches loops self-trigger suppression cannot see — two rules
+ping-ponging (A's action triggers B, B's triggers A) never re-enter themselves,
+but each hop still counts.
+
+Provenance is exact, not inferred. Only automation-caused mutations carry it, so
+a change made by you in the UI, by an agent, or by an external edit to the
+session file starts a fresh chain at depth 0 — which is correct, because it is
+genuinely a new cause.
+
+**3. Rate gate.** A matcher may run session actions at most **5 times per
+minute**. This bounds the case the other two structurally cannot: one rule
+firing a fresh, depth-1 action on every event of a chatty type. Webhook
+deliveries are exempt here because they are already rate-limited per hook at the
+receiver.
+
+A refusal is never silent — it is logged with the matcher, the reason, and the
+specifics (the depth reached, the offending rule). If a rule seems to have
+stopped firing, that log is the first place to look.
 
 ## Environment Variables
 
@@ -1110,6 +1147,11 @@ To protect against runaway automations (e.g., an automation that indirectly trig
 When a limit is hit, further events of that type are **silently dropped** for the remainder of the 60-second window. A warning is logged. The window resets automatically.
 
 **Example:** If you have a `LabelAdd` task that triggers a prompt which adds a label back to a session, it will fire at most 10 times before being rate-limited — preventing infinite session creation.
+
+This bus limit is a blunt backstop: it drops events for *every* rule on that
+event type, silently, for the rest of the window. Session actions have their own
+narrower guards that engage first and report why — see
+[Loop safety](#loop-safety).
 
 ## Troubleshooting
 

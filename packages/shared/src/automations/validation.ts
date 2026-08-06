@@ -21,9 +21,6 @@ import type { AutomationsConfig, AutomationsValidationResult } from './types.ts'
 import { MAX_CONDITION_DEPTH_EXCLUSIVE, CONDITION_DEPTH_WARNING_THRESHOLD } from './conditions-constants.ts';
 import { isValidJsonPathLite } from './webhook-ingest/jsonpath-lite.ts';
 
-/** fork(PLAN-014): action types that are only valid on WebhookReceived matchers (v1). */
-const WEBHOOK_ONLY_ACTION_TYPES = new Set(['set-status', 'set-labels', 'send-message']);
-
 /** fork(PLAN-017): action types permitted inside a matcher's `onFailure` list. */
 const ONFAILURE_ALLOWED_ACTION_TYPES = new Set(['prompt', 'webhook']);
 
@@ -641,7 +638,6 @@ function runMatcherSemanticValidations(
  *   (mirror of the cron↔SchedulerTick rule).
  * - hook slugs are unique per workspace (per event array here).
  * - `matchField` must be valid JSONPath-lite and is WebhookReceived-only.
- * - the new session-mutation action types are gated to WebhookReceived (v1).
  */
 function validateWebhookMatcher(
   matcher: import('./types.ts').AutomationMatcher,
@@ -706,21 +702,13 @@ function validateWebhookMatcher(
     }
   }
 
-  // Session-mutation action types are WebhookReceived-only in v1.
-  if (!isWebhookEvent && Array.isArray(matcher.actions)) {
-    for (let j = 0; j < matcher.actions.length; j++) {
-      const action = matcher.actions[j] as { type?: string } | undefined;
-      if (action && typeof action.type === 'string' && WEBHOOK_ONLY_ACTION_TYPES.has(action.type)) {
-        errors.push({
-          file,
-          path: `automations.${event}[${i}].actions[${j}]`,
-          message: `Action type "${action.type}" is only supported on WebhookReceived matchers (v1)`,
-          severity: 'error',
-          suggestion: 'Use these actions under the WebhookReceived event',
-        });
-      }
-    }
-  }
+  // fork(PLAN-030) / ADR-0021 §1: `set-status` / `set-labels` / `send-message` used to be
+  // rejected here on any non-WebhookReceived matcher. The scoping was a `(v1)` limitation,
+  // not a security property — nothing about the webhook transport makes a status change
+  // safer. It is gone, together with the runtime early-return in `session-action-handler.ts`
+  // and *only* alongside the executor in `SessionManager.setupConfigWatcher`: dropping the
+  // validation error without an executor would turn a loud misconfiguration into a rule that
+  // validates clean and can never run. Loop safety moved to `causation.ts`.
 }
 
 /**
