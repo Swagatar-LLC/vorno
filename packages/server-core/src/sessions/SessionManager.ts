@@ -98,6 +98,14 @@ import { listLabels, loadLabelConfig } from '@craft-agent/shared/labels/storage'
 import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
+import {
+  type StatusChangeOrigin,
+  UNATTRIBUTED_ORIGIN,
+  USER_ORIGIN,
+  hostOrigin,
+  mayCloseSession,
+  describeOrigin,
+} from '@craft-agent/shared/statuses'
 import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
 import type { PromptAction as AutomationPromptAction } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, buildRuntimeEnvelope, filterAttachmentsForModelInput } from './runtime-config'
@@ -4286,7 +4294,12 @@ export class SessionManager implements ISessionManager {
           await this.setSessionLabels(sessionId ?? managed.id, labels)
         },
         setSessionStatusFn: async (sessionId: string | undefined, status: string) => {
-          await this.setSessionStatus(sessionId ?? managed.id, status as SessionStatus)
+          // Model-mediated: may never close a task. The `set_session_status` handler refuses
+          // closed statuses upstream with a better message; this origin is the backstop that
+          // makes the invariant hold even if that handler is ever bypassed (PLAN-031).
+          await this.setSessionStatus(sessionId ?? managed.id, status as SessionStatus, {
+            kind: 'agent',
+          })
         },
         // archive_session — archive/unarchive ANOTHER session by ID. Scoped to the
         // invoking session's workspace and blocked mid-turn (guard logic lives in
@@ -4717,10 +4730,25 @@ export class SessionManager implements ISessionManager {
    * Emits the `SessionStatusChange` automation event directly (after the flush) via
    * `syncAutomationSessionMetadata` — the watcher no longer forwards self-writes to the
    * automation differ. ADR-0021 §3 (amended 2026-08-05).
+   *
+   * This is the single choke point every status writer shares, so the closure invariant is
+   * enforced here rather than per-call-site (PLAN-031). `origin` declares who is asking; a caller
+   * that omits it cannot close a session — new code fails closed. See `StatusChangeOrigin`.
+   *
+   * A refused close is a logged no-op, not a throw: the UI and host callers are fire-and-forget,
+   * and the agent-facing path keeps its own upstream guard, which produces a far better error
+   * message for a model than an exception here would.
    */
-  async setSessionStatus(sessionId: string, sessionStatus: SessionStatus): Promise<void> {
+  async setSessionStatus(
+    sessionId: string,
+    sessionStatus: SessionStatus,
+    origin: StatusChangeOrigin = UNATTRIBUTED_ORIGIN
+  ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
+      if (!this.mayApplyStatus(managed, sessionStatus, origin)) {
+        return
+      }
       managed.sessionStatus = sessionStatus
       this.setMetadataWriteGuard(managed)
       // Persist in-memory state directly to avoid race with pending queue writes
@@ -4735,6 +4763,42 @@ export class SessionManager implements ISessionManager {
       const watcher = this.configWatchers.get(managed.workspace.rootPath)
       watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
     }
+  }
+
+  /**
+   * Closure gate for `setSessionStatus` (PLAN-031, ADR-0021 §2).
+   *
+   * Only closed-category targets are gated — any origin may set an open status. A target that
+   * doesn't resolve to a known status is allowed through: `validateSessionStatus` already handles
+   * unknown ids on read, and refusing the write here would be a new behavior this plan doesn't
+   * intend to introduce.
+   */
+  private mayApplyStatus(
+    managed: ManagedSession,
+    sessionStatus: SessionStatus,
+    origin: StatusChangeOrigin
+  ): boolean {
+    let category: string | undefined
+    try {
+      const statusConfig = loadStatusConfig(managed.workspace.rootPath)
+      category = statusConfig.statuses.find(s => s.id === sessionStatus)?.category
+    } catch (error) {
+      // A config we can't read must not become a bypass, but it must also not wedge every status
+      // change. Fall back to the pre-PLAN-031 behavior: allow, and leave a trail.
+      sessionLog.warn(`mayApplyStatus: failed to load status config — ${error}`)
+      return true
+    }
+
+    if (category !== 'closed' || mayCloseSession(origin)) {
+      return true
+    }
+
+    sessionLog.warn(
+      `Refusing to close session ${managed.id} (status '${sessionStatus}') — ` +
+        `origin: ${describeOrigin(origin)}. Closing a task is the user's decision; an automation ` +
+        `must declare allowClosed: true.`
+    )
+    return false
   }
 
   /**
@@ -6681,7 +6745,9 @@ export class SessionManager implements ISessionManager {
     //    and should automatically move to 'done' when finished
     if (reason === 'complete' && managed.systemPromptPreset === 'mini' && managed.sessionStatus !== 'done') {
       sessionLog.info(`Auto-completing mini agent session ${sessionId}`)
-      await this.setSessionStatus(sessionId, 'done')
+      // Deterministic host code, not the model: a mini agent spawned from an EditPopover has
+      // finished its one job, and leaving it open is list clutter. Declared intent by design.
+      await this.setSessionStatus(sessionId, 'done', hostOrigin('mini-agent auto-complete'))
     }
 
     // 4. Apply deferred external metadata updates captured while processing.

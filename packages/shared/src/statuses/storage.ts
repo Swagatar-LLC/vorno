@@ -23,6 +23,7 @@ import {
   ICON_EXTENSIONS,
 } from '../utils/icon.ts';
 import { migrateStatusColors } from '../colors/migrate.ts';
+import { BUILT_IN_STATUSES, DEFAULT_STATUS_ID } from './built-in.ts';
 import { debug } from '../utils/debug.ts';
 
 const STATUS_CONFIG_DIR = 'statuses';
@@ -37,57 +38,69 @@ export function getDefaultStatusConfig(): WorkspaceStatusConfig {
   // Note: color is omitted - defaults from colors/defaults.ts are applied:
   // - backlog: foreground/50 (muted, not yet planned)
   // - todo: foreground/50 (muted, ready to work on)
+  // - in-progress: (running)
   // - needs-review: info (amber, attention needed)
   // - done: accent (purple, completed)
   // - cancelled: foreground/50 (muted, inactive)
   //
   // Note: icon is omitted - auto-discovered from statuses/icons/{id}.svg
+  //
+  // The status list is NOT written out here — it derives from BUILT_IN_STATUSES so this function
+  // cannot drift from the type, the icon table, and TaskRunner again (PLAN-031).
   return {
     version: 1,
-    statuses: [
-      {
-        id: 'backlog',
-        label: 'Backlog',
-        category: 'open',
-        isFixed: false,
-        isDefault: true,
-        order: 0,
-      },
-      {
-        id: 'todo',
-        label: 'Todo',
-        category: 'open',
-        isFixed: true,
-        isDefault: false,
-        order: 1,
-      },
-      {
-        id: 'needs-review',
-        label: 'Needs Review',
-        category: 'open',
-        isFixed: false,
-        isDefault: true,
-        order: 2,
-      },
-      {
-        id: 'done',
-        label: 'Done',
-        category: 'closed',
-        isFixed: true,
-        isDefault: false,
-        order: 3,
-      },
-      {
-        id: 'cancelled',
-        label: 'Cancelled',
-        category: 'closed',
-        isFixed: true,
-        isDefault: false,
-        order: 4,
-      },
-    ],
-    defaultStatusId: 'todo',
+    statuses: BUILT_IN_STATUSES.map(s => ({ ...s })),
+    defaultStatusId: DEFAULT_STATUS_ID,
   };
+}
+
+/**
+ * Backfill any missing built-in statuses into an existing config, in place.
+ *
+ * Adding a status to `getDefaultStatusConfig` only helps *new* workspaces; an existing
+ * `statuses/config.json` written before the built-in existed would never gain it, and any session
+ * set to it would read back as `todo` forever (PLAN-031). This runs on load, in the same
+ * write-back slot `migrateStatusColors` occupies.
+ *
+ * Deliberately conservative:
+ * - A built-in that is already present is left completely untouched — user-authored label, color,
+ *   category, and flags all survive. This is what makes the function a no-op on any workspace that
+ *   hand-patched a missing status in, which is the common case for `in-progress`.
+ * - A missing built-in is inserted at its canonical position *relative to the built-ins that are
+ *   present*, not appended, so it doesn't land after "Cancelled" in the UI.
+ * - `order` is renumbered only when something was actually inserted, and only to close the gaps
+ *   left by insertion — relative order of the user's own custom statuses is preserved.
+ *
+ * @returns true if the config was modified (caller should write it back)
+ */
+export function backfillBuiltInStatuses(config: WorkspaceStatusConfig): boolean {
+  const present = new Set(config.statuses.map(s => s.id));
+  const missing = BUILT_IN_STATUSES.filter(s => !present.has(s.id));
+  if (missing.length === 0) {
+    return false;
+  }
+
+  for (const builtIn of missing) {
+    // Find the nearest preceding built-in that is already in the config, and insert after it.
+    // If none is present, this built-in goes to the front.
+    const canonicalIndex = BUILT_IN_STATUSES.findIndex(s => s.id === builtIn.id);
+    let insertAt = 0;
+    for (let i = canonicalIndex - 1; i >= 0; i--) {
+      const anchor = config.statuses.findIndex(s => s.id === BUILT_IN_STATUSES[i]!.id);
+      if (anchor !== -1) {
+        insertAt = anchor + 1;
+        break;
+      }
+    }
+    config.statuses.splice(insertAt, 0, { ...builtIn });
+  }
+
+  // Renumber to close insertion gaps, preserving the array's (now-correct) relative order.
+  config.statuses.forEach((s, i) => {
+    s.order = i;
+  });
+
+  return true;
 }
 
 /**
@@ -153,11 +166,15 @@ export function loadStatusConfig(workspaceRootPath: string): WorkspaceStatusConf
       return getDefaultStatusConfig();
     }
 
-    // Auto-migrate old Tailwind class colors (e.g., "text-accent") to new EntityColor format.
-    // If migration occurs, write the updated config back to disk.
+    // Auto-migrate old Tailwind class colors (e.g., "text-accent") to new EntityColor format,
+    // and backfill any built-in status the config predates (PLAN-031). Both are idempotent; a
+    // second load of an already-current config writes nothing.
     const migrated = migrateStatusColors(config);
-    if (migrated) {
-      debug('[loadStatusConfig] Migrated old color format, writing back');
+    const backfilled = backfillBuiltInStatuses(config);
+    if (migrated || backfilled) {
+      debug(
+        `[loadStatusConfig] Writing back (colors migrated: ${migrated}, built-ins backfilled: ${backfilled})`
+      );
       saveStatusConfig(workspaceRootPath, config);
     }
 

@@ -10,6 +10,8 @@ related-plans:
   - PLAN-007-orchestration-activity-panel-done.md
   - PLAN-013-server-only-deployment.md
   - PLAN-023-hosted-workspace-server.md
+  - PLAN-030-session-lifecycle-automation.md
+  - PLAN-031-status-invariants-at-the-choke-point.md
   # The paused richer-progress / phase-1.5 orchestration plans are archived in
   # the private vorno-internal repo (see ADR-0006).
 ---

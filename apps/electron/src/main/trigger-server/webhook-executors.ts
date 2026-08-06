@@ -179,7 +179,15 @@ export function createDesktopWebhookExecutors(sm: WebhookSessionManager): Webhoo
           await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `rejected:closed-status:${status}`, false, { sessionId }))
           return { ok: true, note: 'closed-status-rejected' }
         }
-        await sm.setSessionStatus(sessionId, status)
+        // The executor's own closed-status check above is the primary, message-producing gate;
+        // this origin carries the same declared intent down to the choke point so the two cannot
+        // disagree (PLAN-031). `allowClosed` is registration-time only — there is no runtime path
+        // that sets it (ADR-0021 §2).
+        await sm.setSessionStatus(sessionId, status, {
+          kind: 'automation',
+          matcherId: action.matcherId ?? 'webhook',
+          allowClosed: action.allowClosed === true,
+        })
         await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `set-status:${status}`, true, { sessionId }))
         return { ok: true, sessionId }
       }
