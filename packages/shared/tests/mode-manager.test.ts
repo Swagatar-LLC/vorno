@@ -24,6 +24,7 @@ import {
   shouldAllowToolInMode,
   extractBashWriteTarget,
   looksLikePotentialWrite,
+  blockWithReason,
   SAFE_MODE_CONFIG,
   type CompiledBashPattern,
 } from '../src/agent/mode-manager.ts';
@@ -1998,14 +1999,25 @@ describe('unwrapPowerShellCommand', () => {
 // PowerShell Plans Folder Exception Tests
 // ============================================================
 
+// These assert the plans-folder exception against Windows-shaped paths
+// (`C:\...`, backslash separators, case-insensitive comparison). The matching
+// runs through isPathWithinDirectory() -> path.resolve(), which is POSIX on
+// macOS/Linux — `C:\Users\test\...` is not a path there, it's one long
+// filename. So the behavior under test only exists on win32.
+//
+// `isPowerShellAvailable()` is the wrong gate: it's true on any host with pwsh
+// installed (including GitHub's ubuntu runners), so these ran on Linux and
+// failed. It was also masked locally — a macOS box without pwsh hit the bare
+// `return` and the test reported as PASSING while asserting nothing.
+// skipIf reports honestly instead of vacuously passing.
 describe('PowerShell plans folder exception', () => {
   const psAvailable = isPowerShellAvailable();
+  const isWindows = process.platform === 'win32';
+  const skipNonWindows = !isWindows || !psAvailable;
   const plansFolderPath = 'C:\\Users\\test\\.craft-agent\\workspaces\\ws\\sessions\\s1\\plans';
 
   describe('should allow Out-File to plans folder', () => {
-    it('allows Out-File with -FilePath to plans folder', () => {
-      if (!psAvailable) return;
-
+    it.skipIf(skipNonWindows)('allows Out-File with -FilePath to plans folder', () => {
       const command = `@('# Sample Plan','','## Goal','Test') | Out-File -FilePath '${plansFolderPath}\\sample-plan.md' -Encoding utf8`;
       const result = shouldAllowToolInMode(
         'Bash',
@@ -2016,9 +2028,7 @@ describe('PowerShell plans folder exception', () => {
       expect(result.allowed).toBe(true);
     });
 
-    it('allows Set-Content to plans folder', () => {
-      if (!psAvailable) return;
-
+    it.skipIf(skipNonWindows)('allows Set-Content to plans folder', () => {
       const command = `'# Plan content' | Set-Content -Path '${plansFolderPath}\\plan.md'`;
       const result = shouldAllowToolInMode(
         'Bash',
@@ -2031,9 +2041,7 @@ describe('PowerShell plans folder exception', () => {
   });
 
   describe('should block Out-File outside plans folder', () => {
-    it('blocks Out-File to temp folder', () => {
-      if (!psAvailable) return;
-
+    it.skipIf(skipNonWindows)('blocks Out-File to temp folder', () => {
       const command = `@('data') | Out-File -FilePath 'C:\\temp\\evil.txt' -Encoding utf8`;
       const result = shouldAllowToolInMode(
         'Bash',
@@ -2044,9 +2052,7 @@ describe('PowerShell plans folder exception', () => {
       expect(result.allowed).toBe(false);
     });
 
-    it('blocks Set-Content outside plans folder', () => {
-      if (!psAvailable) return;
-
+    it.skipIf(skipNonWindows)('blocks Set-Content outside plans folder', () => {
       const command = `'content' | Set-Content -Path 'C:\\Users\\test\\Desktop\\file.txt'`;
       const result = shouldAllowToolInMode(
         'Bash',
@@ -2059,9 +2065,7 @@ describe('PowerShell plans folder exception', () => {
   });
 
   describe('case-insensitive path matching on Windows', () => {
-    it('allows write when path case differs from plansFolderPath', () => {
-      if (!psAvailable) return;
-
+    it.skipIf(skipNonWindows)('allows write when path case differs from plansFolderPath', () => {
       // plansFolderPath uses lowercase 'test', command uses 'Test'
       const command = `@('plan') | Out-File -FilePath 'C:\\Users\\Test\\.craft-agent\\workspaces\\ws\\sessions\\s1\\plans\\plan.md'`;
       const result = shouldAllowToolInMode(
@@ -2398,6 +2402,57 @@ describe('Windows path handling through getBashRejectionReason', () => {
       if (!isWindows) return;
       const reason = getBashRejectionReason('ls', integrationConfig);
       expect(reason).toBeNull();
+    });
+  });
+});
+
+// ============================================================
+// blockWithReason — PreToolUse hook block shape
+// ============================================================
+
+// Regression guard for the v0.11.4 upstream fix. Claude CLI 2.1.212 (SDK
+// 0.3.220) changed how `continue: false` is handled: it halts the entire turn
+// immediately, before the model observes the block reason. That silently broke
+// Explore mode — the first denied tool ended the turn with no reply, instead of
+// the agent explaining the block, suggesting a mode switch, or submitting a
+// plan. `continue: true` + `decision: 'block'` feeds the reason back as a tool
+// error and lets the turn proceed.
+//
+// This shape is a contract with two downstream consumers that were previously
+// unguarded by any test:
+//   - session-tools-core/src/response.ts (errorResponse parity)
+//   - ui/src/components/chat/turn-utils.ts (strips the [ERROR] prefix for display)
+describe('blockWithReason', () => {
+  it('sets continue: true so the model can react to the block', () => {
+    // The load-bearing assertion: if an upstream merge ever flips this back to
+    // false, Explore mode goes silent on the first blocked tool.
+    expect(blockWithReason('Write is blocked in Explore mode.').continue).toBe(true);
+  });
+
+  it("uses decision: 'block' to deny the call", () => {
+    expect(blockWithReason('nope').decision).toBe('block');
+  });
+
+  it('prefixes the reason with [ERROR] for Codex tool-result disambiguation', () => {
+    expect(blockWithReason('Write is blocked in Explore mode.').reason).toBe(
+      '[ERROR] Write is blocked in Explore mode.'
+    );
+  });
+
+  it('passes the reason through verbatim after the prefix', () => {
+    const reason = getBashRejectionReason('rm -rf /', TEST_MODE_CONFIG);
+    expect(reason).not.toBeNull();
+    expect(blockWithReason(reason!).reason).toBe(`[ERROR] ${reason}`);
+  });
+
+  it('returns a block shape that never suppresses the reason', () => {
+    // Guards the combination rather than the fields in isolation: a block that
+    // carries a reason the model never sees is the exact failure mode above.
+    const result = blockWithReason('Edit is blocked in Explore mode.');
+    expect(result).toEqual({
+      continue: true,
+      decision: 'block',
+      reason: '[ERROR] Edit is blocked in Explore mode.',
     });
   });
 });
