@@ -105,6 +105,26 @@ export const SendMessageActionSchema = z.object({
 });
 
 /**
+ * fork(PLAN-030 Phase 3) / ADR-0022: activate a named context profile on a session.
+ *
+ * Deliberately the *only* action type for session context. `addWorkingDirectory`,
+ * `enableSkill`, and `enableSource` were the invented names that motivated this whole
+ * plan, and adding them for real would have made the automation surface grow one action
+ * type per knob — N knobs × M rules, with the review burden landing on every rule. The
+ * profile is reviewed once in `context-profiles/config.json` and reused by id; new knobs
+ * become fields there and this schema never changes.
+ *
+ * `profile` carries `$ENV` / `$.jsonpath` expansion like every other action string, so a
+ * webhook body can select a profile — but only from the set the workspace already
+ * declared, since an unresolvable id is a recorded refusal rather than an ad-hoc context.
+ */
+export const ApplyContextActionSchema = z.object({
+  type: z.literal('apply-context'),
+  session: SessionTargetSelectorSchema,
+  profile: z.string().min(1),
+});
+
+/**
  * fork(PLAN-030): every action type the runtime has a handler for.
  *
  * Kept beside the union it describes — the `.passthrough()` member below means
@@ -120,6 +140,7 @@ export const KNOWN_ACTION_TYPES = [
   'set-status',
   'set-labels',
   'send-message',
+  'apply-context',
 ] as const;
 
 export type KnownActionType = (typeof KNOWN_ACTION_TYPES)[number];
@@ -140,6 +161,7 @@ export const KNOWN_ACTION_SCHEMAS: Record<KnownActionType, z.ZodType> = {
   'set-status': SetStatusActionSchema,
   'set-labels': SetLabelsActionSchema,
   'send-message': SendMessageActionSchema,
+  'apply-context': ApplyContextActionSchema,
 };
 
 /**
@@ -160,6 +182,7 @@ export const ActionDefinitionSchema = z.union([
   SetStatusActionSchema,
   SetLabelsActionSchema,
   SendMessageActionSchema,
+  ApplyContextActionSchema,
   z.object({ type: z.string() }).passthrough(),
 ]);
 

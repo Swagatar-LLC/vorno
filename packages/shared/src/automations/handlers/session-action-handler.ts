@@ -52,7 +52,12 @@ export interface SessionActionHandlerOptions {
   onError?: (event: AutomationEvent, error: Error) => void;
 }
 
-const SESSION_ACTION_TYPES = new Set(['set-status', 'set-labels', 'send-message']);
+const SESSION_ACTION_TYPES = new Set([
+  'set-status',
+  'set-labels',
+  'send-message',
+  'apply-context',
+]);
 
 /**
  * fork(PLAN-030) Phase 2a: action types no handler dispatches.
@@ -225,6 +230,23 @@ export class SessionActionHandler implements AutomationHandler {
                 type: 'send-message',
                 target: expandSelector(action.session, env, body),
                 message: expandActionString(action.message, env, body),
+                hookId,
+                eventId,
+                event,
+                cause: decision.cause,
+              });
+            } else if (action.type === 'apply-context') {
+              // fork(PLAN-030 Phase 3): the handler resolves the profile *id* only, never
+              // the profile itself. Reading `context-profiles/config.json` here would drag
+              // filesystem access into `packages/shared`'s compute half and, worse, would
+              // decide the escalation question in a place that cannot see the target
+              // session's current permission mode — which is the input the guard needs.
+              pending.push({
+                matcherId: matcher.id,
+                automationName,
+                type: 'apply-context',
+                target: expandSelector(action.session, env, body),
+                profile: expandActionString(action.profile, env, body),
                 hookId,
                 eventId,
                 event,

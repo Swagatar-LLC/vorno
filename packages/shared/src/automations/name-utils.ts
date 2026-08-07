@@ -33,6 +33,9 @@ export function deriveAutomationName(event: string, matcher: AutomationMatcher):
   if (firstAction.type === 'set-status') return `Set status ${firstAction.status}`;
   if (firstAction.type === 'set-labels') return 'Set labels';
   if (firstAction.type === 'send-message') return 'Send message';
+  // fork(PLAN-030 Phase 3): the profile id is the useful half — "Apply context" alone
+  // would make every context rule in the list read identically.
+  if (firstAction.type === 'apply-context') return `Apply context ${firstAction.profile}`;
 
   // Extract @skill/@source mention
   const mentionMatch = firstAction.prompt.match(/@(\S+)/);

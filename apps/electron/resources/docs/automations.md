@@ -100,17 +100,20 @@ vorno-cli automation validate
 
 ## Action Types
 
-There are exactly **five** action types. Anything else is not a valid action —
-see [Session Actions](#session-actions) below for the three that were previously
-undocumented, and [Validation](#validation) for what happens if you invent one.
+There are exactly **six** action types. Anything else is not a valid action —
+see [Session Actions](#session-actions) below, and [Validation](#validation) for
+what happens if you invent one.
 
-| `type` | Does | Valid on |
-|--------|------|----------|
-| `prompt` | Creates a session and sends it a prompt | Any event |
-| `webhook` | Sends an outbound HTTP request | Any event |
-| `set-status` | Changes a session's status | `WebhookReceived` only |
-| `set-labels` | Adds/removes labels on a session | `WebhookReceived` only |
-| `send-message` | Injects a message into a live session | `WebhookReceived` only |
+| `type` | Does |
+|--------|------|
+| `prompt` | Creates a session and sends it a prompt |
+| `webhook` | Sends an outbound HTTP request |
+| `set-status` | Changes a session's status |
+| `set-labels` | Adds/removes labels on a session |
+| `send-message` | Injects a message into a live session |
+| `apply-context` | Activates a named [context profile](#context-profiles) on a session |
+
+All six work on **any** event.
 
 ### Prompt Actions
 
@@ -231,8 +234,8 @@ The `auth` field is applied before custom `headers`, so you can override the gen
 
 ### Session Actions
 
-Three action types mutate an existing session rather than creating one:
-`set-status`, `set-labels`, and `send-message`.
+Four action types mutate an existing session rather than creating one:
+`set-status`, `set-labels`, `send-message`, and `apply-context`.
 
 They work on **any** event. Earlier builds restricted them to `WebhookReceived`;
 that restriction was a scope limitation, not a security property, and it is gone.
@@ -244,7 +247,7 @@ The closure rule is unchanged: `set-status` still refuses a closed status unless
 the rule declared `allowClosed: true`, and the agent-facing `set_session_status`
 tool still refuses closed statuses unconditionally.
 
-All three take a `session` selector naming the session to act on. Set **exactly
+All four take a `session` selector naming the session to act on. Set **exactly
 one** of `id` or `label`:
 
 ```json
@@ -338,6 +341,114 @@ Valued labels use the `id::value` form (e.g. `priority::3`).
 > **Desktop only.** The standalone trigger server cannot inject into a session it
 > does not host; it records `deferred:host-unreachable` and moves on.
 
+#### apply-context
+
+Activates a named **context profile** on a session — its working directory,
+sources, and permission mode, in one action.
+
+```json
+{
+  "type": "apply-context",
+  "session": { "id": "$CRAFT_SESSION_ID" },
+  "profile": "steward"
+}
+```
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `type` | `"apply-context"` | Required | Action type |
+| `session` | selector | Required | Exactly one of `id` / `label` |
+| `profile` | string | Required | An `id` from `context-profiles/config.json` (supports `$VAR` and `$.jsonpath`) |
+
+Pair it with a `LabelAdd` rule and a label becomes a **context activator** —
+add `steward` to a session and it moves to the Steward checkout with the right
+sources on:
+
+```json
+{
+  "automations": {
+    "LabelAdd": [
+      {
+        "id": "steward-context",
+        "matcher": "^steward$",
+        "actions": [
+          { "type": "apply-context", "session": { "id": "$CRAFT_SESSION_ID" }, "profile": "steward" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+> **Desktop only.** The standalone trigger server records
+> `deferred:host-unreachable`. It could write the session header, but sources and
+> permission mode only take effect by re-plumbing a live agent — so writing the
+> header alone would report success while the running session kept its old
+> context.
+
+##### Context profiles
+
+Profiles live in `context-profiles/config.json` in your workspace folder:
+
+```json
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "steward",
+      "name": "Steward repo",
+      "workingDirectory": "/Users/you/dev/steward",
+      "sources": ["dev"],
+      "permissionMode": "ask"
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Required. What `apply-context` references. |
+| `name` | string | Optional display name. |
+| `workingDirectory` | string | Absolute path. Validated when applied. |
+| `sources` | string[] | **Replaces** the session's enabled sources — it is not a merge. |
+| `permissionMode` | `safe` \| `ask` \| `allow-all` | See the escalation rule below. |
+| `allowEscalation` | boolean | Required to *raise* `permissionMode`. Default `false`. |
+
+Every knob is optional; an omitted one is left alone. A profile must set at
+least one — a profile that changes nothing is a rule that silently does nothing.
+
+**Why a profile instead of one action per knob.** `addWorkingDirectory`,
+`enableSkill`, `enableSource` are the names people reach for, and none of them
+exist. One action type per knob multiplies without bound: N knobs × M rules,
+with every rule needing its own review. A profile is reviewed **once**, reused
+everywhere, and auditable in one file — and new knobs become fields here rather
+than new action types. If you find yourself wanting a per-knob action, that is
+the signal to add a field instead.
+
+**Permission-mode escalation.** *Lowering* the mode is always allowed.
+*Raising* it above the session's current mode requires `"allowEscalation": true`
+on the profile — otherwise the action is refused and recorded as
+`rejected:permission-escalation:<mode>`. Without this, adding a label would be a
+silent privilege escalation. The flag sits on the profile rather than on the
+rule so that the file declaring `"permissionMode": "allow-all"` is the same file
+that says whether that is authorized.
+
+`apply-context` **cannot close a session.** There is no status knob on a
+profile, and permission mode is not an input to either closure rule — an
+automation still needs `allowClosed` on a `set-status` action, and the
+agent-facing `set_session_status` tool still refuses closed statuses
+unconditionally.
+
+**Skills are not a profile field.** Skills activate per *message*, via a
+`[skill:<slug>]` mention — there is no session-level skill state to set. Put the
+mention in the rule's `prompt` action instead. Writing `"skills"` in a profile
+is a config error with that explanation, not a silent no-op.
+
+If `context-profiles/config.json` is missing, unparseable, or has any invalid
+profile, **no** profiles load — one bad entry does not leave its siblings
+half-usable — and `apply-context` records
+`rejected:unknown-profile:<id>`.
+
 #### Outcomes
 
 Session actions record what actually happened, not merely that they were
@@ -346,10 +457,14 @@ attempted:
 | History outcome | Meaning |
 |-----------------|---------|
 | `set-status:<status>` / `set-labels` / `send-message` | Applied |
+| `apply-context:<profile>` | Applied; the record lists which knobs actually changed |
 | `deferred:target-not-found` | The selector matched no session |
 | `rejected:invalid-status:<status>` | No such status in `statuses/config.json` |
 | `rejected:closed-status:<status>` | Closed status without `allowClosed: true` |
-| `deferred:host-unreachable` | `send-message` on the standalone server |
+| `rejected:unknown-profile:<id>` | No such profile in `context-profiles/config.json` |
+| `rejected:permission-escalation:<mode>` | Profile raises the mode without `allowEscalation: true` |
+| `deferred:host-unreachable` | `send-message` / `apply-context` on the standalone server |
+| `skipped:unhandled-action:<type>` | This host has no implementation for that action type |
 | `error:<message>` | The mutation threw |
 | `skipped:self-trigger` | Refused: the rule would re-enter on an event its own action caused |
 | `skipped:depth-exceeded` | Refused: the automation chain hit the depth cap |
@@ -371,8 +486,8 @@ its actions is unrunnable, and is written when that half-fire actually happens.
 #### Loop safety
 
 Session actions mutate session state, and session state changes emit events. So
-a `set-status` action on `SessionStatusChange`, or `set-labels` on `LabelAdd`,
-feeds itself by construction: the rule's own effect looks exactly like the thing
+a `set-status` action on `SessionStatusChange`, `set-labels` on `LabelAdd`, or
+`apply-context` on `PermissionModeChange`, feeds itself by construction: the rule's own effect looks exactly like the thing
 that triggers it. Three guards keep that bounded. You do not configure any of
 them, and none can be turned off.
 

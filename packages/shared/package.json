@@ -36,6 +36,8 @@
     "./sessions": "./src/sessions/index.ts",
     "./statuses": "./src/statuses/index.ts",
     "./statuses/storage": "./src/statuses/storage.ts",
+    "./context-profiles": "./src/context-profiles/index.ts",
+    "./context-profiles/storage": "./src/context-profiles/storage.ts",
     "./projects": "./src/projects/index.ts",
     "./projects/types": "./src/projects/types.ts",
     "./workbench": "./src/workbench/index.ts",
