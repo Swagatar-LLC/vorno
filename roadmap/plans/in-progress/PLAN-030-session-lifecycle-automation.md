@@ -373,3 +373,31 @@ validates clean and all 23 working matchers are preserved.
   tools.
 
   Phases 2–3 remain.
+- `2026-08-07` — **ADR-0021 accepted** and PR #139 rebased onto `main` after the v0.11.4 upstream
+  merge (#140) landed. The ADR moved `proposed` → `accepted` on Jeff's call: the decision has
+  shipped end to end (PLAN-031 for §2, Phases 0–1 here for §1/§3/§4) and no implementation finding
+  contradicted it — both amendments corrected *mechanism*, never the ruling that loop safety
+  replaces transport scoping. §5 stays open as Phase 2 and does not block acceptance.
+
+  Added to ADR-0021 §3 at Jeff's request: a standing **security-review note**. The provenance
+  model is a *correctness* mechanism, not a security boundary, and the two are easy to conflate.
+  It assumes anything reaching the session store through the filesystem — rather than through a
+  `SessionManager` mutator — has no automation ancestor and is safe to treat as user-origin at
+  depth 0. A writer that edits `session.jsonl` directly bypasses the provenance path entirely, so
+  a bot, an MCP server, or a future sync path could launder its own causation into apparent user
+  intent and reset the depth counter. The guards still bound each *observed* chain; what is lost
+  is the link between chains. `allowClosed` and the §2 choke point are unaffected — neither reads
+  `causedBy`. Accepted for now because the threat needs local workspace write access, which
+  already implies the ability to edit `automations.json`; revisit before session state can be
+  written by anything less trusted than the local user (remote workspaces, a sync daemon, a
+  sandboxed agent with scoped write access).
+
+  The rebase was clean, but the full eight-gate set was re-run against the upstream merge rather
+  than trusting that — v0.11.4 touched `packages/shared`. All green (shared 3404, server-core 289,
+  session-tools-core 92, apps/server 193, webui, `typecheck:ci`, branding, i18n ×3, doc tools).
+
+  **Phase 1 closed. Phases 2–3 remain, unstarted and untracked** — no sessions, no tasks, nothing
+  in `planned/`. This plan is their tracking until Jeff creates them. Phase 2 has a ready entry
+  point: `onSessionActionSkipped` is wired and logging, so it is a matter of turning those log
+  lines into `skipped:<reason>` history records. Phase 3 (context profiles) remains separable and
+  may become its own plan, per the note under its heading.
