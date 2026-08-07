@@ -1,0 +1,9 @@
+# Shared-package test config.
+#
+# CI runs `cd packages/shared && bun test`, and bun reads bunfig.toml from the
+# cwd — so the repo-root bunfig does not apply here. The preload points the
+# suite at a throwaway CRAFT_CONFIG_DIR before any module resolves the real one,
+# which is what makes config-dependent tests deterministic across a dev machine
+# (config dir populated) and a fresh CI runner (config dir absent).
+[test]
+preload = ["./tests/setup/config-fixture.ts"]

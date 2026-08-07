@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
 import { writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { dirname } from 'node:path';
+import { CONFIG_FILE } from '../interceptor-common.ts';
 
 let injectMetadataIntoToolSchema: typeof import('../unified-network-interceptor.ts').injectMetadataIntoToolSchema;
 let sanitizeEmptyTextCacheControl: typeof import('../unified-network-interceptor.ts').sanitizeEmptyTextCacheControl;
@@ -123,7 +123,13 @@ describe('sanitizeEmptyTextCacheControl', () => {
 });
 
 describe('upgradePromptCacheTtl', () => {
-  const configFile = join(homedir(), '.craft-agent', 'config.json');
+  // Must be the config file the interceptor actually reads. Hardcoding
+  // `~/.craft-agent/config.json` (upstream's dir) silently no-op'd on the fork,
+  // which reads CONFIG_DIR (`~/.vorno-agent`, or CRAFT_CONFIG_DIR when set):
+  // enable/disableExtendedCache() wrote a file nothing consumed, so these tests
+  // only ever reflected whatever the developer's real config happened to say.
+  const configFile = CONFIG_FILE;
+  const configDir = dirname(configFile);
   let originalConfig: string | null = null;
 
   beforeEach(() => {
@@ -145,21 +151,15 @@ describe('upgradePromptCacheTtl', () => {
     _resetConfigCacheForTesting();
   });
 
-  function enableExtendedCache() {
-    const dir = join(homedir(), '.craft-agent');
-    mkdirSync(dir, { recursive: true });
+  function setExtendedCache(enabled: boolean) {
+    mkdirSync(configDir, { recursive: true });
     const existing = originalConfig ? JSON.parse(originalConfig) : {};
-    writeFileSync(configFile, JSON.stringify({ ...existing, extendedPromptCache: true }));
+    writeFileSync(configFile, JSON.stringify({ ...existing, extendedPromptCache: enabled }));
     _resetConfigCacheForTesting();
   }
 
-  function disableExtendedCache() {
-    const dir = join(homedir(), '.craft-agent');
-    mkdirSync(dir, { recursive: true });
-    const existing = originalConfig ? JSON.parse(originalConfig) : {};
-    writeFileSync(configFile, JSON.stringify({ ...existing, extendedPromptCache: false }));
-    _resetConfigCacheForTesting();
-  }
+  const enableExtendedCache = () => setExtendedCache(true);
+  const disableExtendedCache = () => setExtendedCache(false);
 
   it('leaves blocks without ttl untouched when disabled', () => {
     disableExtendedCache();

@@ -69,10 +69,14 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Run shared tests
-        # Pre-existing failures vary by platform (2 on macOS, up to 7 on Linux).
-        # Known issues: session tool safe-mode, send_developer_feedback, PowerShell
-        # path tests (Linux-only), ClaudeAgent model switching (env-dependent).
-        # We verify the pass count hasn't regressed and failures haven't grown.
+        # The suite is expected to be fully green. The former allowance (up to 20
+        # failures) masked 14 real ones that were env-dependent, not flaky:
+        #   - 11 needed an already-populated config dir, so they passed on a dev
+        #     machine and failed on a fresh runner. Fixed by the throwaway
+        #     CRAFT_CONFIG_DIR fixture in packages/shared/tests/setup/.
+        #   - 3 asserted Windows path semantics but gated on isPowerShellAvailable(),
+        #     which is true on this runner (ubuntu ships pwsh). Now skipIf(!win32).
+        # Keep this at zero — a nonzero count is a real regression, not noise.
         run: |
           cd packages/shared
           bun test 2>&1 | tee /tmp/shared-results.txt || true
@@ -82,12 +86,12 @@ jobs:
           PASS_COUNT=$(echo "$SUMMARY" | grep -Eo '[0-9]+ pass' | grep -Eo '[0-9]+' || echo "0")
           FAIL_COUNT=$(echo "$SUMMARY" | grep -Eo '[0-9]+ fail' | grep -Eo '[0-9]+' || echo "0")
           echo "Shared tests: $PASS_COUNT pass, $FAIL_COUNT fail"
-          if [ "$PASS_COUNT" -lt 2600 ]; then
-            echo "::error::Shared test pass count dropped below 2600 (got $PASS_COUNT). Regression detected."
+          if [ "$PASS_COUNT" -lt 3300 ]; then
+            echo "::error::Shared test pass count dropped below 3300 (got $PASS_COUNT). Regression detected."
             exit 1
           fi
-          if [ "$FAIL_COUNT" -gt 20 ]; then
-            echo "::error::Shared test failures exceeded 20 (got $FAIL_COUNT). New failures detected."
+          if [ "$FAIL_COUNT" -gt 0 ]; then
+            echo "::error::Shared tests must be green (got $FAIL_COUNT failures)."
             exit 1
           fi
           echo "✓ Shared tests healthy"
