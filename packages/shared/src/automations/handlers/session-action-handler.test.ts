@@ -15,6 +15,7 @@ import { SessionActionHandler } from './session-action-handler.ts';
 import { WorkspaceEventBus } from '../event-bus.ts';
 import type { AutomationCause } from '../causation.ts';
 import { MAX_AUTOMATION_CHAIN_DEPTH, SESSION_ACTION_RATE_PER_MINUTE, type SessionActionSkip } from '../causation.ts';
+import { KNOWN_ACTION_TYPES } from '../schemas.ts';
 import type { AutomationsConfig, AutomationEvent, AutomationMatcher, PendingSessionAction } from '../types.ts';
 
 function configProvider(automations: Record<string, AutomationMatcher[]>) {
@@ -298,6 +299,32 @@ describe('loop safety', () => {
     expect(h.skips[0]!.detail.length).toBeGreaterThan(0);
   });
 
+  test('every refusal names the action types it covers', async () => {
+    // Phase 2a writes the history record's `sessionAction.type` from this. A refusal that
+    // cannot say what it refused is a record an operator cannot act on.
+    const h = harness({ SessionStatusChange: [setStatus('self', 'done')] });
+    await h.bus.emit('SessionStatusChange', statusChange('todo', { matcherId: 'self', depth: 1 }));
+    expect(h.skips[0]!.actionTypes).toEqual(['set-status']);
+  });
+
+  test('a refusal covers every session action the matcher declared', async () => {
+    // The guards run per matcher, so all of its session actions are refused together.
+    const h = harness({
+      SessionStatusChange: [
+        {
+          id: 'both',
+          actions: [
+            { type: 'set-status', session: { id: 'sess-1' }, status: 'done' },
+            { type: 'set-labels', session: { id: 'sess-1' }, add: ['x'] },
+            { type: 'prompt', prompt: 'not a session action' },
+          ],
+        } as unknown as AutomationMatcher,
+      ],
+    });
+    await h.bus.emit('SessionStatusChange', statusChange('todo', { matcherId: 'both', depth: 1 }));
+    expect(h.skips[0]!.actionTypes).toEqual(['set-status', 'set-labels']);
+  });
+
   test('a matcher with no session actions is not charged to the rate gate', async () => {
     // Prompt-only matchers match the same events. Counting them here would let an
     // unrelated rule exhaust a session-action budget it never uses.
@@ -312,6 +339,78 @@ describe('loop safety', () => {
     }
     expect(h.actions).toHaveLength(SESSION_ACTION_RATE_PER_MINUTE);
     expect(h.skips).toHaveLength(0);
+  });
+});
+
+describe('unknown action types (Phase 0 class, caught at dispatch)', () => {
+  const withUnknown = (id: string, unknownType: string): AutomationMatcher =>
+    ({
+      id,
+      actions: [
+        { type: 'set-status', session: { id: 'sess-1' }, status: 'needs-review' },
+        { type: unknownType, session: { id: 'sess-1' } },
+      ],
+    }) as unknown as AutomationMatcher;
+
+  test('an unrecognized action type on a firing matcher is refused and reported', async () => {
+    const h = harness({ SessionStatusChange: [withUnknown('half-dead', 'setSessionStatus')] });
+    await h.bus.emit('SessionStatusChange', statusChange('todo'));
+
+    expect(h.skips).toHaveLength(1);
+    expect(h.skips[0]).toMatchObject({
+      matcherId: 'half-dead',
+      reason: 'unknown-action',
+      actionTypes: ['setSessionStatus'],
+    });
+    expect(h.skips[0]!.detail).toContain('setSessionStatus');
+  });
+
+  test('the healthy actions on the same matcher still run', async () => {
+    // The distinction Phase 2a exists to record: this rule is not dead, it is partly dead.
+    // Refusing the whole matcher would be a behavior regression dressed up as strictness.
+    const h = harness({ SessionStatusChange: [withUnknown('half-dead', 'enableSkill')] });
+    await h.bus.emit('SessionStatusChange', statusChange('todo'));
+    expect(h.actions).toHaveLength(1);
+    expect(h.actions[0]!.type).toBe('set-status');
+  });
+
+  test('the predicate flips on the type — every known type is admitted silently', async () => {
+    // Mutation check for the guard itself. Phase 0 shipped a drift guard that compared a
+    // value to itself and passed unconditionally; this asserts the predicate actually
+    // discriminates, by driving both sides of it through the same matcher shape.
+    for (const known of KNOWN_ACTION_TYPES) {
+      const h = harness({ SessionStatusChange: [withUnknown(`known-${known}`, known)] });
+      await h.bus.emit('SessionStatusChange', statusChange('todo'));
+      expect(h.skips.map((s) => s.reason)).not.toContain('unknown-action');
+    }
+
+    // ...and that the same shape with a name one character off is refused.
+    for (const mutated of ['set-statuss', 'Set-Status', 'setstatus', 'send_message']) {
+      const h = harness({ SessionStatusChange: [withUnknown(`bad-${mutated}`, mutated)] });
+      await h.bus.emit('SessionStatusChange', statusChange('todo'));
+      expect(h.skips.map((s) => s.reason)).toContain('unknown-action');
+    }
+  });
+
+  test('a matcher whose actions are ALL unknown does not flood history', async () => {
+    // It never reaches the session-action path at all — the Phase 0 load-time
+    // `config-diagnostic` owns that case, once per load rather than once per event.
+    const h = harness({
+      SessionStatusChange: [
+        { id: 'fully-dead', actions: [{ type: 'setSessionStatus' }] } as unknown as AutomationMatcher,
+      ],
+    });
+    for (let i = 0; i < 5; i++) await h.bus.emit('SessionStatusChange', statusChange('todo'));
+    expect(h.skips).toHaveLength(0);
+    expect(h.actions).toHaveLength(0);
+  });
+
+  test('a matcher refused by a loop guard reports the guard, not the unknown action', async () => {
+    // Order matters: the loop guard is the reason nothing ran. Reporting `unknown-action`
+    // here would name a secondary defect and hide the actual refusal.
+    const h = harness({ SessionStatusChange: [withUnknown('self', 'setSessionStatus')] });
+    await h.bus.emit('SessionStatusChange', statusChange('todo', { matcherId: 'self', depth: 1 }));
+    expect(h.skips.map((s) => s.reason)).toEqual(['self-trigger']);
   });
 });
 

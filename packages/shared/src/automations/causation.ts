@@ -53,8 +53,21 @@ export const MAX_AUTOMATION_CHAIN_DEPTH = 3;
  */
 export const SESSION_ACTION_RATE_PER_MINUTE = 5;
 
-/** Why a session action was refused before execution. Phase 2 records these in history. */
-export type SessionActionSkipReason = 'depth-exceeded' | 'self-trigger' | 'rate-limited';
+/**
+ * Why a session action was refused before execution. Recorded in history as
+ * `skipped:<reason>` (fork(PLAN-030) Phase 2a).
+ *
+ * The first three are the Phase 1 loop guards. `unknown-action` is the Phase 0 dead-rule
+ * class caught at *dispatch* rather than at load: the load-time `config-diagnostic` covers
+ * a rule that can never run at all, and this covers the narrower case of a rule that fires
+ * normally while one of its actions is unrunnable — which the load diagnostic reports once
+ * and then never mentions again, however many times the rule half-fires.
+ */
+export type SessionActionSkipReason =
+  | 'depth-exceeded'
+  | 'self-trigger'
+  | 'rate-limited'
+  | 'unknown-action';
 
 /**
  * A refused session action. Carries everything a history record needs, so Phase 2
@@ -71,6 +84,13 @@ export interface SessionActionSkip {
   detail: string;
   /** The session the event was about, when it had one. */
   sessionId?: string;
+  /**
+   * The action types this refusal covers. The loop guards are evaluated per *matcher*, so
+   * a refusal covers every session action the matcher declared; `unknown-action` covers
+   * only the unrecognized ones. The history envelope's `sessionAction.type` is written
+   * from this, so a skip record names what was actually refused rather than a placeholder.
+   */
+  actionTypes: string[];
 }
 
 /** Decision for one matcher on one event: run its session actions, or refuse and why. */

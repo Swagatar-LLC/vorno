@@ -16,6 +16,7 @@
  */
 
 import { isValidStatusId, getStatusCategory } from '../statuses/storage.ts';
+import { sessionActionOutcome } from './session-action-outcome.ts';
 
 /** Why a `set-status` action will not be applied. `null` means "apply it". */
 export type StatusActionRejection =
@@ -37,7 +38,7 @@ export function checkStatusAction(
   if (!isValidStatusId(workspaceRootPath, status)) {
     return {
       reason: 'invalid-status',
-      outcome: `rejected:invalid-status:${status}`,
+      outcome: sessionActionOutcome.invalidStatus(status),
       note: 'invalid-status',
     };
   }
@@ -45,7 +46,7 @@ export function checkStatusAction(
   if (getStatusCategory(workspaceRootPath, status) === 'closed' && allowClosed !== true) {
     return {
       reason: 'closed-status',
-      outcome: `rejected:closed-status:${status}`,
+      outcome: sessionActionOutcome.closedStatus(status),
       note: 'closed-status-rejected',
     };
   }

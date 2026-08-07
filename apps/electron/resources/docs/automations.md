@@ -351,6 +351,22 @@ attempted:
 | `rejected:closed-status:<status>` | Closed status without `allowClosed: true` |
 | `deferred:host-unreachable` | `send-message` on the standalone server |
 | `error:<message>` | The mutation threw |
+| `skipped:self-trigger` | Refused: the rule would re-enter on an event its own action caused |
+| `skipped:depth-exceeded` | Refused: the automation chain hit the depth cap |
+| `skipped:rate-limited` | Refused: the rule exceeded its per-minute session-action budget |
+| `skipped:unknown-action` | Refused: one of the rule's actions names a type no handler dispatches |
+
+The three prefixes are not interchangeable. `rejected:` and `error:` mean the
+action reached an executor; `deferred:` means it was admitted but did not apply
+here or now; **`skipped:` means a guard refused it before execution**, so nothing
+was attempted at all. A `skipped:` record is shown in the run history with the
+same blocked treatment as a dead-rule diagnostic — visible, but never counted as
+a successful run.
+
+`skipped:unknown-action` is the narrow sibling of the `config-diagnostic`
+dead-rule record. The diagnostic covers a rule that can never run at all and is
+written once per config load; this covers a rule that fires normally while one of
+its actions is unrunnable, and is written when that half-fire actually happens.
 
 #### Loop safety
 
@@ -685,6 +701,9 @@ root. Records come in four kinds, distinguished by an optional `kind` field:
   shown — a rule that can never run is exactly what you need to see when you go
   looking for why it never ran — but they are marked as blocked rather than
   counted as runs.
+- Session-action records (dispatch records carrying a `sessionAction` field) are
+  shown in the run list with their outcome spelled out, so a refused `set-status`
+  reads differently from an applied one. A `skipped:` outcome renders as blocked.
 - **A dispatch record with `ok: true` means the action was dispatched, not that
   it achieved anything.** A prompt action records `ok: true` as soon as the
   session is created; if the model's tool call is then rejected, that shows up in
@@ -1162,7 +1181,9 @@ narrower guards that engage first and report why — see
    name), this says so directly and the rest of this list is moot. See
    [Rules that validate but can never run](#rules-that-validate-but-can-never-run).
 2. **Check the run history** — open the automation's detail page. A blocked entry
-   means the rule is structurally dead, not that it fired and failed.
+   means either that the rule is structurally dead (`config-diagnostic`) or that a
+   guard refused it (`skipped:*`) — not that it fired and failed. The entry text
+   names which.
 3. **Check event name** — must be exact (e.g., `LabelAdd`, not `labeladd` or `LabelAdded`)
 4. **Check matcher** — regex must match the event value. Note an *absent* `matcher`
    matches everything, so a rule firing too often usually means a mis-keyed filter.
@@ -1180,7 +1201,9 @@ A dispatch record with `ok: true` only means the action was *dispatched*.
   `set_session_status` tool refuses — correctly, since models may never close
   tasks. Use a `set-status` action with `allowClosed: true` instead.
 - **Session actions:** check the recorded outcome (`rejected:closed-status`,
-  `deferred:target-not-found`, …) in [Session Actions → Outcomes](#outcomes).
+  `deferred:target-not-found`, `skipped:rate-limited`, …) in
+  [Session Actions → Outcomes](#outcomes). A rule that worked and then quietly
+  stopped is most often `skipped:self-trigger` or `skipped:rate-limited`.
 
 ### Prompt not creating session
 

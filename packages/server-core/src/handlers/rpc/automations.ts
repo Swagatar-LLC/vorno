@@ -13,7 +13,11 @@ const HISTORY_FILE = 'automations-history.jsonl'
 // fork(PLAN-030): `config-diagnostic` records a rule that can never fire (with
 // `reason`/`detail`); it is not a run, and GET_LAST_EXECUTED skips it like the
 // others, but the history view does render it. See renderer/lib/automation-history.ts.
-interface HistoryEntry { id: string; ts: number; ok: boolean; kind?: 'outcome' | 'missed' | 'config-diagnostic'; reason?: string; detail?: string; event?: string; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }
+// fork(PLAN-030) Phase 2a: `sessionAction` is declared here because this interface is the
+// boundary the renderer's history view reads through. It was already flowing at runtime
+// (the parse keeps unknown keys) while being invisible to types — which is how a record
+// ends up written, transported, and then silently unrenderable.
+interface HistoryEntry { id: string; ts: number; ok: boolean; kind?: 'outcome' | 'missed' | 'config-diagnostic'; reason?: string; detail?: string; event?: string; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; sessionAction?: { type?: string; outcome?: string; event?: string; depth?: number; reason?: string; detail?: string; sessionId?: string }; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }
 
 // Per-workspace config mutex: serializes read-modify-write cycles on automations.json
 // to prevent concurrent IPC calls from clobbering each other's changes.

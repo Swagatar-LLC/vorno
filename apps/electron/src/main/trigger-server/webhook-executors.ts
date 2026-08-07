@@ -29,6 +29,7 @@ import {
   appendAutomationHistoryEntry,
   createPromptHistoryEntry,
   checkStatusAction,
+  sessionActionOutcome,
   type AutomationCause,
   type PendingPrompt,
   type PendingSessionAction,
@@ -168,7 +169,7 @@ export function createDesktopWebhookExecutors(sm: WebhookSessionManager): Webhoo
     const rootPath = ws.rootPath
     const sessionId = await resolveTargetSession(ws, action.target)
     if (!sessionId) {
-      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, 'deferred:target-not-found', false, {
+      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.targetNotFound, false, {
         target: action.target,
       }))
       return { ok: true, note: 'target-not-found' }
@@ -194,7 +195,7 @@ export function createDesktopWebhookExecutors(sm: WebhookSessionManager): Webhoo
           matcherId: action.matcherId ?? 'webhook',
           allowClosed: action.allowClosed === true,
         }, action.cause)
-        await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `set-status:${status}`, true, { sessionId }))
+        await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.setStatus(status), true, { sessionId }))
         return { ok: true, sessionId }
       }
 
@@ -207,7 +208,7 @@ export function createDesktopWebhookExecutors(sm: WebhookSessionManager): Webhoo
         // (valued `id::value` entries preserved). Mirrors labels/validation.ts.
         const validated = deduped.filter((entry) => isValidLabelId(rootPath, extractLabelId(entry)))
         sm.setSessionLabels(sessionId, validated, action.cause)
-        await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, 'set-labels', true, { sessionId, labels: validated }))
+        await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.setLabels, true, { sessionId, labels: validated }))
         return { ok: true, sessionId }
       }
 
@@ -215,14 +216,14 @@ export function createDesktopWebhookExecutors(sm: WebhookSessionManager): Webhoo
         // Embedded host CAN inject into the live desktop session (unlike standalone).
         const message = action.message ?? ''
         await sm.sendMessage(sessionId, message)
-        await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, 'send-message', true, { sessionId }))
+        await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.sendMessage, true, { sessionId }))
         return { ok: true, sessionId }
       }
 
       return { ok: true }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `error:${message}`, false, { sessionId }))
+      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.error(message), false, { sessionId }))
       return { ok: false, error: message }
     }
   }

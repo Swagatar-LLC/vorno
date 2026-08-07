@@ -19,12 +19,13 @@ import {
   setSessionStatus,
   setSessionLabels,
 } from '@craft-agent/shared/sessions';
-import { isValidStatusId, getStatusCategory } from '@craft-agent/shared/statuses/storage';
 import { isValidLabelId } from '@craft-agent/shared/labels/storage';
 import { extractLabelId } from '@craft-agent/shared/labels';
 import {
   appendAutomationHistoryEntry,
   createPromptHistoryEntry,
+  checkStatusAction,
+  sessionActionOutcome,
   type PendingPrompt,
   type PendingSessionAction,
   type SessionTargetSelector,
@@ -105,7 +106,7 @@ export function resolveTargetSession(rootPath: string, target: SessionTargetSele
 export async function executeWebhookSessionAction(rootPath: string, action: PendingSessionAction): Promise<ExecResult> {
   const sessionId = resolveTargetSession(rootPath, action.target);
   if (!sessionId) {
-    await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, 'deferred:target-not-found', false, {
+    await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.targetNotFound, false, {
       target: action.target,
     }));
     return { ok: true, note: 'target-not-found' };
@@ -114,17 +115,16 @@ export async function executeWebhookSessionAction(rootPath: string, action: Pend
   try {
     if (action.type === 'set-status') {
       const status = action.status ?? '';
-      if (!isValidStatusId(rootPath, status)) {
-        await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `rejected:invalid-status:${status}`, false, { sessionId }));
-        return { ok: true, note: 'invalid-status' };
-      }
-      if (getStatusCategory(rootPath, status) === 'closed' && !action.allowClosed) {
-        // House rule: agents never close tasks unless explicitly allowed at registration.
-        await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `rejected:closed-status:${status}`, false, { sessionId }));
-        return { ok: true, note: 'closed-status-rejected' };
+      // House rule: agents never close tasks unless explicitly allowed at registration.
+      // The shared gate rather than a third inline copy — all three hosts must produce
+      // identical history outcomes for identical rejections (fork(PLAN-030) Phase 2a).
+      const rejection = checkStatusAction(rootPath, status, action.allowClosed);
+      if (rejection) {
+        await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, rejection.outcome, false, { sessionId }));
+        return { ok: true, note: rejection.note };
       }
       await setSessionStatus(rootPath, sessionId, status);
-      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `set-status:${status}`, true, { sessionId }));
+      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.setStatus(status), true, { sessionId }));
       return { ok: true, sessionId };
     }
 
@@ -138,21 +138,21 @@ export async function executeWebhookSessionAction(rootPath: string, action: Pend
       // (valued `id::value` entries preserved). Mirrors labels/validation.ts.
       const validated = deduped.filter((entry) => isValidLabelId(rootPath, extractLabelId(entry)));
       await setSessionLabels(rootPath, sessionId, validated);
-      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, 'set-labels', true, { sessionId, labels: validated }));
+      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.setLabels, true, { sessionId, labels: validated }));
       return { ok: true, sessionId };
     }
 
     if (action.type === 'send-message') {
       // Standalone host cannot inject into a live agent it does not host (Risk #2).
       // Full support arrives with the embedded/headless host (PLAN-013 seam).
-      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, 'deferred:host-unreachable', false, { sessionId }));
+      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.hostUnreachable, false, { sessionId }));
       return { ok: true, sessionId, note: 'host-unreachable' };
     }
 
     return { ok: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, `error:${message}`, false, { sessionId }));
+    await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.error(message), false, { sessionId }));
     return { ok: false, error: message };
   }
 }
