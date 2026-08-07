@@ -239,8 +239,14 @@ export function cleanEnv(): Record<string, string> {
   );
 }
 
-/** Keys skipped when iterating payload fields for env vars */
-const PAYLOAD_SKIP_KEYS = new Set(['sessionId', 'sessionName', 'workspaceId', 'timestamp']);
+/**
+ * Keys skipped when iterating payload fields for env vars.
+ *
+ * `causedBy` (fork(PLAN-030)) is an object, and the generic dump stringifies non-strings —
+ * it would surface as `CRAFT_CAUSED_BY=[object Object]`, which is worse than useless. The
+ * full provenance is still readable in `CRAFT_EVENT_DATA`.
+ */
+const PAYLOAD_SKIP_KEYS = new Set(['sessionId', 'sessionName', 'workspaceId', 'timestamp', 'causedBy']);
 
 /**
  * fork(PLAN-014): WebhookReceived payload keys that get dedicated CRAFT_WEBHOOK_*

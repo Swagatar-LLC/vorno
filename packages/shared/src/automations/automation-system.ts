@@ -31,6 +31,7 @@ import { validateAutomationsConfig, collectConfigDiagnostics, type ConfigDiagnos
 import { KNOWN_ACTION_TYPES, VALID_EVENTS } from './schemas.ts';
 import { createConfigDiagnosticHistoryEntry } from './webhook-utils.ts';
 import { matcherMatchesSdk } from './utils.ts';
+import type { AutomationCause, SessionActionSkip } from './causation.ts';
 import { SchedulerService, type SchedulerTickPayload } from '../scheduler/scheduler-service.ts';
 
 const log = createLogger('automation-system');
@@ -93,6 +94,11 @@ export interface AutomationSystemOptions {
    * executes (resolves label→session, validates, writes to disk).
    */
   onSessionActions?: (actions: PendingSessionAction[]) => void;
+  /**
+   * fork(PLAN-030): called when a matcher's session actions were refused by a loop
+   * guard (depth cap / self-trigger / rate gate). Phase 2 turns these into history.
+   */
+  onSessionActionSkipped?: (skips: SessionActionSkip[]) => void;
   /** Called when webhook results are available */
   onWebhookResults?: (results: WebhookActionResult[]) => void;
   /** Called when an error occurs during automation execution */
@@ -375,6 +381,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
         workspaceId: this.options.workspaceId,
         workspaceRootPath: this.options.workspaceRootPath,
         onSessionActions: this.options.onSessionActions,
+        onSessionActionSkipped: this.options.onSessionActionSkipped,
         onError: this.options.onError,
       },
       this
@@ -522,14 +529,19 @@ export class AutomationSystem implements AutomationsConfigProvider {
    *
    * @param sessionId - The session ID
    * @param next - The new metadata snapshot
+   * @param causedBy - fork(PLAN-030): the automation action responsible for this mutation,
+   *   stamped onto every event emitted from this diff so the loop guards can see the chain.
+   *   Omitted for user / agent / external writes, which genuinely have no automation
+   *   ancestor and correctly reset the chain to depth 0 (ADR-0021 §3).
    * @returns The events that were emitted
    */
   async updateSessionMetadata(
     sessionId: string,
-    next: SessionMetadataSnapshot
+    next: SessionMetadataSnapshot,
+    causedBy?: AutomationCause
   ): Promise<AppEvent[]> {
     const prior = this.metadataUpdateChains.get(sessionId) ?? Promise.resolve();
-    const run = prior.then(() => this.applySessionMetadataUpdate(sessionId, next));
+    const run = prior.then(() => this.applySessionMetadataUpdate(sessionId, next, causedBy));
     // The stored chain link swallows rejections so one failed update cannot
     // poison every later update for the session; callers still see the rejection.
     const link = run.then(
@@ -547,7 +559,8 @@ export class AutomationSystem implements AutomationsConfigProvider {
 
   private async applySessionMetadataUpdate(
     sessionId: string,
-    next: SessionMetadataSnapshot
+    next: SessionMetadataSnapshot,
+    causedBy?: AutomationCause
   ): Promise<AppEvent[]> {
     const prev = this.lastKnownMetadata.get(sessionId) ?? {};
     const emittedEvents: AppEvent[] = [];
@@ -556,6 +569,10 @@ export class AutomationSystem implements AutomationsConfigProvider {
     // Common fields for all events
     const sessionName = next.sessionName;
     const labels = next.labels ?? [];
+    // Spread rather than assigned so an absent cause leaves the key off the payload
+    // entirely — `causedBy: undefined` and "no causedBy" must not read differently to
+    // anything downstream (env building, event-log JSON, condition matching).
+    const provenance = causedBy ? { causedBy } : {};
 
     // Permission mode change
     if (prev.permissionMode !== next.permissionMode) {
@@ -567,6 +584,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
         labels,
         oldMode: prev.permissionMode ?? '',
         newMode: next.permissionMode ?? '',
+        ...provenance,
       });
       emittedEvents.push('PermissionModeChange');
     }
@@ -584,6 +602,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
           timestamp,
           labels: [...nextLabels],
           label,
+          ...provenance,
         });
         emittedEvents.push('LabelAdd');
       }
@@ -598,6 +617,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
           timestamp,
           labels: [...nextLabels],
           label,
+          ...provenance,
         });
         emittedEvents.push('LabelRemove');
       }
@@ -614,6 +634,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
         timestamp,
         labels,
         isFlagged,
+        ...provenance,
       });
       emittedEvents.push('FlagChange');
     }
@@ -628,6 +649,7 @@ export class AutomationSystem implements AutomationsConfigProvider {
         labels,
         oldState: prev.sessionStatus ?? '',
         newState: next.sessionStatus ?? '',
+        ...provenance,
       });
       emittedEvents.push('SessionStatusChange');
     }

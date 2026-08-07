@@ -8,8 +8,12 @@
  * disk) — identical to the PromptHandler / `onPromptsReady` division of labor,
  * which keeps `packages/shared` free of SessionManager dependencies.
  *
- * v1 scope: only WebhookReceived matchers carry the three session-mutation
- * action types (validator-gated), so this handler is WebhookReceived-only.
+ * fork(PLAN-030) / ADR-0021 §1: session actions now ride ANY app event, not only
+ * WebhookReceived. The `(v1)` transport scoping is gone — it was a scope limitation, never
+ * a security property. What replaces it is loop safety (`causation.ts`), because session
+ * actions mutate session state and session state changes emit events, so `set-status` on
+ * `SessionStatusChange` is self-feeding by construction: self-trigger suppression, a fixed
+ * depth cap, and a per-matcher rate gate, evaluated per matcher below.
  */
 
 import { createLogger } from '../../utils/debug.ts';
@@ -23,6 +27,12 @@ import type {
 import { matcherMatches, buildEnvFromPayload, expandEnvVars } from '../utils.ts';
 import { resolveJsonPathLiteString } from '../webhook-ingest/jsonpath-lite.ts';
 import { deriveAutomationName } from '../name-utils.ts';
+import { WebhookRateGate } from '../webhook-ingest/rate-gate.ts';
+import {
+  evaluateChainGuards,
+  SESSION_ACTION_RATE_PER_MINUTE,
+  type SessionActionSkip,
+} from '../causation.ts';
 
 const log = createLogger('session-action-handler');
 
@@ -31,6 +41,13 @@ export interface SessionActionHandlerOptions {
   workspaceRootPath: string;
   /** Called when session actions are ready for the host to execute. */
   onSessionActions?: (actions: PendingSessionAction[]) => void;
+  /**
+   * fork(PLAN-030): called when a matcher's session actions were refused by a loop
+   * guard. Phase 1 wires this to a log; Phase 2 ("effect-accurate history") wires it to
+   * `skipped:<reason>` history records — a refusal that leaves no trace is the same
+   * silent-dead-rule failure Phase 0 exists to prevent.
+   */
+  onSessionActionSkipped?: (skips: SessionActionSkip[]) => void;
   onError?: (event: AutomationEvent, error: Error) => void;
 }
 
@@ -62,10 +79,17 @@ export class SessionActionHandler implements AutomationHandler {
   private readonly configProvider: AutomationsConfigProvider;
   private bus: EventBus | null = null;
   private boundHandler: ((event: AutomationEvent, payload: BaseEventPayload) => Promise<void>) | null = null;
+  /** fork(PLAN-030): per-matcher sliding-window gate. `now` is injectable for tests. */
+  private readonly rateGate: WebhookRateGate;
 
-  constructor(options: SessionActionHandlerOptions, configProvider: AutomationsConfigProvider) {
+  constructor(
+    options: SessionActionHandlerOptions,
+    configProvider: AutomationsConfigProvider,
+    now: () => number = Date.now,
+  ) {
     this.options = options;
     this.configProvider = configProvider;
+    this.rateGate = new WebhookRateGate(now);
   }
 
   subscribe(bus: EventBus): void {
@@ -76,9 +100,6 @@ export class SessionActionHandler implements AutomationHandler {
   }
 
   private async handleEvent(event: AutomationEvent, payload: BaseEventPayload): Promise<void> {
-    // v1: session actions ride WebhookReceived only.
-    if (event !== 'WebhookReceived') return;
-
     const matchers = this.configProvider.getMatchersForEvent(event);
     if (matchers.length === 0) return;
 
@@ -89,15 +110,45 @@ export class SessionActionHandler implements AutomationHandler {
     const eventId = typeof record.eventId === 'string' ? record.eventId : undefined;
 
     const pending: PendingSessionAction[] = [];
+    const skipped: SessionActionSkip[] = [];
 
     try {
       for (const matcher of matchers) {
         if (!matcherMatches(matcher, event, record)) continue;
+        if (!matcher.actions.some((a) => SESSION_ACTION_TYPES.has(a.type))) continue;
+
+        const automationName = deriveAutomationName(event, matcher);
+
+        // fork(PLAN-030) / ADR-0021 §3: loop safety, evaluated once per matcher rather
+        // than per action — a matcher is refused as a unit, so a rule with two actions
+        // can't half-fire and leave the session in a state neither branch intended.
+        const decision = evaluateChainGuards(matcher.id, payload.causedBy);
+        if (!decision.allow) {
+          skipped.push({
+            matcherId: matcher.id ?? automationName,
+            automationName,
+            event,
+            reason: decision.reason,
+            detail: decision.detail,
+            sessionId: payload.sessionId,
+          });
+          continue;
+        }
+
+        if (!this.admitUnderRateGate(event, matcher.id ?? automationName)) {
+          skipped.push({
+            matcherId: matcher.id ?? automationName,
+            automationName,
+            event,
+            reason: 'rate-limited',
+            detail: `matcher exceeded ${SESSION_ACTION_RATE_PER_MINUTE} session actions/min`,
+            sessionId: payload.sessionId,
+          });
+          continue;
+        }
 
         for (const action of matcher.actions) {
           if (!SESSION_ACTION_TYPES.has(action.type)) continue;
-
-          const automationName = deriveAutomationName(event, matcher);
 
           // fork(PLAN-030): one malformed action must not cost the others.
           // A `set-status` with no `session` validates clean (the schema union's
@@ -117,6 +168,8 @@ export class SessionActionHandler implements AutomationHandler {
                 allowClosed: action.allowClosed,
                 hookId,
                 eventId,
+                event,
+                cause: decision.cause,
               });
             } else if (action.type === 'set-labels') {
               pending.push({
@@ -128,6 +181,8 @@ export class SessionActionHandler implements AutomationHandler {
                 remove: action.remove?.map((l) => expandActionString(l, env, body)),
                 hookId,
                 eventId,
+                event,
+                cause: decision.cause,
               });
             } else if (action.type === 'send-message') {
               pending.push({
@@ -138,6 +193,8 @@ export class SessionActionHandler implements AutomationHandler {
                 message: expandActionString(action.message, env, body),
                 hookId,
                 eventId,
+                event,
+                cause: decision.cause,
               });
             }
           } catch (error) {
@@ -150,6 +207,14 @@ export class SessionActionHandler implements AutomationHandler {
         }
       }
 
+      for (const skip of skipped) {
+        log.warn(
+          `[SessionActionHandler] Refused session actions on "${skip.matcherId}" (${event}): `
+          + `${skip.reason} — ${skip.detail}`,
+        );
+      }
+      if (skipped.length > 0) this.options.onSessionActionSkipped?.(skipped);
+
       if (pending.length > 0 && this.options.onSessionActions) {
         log.debug(`[SessionActionHandler] Delivering ${pending.length} session actions`);
         this.options.onSessionActions(pending);
@@ -159,6 +224,21 @@ export class SessionActionHandler implements AutomationHandler {
       log.error(`[SessionActionHandler] Error handling ${event}: ${err.message}`);
       this.options.onError?.(event, err);
     }
+  }
+
+  /**
+   * fork(PLAN-030): per-matcher rate gate, applied to app events only.
+   *
+   * `WebhookReceived` deliveries are already rate-limited per hook at the receiver
+   * (`webhook-ingest/`), which is the real limiter and is tuned for the bursty arrival
+   * pattern webhooks actually have. A second, tighter ceiling here would silently drop
+   * deliveries the hook deliberately admitted — a behavior regression on a path that
+   * works today, dressed up as loop safety. This is not transport-as-trust-boundary
+   * (ADR-0021 rejects that); the gate is *already applied* on that path, upstream.
+   */
+  private admitUnderRateGate(event: AutomationEvent, matcherId: string): boolean {
+    if (event === 'WebhookReceived') return true;
+    return this.rateGate.check(matcherId, SESSION_ACTION_RATE_PER_MINUTE).allowed;
   }
 
   dispose(): void {

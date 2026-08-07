@@ -1,7 +1,7 @@
 ---
 id: ADR-0021
 title: Gate session-mutating automation actions on declared intent, not on transport
-status: proposed
+status: accepted
 date: 2026-08-04
 supersedes: []
 superseded-by: []
@@ -129,6 +129,29 @@ at registration time — not which event carried it.**
    call already on the stack. This is the same direct-push-on-self-write idiom
    `setKanbanColumn`/`setTaskNodeCount` already use.
 
+   > **⚠️ Security review owed.** The provenance model above is a *correctness* mechanism, not a
+   > security boundary, and the two are easy to conflate. It rests on an assumption that holds
+   > today and may not hold later: that anything reaching the session store through the
+   > filesystem — rather than through a `SessionManager` mutator — has no automation ancestor and
+   > can safely be treated as user-origin at depth 0.
+   >
+   > A writer that edits `session.jsonl` directly bypasses the provenance path entirely. The
+   > watcher sees an external write, attributes it to no automation, and resets the depth counter
+   > — so an automation-driven agent with filesystem access, a bot, an MCP server, or a future
+   > sync/replication path could launder its own causation into apparent user intent and defeat
+   > the depth cap. The loop guards would still bound each *observed* chain; what is lost is the
+   > link between chains. `allowClosed` and the `StatusChangeOrigin` choke point (§2) are
+   > unaffected, since neither depends on `causedBy`.
+   >
+   > This is accepted for now: the threat requires local filesystem write access to the
+   > workspace, which already implies the ability to edit `automations.json` itself, so it grants
+   > no privilege an attacker at that level lacks. It is recorded here because the reasoning
+   > changes the moment session state is written by anything less trusted than the local user —
+   > remote workspaces, a sync daemon, a sandboxed agent with scoped write access. **Revisit
+   > before any of those ship.** The question to answer then is whether external writes should
+   > inherit a conservative non-zero depth, or be denied the ability to trigger session actions
+   > at all, rather than being trusted as user-origin.
+
 4. **Unknown action types and unknown matcher keys are diagnostics, never silence.** Parsing
    stays lenient — an unrecognized type must not fail the whole config load, so a config written
    by a newer build still opens. But an unrecognized action type is a **validation error** and
@@ -236,6 +259,16 @@ at registration time — not which event carried it.**
   card into a closed column is itself the declaration of intent and is the product's intended way
   to close a task. The trust model in §2 is otherwise unchanged — `allowClosed` still gates
   automations, and models still may never close. Implemented in PLAN-031; no wire change.
+
+- **2026-08-07 — accepted; §3 carries a standing security-review note.** Recorded as `accepted`
+  now that the decision has shipped end to end: PLAN-031 (the §2 choke point) and PLAN-030 Phases
+  0–1 (§1 the flip, §3 provenance + loop guards, §4 diagnostics) are all merged or in review, and
+  no implementation finding contradicted the decision — the two amendments above corrected
+  *mechanism*, never the ruling that loop safety replaces transport scoping. §5 (effect-accurate
+  history) remains open as PLAN-030 Phase 2 and does not block acceptance. Added to §3: the
+  provenance model is a correctness mechanism rather than a security boundary, and its
+  external-writes-are-user-origin assumption needs a security review before session state can be
+  written by anything less trusted than the local user.
 
 ## References
 

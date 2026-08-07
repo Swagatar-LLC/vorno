@@ -6,6 +6,7 @@
 
 import type { PermissionMode } from '../agent/mode-types.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
+import type { AutomationCause } from './causation.ts';
 
 // ============================================================================
 // Event Types
@@ -459,6 +460,16 @@ export interface PendingSessionAction {
   /** Correlation to the originating webhook delivery. */
   hookId?: string;
   eventId?: string;
+  /** The event that produced this action (fork(PLAN-030) — history + diagnostics). */
+  event?: string;
+  /**
+   * fork(PLAN-030): provenance to stamp on whatever this action goes on to emit.
+   *
+   * The host MUST pass it through to the mutation it performs (`setSessionStatus` /
+   * `setSessionLabels`), or the resulting event looks user-originated, the chain resets
+   * to depth 0, and the depth cap stops bounding anything (ADR-0021 §3).
+   */
+  cause?: AutomationCause;
 }
 
 // ============================================================================

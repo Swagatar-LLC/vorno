@@ -219,3 +219,28 @@ point while the MCP handler's own refusal stays.
 
   Gates green: typecheck:ci, shared 3370 pass, server-core 277 pass, test:webui 380+24+310+277
   pass, apps/server 193 pass, session-tools-core 89 pass, branding, i18n ×3, doc-tools 19 pass.
+
+- `2026-08-07` — **Merged as PR #138** (`8b08a495`, merge `07c639a3`), and confirmed load-bearing
+  for PLAN-030 Phase 1: the `automation` origin variant is what that phase's session-action
+  executor declares, and the `in-progress` seeding fix is what made its status-transition
+  acceptance items observable at all (on a defaults-seeded workspace every TaskRunner run
+  previously read back as `todo`).
+
+  **Stays `in-progress` — two acceptance items are genuinely open**, both end-to-end regressions
+  that the shipped unit coverage deliberately does not stand in for:
+
+  1. *A TaskRunner-driven run reads back as `in-progress` on a defaults-seeded workspace.* The
+     constant is unit-tested and the gate is unit-tested; what is not tested is the whole path.
+     That is the point of the item — the original defect was invisible precisely because every
+     component was individually correct. PLAN-030's `status-closure-gate.test.ts` covers
+     `setSessionStatus('in-progress', hostOrigin(...))` reaching disk, which is the seam, not the
+     journey.
+  2. *Dragging a card into a closed column still closes it, with no added prompt.* The decision to
+     keep this path frictionless was explicit and is the easiest thing to regress by accident —
+     someone tightening the gate later adds a confirm and the product's primary way of closing a
+     task grows friction. Needs a renderer-level regression, which is why it did not land with the
+     main-process work.
+
+  Neither blocks ADR-0021 (accepted 2026-08-07 — §2's choke point is implemented and enforced) and
+  neither is a bookkeeping lag. Recorded here rather than silently carried so the folder state
+  keeps meaning what it says.

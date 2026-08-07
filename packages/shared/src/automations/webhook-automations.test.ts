@@ -52,12 +52,14 @@ describe('hook validation', () => {
     expect(r.errors.join(' ')).toContain('Invalid matchField');
   });
 
-  test('session-mutation actions gated to WebhookReceived', () => {
-    const bad = validateAutomationsConfig(cfg({
+  // fork(PLAN-030) / ADR-0021 §1: this used to assert the inverse — that a session action
+  // on a non-webhook matcher was a validation error. The scoping was a `(v1)` limitation,
+  // not a security property, and it is gone. Loop safety replaced it (`causation.ts`).
+  test('session-mutation actions are valid on any event, not just WebhookReceived', () => {
+    const onLabelAdd = validateAutomationsConfig(cfg({
       LabelAdd: [{ actions: [{ type: 'set-status', session: { id: 's' }, status: 'done' }] }],
     }));
-    expect(bad.valid).toBe(false);
-    expect(bad.errors.join(' ')).toContain('only supported on WebhookReceived');
+    expect(onLabelAdd.valid).toBe(true);
 
     const good = validateAutomationsConfig(cfg({
       WebhookReceived: [{
