@@ -1,7 +1,7 @@
 ---
 id: PLAN-030
 title: Session lifecycle automation — loud diagnostics, event-triggered session actions, context profiles
-status: done
+status: documented
 direction: DIR-03
 owner: jh
 created: 2026-08-04
@@ -357,7 +357,8 @@ validates clean and all 23 working matchers are preserved.
 - [x] Tests added/updated for each phase. Phase 0 22 cases, Phase 1 47, Phase 2a 23 (including
       the pipeline suite that starts from a real `automations.json`), Phase 3 42. Phase 2b is
       investigation-only and adds none by design.
-- [x] `automations.md` documents all five action types, the `session` selector, `allowClosed`
+- [x] `automations.md` documents all six action types (written as "all five" before Phase 3
+      added `apply-context`), the `session` selector, `allowClosed`
       (with the models-never-close house rule), `WebhookReceived`, the `config-diagnostic`
       history kind, the dispatch-vs-effect distinction, and all three dead-rule classes.
       Source of truth is `apps/electron/resources/docs/automations.md`, which is installed to
@@ -666,3 +667,14 @@ validates clean and all 23 working matchers are preserved.
   vocabulary; all eight gates re-ran green post-rebase. The rebase run also exposed a snapshot
   race in the Phase 2a rate-gate test (green on fast machines only) — fixed on the #143 branch,
   recorded as LEARNING-055 (vorno-internal). ADR-0022 remains `proposed`, awaiting Jeff.
+- `2026-08-14` — moved from done to documented: shipped in **v0.16.0** (automation refusal
+  history + `apply-context` profiles; tag on `5696b130`, all five feed checks incl. `vrno.io/dl`
+  verified). Post-merge docs review (staff-code-reviewer over #142/#143 diffs): verdict clean —
+  `automations.md` accurate and complete for all six action types, ADR-0022 content matches
+  shipped code and stays `proposed`, no root-doc drift. Docs touched: `packages/shared/CLAUDE.md`
+  (single-producer outcome vocabulary + `context-profiles/` strict-schema bullet), this file
+  (stale "all five action types" tick corrected to six). One cosmetic code follow-up left open,
+  deliberately not patched in a docs pass: `SessionManager.applyContextProfile`'s
+  no-session branch inlines `'deferred:target-not-found'` instead of calling
+  `sessionActionOutcome.targetNotFound` — the sole crack in the single-producer invariant,
+  value-identical today.
