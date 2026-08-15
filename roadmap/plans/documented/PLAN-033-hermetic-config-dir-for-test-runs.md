@@ -1,7 +1,7 @@
 ---
 id: PLAN-033
 title: Hermetic CRAFT_CONFIG_DIR for all test runs
-status: done
+status: documented
 direction: DIR-03
 owner: jh
 created: 2026-08-15
@@ -78,3 +78,4 @@ LEARNING-056 (vorno-internal).
 - `2026-08-15` — moved from planned to in-progress: implementation on branch `jh/plan-033-test-hermeticity` (diagnosis pre-established in LEARNING-056, session 260815-prime-badger)
 - `2026-08-15` — moved from in-progress to done: PR #149 merged (f8970c0b), all eight validate-pr gates green. No release required — test infra + docs only.
 - `2026-08-15` — post-merge docs-hygiene review caught a fourth non-hermetic leg (`packages/server-core`, reached only via the `test:webui` script chain — it has no `test` script of its own); closed in PR #150 alongside this move (bunfig + guard + `packages/shared/CLAUDE.md` contract note). Residue, deliberately not fixed: `packages/server/src/__tests__/smoke.test.ts` reaches `config/paths` but spawns a subprocess and is not CI-run — latent, not live.
+- `2026-08-15` — moved from done to documented: hermetic test-run config dir enforced across all four bun-test packages, with red-test guards. Docs touched: CLAUDE.md (CI section listed seven of the eight validate-pr jobs — added webui tests), packages/shared/CLAUDE.md (contract note, landed in PR #150). Code-review pass: staff-code-reviewer on the #149 diff; its two findings (server-core leg, contract-not-documented) were both closed in #150, which followed the review's own prescriptions.
