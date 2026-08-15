@@ -1,7 +1,7 @@
 ---
 id: PLAN-033
 title: Hermetic CRAFT_CONFIG_DIR for all test runs
-status: in-progress
+status: done
 direction: DIR-03
 owner: jh
 created: 2026-08-15
@@ -20,9 +20,13 @@ silent live-credential rewrite.
 
 ## Scope
 
-- `[test] preload` bunfigs for `apps/electron` and `apps/server` (the two
-  test-running packages without one; `packages/shared` already has it), reusing
-  the proven `packages/shared/tests/setup/config-fixture.ts`.
+- `[test] preload` bunfigs for `apps/electron`, `apps/server`, and
+  `packages/server-core` (`packages/shared` already has one), reusing the
+  proven `packages/shared/tests/setup/config-fixture.ts`. The server-core leg
+  was found post-merge by the docs-hygiene review: `token-entropy.test.ts` →
+  `headless-start` transitively evaluates `config/paths.ts`, and a fresh-HOME
+  run created a full `.vorno-agent` tree (create/migrate writes, no credential
+  clobber).
 - Delete the dead module-scope `process.env.CRAFT_CONFIG_DIR = …` lines that ES
   import hoisting defeats (`apps/electron/src/main/webui/__tests__/{handler,settings.e2e,supervisor}.test.ts`,
   `apps/server/tests/unit/config.test.ts`) and correct the misleading comments —
@@ -57,8 +61,12 @@ LEARNING-056 (vorno-internal).
       `bun test src/main/webui` rewrites the sentinel password and wipes apiKeys
       with 85 pass / 0 fail; after the fix, sentinel intact across all four
       `test:webui` legs and the full `apps/server` suite.
-- [x] Guard test proven live: removing either bunfig makes the corresponding
-      `config-dir-guard.test.ts` fail.
+- [x] Guard test proven live: removing any of the three new bunfigs makes the
+      corresponding `config-dir-guard.test.ts` fail.
+- [x] `packages/server-core` leg hermetic: fresh-HOME run creates no config
+      dir (pre-fix it created `.vorno-agent` with migration marker + subdirs).
+- [x] Cross-package contract documented in `packages/shared/CLAUDE.md`
+      (owner of `config/paths.ts`).
 - [x] Dead module-scope env assignments removed; comments corrected.
 - [x] Release skill states the hermeticity invariant.
 - [x] All eight validate-pr gates green locally.
@@ -68,3 +76,5 @@ LEARNING-056 (vorno-internal).
 
 - `2026-08-15` — created in `planned/`
 - `2026-08-15` — moved from planned to in-progress: implementation on branch `jh/plan-033-test-hermeticity` (diagnosis pre-established in LEARNING-056, session 260815-prime-badger)
+- `2026-08-15` — moved from in-progress to done: PR #149 merged (f8970c0b), all eight validate-pr gates green. No release required — test infra + docs only.
+- `2026-08-15` — post-merge docs-hygiene review caught a fourth non-hermetic leg (`packages/server-core`, reached only via the `test:webui` script chain — it has no `test` script of its own); closed in PR #150 alongside this move (bunfig + guard + `packages/shared/CLAUDE.md` contract note). Residue, deliberately not fixed: `packages/server/src/__tests__/smoke.test.ts` reaches `config/paths` but spawns a subprocess and is not CI-run — latent, not live.
