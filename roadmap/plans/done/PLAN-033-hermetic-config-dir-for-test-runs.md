@@ -1,7 +1,7 @@
 ---
 id: PLAN-033
 title: Hermetic CRAFT_CONFIG_DIR for all test runs
-status: in-progress
+status: done
 direction: DIR-03
 owner: jh
 created: 2026-08-15
@@ -68,3 +68,4 @@ LEARNING-056 (vorno-internal).
 
 - `2026-08-15` — created in `planned/`
 - `2026-08-15` — moved from planned to in-progress: implementation on branch `jh/plan-033-test-hermeticity` (diagnosis pre-established in LEARNING-056, session 260815-prime-badger)
+- `2026-08-15` — moved from in-progress to done: PR #149 merged (f8970c0b), all eight validate-pr gates green. No release required — test infra + docs only.
