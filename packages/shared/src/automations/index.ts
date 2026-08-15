@@ -170,6 +170,9 @@ export { SessionActionHandler, type SessionActionHandlerOptions } from './handle
 // fork(PLAN-030): shared `set-status` pre-check (history-outcome parity across hosts)
 export { checkStatusAction, type StatusActionRejection } from './session-action-gate.ts';
 
+// fork(PLAN-030) Phase 2a: the single producer of session-action history outcome strings
+export { sessionActionOutcome } from './session-action-outcome.ts';
+
 // fork(PLAN-030) / ADR-0021 §3: automation provenance + loop-safety guards
 export {
   evaluateChainGuards,

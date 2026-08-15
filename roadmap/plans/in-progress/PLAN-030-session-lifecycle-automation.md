@@ -267,7 +267,16 @@ validates clean and all 23 working matchers are preserved.
       terminates — regression test asserts bounded firing, not just "no crash".
 - [x] Phase 1: the agent-facing MCP closed-status guard is unchanged; a test asserts a model
       still cannot close a task.
-- [ ] Phase 2: refusal outcomes appear in `automations-history.jsonl` with a reason.
+- [x] Phase 2a: refusal outcomes appear in `automations-history.jsonl` with a reason
+      (`skipped:self-trigger` / `skipped:depth-exceeded` / `skipped:rate-limited` /
+      `skipped:unknown-action`), in the same envelope as an executed action.
+- [x] Phase 2a: refusals are visible in the Automations run history UI, not only in the JSONL —
+      and every session-action outcome now renders a summary at all, where the timeline used to
+      show an em-dash for all of them.
+- [x] Phase 2a: the outcome vocabulary has exactly one producer (`sessionActionOutcome`), shared
+      by all three executors; `apps/server` no longer carries its own copy of the status gate.
+- [ ] Phase 2b: prompt-action tool rejections surfaced in the session transcript rather than
+      reading as success (investigation only in this plan).
 - [ ] Phase 3: `apply-context` activates working directory, skills, sources, and permission mode
       from a named profile.
 - [ ] Tests added/updated for each phase.
@@ -277,7 +286,9 @@ validates clean and all 23 working matchers are preserved.
       Source of truth is `apps/electron/resources/docs/automations.md`, which is installed to
       `~/.craft-agent/docs/`.
 - [ ] `automations.md` documents the loop guards (Phase 1) and context profiles (Phase 3).
-      *(Phase 1 half done: lifted scoping + all three guards documented; Phase 3 pending.)*
+      *(Phase 1 done: lifted scoping + all three guards documented. Phase 2a done: the four
+      `skipped:*` outcomes, the prefix taxonomy, and the diagnostic-vs-refusal distinction.
+      Phase 3 pending.)*
 
 ## Status log
 
@@ -401,3 +412,50 @@ validates clean and all 23 working matchers are preserved.
   point: `onSessionActionSkipped` is wired and logging, so it is a matter of turning those log
   lines into `skipped:<reason>` history records. Phase 3 (context profiles) remains separable and
   may become its own plan, per the note under its heading.
+- `2026-08-07` — **Phase 2a implemented** (refusal history + visibility). Four changes:
+
+  1. `handleAutomationSessionActionsSkipped` writes history instead of only logging, in the
+     **same envelope as an executed action** — deliberately no `kind`. A `kind` would have put
+     the record behind the very filter that made Phase 0's diagnostics write-only; the renderer
+     classifies it by the `skipped:` outcome prefix instead and renders it `blocked`.
+  2. `skipped:unknown-action` added at *dispatch*, for the half-dead case the load-time
+     `config-diagnostic` structurally cannot report: a rule that fires normally while one of its
+     actions names a type nothing dispatches. Its healthy actions still run. A matcher whose
+     actions are *all* unknown never reaches this path, so a permanently dead rule still costs
+     one record per load rather than one per event.
+  3. **The outcome vocabulary got a single producer** (`session-action-outcome.ts`). It was eight
+     literals × three executors; `checkStatusAction` only ever covered two of them. `apps/server`
+     also had its own inline copy of the closed-status gate, now deleted in favor of the shared
+     one. These strings are the interface operators diagnose from — drift in them is invisible
+     because the record still writes, still says `ok: false`, and merely stops matching what the
+     reader greps for.
+  4. **The renderer was the real defect.** `RawHistoryEntry` had no `sessionAction` field at all,
+     so *every* session-action record since PLAN-014 rendered with an empty summary — the
+     timeline literally showed `—`, and a `set-status` refused for closing a task was
+     indistinguishable from one that succeeded except by a red dot. `describeSessionAction` fixes
+     the whole vocabulary, not just the new refusals. The field was also typed away at two
+     boundaries (the RPC's `HistoryEntry`, `shared/types.ts`) while flowing fine at runtime.
+
+  One near-miss worth recording: the entry key is `${id}-${ts}`, and an `unknown-action` refusal
+  is written in the same tick, under the same matcher id, as the action that *did* run — so both
+  rows carried the same React key and one would have silently stopped rendering. Phase 0's
+  invisibility defect, reintroduced by a different mechanism. Keys are now suffixed per refusal
+  reason, with a regression test.
+
+  Testing follows the Phase 1 lesson (the rate gate shipped unreachable behind a green unit
+  test): `automation-refusal-history.test.ts` starts from a real `automations.json`, calls the
+  production `setupConfigWatcher`, emits on the real `WorkspaceEventBus`, and reads the JSONL —
+  no direct call to the writer. Verified by mutation: deleting the `onSessionActionSkipped`
+  wiring turns that suite fully red (4/4) while the direct-call unit suite stays green (19/19),
+  which is exactly the gap it exists to cover. The `unknownActionTypes` predicate was mutation-
+  tested three ways (neutered → 2 fail, inverted → 8 fail, over-eager `continue` → 1 fail).
+
+  Gates: shared 3411 pass / 17 skip, server-core 300 pass, apps/server 193 pass,
+  `test:webui` 395 + 24 + 310 + 300 pass, `typecheck:ci` clean, branding clean, i18n ×3 clean,
+  doc tools 19 pass. **No wire contract
+  touched** — no `packages/shared/src/protocol/` change; the history JSONL is local disk and the
+  RPC `HistoryEntry` addition is additive on a fork-owned channel.
+
+  **Phase 2b** (prompt-action tool rejections in the transcript) and **Phase 3** (context
+  profiles) remain. Phase 3 is still greenfield: nothing named `apply-context` /
+  `context-profile` exists in the tree beyond the `applycontext: null` alias.

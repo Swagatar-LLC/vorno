@@ -17,7 +17,7 @@ import {
   writeSessionJsonl,
   type StoredSession,
 } from '@craft-agent/shared/sessions'
-import type { PendingSessionAction } from '@craft-agent/shared/automations'
+import type { PendingSessionAction, SessionActionSkip } from '@craft-agent/shared/automations'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
 
 const WORKSPACE_ID = 'ws_test'
@@ -203,6 +203,84 @@ describe('automation session actions (app events)', () => {
         () => [{ id: 'sess-1', labels: ['on-call'] }]
       await run(setStatus('needs-review', { target: { label: 'on-call' } }))
       expect(managed.sessionStatus).toBe('needs-review')
+    })
+  })
+
+  describe('refusal records (Phase 2a)', () => {
+    async function runSkips(...skips: SessionActionSkip[]): Promise<void> {
+      await (sm as unknown as {
+        handleAutomationSessionActionsSkipped(r: string, s: SessionActionSkip[]): Promise<void>
+      }).handleAutomationSessionActionsSkipped(tmpRoot, skips)
+    }
+
+    const skip = (extra: Partial<SessionActionSkip> = {}): SessionActionSkip => ({
+      matcherId: 'lifecycle-rule',
+      automationName: 'LabelAdd rule',
+      event: 'LabelAdd',
+      reason: 'self-trigger',
+      detail: 'matcher "lifecycle-rule" would re-enter on an event its own action caused (depth 1)',
+      sessionId: 'sess-1',
+      actionTypes: ['set-status'],
+      ...extra,
+    })
+
+    it('writes a skipped:<reason> record instead of only logging', async () => {
+      // Phase 1 logged and returned. A refusal an operator cannot see in run history is
+      // indistinguishable from a rule that simply never matched.
+      await runSkips(skip())
+      expect(outcomes()).toEqual(['skipped:self-trigger'])
+      expect(history()[0]!.ok).toBe(false)
+    })
+
+    it('records every guard reason distinctly', async () => {
+      await runSkips(
+        skip({ reason: 'self-trigger' }),
+        skip({ reason: 'depth-exceeded' }),
+        skip({ reason: 'rate-limited' }),
+        skip({ reason: 'unknown-action' }),
+      )
+      expect(outcomes()).toEqual([
+        'skipped:self-trigger',
+        'skipped:depth-exceeded',
+        'skipped:rate-limited',
+        'skipped:unknown-action',
+      ])
+    })
+
+    it('matches the executed-action envelope, so one reader parses both', async () => {
+      seedSession('sess-1')
+      await run(setStatus('needs-review'))
+      await runSkips(skip())
+      const [executed, refused] = history()
+      expect(Object.keys(refused!).sort()).toEqual(Object.keys(executed!).sort())
+      expect(refused!.id).toBe('lifecycle-rule')
+      expect(typeof refused!.ts).toBe('number')
+    })
+
+    it('carries the reason, the detail, and the target session', async () => {
+      await runSkips(skip())
+      const sa = history()[0]!.sessionAction as Record<string, unknown>
+      expect(sa.reason).toBe('self-trigger')
+      expect(sa.detail).toContain('re-enter')
+      expect(sa.sessionId).toBe('sess-1')
+      expect(sa.event).toBe('LabelAdd')
+    })
+
+    it('names the action types the refusal covers', async () => {
+      await runSkips(skip({ actionTypes: ['set-status', 'set-labels'] }))
+      expect((history()[0]!.sessionAction as { type: string }).type).toBe('set-status, set-labels')
+    })
+
+    it('carries no `kind`, so the run-history view cannot filter it out', async () => {
+      // The Phase 0 defect, pinned. `useAutomations` drops every record carrying a `kind`
+      // except the one it explicitly allows; a refusal must not depend on that allowance.
+      await runSkips(skip())
+      expect(history()[0]!.kind).toBeUndefined()
+    })
+
+    it('omits sessionId when the event had no session', async () => {
+      await runSkips(skip({ sessionId: undefined }))
+      expect((history()[0]!.sessionAction as Record<string, unknown>).sessionId).toBeUndefined()
     })
   })
 

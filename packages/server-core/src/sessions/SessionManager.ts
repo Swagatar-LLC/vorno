@@ -106,7 +106,7 @@ import {
   mayCloseSession,
   describeOrigin,
 } from '@craft-agent/shared/statuses'
-import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, sessionActionOutcome, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
 import type { PromptAction as AutomationPromptAction, PendingSessionAction, AutomationCause, SessionActionSkip } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, buildRuntimeEnvelope, filterAttachmentsForModelInput } from './runtime-config'
 import { validateArchiveTarget } from './archive-guards'
@@ -8638,7 +8638,7 @@ export class SessionManager implements ISessionManager {
         await this.executeAutomationSessionAction(workspaceId, workspaceRootPath, action)
       } catch (e) {
         sessionLog.error('[Automations] Session action failed:', e)
-        await this.appendSessionActionHistory(workspaceRootPath, action, `error:${e instanceof Error ? e.message : String(e)}`, false)
+        await this.appendSessionActionHistory(workspaceRootPath, action, sessionActionOutcome.error(e instanceof Error ? e.message : String(e)), false)
       }
     }
   }
@@ -8650,7 +8650,7 @@ export class SessionManager implements ISessionManager {
   ): Promise<void> {
     const sessionId = this.resolveAutomationTargetSession(workspaceId, action)
     if (!sessionId) {
-      await this.appendSessionActionHistory(workspaceRootPath, action, 'deferred:target-not-found', false, {
+      await this.appendSessionActionHistory(workspaceRootPath, action, sessionActionOutcome.targetNotFound, false, {
         target: action.target,
       })
       return
@@ -8670,7 +8670,7 @@ export class SessionManager implements ISessionManager {
         matcherId: action.matcherId ?? action.event ?? 'automation',
         allowClosed: action.allowClosed === true,
       }, action.cause)
-      await this.appendSessionActionHistory(workspaceRootPath, action, `set-status:${status}`, true, { sessionId })
+      await this.appendSessionActionHistory(workspaceRootPath, action, sessionActionOutcome.setStatus(status), true, { sessionId })
       return
     }
 
@@ -8682,13 +8682,13 @@ export class SessionManager implements ISessionManager {
       // preserved). Mirrors the desktop webhook executor and labels/validation.ts.
       const validated = [...new Set(merged)].filter((entry) => isValidLabelId(workspaceRootPath, extractLabelId(entry)))
       await this.setSessionLabels(sessionId, validated, action.cause)
-      await this.appendSessionActionHistory(workspaceRootPath, action, 'set-labels', true, { sessionId, labels: validated })
+      await this.appendSessionActionHistory(workspaceRootPath, action, sessionActionOutcome.setLabels, true, { sessionId, labels: validated })
       return
     }
 
     if (action.type === 'send-message') {
       await this.sendMessage(sessionId, action.message ?? '')
-      await this.appendSessionActionHistory(workspaceRootPath, action, 'send-message', true, { sessionId })
+      await this.appendSessionActionHistory(workspaceRootPath, action, sessionActionOutcome.sendMessage, true, { sessionId })
     }
   }
 
@@ -8736,11 +8736,21 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * fork(PLAN-030): a matcher whose session actions were refused by a loop guard.
+   * fork(PLAN-030) Phase 2a — a matcher whose session actions were refused, recorded.
    *
-   * Phase 1 logs; Phase 2 ("effect-accurate history") turns these into
-   * `skipped:<reason>` history records. The callback exists now so the guards have a
-   * reporting seam from the start rather than needing one retrofitted.
+   * Phase 1 logged these and nothing more, which left the guards in the same position the
+   * dead rules of Phase 0 were in: correct behavior, invisible outcome. An operator whose
+   * rule silently stops acting looks at run history, not at a `console.warn` in a log they
+   * would need the app relaunched from a terminal to see.
+   *
+   * Written in the same envelope as an executed action (`appendSessionActionHistory`)
+   * rather than as a new `kind`, deliberately. A refusal *is* a fire — the event arrived,
+   * the matcher matched, a decision was made — it just produced no mutation. Giving it a
+   * `kind` would have hidden it behind the very `kind` filter that made Phase 0's
+   * diagnostics write-only; the renderer distinguishes it by the `skipped:` outcome prefix
+   * and renders it `blocked`, so it reads as "refused", never as a successful run.
+   *
+   * Best-effort per skip: one unwritable record must not cost the others.
    */
   private async handleAutomationSessionActionsSkipped(
     workspaceRootPath: string,
@@ -8750,8 +8760,24 @@ export class SessionManager implements ISessionManager {
       sessionLog.warn(
         `[Automations] Skipped session actions on "${skip.matcherId}" (${skip.event}): ${skip.reason} — ${skip.detail}`,
       )
+      try {
+        await appendAutomationHistoryEntry(workspaceRootPath, {
+          id: skip.matcherId,
+          ts: Date.now(),
+          ok: false,
+          sessionAction: {
+            type: skip.actionTypes.join(', '),
+            outcome: sessionActionOutcome.skipped(skip.reason),
+            event: skip.event,
+            reason: skip.reason,
+            detail: skip.detail,
+            ...(skip.sessionId ? { sessionId: skip.sessionId } : {}),
+          },
+        })
+      } catch {
+        // History is best-effort — never fail on a logging error.
+      }
     }
-    void workspaceRootPath
   }
 
   /**

@@ -25,6 +25,7 @@ import type {
   SessionTargetSelector,
 } from '../types.ts';
 import { matcherMatches, buildEnvFromPayload, expandEnvVars } from '../utils.ts';
+import { KNOWN_ACTION_TYPES } from '../schemas.ts';
 import { resolveJsonPathLiteString } from '../webhook-ingest/jsonpath-lite.ts';
 import { deriveAutomationName } from '../name-utils.ts';
 import { WebhookRateGate } from '../webhook-ingest/rate-gate.ts';
@@ -52,6 +53,21 @@ export interface SessionActionHandlerOptions {
 }
 
 const SESSION_ACTION_TYPES = new Set(['set-status', 'set-labels', 'send-message']);
+
+/**
+ * fork(PLAN-030) Phase 2a: action types no handler dispatches.
+ *
+ * Reads `KNOWN_ACTION_TYPES` rather than restating it, so adding an action type cannot
+ * leave this predicate reporting the new type as dead. Only meaningful on a matcher that
+ * also declares at least one real session action — a matcher whose actions are *all*
+ * unknown never reaches here (it fails the `SESSION_ACTION_TYPES` filter) and is covered
+ * once per load by the Phase 0 `config-diagnostic` instead, which is what keeps a
+ * permanently dead rule from writing a record on every event.
+ */
+function unknownActionTypes(actions: ReadonlyArray<{ type: string }>): string[] {
+  const known = KNOWN_ACTION_TYPES as readonly string[];
+  return [...new Set(actions.map((a) => a.type).filter((t) => !known.includes(t)))];
+}
 
 /**
  * Resolve embedded `$.jsonpath` tokens against the webhook body, then expand
@@ -118,33 +134,51 @@ export class SessionActionHandler implements AutomationHandler {
         if (!matcher.actions.some((a) => SESSION_ACTION_TYPES.has(a.type))) continue;
 
         const automationName = deriveAutomationName(event, matcher);
+        const matcherId = matcher.id ?? automationName;
+        const sessionActionTypes = matcher.actions
+          .map((a) => a.type)
+          .filter((t) => SESSION_ACTION_TYPES.has(t));
+        const skip = (
+          reason: SessionActionSkip['reason'],
+          detail: string,
+          actionTypes: string[],
+        ): void => {
+          skipped.push({
+            matcherId,
+            automationName,
+            event,
+            reason,
+            detail,
+            sessionId: payload.sessionId,
+            actionTypes,
+          });
+        };
 
         // fork(PLAN-030) / ADR-0021 §3: loop safety, evaluated once per matcher rather
         // than per action — a matcher is refused as a unit, so a rule with two actions
         // can't half-fire and leave the session in a state neither branch intended.
         const decision = evaluateChainGuards(matcher.id, payload.causedBy);
         if (!decision.allow) {
-          skipped.push({
-            matcherId: matcher.id ?? automationName,
-            automationName,
-            event,
-            reason: decision.reason,
-            detail: decision.detail,
-            sessionId: payload.sessionId,
-          });
+          skip(decision.reason, decision.detail, sessionActionTypes);
           continue;
         }
 
-        if (!this.admitUnderRateGate(event, matcher.id ?? automationName)) {
-          skipped.push({
-            matcherId: matcher.id ?? automationName,
-            automationName,
-            event,
-            reason: 'rate-limited',
-            detail: `matcher exceeded ${SESSION_ACTION_RATE_PER_MINUTE} session actions/min`,
-            sessionId: payload.sessionId,
-          });
+        if (!this.admitUnderRateGate(event, matcherId)) {
+          skip(
+            'rate-limited',
+            `matcher exceeded ${SESSION_ACTION_RATE_PER_MINUTE} session actions/min`,
+            sessionActionTypes,
+          );
           continue;
+        }
+
+        // fork(PLAN-030) Phase 2a: the matcher *is* firing, but one of its actions names a
+        // type nothing dispatches. Recorded, not fatal — the healthy actions below still
+        // run, which is the whole distinction between "this rule is dead" (Phase 0, once
+        // per load) and "this fire did three things and refused a fourth".
+        const unknown = unknownActionTypes(matcher.actions);
+        if (unknown.length > 0) {
+          skip('unknown-action', `no handler dispatches: ${unknown.join(', ')}`, unknown);
         }
 
         for (const action of matcher.actions) {
