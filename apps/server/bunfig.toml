@@ -1,0 +1,11 @@
+# Server test config.
+#
+# CI and `bun run test:server` run `cd apps/server && bun test`, and bun reads
+# bunfig.toml from the cwd only — the repo-root bunfig does not apply here.
+# The preload claims a throwaway CRAFT_CONFIG_DIR before ANY test module graph
+# evaluates; a module-scope env assignment in a test file is defeated by ES
+# import hoisting and lets the suite write to the LIVE config dir on a dev
+# machine (LEARNING-056, vorno-internal). A preload is the only hook early
+# enough.
+[test]
+preload = ["../../packages/shared/tests/setup/config-fixture.ts"]

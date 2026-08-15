@@ -11,10 +11,9 @@ import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-// Point CONFIG_DIR at a throwaway temp dir so this file never touches the real
-// store (and so its eval of config/paths doesn't leak the default dir into a
-// sibling test sharing the process). The handler itself reads no config.
-process.env.CRAFT_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'webui-handler-cfg-'));
+// CRAFT_CONFIG_DIR is claimed by the bunfig [test] preload before any module
+// evaluates. A module-scope assignment here would be dead code — ES imports
+// hoist above it (LEARNING-056).
 
 import { createWebUiHandler, resolveStaticPath } from '../handler';
 import { validateSession } from '@craft-agent/server-core/webui';

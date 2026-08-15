@@ -1,0 +1,13 @@
+# Electron test config.
+#
+# CI and `bun run test:webui` run `cd apps/electron && bun test …`, and bun
+# reads bunfig.toml from the cwd only — the repo-root bunfig does not apply
+# here. The preload claims a throwaway CRAFT_CONFIG_DIR before ANY test module
+# graph evaluates. Module-scope `process.env.CRAFT_CONFIG_DIR = …` lines in
+# individual test files are defeated by ES import hoisting: the imports
+# evaluate first, config/paths.ts freezes CONFIG_DIR to the fork default
+# (the LIVE app's config dir on a dev machine), and a green suite silently
+# rewrites the running app's WebUI password (LEARNING-056, vorno-internal).
+# A preload is the only hook early enough.
+[test]
+preload = ["../../packages/shared/tests/setup/config-fixture.ts"]
