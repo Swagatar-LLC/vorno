@@ -61,7 +61,7 @@ When the user references one, read its `SKILL.md` *first* — tool calls are blo
 
 ## CI
 
-- `.github/workflows/validate-pr.yml` — typecheck, shared tests (threshold-based), server tests (strict), doc tools, i18n gates, branding gate, build check. **All seven must pass.**
+- `.github/workflows/validate-pr.yml` — typecheck, shared tests (threshold-based), server tests (strict), webui tests (strict), doc tools, i18n gates, branding gate, build check. **All eight must pass.**
 - `.github/workflows/validate.yml` — disabled (`workflow_dispatch` only). Was upstream's broken Validate.
 
 ## Quick commands
