@@ -12,6 +12,7 @@ related-plans:
   - PLAN-023-hosted-workspace-server.md
   - PLAN-030-session-lifecycle-automation.md
   - PLAN-031-status-invariants-at-the-choke-point.md
+  - PLAN-033-hermetic-config-dir-for-test-runs.md
   # The paused richer-progress / phase-1.5 orchestration plans are archived in
   # the private vorno-internal repo (see ADR-0006).
 ---

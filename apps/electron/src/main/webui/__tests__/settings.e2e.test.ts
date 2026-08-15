@@ -17,9 +17,11 @@
  *                                   on live port switch, teardown targets the
  *                                   served port (not hardcoded 443)
  *
- * CRAFT_CONFIG_DIR is set at module scope (frozen at the config module's first
- * eval; sibling test files share the process, so the file paths used below are
- * derived from the ACTUAL frozen CONFIG_DIR, never guessed).
+ * CRAFT_CONFIG_DIR is claimed by the bunfig [test] preload before any module
+ * evaluates (a module-scope assignment here would be dead code — ES imports
+ * hoist above it, LEARNING-056). Sibling test files share the process, so the
+ * file paths used below are derived from the ACTUAL frozen CONFIG_DIR, never
+ * guessed.
  */
 import { describe, test, expect, beforeAll, afterEach } from 'bun:test';
 import {
@@ -32,8 +34,6 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-
-process.env.CRAFT_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'webui-settings-'));
 
 import { resolvePageWsUrl } from '../../../../../webui/src/adapter/ws-url';
 import type { WebUiHandler } from '../handler';

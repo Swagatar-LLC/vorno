@@ -48,6 +48,14 @@ git log --oneline "$LAST"..origin/main
 
 - [ ] The intended commits are on `main` — verify with `git merge-base --is-ancestor <sha> origin/main`, **not** a PR's "MERGED" badge (see LEARNING-046: a stacked PR can merge into a stale base branch, not `main`).
 - [ ] `bun run test:webui` and `bun run typecheck` green on `main`.
+  - **Hermeticity invariant:** this pre-flight runs on the daily driver — the same
+    machine serving the live WebUI. Test runs must NEVER touch the real config dir
+    (`~/.vorno-agent` → `~/.craft-agent`). The per-package `bunfig.toml` `[test]`
+    preloads claim a throwaway `CRAFT_CONFIG_DIR` and a `config-dir-guard` test
+    reds the run if that ever breaks — if it fires, STOP and check the live
+    `server-config.json` for pollution before anything else (LEARNING-056: a
+    green suite once silently rewrote the live WebUI password and wiped all API
+    keys). Never delete those bunfig preloads or weaken the guard.
 - [ ] Decide the version per the table above.
 
 ## The recipe (on go-ahead)

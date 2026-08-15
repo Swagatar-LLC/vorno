@@ -1,13 +1,12 @@
 import { describe, test, expect, afterEach } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
+import { writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 
-// fork(PLAN-020): CONFIG_DIR freezes at module eval, so set a temp override
-// before importing the config module (whose CONFIG_PATH is derived from it).
-const CONFIG_DIR = mkdtempSync(join(tmpdir(), 'server-cfg-'));
-process.env.CRAFT_CONFIG_DIR = CONFIG_DIR;
+// CRAFT_CONFIG_DIR is claimed by the bunfig [test] preload before any module
+// evaluates, so CONFIG_PATH below resolves inside a throwaway temp dir. A
+// module-scope env assignment here would be dead code — ES imports hoist
+// above it, and this file's former one let the suite rewrite the LIVE
+// server-config.json (LEARNING-056).
 
 import {
   generateApiKey,

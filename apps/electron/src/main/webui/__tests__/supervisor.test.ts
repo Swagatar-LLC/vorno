@@ -2,21 +2,19 @@
  * fork(PLAN-020): WebUiSupervisor state-machine tests.
  *
  * Uses injected test seams (hostFactory + healthProbe) so no real listener or
- * network is stood up. CRAFT_CONFIG_DIR is set before the first (dynamic) import
- * of the config module, whose CONFIG_DIR is frozen at import time.
+ * network is stood up. CRAFT_CONFIG_DIR is claimed by the bunfig [test]
+ * preload before any module evaluates, so CONFIG_DIR freezes to a throwaway
+ * temp dir.
  */
 import { describe, test, expect, beforeAll, afterEach } from 'bun:test';
-import { mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 
-// CONFIG_DIR is frozen at the config module's first eval. Set the override at
-// module scope so the store resolves to a temp dir. Note: because ES imports
-// hoist above this line, and because sibling test files may share the process
-// (`bun test <dir>`), we do NOT read/write the config file by a guessed path —
-// we go through save/loadServerConfig, which always target the module's ACTUAL
-// frozen CONFIG_DIR regardless of import order.
-process.env.CRAFT_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'webui-sup-'));
+// This file writes config through the real save/loadServerConfig, which target
+// the frozen CONFIG_DIR. That is safe ONLY because the bunfig [test] preload
+// claims CRAFT_CONFIG_DIR before any module graph evaluates. A module-scope
+// env assignment here cannot provide that guarantee — ES imports hoist above
+// it, and with sibling files sharing the process the frozen dir was the LIVE
+// config dir, so this suite rewrote the running app's WebUI password while
+// reporting 85 pass / 0 fail (LEARNING-056).
 
 import type { WebUiHandler } from '../handler';
 import type { WebUiHostOptions } from '../host';
