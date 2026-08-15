@@ -33,7 +33,7 @@ There is **no `Workflow`-tool event** in the backend today (the SDK Workflow/`/w
 
 ```mermaid
 graph LR
-  SDK[Claude Agent SDK stream] --> AD=>EA[ClaudeEventAdapter]
+  SDK[Claude Agent SDK stream] --> EA[ClaudeEventAdapter]
   EA --> AE[AgentEvent / SessionEvent]
   AE -->|sessions:event WS| EP[event-processor]
   EP --> MSG[Message array + ActivityGroups]

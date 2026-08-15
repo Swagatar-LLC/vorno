@@ -120,7 +120,7 @@ graph TD
         SUP -->|reads/writes| CFG[(server-config.json)]
         CORE[createTriggerServer core<br/>router · auth · SSE · pool] -->|HostBridge callbacks| AS[AutomationSystem /<br/>SessionManager]
     end
-    subgraph Standalone host — PLAN-013
+    subgraph "Standalone host — PLAN-013"
         BUN[Bun.serve entry<br/>apps/server/src/index.ts] --> CORE2[same core]
         CORE2 --> HAS[headless AutomationSystem +<br/>SessionManager]
     end

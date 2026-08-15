@@ -124,7 +124,7 @@ It cannot, because those sites do not emit the events:
 graph LR
     A[executor calls<br/>sm.setSessionStatus] --> B[persist to<br/>session.jsonl]
     B --> C[notifyFileChange]
-    C -.fs.watch.-> D[ConfigWatcher<br/>onSessionMetadataChange]
+    C -."fs.watch".-> D[ConfigWatcher<br/>onSessionMetadataChange]
     D --> E[automationSystem<br/>.updateSessionMetadata]
     E --> F[diff → emit<br/>SessionStatusChange]
 ```
