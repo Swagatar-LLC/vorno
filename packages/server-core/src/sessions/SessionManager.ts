@@ -106,8 +106,8 @@ import {
   mayCloseSession,
   describeOrigin,
 } from '@craft-agent/shared/statuses'
-import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, sessionActionOutcome, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
-import type { PromptAction as AutomationPromptAction, PendingSessionAction, AutomationCause, SessionActionSkip } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, checkContextAction, sessionActionOutcome, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import type { PromptAction as AutomationPromptAction, PendingSessionAction, AutomationCause, SessionActionSkip, ContextActionRejection } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, buildRuntimeEnvelope, filterAttachmentsForModelInput } from './runtime-config'
 import { validateArchiveTarget } from './archive-guards'
 
@@ -7156,8 +7156,13 @@ export class SessionManager implements ISessionManager {
 
   /**
    * Set the permission mode for a session ('safe', 'ask', 'allow-all')
+   *
+   * `cause` is fork(PLAN-030 Phase 3): this mutation emits an automation metadata event,
+   * so an automation-driven change must carry its provenance or the resulting event looks
+   * user-originated and resets the chain depth (ADR-0021 §3). Every non-automation caller
+   * correctly omits it — a user or an RPC genuinely has no automation ancestor.
    */
-  setSessionPermissionMode(sessionId: string, mode: PermissionMode): void {
+  setSessionPermissionMode(sessionId: string, mode: PermissionMode, cause?: AutomationCause): void {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       const previousManagedMode = managed.permissionMode ?? 'ask'
@@ -7217,7 +7222,7 @@ export class SessionManager implements ISessionManager {
       }, managed.workspace.id)
       // Persist to disk
       this.persistSession(managed)
-      this.syncAutomationSessionMetadata(managed)
+      this.syncAutomationSessionMetadata(managed, cause)
     }
   }
 
@@ -8689,7 +8694,88 @@ export class SessionManager implements ISessionManager {
     if (action.type === 'send-message') {
       await this.sendMessage(sessionId, action.message ?? '')
       await this.appendSessionActionHistory(workspaceRootPath, action, sessionActionOutcome.sendMessage, true, { sessionId })
+      return
     }
+
+    if (action.type === 'apply-context') {
+      const result = this.applyContextProfile(sessionId, action.profile ?? '', action.cause)
+      if (result.rejection) {
+        await this.appendSessionActionHistory(workspaceRootPath, action, result.rejection.outcome, false, { sessionId })
+        return
+      }
+      await this.appendSessionActionHistory(
+        workspaceRootPath,
+        action,
+        sessionActionOutcome.applyContext(action.profile ?? ''),
+        true,
+        { sessionId, applied: result.applied },
+      )
+    }
+  }
+
+  /**
+   * fork(PLAN-030 Phase 3) / ADR-0022 — apply a named context profile to a live session.
+   *
+   * Public and shared, for the same reason `checkStatusAction` is: two hosts execute
+   * session actions (this manager's app-event executor and the desktop webhook executor)
+   * and a second copy of "what applying a profile means" would drift on the first change.
+   * The desktop executor calls straight through to this method rather than re-deriving it
+   * from `updateWorkingDirectory` / `setSessionSources` / `setSessionPermissionMode`.
+   *
+   * Order matters. The permission-mode change is applied **last**, so a profile that
+   * lowers the mode cannot lock its own remaining knobs out, and one that raises it does
+   * not widen permissions for a directory or source set that has not landed yet.
+   *
+   * `applied` names only the knobs that actually changed, so the history record answers
+   * "what did this do" rather than "what did it intend" — the Phase 2 distinction.
+   */
+  applyContextProfile(
+    sessionId: string,
+    profileId: string,
+    cause?: AutomationCause,
+  ): { rejection: ContextActionRejection | null; applied: string[] } {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) {
+      return {
+        rejection: { reason: 'unknown-profile', outcome: 'deferred:target-not-found', note: 'target-not-found' },
+        applied: [],
+      }
+    }
+
+    const workspaceRootPath = managed.workspace.rootPath
+    const decision = checkContextAction(workspaceRootPath, profileId, managed.permissionMode)
+    if (decision.rejection) return { rejection: decision.rejection, applied: [] }
+
+    const profile = decision.profile
+    const applied: string[] = []
+
+    if (profile.workingDirectory !== undefined && profile.workingDirectory !== managed.workingDirectory) {
+      // Validates the path itself and no-ops loudly (a `working_directory_error` event) on
+      // a bad one, so a profile pointing at a deleted checkout does not silently "apply".
+      this.updateWorkingDirectory(sessionId, profile.workingDirectory)
+      if (managed.workingDirectory === profile.workingDirectory) applied.push('workingDirectory')
+    }
+
+    if (profile.sources !== undefined) {
+      // Replace, not merge — see `ContextProfile.sources`. Fire-and-forget because the
+      // source rebuild talks to MCP subprocesses and an action must not block the event
+      // loop behind them; a failure surfaces in the session log, as it does for a
+      // user-driven source change.
+      void this.setSessionSources(sessionId, profile.sources).catch((e) => {
+        sessionLog.error('[Automations] apply-context failed to set sources:', e)
+      })
+      applied.push('sources')
+    }
+
+    if (profile.permissionMode !== undefined && profile.permissionMode !== managed.permissionMode) {
+      // `cause` is load-bearing: this mutation emits an automation metadata event, and
+      // without provenance that event reads as user-originated, resets the chain to
+      // depth 0, and defeats the depth cap (ADR-0021 §3).
+      this.setSessionPermissionMode(sessionId, profile.permissionMode, cause)
+      applied.push('permissionMode')
+    }
+
+    return { rejection: null, applied }
   }
 
   /**

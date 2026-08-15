@@ -158,15 +158,33 @@ export interface SendMessageAction {
   message: string;
 }
 
-/** The three new session-mutation actions. */
-export type SessionAction = SetStatusAction | SetLabelsAction | SendMessageAction;
+/**
+ * Activate a named context profile on an existing session — fork(PLAN-030 Phase 3).
+ *
+ * One action for every context knob, on purpose. The profile named here is resolved
+ * host-side against `context-profiles/config.json`; see `ContextProfile`.
+ */
+export interface ApplyContextAction {
+  type: 'apply-context';
+  session: SessionTargetSelector;
+  /** Id of a profile declared in the workspace's `context-profiles/config.json`. */
+  profile: string;
+}
+
+/** The session-mutation actions. */
+export type SessionAction =
+  | SetStatusAction
+  | SetLabelsAction
+  | SendMessageAction
+  | ApplyContextAction;
 
 export type AutomationAction =
   | PromptAction
   | WebhookAction
   | SetStatusAction
   | SetLabelsAction
-  | SendMessageAction;
+  | SendMessageAction
+  | ApplyContextAction;
 
 // ============================================================================
 // Hook Registration (fork(PLAN-014))
@@ -445,7 +463,7 @@ export interface PendingSessionAction {
   /** Human-readable automation name. */
   automationName?: string;
   /** The action kind. */
-  type: 'set-status' | 'set-labels' | 'send-message';
+  type: 'set-status' | 'set-labels' | 'send-message' | 'apply-context';
   /** Target selector with `$ENV`/`$.jsonpath` already expanded to literals. */
   target: SessionTargetSelector;
   /** set-status */
@@ -457,6 +475,8 @@ export interface PendingSessionAction {
   remove?: string[];
   /** send-message */
   message?: string;
+  /** apply-context: id of a profile in `context-profiles/config.json` (fork(PLAN-030 Phase 3)). */
+  profile?: string;
   /** Correlation to the originating webhook delivery. */
   hookId?: string;
   eventId?: string;

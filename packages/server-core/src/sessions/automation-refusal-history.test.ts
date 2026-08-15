@@ -140,8 +140,16 @@ describe('automation refusals reach history through the live wiring', () => {
     for (let i = 0; i < 9; i++) await emit(statusChange('todo'))
 
     const found = refusals(await historyWhenWritten())
-    expect(found.length).toBeGreaterThan(0)
-    expect(found.every((f) => f.outcome === 'skipped:rate-limited')).toBe(true)
+    // The first *executed* action mutates the session, and this same matcher then refuses
+    // the caused event as skipped:self-trigger — that cascade write lands on its own
+    // schedule (persist → direct emit → guard → fire-and-forget append), so the snapshot
+    // may or may not contain it yet. Asserting `every(rate-limited)` was a race that fast
+    // machines happened to win; the settled history legitimately holds both outcomes.
+    const rateLimited = found.filter((f) => f.outcome === 'skipped:rate-limited')
+    expect(rateLimited.length).toBeGreaterThan(0)
+    expect(
+      found.every((f) => f.outcome === 'skipped:rate-limited' || f.outcome === 'skipped:self-trigger')
+    ).toBe(true)
   })
 
   it('a refusal record carries no `kind`, so the run-history view keeps it', async () => {

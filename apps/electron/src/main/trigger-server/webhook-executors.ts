@@ -31,6 +31,7 @@ import {
   checkStatusAction,
   sessionActionOutcome,
   type AutomationCause,
+  type ContextActionRejection,
   type PendingPrompt,
   type PendingSessionAction,
   type SessionTargetSelector,
@@ -73,6 +74,17 @@ export interface WebhookSessionManager {
   ): Promise<void>
   setSessionLabels(sessionId: string, labels: string[], cause?: AutomationCause): void
   sendMessage(sessionId: string, message: string): Promise<void>
+  /**
+   * fork(PLAN-030 Phase 3). One method rather than the three setters it wraps
+   * (`updateWorkingDirectory` / `setSessionSources` / `setSessionPermissionMode`): the
+   * escalation guard and the apply order are part of what "apply a profile" means, and
+   * exposing the raw setters here would invite this host to reassemble them differently.
+   */
+  applyContextProfile(
+    sessionId: string,
+    profileId: string,
+    cause?: AutomationCause,
+  ): { rejection: ContextActionRejection | null; applied: string[] }
 }
 
 /** Build a session-action history entry (matches the history-store envelope). */
@@ -220,7 +232,29 @@ export function createDesktopWebhookExecutors(sm: WebhookSessionManager): Webhoo
         return { ok: true, sessionId }
       }
 
-      return { ok: true }
+      if (action.type === 'apply-context') {
+        // fork(PLAN-030 Phase 3): straight through to the shared implementation on the
+        // live SessionManager — the profile lookup, the escalation guard, and the outcome
+        // vocabulary all live there, so this host cannot drift from the app-event executor
+        // the way two hand-written copies would.
+        const result = sm.applyContextProfile(sessionId, action.profile ?? '', action.cause)
+        if (result.rejection) {
+          await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, result.rejection.outcome, false, { sessionId }))
+          return { ok: true, note: result.rejection.note }
+        }
+        await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.applyContext(action.profile ?? ''), true, { sessionId, applied: result.applied }))
+        return { ok: true, sessionId }
+      }
+
+      // fork(PLAN-030 Phase 3): this used to be a bare `return { ok: true }` — an action
+      // type this host does not implement was reported as a clean success and left no
+      // trace anywhere, which is the exact silent-dead-rule failure Phase 0 exists to
+      // eliminate, sitting one `if` away from the code that eliminates it. Adding
+      // `apply-context` to `KNOWN_ACTION_TYPES` would have walked into it, since the
+      // handler's `unknownActionTypes` reads that list and would have called it dispatched.
+      // Recording it is the general fix: the *next* action type cannot repeat this.
+      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.unhandledAction(action.type), false, { sessionId }))
+      return { ok: true, note: 'unhandled-action' }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.error(message), false, { sessionId }))

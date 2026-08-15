@@ -470,3 +470,121 @@ describe('the webhook path is unchanged', () => {
     expect(h.actions[0]!.status).toBe('needs-review');
   });
 });
+
+/**
+ * fork(PLAN-030 Phase 3) / ADR-0022 — `apply-context`.
+ *
+ * Driven through the real `WorkspaceEventBus`, not by calling `handleEvent` directly. That
+ * distinction already earned its keep on this exact surface: the Phase 1 rate gate was
+ * silently unreachable behind the bus's own limit, and only a bus-driven test could see
+ * it. The same class of mistake here is an action that computes fine in isolation and
+ * never reaches an executor.
+ */
+describe('apply-context reaches the executor seam', () => {
+  const applyContext = (id: string, profile: string): AutomationMatcher =>
+    ({
+      id,
+      actions: [{ type: 'apply-context', session: { id: 'sess-1' }, profile }],
+    }) as unknown as AutomationMatcher;
+
+  const labelAdd = (label: string) => ({
+    sessionId: 'sess-1',
+    workspaceId: 'ws_test',
+    timestamp: Date.now(),
+    labels: [label],
+    addedLabel: label,
+  });
+
+  test('an apply-context action is delivered on a plain app event', async () => {
+    const h = harness({ LabelAdd: [applyContext('ctx-on-label', 'steward')] });
+
+    await h.bus.emit('LabelAdd', labelAdd('steward'));
+
+    expect(h.actions).toHaveLength(1);
+    expect(h.actions[0]!.type).toBe('apply-context');
+    // The handler resolves the profile *id* only. Reading the profile here would drag
+    // filesystem access into the compute half, and would decide the escalation question
+    // without knowing the target session's current mode — the guard's own input.
+    expect(h.actions[0]!.profile).toBe('steward');
+    expect(h.actions[0]!.target.id).toBe('sess-1');
+    expect(h.skips).toHaveLength(0);
+  });
+
+  test('the profile id expands $.jsonpath from a webhook body', async () => {
+    const h = harness({
+      WebhookReceived: [
+        {
+          id: 'deploy',
+          hook: { slug: 'deploy', tokenHash: 'x' },
+          actions: [{ type: 'apply-context', session: { id: 'sess-1' }, profile: '$.profile' }],
+        } as unknown as AutomationMatcher,
+      ],
+    });
+
+    await h.bus.emit('WebhookReceived', {
+      workspaceId: 'ws_test',
+      timestamp: Date.now(),
+      hookId: 'deploy',
+      hookSlug: 'deploy',
+      eventId: 'deploy:1',
+      headers: {},
+      body: { profile: 'steward' },
+    });
+
+    // Expansion selects *which declared profile*, never an ad-hoc one: an id the workspace
+    // has not declared becomes `rejected:unknown-profile` at the executor.
+    expect(h.actions[0]!.profile).toBe('steward');
+  });
+
+  test('apply-context carries provenance, so it cannot reset the chain depth', async () => {
+    const h = harness({ SessionStatusChange: [applyContext('ctx', 'steward')] });
+
+    await h.bus.emit('SessionStatusChange', statusChange('needs-review', { matcherId: 'other', depth: 2 }));
+
+    expect(h.actions[0]!.cause).toEqual({ matcherId: 'ctx', depth: 3 });
+  });
+
+  test('apply-context is refused by the depth cap like every other session action', async () => {
+    const h = harness({ SessionStatusChange: [applyContext('ctx', 'steward')] });
+
+    await h.bus.emit(
+      'SessionStatusChange',
+      statusChange('needs-review', { matcherId: 'other', depth: MAX_AUTOMATION_CHAIN_DEPTH }),
+    );
+
+    expect(h.actions).toHaveLength(0);
+    expect(h.skips[0]!.reason).toBe('depth-exceeded');
+    expect(h.skips[0]!.matcherId).toBe('ctx');
+  });
+
+  test('a self-feeding apply-context rule terminates', async () => {
+    // Not hypothetical: `apply-context` can change permission mode, which emits a session
+    // metadata event, which is exactly the self-feeding shape the guards exist for.
+    const h = harness({ SessionStatusChange: [applyContext('self', 'steward')] });
+
+    await h.bus.emit('SessionStatusChange', statusChange('needs-review', { matcherId: 'self', depth: 1 }));
+
+    expect(h.actions).toHaveLength(0);
+    expect(h.skips[0]!.reason).toBe('self-trigger');
+  });
+
+  test('a malformed apply-context does not cost its healthy siblings', async () => {
+    const h = harness({
+      LabelAdd: [
+        {
+          id: 'mixed',
+          actions: [
+            // No `session` — the schema union's catch-all admits it, and it throws here.
+            { type: 'apply-context', profile: 'steward' },
+            { type: 'set-labels', session: { id: 'sess-1' }, add: ['ok'] },
+          ],
+        } as unknown as AutomationMatcher,
+      ],
+    });
+
+    await h.bus.emit('LabelAdd', labelAdd('x'));
+
+    expect(h.actions).toHaveLength(1);
+    expect(h.actions[0]!.type).toBe('set-labels');
+  });
+});

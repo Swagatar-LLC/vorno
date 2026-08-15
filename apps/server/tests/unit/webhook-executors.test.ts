@@ -109,6 +109,43 @@ describe('executeWebhookSessionAction: targeting + other kinds', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // fork(PLAN-030 Phase 3) / ADR-0022
+  test('apply-context is deferred — a header write without a live agent would be a lie', async () => {
+    const root = tmpWorkspace();
+    try {
+      const session = await createSession(root, { name: 'w' });
+      // All three profile knobs ARE persisted session-header fields, so this host *could*
+      // write them — which is exactly the trap. Sources and permission mode only take
+      // effect by re-plumbing a live agent, so the header write would record success while
+      // the running session kept its old context.
+      const res = await executeWebhookSessionAction(root, action({
+        type: 'apply-context', target: { id: session.id }, profile: 'steward',
+      }));
+      expect(res.ok).toBe(true);
+      expect(res.note).toBe('host-unreachable');
+      expect(loadSession(root, session.id)?.permissionMode).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('an unimplemented action type is recorded, not reported as a bare success', async () => {
+    // fork(PLAN-030 Phase 3): this fall-through used to `return { ok: true }` with no
+    // history record at all — a dead action reported as a clean run. See the matching
+    // case in the desktop executor tests.
+    const root = tmpWorkspace();
+    try {
+      const session = await createSession(root, { name: 'w' });
+      const res = await executeWebhookSessionAction(root, action({
+        type: 'not-implemented-here' as never, target: { id: session.id },
+      }));
+      expect(res.ok).toBe(true);
+      expect(res.note).toBe('unhandled-action');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('executeWebhookPrompt', () => {

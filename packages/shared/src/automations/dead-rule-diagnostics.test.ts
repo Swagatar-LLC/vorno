@@ -66,11 +66,33 @@ describe('PLAN-030 Phase 0 — dead-rule diagnostics', () => {
 
     it('lists valid types when no confident suggestion exists', () => {
       const issues = scanUnknownActionTypes(
-        { automations: { LabelAdd: [{ actions: [{ type: 'enableSkill' }] }] } },
+        { automations: { LabelAdd: [{ actions: [{ type: 'launchRocket' }] }] } },
         'automations.json',
       );
       expect(issues[0]!.suggestion).toContain('prompt');
       expect(issues[0]!.suggestion).toContain('send-message');
+    });
+
+    // fork(PLAN-030 Phase 3): these five aliases used to map to `null` — "no equivalent
+    // today" — and they are the reason Phase 3 exists. They now all point at
+    // `apply-context`, which is the payoff of the profile indirection: someone reaching
+    // for a per-knob action type is sent to the one action that covers every knob, rather
+    // than to a list of five types that does not contain what they were looking for.
+    // `enableSkill` is included deliberately even though a profile cannot carry skills —
+    // `apply-context` is still the right destination, and the profile schema explains the
+    // skills limitation precisely when they arrive.
+    it.each([
+      'addWorkingDirectory',
+      'setWorkingDirectory',
+      'enableSkill',
+      'enableSource',
+      'applyContext',
+    ])('%s suggests apply-context', (type) => {
+      const issues = scanUnknownActionTypes(
+        { automations: { LabelAdd: [{ actions: [{ type }] }] } },
+        'automations.json',
+      );
+      expect(issues[0]!.suggestion).toBe('Did you mean "apply-context"?');
     });
 
     it('accepts every known action type', () => {
@@ -486,7 +508,7 @@ describe('PLAN-030 Phase 0 — dead-rule diagnostics', () => {
 
     it('a well-formed action of every known type passes both the union and its own schema', () => {
       for (const type of KNOWN_ACTION_TYPES) {
-        const probe = { type, prompt: 'x', url: 'https://e.com', session: { id: 's' }, status: 'todo', add: ['l'], message: 'm' };
+        const probe = { type, prompt: 'x', url: 'https://e.com', session: { id: 's' }, status: 'todo', add: ['l'], message: 'm', profile: 'p' };
         expect(ActionDefinitionSchema.safeParse(probe).success).toBe(true);
         expect(KNOWN_ACTION_SCHEMAS[type].safeParse(probe).success).toBe(true);
       }

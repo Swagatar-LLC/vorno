@@ -44,12 +44,19 @@ const ACTION_TYPE_ALIASES: Record<string, string | null> = {
   addlabels: 'set-labels',
   sendmessage: 'send-message',
   message: 'send-message',
-  // No equivalent today — session context activation is PLAN-030 Phase 3.
-  addworkingdirectory: null,
-  setworkingdirectory: null,
-  enableskill: null,
-  enablesource: null,
-  applycontext: null,
+  // fork(PLAN-030 Phase 3): these were `null` — "no equivalent today" — and they were the
+  // reason the phase exists. Now that `apply-context` is real they all suggest it, which
+  // is the whole point of the profile indirection: someone reaching for a per-knob action
+  // type gets pointed at the one action that covers every knob, instead of at a list that
+  // doesn't contain what they wanted. `enableskill` is included deliberately even though a
+  // profile cannot carry skills — `apply-context` is still the right destination to be
+  // sent to, and the profile schema names the skills limitation precisely when they get
+  // there, which is a far better error than "valid action types are: …".
+  addworkingdirectory: 'apply-context',
+  setworkingdirectory: 'apply-context',
+  enableskill: 'apply-context',
+  enablesource: 'apply-context',
+  applycontext: 'apply-context',
 };
 
 /**

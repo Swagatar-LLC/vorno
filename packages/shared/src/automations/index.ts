@@ -167,8 +167,14 @@ export {
 // fork(PLAN-014): webhook ingest (verify/dedup/rate/queue/receiver) + session actions
 export { SessionActionHandler, type SessionActionHandlerOptions } from './handlers/session-action-handler.ts';
 
-// fork(PLAN-030): shared `set-status` pre-check (history-outcome parity across hosts)
-export { checkStatusAction, type StatusActionRejection } from './session-action-gate.ts';
+// fork(PLAN-030): shared session-action pre-checks (history-outcome parity across hosts)
+export {
+  checkStatusAction,
+  checkContextAction,
+  type StatusActionRejection,
+  type ContextActionRejection,
+  type ContextActionDecision,
+} from './session-action-gate.ts';
 
 // fork(PLAN-030) Phase 2a: the single producer of session-action history outcome strings
 export { sessionActionOutcome } from './session-action-outcome.ts';

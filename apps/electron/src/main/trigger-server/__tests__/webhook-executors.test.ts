@@ -46,6 +46,10 @@ function makeFakeSM(overrides: Partial<WebhookSessionManager> = {}): {
     async sendMessage(id, message) {
       calls.push({ fn: 'sendMessage', args: [id, message] });
     },
+    applyContextProfile(id, profileId, cause) {
+      calls.push({ fn: 'applyContextProfile', args: [id, profileId, cause] });
+      return { rejection: null, applied: ['permissionMode'] };
+    },
     ...overrides,
   };
   return { sm, calls, sessions };
@@ -145,5 +149,59 @@ describe('createDesktopWebhookExecutors', () => {
     const res = await ex.executeSessionAction(ws, action({ type: 'send-message', message: 'x', target: { label: 'ci' } }));
     expect(res.ok).toBe(true);
     expect(calls.some((c) => c.fn === 'sendMessage' && c.args[0] === 'sess-a')).toBe(true);
+  });
+
+  // fork(PLAN-030 Phase 3) / ADR-0022
+  test('apply-context → delegates to the shared SessionManager implementation', async () => {
+    const { sm, calls, sessions } = makeFakeSM();
+    sessions.set('sess-1', { id: 'sess-1' });
+    const ex = createDesktopWebhookExecutors(sm);
+    const res = await ex.executeSessionAction(
+      ws,
+      action({ type: 'apply-context', profile: 'steward', target: { id: 'sess-1' }, cause: { matcherId: 'm1', depth: 1 } }),
+    );
+    expect(res.ok).toBe(true);
+    const call = calls.find((c) => c.fn === 'applyContextProfile');
+    // Delegation rather than reassembly: the escalation guard and the apply order are part
+    // of what "apply a profile" means, and a second copy here would drift from the
+    // app-event executor on the first change.
+    expect(call?.args).toEqual(['sess-1', 'steward', { matcherId: 'm1', depth: 1 }]);
+  });
+
+  test('apply-context → a rejection from the shared gate is reported, not swallowed', async () => {
+    const { sm, sessions } = makeFakeSM({
+      applyContextProfile() {
+        return {
+          rejection: {
+            reason: 'permission-escalation',
+            outcome: 'rejected:permission-escalation:allow-all',
+            note: 'permission-escalation-rejected',
+          },
+          applied: [],
+        };
+      },
+    });
+    sessions.set('sess-1', { id: 'sess-1' });
+    const ex = createDesktopWebhookExecutors(sm);
+    const res = await ex.executeSessionAction(ws, action({ type: 'apply-context', profile: 'yolo', target: { id: 'sess-1' } }));
+    expect(res.ok).toBe(true);
+    expect(res.note).toBe('permission-escalation-rejected');
+  });
+
+  test('an action type this host does not implement is recorded, not reported as success', async () => {
+    // fork(PLAN-030 Phase 3): the fall-through used to be a bare `return { ok: true }` —
+    // a clean success with no history record anywhere, which is precisely the silent
+    // dead-rule failure Phase 0 exists to eliminate. Adding `apply-context` to
+    // `KNOWN_ACTION_TYPES` would have walked into it, because the handler's dead-action
+    // scan reads that list and would have called the action dispatched.
+    const { sm, sessions } = makeFakeSM();
+    sessions.set('sess-1', { id: 'sess-1' });
+    const ex = createDesktopWebhookExecutors(sm);
+    const res = await ex.executeSessionAction(
+      ws,
+      action({ type: 'not-implemented-here' as never, target: { id: 'sess-1' } }),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.note).toBe('unhandled-action');
   });
 });

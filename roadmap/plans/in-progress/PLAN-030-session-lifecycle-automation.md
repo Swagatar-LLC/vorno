@@ -220,6 +220,64 @@ the thing to avoid.
 
 Phase 3 is separable and may be split into its own plan if Phases 0–2 ship first.
 
+#### ✅ Implemented 2026-08-07 — three knobs shipped, skills split to PLAN-032 (ADR-0022)
+
+`apply-context` ships covering **working directory, sources, and permission mode**. The
+fourth knob this section names — skills — is split to **PLAN-032**, on a finding verified
+against the code rather than a scope judgment: **skills are not session state.** There is no
+`skills` field on `SessionHeader`, `ManagedSession`, or `SESSION_PERSISTENT_FIELDS`; no
+`setSessionSkills`; and no RPC case for one. A skill is activated by a `[skill:<slug>]`
+mention *in a message*, parsed by `base-agent.ts` out of the message text.
+`sendMessage`'s `options.skillSlugs` is not an activation path — its only effect is
+pre-enabling a skill's declared sources (`SessionManager.ts:6142`), so wiring a profile to it
+would have produced a knob that looks like it works and does not.
+
+A profile field named `skills` therefore needed a session-state knob invented underneath it
+first, with its own questions (does the preamble go in the user's message or in hidden
+context? every turn or once? how does the user see what is active?). Accepting the field and
+no-oping it was rejected outright: a silently ignored field is the defect this whole plan
+exists to eliminate. Instead the schema **declares `skills` in order to reject it with an
+explanation** — the Phase 0 near-miss discipline applied to the new surface.
+
+Design rulings, all recorded in **ADR-0022**:
+
+- **Strict profile schema**, deliberately *not* following ADR-0021 §4's lenient-union
+  ruling. An unknown action type must not take a whole config down with it; an unknown
+  profile key means someone reached for a knob that does not exist. An invalid file loads
+  **no** profiles — a profile carries a permission mode, so half-accepting one is worse than
+  rejecting it, and `apply-context` then records `rejected:unknown-profile`.
+- **`allowEscalation` on the profile**, mirroring `allowClosed`: lowering permission mode is
+  always allowed, raising it needs a registration-time declaration. It sits on the profile
+  rather than on the action so that the file declaring `"permissionMode": "allow-all"` is
+  the same file that says whether that is authorized. Mutation-proved
+  (`automations/context-action-gate.test.ts`): the shipped comparison is checked
+  exhaustively across all nine mode pairs, then shown to disagree with a `>=` mutant and an
+  inverted mutant on cases the suite actually asserts.
+- **`apply-context` cannot close a session, structurally.** There is no status field on a
+  profile, and permission mode is not an input to either closure rule — PLAN-031's choke
+  point refuses on declared *origin*, and the MCP guard refuses closed categories
+  unconditionally. Neither reads permission mode. Pinned by a test, so a future "just add a
+  status knob" has to argue past it.
+- **The five `null` aliases now suggest `apply-context`** — `addworkingdirectory`,
+  `setworkingdirectory`, `enableskill`, `enablesource`, `applycontext`. `enableskill` is
+  included even though profiles cannot carry skills: `apply-context` is still the right
+  destination, and the profile schema explains the limitation on arrival, which is a better
+  error than "valid action types are: …".
+
+**A latent Phase 0 defect found on the way.** Both webhook executors ended their
+`action.type` chain with a bare `return { ok: true }` — an action type a host did not
+implement was reported as a **clean success with no history record anywhere**, sitting one
+`if` away from the code Phase 0 added to prevent exactly that. Adding `apply-context` to
+`KNOWN_ACTION_TYPES` would have walked straight into it, because the handler's dead-action
+scan reads that list and would have counted the action as dispatched. Both fall-throughs now
+record `skipped:unhandled-action:<type>` — the general fix, so the *next* action type cannot
+repeat it.
+
+`setSessionPermissionMode` gained an optional `cause`: without it the emitted metadata event
+reads as user-originated, resets the chain to depth 0, and defeats the depth cap
+(ADR-0021 §3). No `ConfigWatcher` entry and no cache — the config is read off disk per call
+like `isValidStatusId`, so there is nothing to invalidate.
+
 ## Live workspace remediation (immediate, no code)
 
 Independent of the phases, three rules in Jeff's workspace need attention now:
@@ -277,18 +335,29 @@ validates clean and all 23 working matchers are preserved.
       by all three executors; `apps/server` no longer carries its own copy of the status gate.
 - [ ] Phase 2b: prompt-action tool rejections surfaced in the session transcript rather than
       reading as success (investigation only in this plan).
-- [ ] Phase 3: `apply-context` activates working directory, skills, sources, and permission mode
-      from a named profile.
+- [x] Phase 3: `apply-context` activates working directory, sources, and permission mode from
+      a named profile. **Skills deliberately excluded** — they are not session state (see the
+      Phase 3 implementation note); split to PLAN-032, and the profile schema rejects a
+      `skills` key with that explanation rather than ignoring it.
+- [x] Phase 3: raising a session's permission mode requires `allowEscalation` on the profile;
+      lowering it never does. Mutation-proved, not asserted alone.
+- [x] Phase 3: `apply-context` cannot reach the closure path — a test pins that a profile at
+      `allow-all` leaves the session's status untouched.
+- [x] Phase 3: `addWorkingDirectory` / `setWorkingDirectory` / `enableSkill` / `enableSource` /
+      `applyContext` all suggest `apply-context` instead of mapping to `null`.
+- [x] Phase 3: an action type a host does not implement is recorded as
+      `skipped:unhandled-action:<type>` rather than returning a bare `ok: true`.
 - [ ] Tests added/updated for each phase.
 - [x] `automations.md` documents all five action types, the `session` selector, `allowClosed`
       (with the models-never-close house rule), `WebhookReceived`, the `config-diagnostic`
       history kind, the dispatch-vs-effect distinction, and all three dead-rule classes.
       Source of truth is `apps/electron/resources/docs/automations.md`, which is installed to
       `~/.craft-agent/docs/`.
-- [ ] `automations.md` documents the loop guards (Phase 1) and context profiles (Phase 3).
-      *(Phase 1 done: lifted scoping + all three guards documented. Phase 2a done: the four
-      `skipped:*` outcomes, the prefix taxonomy, and the diagnostic-vs-refusal distinction.
-      Phase 3 pending.)*
+- [x] `automations.md` documents the loop guards (Phase 1) and context profiles (Phase 3) —
+      including the escalation rule, the skills exclusion and why, and the corrected action
+      table (the "Valid on: `WebhookReceived` only" column was stale from Phase 1). Phase 2a
+      separately added the four `skipped:*` outcomes, the prefix taxonomy, and the
+      diagnostic-vs-refusal distinction.
 
 ## Status log
 
@@ -459,3 +528,57 @@ validates clean and all 23 working matchers are preserved.
   **Phase 2b** (prompt-action tool rejections in the transcript) and **Phase 3** (context
   profiles) remain. Phase 3 is still greenfield: nothing named `apply-context` /
   `context-profile` exists in the tree beyond the `applycontext: null` alias.
+- `2026-08-07` — **Phase 3 implemented** (branch `jh/plan-030-phase3-context-profiles`, built
+  off `main` at 36d10b45 and independent of the Phase 2a lane).
+
+  `apply-context` + `context-profiles/config.json` cover **three** of the four knobs this
+  plan names. The fourth, skills, is split to **PLAN-032** — not on scope grounds but on a
+  code finding: skills are not session state at all. `SESSION_PERSISTENT_FIELDS` has no
+  entry, there is no `setSessionSkills`, and activation happens by a `[skill:<slug>]` mention
+  in a *message* that `base-agent.ts` parses out of the text. `options.skillSlugs` looked
+  like the hook and is not — it only pre-enables a skill's declared sources
+  (`SessionManager.ts:6142`), so a profile wired to it would have shipped a knob that reads
+  as working and does nothing. That is the failure mode this plan was written to eliminate,
+  so the schema **names `skills` in order to reject it with an explanation** instead.
+
+  Design recorded in **ADR-0022** (proposed): strict profile schema — deliberately *not*
+  ADR-0021 §4's lenient-union ruling, because an unknown profile key means a knob that does
+  not exist rather than a forward-compatibility problem; an invalid file loads no profiles at
+  all; `allowEscalation` on the profile mirroring `allowClosed`, with lowering permission
+  mode always free and raising it opt-in; and the five `null` aliases repointed at
+  `apply-context`.
+
+  **`apply-context` cannot close a session and this is structural, not guarded** — a profile
+  has no status field, and neither closure rule reads permission mode (PLAN-031's choke point
+  refuses on declared origin; the MCP handler refuses closed categories unconditionally).
+  Escalating to `allow-all` buys an agent nothing on that path. The escalation guard exists
+  because unreviewed escalation is bad on its own terms, and conflating the two would have
+  produced a guard aimed at the wrong thing. A test pins the status-untouched property so a
+  future "just add a status knob to the profile" has to argue past it.
+
+  **A latent Phase 0 defect surfaced.** Both webhook executors ended their `action.type`
+  chain with a bare `return { ok: true }`: an action type the host did not implement was
+  reported as a clean success with no history record anywhere — one `if` away from the
+  machinery Phase 0 added to make exactly that impossible. Adding `apply-context` to
+  `KNOWN_ACTION_TYPES` would have walked into it, because `unknownActionTypes` reads that
+  list and would have counted the action as dispatched. Fixed generally rather than for this
+  action: both hosts now record `skipped:unhandled-action:<type>`.
+
+  Also: `setSessionPermissionMode` gained an optional `cause` (without it the emitted metadata
+  event reads as user-originated and the depth cap stops bounding anything); no
+  `ConfigWatcher` entry and no cache, since the config is read per call like
+  `isValidStatusId`; and the `automations.md` action table's "Valid on: `WebhookReceived`
+  only" column, stale since the Phase 1 flip, was corrected in passing.
+
+  Wire compatibility unaffected — no file under `packages/shared/src/protocol/`, no channel,
+  DTO, or envelope change. `context-profiles/config.json` is a new local-disk config, and
+  `PendingSessionAction` / `AutomationAction` are in-process types.
+
+  Tests: 11 config-loading cases, 12 gate cases (including the mutation proof — exhaustive
+  over all nine mode pairs, then shown to disagree with two mutants on cases the suite
+  asserts), 6 handler cases driven through the real `WorkspaceEventBus`, 10 executor cases,
+  and 3 webhook-executor cases across both hosts.
+
+  **Phase 2 remains.** Phase 3 is done modulo PLAN-032. *(Written from this lane's view,
+  independent of the Phase 2a lane merged just before it — Phase 2a shipped in the entry
+  above; Phase 2b's disposition is reconciled in the closeout, PR #144.)*

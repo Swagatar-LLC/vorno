@@ -149,7 +149,23 @@ export async function executeWebhookSessionAction(rootPath: string, action: Pend
       return { ok: true, sessionId, note: 'host-unreachable' };
     }
 
-    return { ok: true };
+    if (action.type === 'apply-context') {
+      // fork(PLAN-030 Phase 3): same limit as `send-message`, for a sharper reason. The
+      // three knobs a profile sets are all persisted session-header fields, so this host
+      // *could* write them — and that is exactly the trap. Sources and permission mode
+      // only take effect by re-plumbing a live agent (`setSourceServers`,
+      // `agent.setPermissionMode`), which a disk-only host cannot do. Writing the header
+      // would produce a record saying the context was applied while the running session
+      // kept the old one. Deferring is the honest outcome.
+      await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.hostUnreachable, false, { sessionId }));
+      return { ok: true, sessionId, note: 'host-unreachable' };
+    }
+
+    // fork(PLAN-030 Phase 3): was a bare `return { ok: true }` — an unimplemented action
+    // type recorded as a clean success with no trace. See the matching note in the desktop
+    // executor; recording it is what stops the next action type repeating it.
+    await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.unhandledAction(action.type), false, { sessionId }));
+    return { ok: true, sessionId, note: 'unhandled-action' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.error(message), false, { sessionId }));

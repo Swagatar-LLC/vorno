@@ -284,6 +284,131 @@ describe('automation session actions (app events)', () => {
     })
   })
 
+  describe('apply-context (PLAN-030 Phase 3 / ADR-0022)', () => {
+    function seedProfiles(...list: Array<Record<string, unknown>>) {
+      mkdirSync(join(tmpRoot, 'context-profiles'), { recursive: true })
+      writeFileSync(
+        join(tmpRoot, 'context-profiles', 'config.json'),
+        JSON.stringify({ version: 1, profiles: list }),
+        'utf-8'
+      )
+    }
+
+    const applyContext = (profile: string, extra: Partial<PendingSessionAction> = {}): PendingSessionAction => ({
+      matcherId: 'ctx-rule',
+      type: 'apply-context',
+      target: { id: 'sess-1' },
+      profile,
+      event: 'LabelAdd',
+      cause: { matcherId: 'ctx-rule', depth: 1 },
+      ...extra,
+    })
+
+    it('applies a working directory from a named profile', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'ctx-wd-'))
+      seedProfiles({ id: 'steward', workingDirectory: dir })
+      const managed = seedSession('sess-1') as unknown as { workingDirectory?: string }
+      await run(applyContext('steward'))
+      expect(managed.workingDirectory).toBe(dir)
+      expect(outcomes()).toEqual(['apply-context:steward'])
+      rmSync(dir, { recursive: true, force: true })
+    })
+
+    it('lowers the permission mode without any opt-in', async () => {
+      seedProfiles({ id: 'lockdown', permissionMode: 'safe' })
+      const managed = seedSession('sess-1') as unknown as { permissionMode?: string }
+      managed.permissionMode = 'allow-all'
+      await run(applyContext('lockdown'))
+      expect(managed.permissionMode).toBe('safe')
+      expect(outcomes()).toEqual(['apply-context:lockdown'])
+    })
+
+    it('refuses to raise the permission mode without allowEscalation — and records it', async () => {
+      // The guard that makes a label safe to use as a context activator. Without it,
+      // adding a label would be an unreviewed privilege escalation.
+      seedProfiles({ id: 'yolo', permissionMode: 'allow-all' })
+      const managed = seedSession('sess-1') as unknown as { permissionMode?: string }
+      managed.permissionMode = 'safe'
+      await run(applyContext('yolo'))
+      expect(managed.permissionMode).toBe('safe')
+      expect(outcomes()).toEqual(['rejected:permission-escalation:allow-all'])
+      expect(history()[0]!.ok).toBe(false)
+    })
+
+    it('raises the permission mode when the profile declared allowEscalation', async () => {
+      seedProfiles({ id: 'yolo', permissionMode: 'allow-all', allowEscalation: true })
+      const managed = seedSession('sess-1') as unknown as { permissionMode?: string }
+      managed.permissionMode = 'safe'
+      await run(applyContext('yolo'))
+      expect(managed.permissionMode).toBe('allow-all')
+      expect(outcomes()).toEqual(['apply-context:yolo'])
+    })
+
+    it('records an unknown profile id instead of applying nothing in silence', async () => {
+      seedProfiles({ id: 'real', permissionMode: 'safe' })
+      seedSession('sess-1')
+      await run(applyContext('typo'))
+      expect(outcomes()).toEqual(['rejected:unknown-profile:typo'])
+      expect(history()[0]!.ok).toBe(false)
+    })
+
+    it('refuses every profile when the workspace declares none', async () => {
+      seedSession('sess-1')
+      await run(applyContext('steward'))
+      expect(outcomes()).toEqual(['rejected:unknown-profile:steward'])
+    })
+
+    it('history names the knobs that actually changed, not the ones the profile declared', async () => {
+      // The Phase 2 distinction applied here: a profile pointing at a directory that does
+      // not exist has its working-directory change refused by `updateWorkingDirectory`'s
+      // own validation, and `applied` must not claim otherwise.
+      seedProfiles({ id: 'stale', workingDirectory: '/definitely/not/a/real/path', permissionMode: 'safe' })
+      const managed = seedSession('sess-1') as unknown as { permissionMode?: string; workingDirectory?: string }
+      managed.permissionMode = 'ask'
+      await run(applyContext('stale'))
+      const applied = (history()[0]!.sessionAction as { applied?: string[] }).applied
+      expect(applied).toEqual(['permissionMode'])
+      expect(managed.workingDirectory).not.toBe('/definitely/not/a/real/path')
+    })
+
+    it('carries the cause into the permission-mode change', async () => {
+      // Without this the emitted metadata event reads as user-originated, the chain resets
+      // to depth 0, and the depth cap stops bounding anything (ADR-0021 §3).
+      const captured: unknown[] = []
+      ;(sm as unknown as { automationSystems: Map<string, unknown> }).automationSystems.set(tmpRoot, {
+        updateSessionMetadata: (_id: string, _next: unknown, cause: unknown) => {
+          captured.push(cause)
+          return Promise.resolve([])
+        },
+      })
+      seedProfiles({ id: 'lockdown', permissionMode: 'safe' })
+      const managed = seedSession('sess-1') as unknown as { permissionMode?: string }
+      managed.permissionMode = 'ask'
+      await run(applyContext('lockdown'))
+      expect(captured).toEqual([{ matcherId: 'ctx-rule', depth: 1 }])
+    })
+
+    it('cannot close a session — apply-context never touches status', async () => {
+      // Structural, not guarded: there is no status field on a profile, so the closure
+      // rules (PLAN-031 choke point, the MCP handler) are not reachable from this action
+      // even at allow-all. Pinned so a future "just add a status knob" has to argue past it.
+      seedProfiles({ id: 'yolo', permissionMode: 'allow-all', allowEscalation: true })
+      const managed = seedSession('sess-1', 'todo') as unknown as {
+        permissionMode?: string
+        sessionStatus: string
+      }
+      await run(applyContext('yolo'))
+      expect(managed.permissionMode).toBe('allow-all')
+      expect(managed.sessionStatus).toBe('todo')
+    })
+
+    it('records deferred:target-not-found for an unknown session id', async () => {
+      seedProfiles({ id: 'steward', permissionMode: 'safe' })
+      await run(applyContext('steward', { target: { id: 'ghost' } }))
+      expect(outcomes()).toEqual(['deferred:target-not-found'])
+    })
+  })
+
   describe('failure isolation', () => {
     it('one failing action does not cost the others', async () => {
       // Same discipline as the handler's per-action isolation: a single bad rule must not

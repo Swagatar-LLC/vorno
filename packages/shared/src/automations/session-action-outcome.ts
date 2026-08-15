@@ -33,4 +33,9 @@ export const sessionActionOutcome = {
   hostUnreachable: 'deferred:host-unreachable',
   error: (message: string) => `error:${message}`,
   skipped: (reason: SessionActionSkipReason) => `skipped:${reason}`,
+  // fork(PLAN-030 Phase 3) — apply-context joins the vocabulary under the same rule.
+  applyContext: (profile: string) => `apply-context:${profile}`,
+  unknownProfile: (profile: string) => `rejected:unknown-profile:${profile}`,
+  permissionEscalation: (mode: string) => `rejected:permission-escalation:${mode}`,
+  unhandledAction: (type: string) => `skipped:unhandled-action:${type}`,
 } as const;
