@@ -77,6 +77,12 @@ git log --oneline "$LAST"..origin/main
    Sanity-check the diff is exactly one line per file (no formatting churn):
    `git diff --numstat | grep -v release-notes`.
 
+   **Then run `bun install` and commit the `bun.lock` delta with the bump.** The lockfile
+   mirrors every workspace package's version; bumping without reinstalling leaves it stale,
+   nothing fails, and it persists until someone notices (the v0.15.0 cut shipped 14 stale
+   entries, fixed a release later in PR #144). Expect exactly one changed line per bumped
+   package in `bun.lock`.
+
 3. **PR → CI → merge.** Branch `release/{version}`, commit
    `chore(release): v{version} — <headline>`, open a PR to `main`, wait for all CI
    checks green. Merge with a **merge commit** (not squash) so there's a stable commit
