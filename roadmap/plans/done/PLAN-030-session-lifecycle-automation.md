@@ -1,11 +1,11 @@
 ---
 id: PLAN-030
 title: Session lifecycle automation — loud diagnostics, event-triggered session actions, context profiles
-status: in-progress
+status: done
 direction: DIR-03
 owner: jh
 created: 2026-08-04
-updated: 2026-08-07
+updated: 2026-08-14
 related:
   - ADR-0021
   - ADR-0022
@@ -658,3 +658,11 @@ validates clean and all 23 working matchers are preserved.
   fix: **`bun.lock` on `main` is stale** — all 14 workspace entries still read `0.14.0` while
   `package.json` reads `0.15.0`, so the v0.15.0 bump never ran `bun install`. Nothing fails, which
   is why it persists.
+- `2026-08-14` — moved from in-progress to done: all four phases merged to `main` — #142
+  (Phase 2a) at `1809d446`, #143 (Phase 3) at `47faf85d`, #144 (closeout + the `bun.lock` sync)
+  at `5b928f9e`, each verified with `git merge-base --is-ancestor` per LEARNING-046. #143 was
+  rebased over Phase 2a and its resolution folded the new `apply-context` outcome strings into
+  Phase 2a's single producer (`sessionActionOutcome`), so the two lanes converge on one
+  vocabulary; all eight gates re-ran green post-rebase. The rebase run also exposed a snapshot
+  race in the Phase 2a rate-gate test (green on fast machines only) — fixed on the #143 branch,
+  recorded as LEARNING-055 (vorno-internal). ADR-0022 remains `proposed`, awaiting Jeff.
