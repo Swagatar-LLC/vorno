@@ -1,0 +1,12 @@
+# Server-core test config.
+#
+# The last leg of `bun run test:webui` runs `cd packages/server-core && bun
+# test`, and bun reads bunfig.toml from the cwd only — the repo-root bunfig
+# does not apply here. Some tests transitively import
+# @craft-agent/shared/config/paths (e.g. token-entropy → headless-start),
+# whose ensureConfigDirReady() creates/migrates the config dir at module-eval
+# — against the LIVE config dir on a dev machine when CRAFT_CONFIG_DIR is
+# unset (LEARNING-056, vorno-internal). The preload claims a throwaway dir
+# before any module graph evaluates.
+[test]
+preload = ["../shared/tests/setup/config-fixture.ts"]
