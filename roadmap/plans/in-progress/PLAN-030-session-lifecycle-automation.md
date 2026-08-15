@@ -5,10 +5,13 @@ status: in-progress
 direction: DIR-03
 owner: jh
 created: 2026-08-04
-updated: 2026-08-05
+updated: 2026-08-07
 related:
   - ADR-0021
+  - ADR-0022
   - PLAN-014
+  - PLAN-031
+  - PLAN-032
 blocked-by: []
 ---
 
@@ -333,8 +336,12 @@ validates clean and all 23 working matchers are preserved.
       show an em-dash for all of them.
 - [x] Phase 2a: the outcome vocabulary has exactly one producer (`sessionActionOutcome`), shared
       by all three executors; `apps/server` no longer carries its own copy of the status gate.
-- [ ] Phase 2b: prompt-action tool rejections surfaced in the session transcript rather than
-      reading as success (investigation only in this plan).
+- [x] Phase 2b: investigated and closed with **no code change** — prompt-action tool rejections
+      *are* already surfaced, in the spawned session's transcript (the failed call and its
+      verbatim `[ERROR]` result are persisted messages). The history row is a dispatch ledger
+      and cannot honestly carry the effect; every mechanical bridge misclassifies healthy
+      probe→fail→retry runs. Recorded as LEARNING-052; the `ok` = dispatched, not achieved
+      semantics are documented in `automations.md`. See the 2026-08-07 status-log entry.
 - [x] Phase 3: `apply-context` activates working directory, sources, and permission mode from
       a named profile. **Skills deliberately excluded** — they are not session state (see the
       Phase 3 implementation note); split to PLAN-032, and the profile schema rejects a
@@ -347,17 +354,21 @@ validates clean and all 23 working matchers are preserved.
       `applyContext` all suggest `apply-context` instead of mapping to `null`.
 - [x] Phase 3: an action type a host does not implement is recorded as
       `skipped:unhandled-action:<type>` rather than returning a bare `ok: true`.
-- [ ] Tests added/updated for each phase.
+- [x] Tests added/updated for each phase. Phase 0 22 cases, Phase 1 47, Phase 2a 23 (including
+      the pipeline suite that starts from a real `automations.json`), Phase 3 42. Phase 2b is
+      investigation-only and adds none by design.
 - [x] `automations.md` documents all five action types, the `session` selector, `allowClosed`
       (with the models-never-close house rule), `WebhookReceived`, the `config-diagnostic`
       history kind, the dispatch-vs-effect distinction, and all three dead-rule classes.
       Source of truth is `apps/electron/resources/docs/automations.md`, which is installed to
       `~/.craft-agent/docs/`.
-- [x] `automations.md` documents the loop guards (Phase 1) and context profiles (Phase 3) —
-      including the escalation rule, the skills exclusion and why, and the corrected action
-      table (the "Valid on: `WebhookReceived` only" column was stale from Phase 1). Phase 2a
-      separately added the four `skipped:*` outcomes, the prefix taxonomy, and the
-      diagnostic-vs-refusal distinction.
+- [x] `automations.md` documents the loop guards (Phase 1), the Phase 2a refusal vocabulary
+      (the four `skipped:*` outcomes, the prefix taxonomy, the diagnostic-vs-refusal
+      distinction), and context profiles (Phase 3) — including the escalation rule, the skills
+      exclusion and why, and the corrected action table (the "Valid on: `WebhookReceived` only"
+      column was stale from Phase 1). Written across #142 and #143; the two edits are to
+      disjoint sections but land in one file, so whichever merges second resolves the other's
+      hunk.
 
 ## Status log
 
@@ -579,6 +590,71 @@ validates clean and all 23 working matchers are preserved.
   asserts), 6 handler cases driven through the real `WorkspaceEventBus`, 10 executor cases,
   and 3 webhook-executor cases across both hosts.
 
-  **Phase 2 remains.** Phase 3 is done modulo PLAN-032. *(Written from this lane's view,
-  independent of the Phase 2a lane merged just before it — Phase 2a shipped in the entry
-  above; Phase 2b's disposition is reconciled in the closeout, PR #144.)*
+  **Phase 2 remains.** Phase 3 is done modulo PLAN-032.
+- `2026-08-07` — **Closeout: all four phases implemented; the plan stays `in-progress` because
+  two of them have not merged.**
+
+  | Phase | What shipped | PR | State |
+  |---|---|---|---|
+  | 0 | Dead-rule diagnostics, near-miss suggestions, `config-diagnostic` history | [#136](https://github.com/Swagatar-LLC/vorno/pull/136) | merged |
+  | 1 | Session-action executor, `causedBy` provenance, three loop guards, the flip | [#139](https://github.com/Swagatar-LLC/vorno/pull/139) | merged |
+  | 2a | `skipped:*` refusal history + the renderer fix + one outcome producer | [#142](https://github.com/Swagatar-LLC/vorno/pull/142) | **open**, 8/8 CI green |
+  | 2b | Investigation; no code change (LEARNING-052) | — | closed |
+  | 3 | `apply-context` + context profiles, ADR-0022, PLAN-032 split | [#143](https://github.com/Swagatar-LLC/vorno/pull/143) | **open**, 8/8 CI green |
+
+  The folder is the status, so it does not move: `done/` means *code landed*, and half of this
+  plan's code is sitting in review. Advance with `[skill:roadmap-plan-advance] PLAN-030 done`
+  once #142 and #143 are both merged — verify with `git merge-base --is-ancestor <sha>
+  origin/main` rather than the `MERGED` badge (LEARNING-046).
+
+  **Merge-order note.** #142 and #143 were built as independent lanes off `main` at `36d10b45`,
+  and both edit `session-action-gate.ts`, `session-action-handler.ts`, `SessionManager.ts`,
+  `automations.md`, both webhook executors, and this file. Whichever merges second will conflict
+  and must re-run the full eight-gate set after resolution — a clean textual merge of two
+  independently-green branches is not evidence either still passes. This closeout branch is a
+  third editor of this file; its version is the **union** of both by construction, so resolve in
+  its favour.
+
+  **Phase 2b closed with no code change**, deliberately. The prompt-action refusal is already
+  recorded losslessly in the spawned session's transcript; the history row is a dispatch ledger
+  and `ok` means *dispatched*, not *achieved*. Every mechanical bridge from "tool refused inside
+  the turn" to "history row" misclassifies healthy probe→fail→retry runs, and the alternative —
+  making the guard emit upward — modifies `set-session-status.ts`, which is byte-identical to
+  upstream. The invariant kept: **history rows record only decisions the automation layer itself
+  made or structurally observed.** The live defect that motivated the investigation
+  (`next-step-spawn-followup`) was a *misconfiguration*, fixed 2026-08-04. LEARNING-052.
+
+  **Guard verification (read from the code, not from the phase reports).** All three untouchables
+  confirmed unchanged on both open branches:
+
+  - `packages/session-tools-core/src/handlers/set-session-status.ts` and its
+    `set-session-status.test.ts` — not in either branch's changed-file set. The unconditional
+    closed-category refusal is intact.
+  - PLAN-031's choke point, `packages/shared/src/statuses/origin.ts` — not in either branch's
+    changed-file set.
+  - Phase 1's guards — `evaluateChainGuards` is byte-identical (self-trigger checked first and
+    unconditionally, then `depth >= MAX_AUTOMATION_CHAIN_DEPTH`), `MAX_AUTOMATION_CHAIN_DEPTH`
+    is still 3, `SESSION_ACTION_RATE_PER_MINUTE` is still 5 against `DEFAULT_RATE_LIMIT = 10`
+    (`automations/event-bus.ts:164`), and `causation.test.ts` — the suite pinning that ordering
+    — is unmodified on both branches. Phase 2a's only edit to `causation.ts` is additive: a
+    fourth `SessionActionSkipReason` (`unknown-action`) and an `actionTypes` field on
+    `SessionActionSkip`.
+
+  **Wire compatibility: not touched.** Verified by diffing both branches against `origin/main` —
+  no file under `packages/shared/src/protocol/`, no channel, DTO, or envelope change. The
+  history JSONL and `context-profiles/config.json` are local disk; `BaseEventPayload`,
+  `PendingSessionAction`, and `AutomationAction` are in-process types in a fork-owned layer with
+  no upstream analog; the RPC `HistoryEntry` addition is additive on a fork-owned channel. No
+  entry in `roadmap/upstream/compatibility.md` applies and none needs amending.
+
+  **LEARNINGs earned by this plan** (all in `vorno-internal`, indexed): 049 (mutation and event
+  separated by a file watcher), 050 (a defaults generator nobody checks), 051 (a guard above an
+  existing ceiling is dead code), 052 (`ok` is a dispatch fact), **053** (an options field named
+  like the knob is not the activation path — `skillSlugs` only pre-enables sources), **054** (a
+  dispatch chain ending in a bare `return { ok: true }` reports unimplemented as success).
+
+  **Follow-ups leaving this plan:** PLAN-032 (session-sticky skills, `planned/`, ships on #143);
+  ADR-0022 is `proposed` and needs Jeff's acceptance call. Unrelated find worth its own one-line
+  fix: **`bun.lock` on `main` is stale** — all 14 workspace entries still read `0.14.0` while
+  `package.json` reads `0.15.0`, so the v0.15.0 bump never ran `bun install`. Nothing fails, which
+  is why it persists.
