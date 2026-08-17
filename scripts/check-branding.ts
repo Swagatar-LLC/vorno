@@ -109,6 +109,11 @@ function isAllowed(relPath: string, ruleId: string): boolean {
 
 function isCommentLine(line: string): boolean {
   const t = line.trimStart();
+  // Markdown bold (`**Product documentation:** …`) is NOT a comment — it is prompt/UX
+  // text inside a template literal. JSDoc continuation lines are `* text`, never `** text`,
+  // so excluding the `**` case is safe and closes a real blind spot: upstream v0.12.0 landed
+  // a brand-visible docs pointer in the system prompt that this heuristic silently skipped.
+  if (t.startsWith('**')) return false;
   return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t.startsWith('#') || t.startsWith('<!--');
 }
 
