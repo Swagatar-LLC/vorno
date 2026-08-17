@@ -74,8 +74,10 @@ const RULES: Rule[] = [
   },
   {
     id: 'upstream-domain',
-    re: /craft\.do/i,
-    description: 'Upstream craft.do endpoint — import SERVICE_BASE_URL / DOCS_URL / UPDATE_MANIFEST_BASE_URL / OAUTH_RELAY_* from the branding module',
+    // Upstream migrated agents.craft.do -> thecraftagents.com in v0.12.0; both must be caught
+    // so a sync cannot silently reintroduce a hardcoded upstream endpoint.
+    re: /craft\.do|thecraftagents\.com/i,
+    description: 'Upstream endpoint (craft.do / thecraftagents.com) — import SERVICE_BASE_URL / DOCS_URL / UPDATE_MANIFEST_BASE_URL / OAUTH_RELAY_* from the branding module',
   },
   {
     id: 'lukilabs',

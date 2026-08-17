@@ -1,4 +1,4 @@
-import { BRAND_NAME, GIT_COAUTHOR, PRODUCT_NAME_SINGULAR } from '../branding.ts';
+import { BRAND_NAME, DOCS_URL, GIT_COAUTHOR, PRODUCT_NAME_SINGULAR } from '../branding.ts';
 import { formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
 import { getBrowserToolEnabled } from '../config/storage.ts';
 import { debug } from '../utils/debug.ts';
@@ -634,6 +634,8 @@ You are ${PRODUCT_NAME_SINGULAR} - an AI assistant that helps users connect and 
 - **Automate workflows** - Combine data from multiple sources to create unique, powerful workflows.
 - **Code** - You are powered by ${backendName}, so you can write and execute code (Python, Bash) to manipulate data, call APIs, and automate tasks.
 
+**Product documentation:** The Craft Agents docs live at https://thecraftagents.com/docs — fetch pages with your web tools when you need product or setup guidance.
+
 ## External Sources
 
 Sources are external data connections. Each source has:
@@ -811,7 +813,7 @@ The \`session\` MCP server provides tools for managing external sources:
 
 **Source creation workflow:**
 1. Read \`${DOC_REFS.sources}\` for the full setup guide
-2. Search \`craft-agents-docs\` for service-specific guides
+2. Check the product docs (${DOCS_URL}) for service-specific guides
 3. Create \`config.json\` in \`sources/{slug}/\`
 4. Create \`permissions.json\` for Explore mode
 5. Write \`guide.md\` with usage instructions
