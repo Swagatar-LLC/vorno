@@ -42,10 +42,17 @@ on a field the API does not return is decorative until someone finds the field s
 That is the primary argument for this ADR. The token savings below are the lesser argument, and
 are stated second deliberately.
 
-As of 2026-08-17 the workspace still contains exactly **one** unarchived flagged session
-(`260206-sunny-stone`, "Self-Hosted Infrastructure"). It is protected today *only* by a
-predicate the API cannot express — the sweeper's out-of-band disk read. Remove that workaround
-without shipping this API and the session is archived on the next run.
+**Repaired 2026-08-17, Jeff-directed:** both sessions were unarchived. The workspace now holds
+**three** flagged sessions and **zero** flagged-and-archived ones, restoring the invariant rule
+2d was always supposed to hold.
+
+That repair raises the stakes rather than closing the issue. All three flagged sessions —
+`260206-sunny-stone`, `260607-lively-sparrow`, `260708-coral-tide` — are now unarchived, and
+the last two are `status: done` and older than the sweeper's 3-day cutoff, so they match every
+condition it archives on **except** the flag. They are protected today *only* by a predicate the
+API cannot express: the sweeper's out-of-band disk read. Retire that workaround before this API
+ships and the next 05:20 run re-archives the exact two sessions we just restored. This is why
+PLAN-037 sequences the workaround removal last.
 
 ### The measured cost, and one correction to the received framing
 
@@ -116,13 +123,22 @@ human-facing surface filters archived sessions. The agent-facing tool is the out
 
 ### A semantic detail that must not be missed
 
-`isArchived` is **never written as `false`**. Measured across all 1,417 headers: present-and-`true`
-on 1,313, and **absent** on the other 104. Same for `archivedAt`. `sessionStatus` is absent on
-273; `labels` on 319.
+`isArchived` has **three** on-disk states, not two, and one of them is easy to miss.
 
-Any predicate design that treats `isArchived: false` as "the stored value equals false" matches
-**zero** sessions. Absence must normalize to `false` for booleans, and predicates must
-distinguish "absent" from "explicitly set" where that distinction matters.
+Measured 2026-08-17 23:00 EDT, before any repair: present-and-`true` on 1,313 headers, and
+**absent** on the other 104 — never `false`. A predicate treating `isArchived: false` as "the
+stored value equals false" would have matched **zero** sessions.
+
+Re-measured 23:45 EDT, after unarchiving `260607-lively-sparrow` and `260708-coral-tide`
+(Jeff-directed): `true` on 1,311, **absent** on 105, and **explicit `false` on 2**. Unarchiving
+*writes* `isArchived: false`; it does not delete the key. So the field is absent until a session
+is first archived, and boolean thereafter.
+
+Both absence and explicit `false` must normalize to false, and the tests must cover **both**
+representations. A test written against absence alone passes on 105 sessions and silently
+mishandles every session that was ever unarchived — a population that starts at 2 and grows
+every time someone restores something. Same for `archivedAt`, which is dropped on unarchive.
+`sessionStatus` is absent on 273 headers; `labels` on 319.
 
 ### Two live automations depend on the on-disk header format
 
@@ -138,7 +154,7 @@ production automations are pinned to it. That coupling is the debt this work exi
 **Session query becomes a composable, conjunctive predicate surface over an explicitly
 allowlisted contract projection — and archived sessions leave the default result set.**
 
-Five parts.
+Six parts.
 
 ### 1. A flat AND-map of field predicates, not a query DSL
 
@@ -178,48 +194,84 @@ both is an error rather than a silent precedence rule.
 (`recent` → `desc`). Orchestrators get oldest-first for drains and newest-first for triage
 without a new sort vocabulary.
 
-### 3. An explicit allowlist projection — never a header spread
+### 3. Caller-shaped output over a three-tier allowlist — never a header spread
 
-The returned record is an **enumerated allowlist**, never `...header`. The contract set:
+The returned record is always an **enumerated allowlist**, never `...header`. But the allowlist
+is split into three tiers rather than one flat contract set, and the caller shapes which of the
+first two it gets:
 
-`id`, `name`, `status`, `labels`, `createdAt`, `lastMessageAt`, `lastUsedAt`, `isArchived`,
-`isFlagged`, `hidden`, `projectId`, `parentSessionId`, `taskSlug`, `taskRunId`, `taskNodeId`,
-`triggeredBy`, `messageCount`, `permissionMode`, `model`, `llmConnection`.
+```ts
+fields?: SessionField[]   // omitted = default projection
+```
 
-Explicitly **internal, not contract, not projected, not filterable**: `sdkSessionId`, `sdkCwd`,
+**Tier 1 — default projection** (returned when `fields` is omitted). Today's six, plus the two
+that make rule 2d enforceable:
+
+`id`, `name`, `status`, `labels`, `createdAt`, `projectId`, **`isArchived`**, **`isFlagged`**
+
+**Tier 2 — requestable via `fields`**: tier 1 plus `archivedAt`, `kanbanColumn`, `lastMessageAt`,
+`lastUsedAt`, `parentSessionId`, `taskSlug`, `taskRunId`, `taskNodeId`, `triggeredBy`,
+`messageCount`, `permissionMode`, `model`, `llmConnection`, `hidden`.
+
+**Tier 3 — never exposed, not requestable at any value of `fields`**: `sdkSessionId`, `sdkCwd`,
 `workspaceRootPath`, `shareEditToken`, `sharedId`, `sharedUrl`, `branchFrom*`,
 `pendingPlanExecution`, `transferredSessionSummary*`, `connectionLocked`, `enabledSourceSlugs`,
 `taskDraft`, `lastReadMessageId`, `lastFinalMessageId`, `preview`, `workingDirectory`,
-`tokenUsage`, `archivedAt`, `kanbanColumn`.
+`tokenUsage`.
 
-The allowlist is a **security control, not a style preference**. `shareEditToken` is a declared
-persistent field (`types.ts:40`); it happens to be unpopulated in this workspace today, but a
-`...header` spread would publish it to every agent the moment a session is shared with an edit
-token. `preview` and `workingDirectory` are conversation and filesystem content and stay out of
-a bulk-listing surface on the same principle.
+**`fields` is validated against tier 2, and an unknown or tier-3 name is an error — never a
+silent passthrough.** This is the whole security property. A `fields` implementation that picks
+keys off the header by name is precisely the leak the allowlist exists to prevent:
+`shareEditToken` is a declared persistent field (`types.ts:40`), unpopulated in this workspace
+today, but a name-indexed projection would hand it to any agent that guessed the key the moment
+a session is shared with an edit token. `preview` and `workingDirectory` are conversation and
+filesystem content and stay in tier 3 on the same principle.
 
-`archivedAt` and `kanbanColumn` are held back deliberately as *reviewable* candidates: neither
-has a named consumer yet, and a contract is easier to widen than to narrow.
+**Why shaping rather than one wider contract set.** This ADR originally proposed a flat 20-field
+contract and held `archivedAt` and `kanbanColumn` back as reviewable. Jeff's answer — that both
+are genuinely useful, and that the surface wants a shaping option — is the better resolution,
+and it commits us to *less*, not more:
 
-### 4. Archived sessions are excluded by default
+- The default payload stays small. Agent context is the scarce resource on this surface; a
+  bulk listing that returns 20 fields per row when the caller wanted 3 burns it for nothing.
+- We do not have to settle the contract-set argument now. Tier 2 is the set of things a caller
+  *may ask for*, and widening it later is additive and cheap.
+- The `archivedAt` / `kanbanColumn` question dissolves: both go in tier 2, cost nobody anything
+  when unrequested, and are there when a consumer appears.
 
-`where.isArchived` defaults to `false`. Callers wanting history pass `isArchived: true`, or
-`{ in: [true, false] }` for both.
+Honest limitation: `fields` does not abolish the contract question, it relocates it. Tier 2 is
+still a commitment, and tier 3 is still a judgement call that has to be defended per field. What
+changes is that the *default* stops being the place where that argument has to be won.
 
-**This breaks someone, and the ADR says which.** A caller that today enumerates archived
-sessions by not filtering — a human asking "find that session from June", or any historical
-search — gets 104 results instead of 1,417 and must opt in. Anyone relying on the old default
-gets a *quiet change in results*, which is the bad kind.
+### 4. The safe archived default is scoped to the new surface, not applied globally
 
-The alternative breaks someone too, and worse. Keeping archived sessions in the default set
-leaves a default that is wrong for **93%** of the corpus (1,313 / 1,417) and makes correctness
-opt-in — every future sweep author must independently rediscover the trap. One choice fails
-loudly at the call site of a query someone is actively writing; the other fails silently, in
-production, at 05:20, on a rule nobody re-reads. **Prefer the loud failure.**
+**Inside `where`, `isArchived` defaults to `false`. Outside it, nothing changes.**
+
+- A call that passes `where` at all and omits `isArchived` excludes archived sessions. Callers
+  wanting history pass `isArchived: true`, or `{ in: [true, false] }` for both.
+- A call using only the legacy arguments — `status`, `label`, `search`, `limit`, `offset`,
+  `sortBy` — or no arguments at all behaves **exactly as it does today**, archived rows
+  included.
+
+This ADR originally proposed flipping the default globally, and that was wrong. The flip is by
+definition non-additive: it changes what an unchanged call returns. Its failure mode is also the
+worst available one — a historical search ("find that session from June") returns an empty set,
+and an empty set is indistinguishable from *no such session ever existed*. The caller is not
+told they were filtered; they conclude the record is gone.
+
+Scoping the default to `where` gets nearly all of the correctness win at zero compatibility
+cost, because **`where` is new syntax — every caller that uses it is being written after this
+decision lands**. New consumers get the safe default automatically. Existing consumers, known
+and unknown, are untouched. No deprecation cycle is needed because nothing is deprecated.
+
+The residual cost, stated plainly: a bare `list_sessions()` keeps a default that is wrong for
+**92%** of the corpus (1,311 / 1,418) indefinitely. That is the price of strict additivity, and
+it is the right price here — the mitigation is the tool description steering callers to `where`,
+not a behaviour change nobody asked for. Revisit only if upstream's own contract moves (§6).
 
 Neither live automation regresses: `session-archive-sweeper` no longer calls `list_sessions` at
-all, and `vshare-reaper` **improves** — its label query drops from 143 rows across two paginated
-calls to 1 row in one call, with the same final work list.
+all, and `vshare-reaper` **improves** once ported to `where` — its label query drops from 143
+rows across two paginated calls to 1 row in one call, with the same final work list.
 
 ### 5. Filter before projecting, not after
 
@@ -228,6 +280,23 @@ calls to 1 row in one call, with the same final work list.
 regardless of how selective the query is. The predicate evaluation must move ahead of
 `managedToSession`, so a query matching 9 of 1,417 sessions materializes 9 records.
 
+### 6. Wire compatibility: additive only, revisit if upstream moves
+
+`list_sessions` is an agent-facing tool schema, and the realistic assumption is that it **is** a
+compatibility surface in practice even where `roadmap/upstream/compatibility.md` does not name
+it — silently, via any consumer we do not control.
+
+Every part of this decision is therefore additive: `where`, `sortDir` and `fields` are new
+optional arguments; `isArchived`/`isFlagged` are new keys on a response object, which existing
+callers ignore; no existing argument changes meaning; no existing call changes its result. There
+is no version bump and no parallel endpoint.
+
+**A second, parallel query API is explicitly not built today.** If a future requirement genuinely
+collides with the existing shape — a return type that cannot be reached additively, or an
+upstream contract change — that is when a separate surface earns its place. Building one now to
+pre-empt a collision that has not happened is complexity adopted speculatively. Revisit this
+section if upstream changes the `list_sessions` contract; until then, YAGNI.
+
 ## Consequences
 
 ### Positive
@@ -235,29 +304,40 @@ regardless of how selective the query is. The predicate evaluation must move ahe
 - Rule 2d becomes enforceable for the first time. `isFlagged` is expressible, so "never archive
   a flagged session" stops being decorative.
 - The ~100:1 redundant-write ratio collapses at the source rather than per-consumer.
-- The on-disk header stops being a de-facto public API; the contract set becomes the thing
-  automations depend on, and `SESSION_PERSISTENT_FIELDS` regains its freedom to change.
+- The on-disk header stops being a de-facto public API; tiers 1–2 become the thing automations
+  depend on, and `SESSION_PERSISTENT_FIELDS` regains its freedom to change.
 - Orchestration queries become expressible in one call: "unarchived children of task X, oldest
   first", "sessions this automation spawned that are still `needs-review`".
-- The allowlist closes a latent `shareEditToken` exposure before it can ever open.
+- The tier-3 allowlist closes a latent `shareEditToken` exposure before it can ever open.
+- **Nothing breaks.** Every change is additive; no existing call returns a different result.
+  There is no migration, no deprecation window, and no release note that begins "if you were
+  relying on…".
+- `fields` makes the default payload *smaller* than a fixed 20-field contract would, which
+  matters because agent context is the scarce resource on a bulk-listing surface.
 
 ### Negative
 
-- **A default-behaviour change that fails quietly for one class of caller.** Historical search
-  silently narrows. Mitigated by release notes and a one-line tool-description change, not by a
-  deprecation cycle — the surface has no external consumers.
-- A contract set is a commitment. Twenty fields become things we cannot remove without an ADR.
-  This is the intended trade — the alternative is the status quo, where 40+ fields are
-  *accidentally* committed via the header.
-- `status`/`label` sugar coexisting with `where` is two ways to say one thing. Accepted for
-  backwards compatibility; the mutual-exclusion error keeps it from becoming a precedence puzzle.
-- More surface to test. The absence-normalization rule alone needs its own cases.
+- **The bare-call default stays wrong.** `list_sessions()` with no `where` keeps returning
+  archived sessions — wrong for 92% of the corpus, indefinitely. Strict additivity buys
+  compatibility by leaving the worst default in place, and the only mitigation is documentation,
+  which has already failed once here.
+- **Two ways to spell the same query.** `status` vs `where.status`, and now a legacy call path
+  with different archived semantics from the `where` path. That divergence is a real
+  comprehension cost and it is permanent. The mutual-exclusion error stops it becoming a
+  precedence puzzle, but it cannot make the surface feel like one idea.
+- Tier 2 is still a commitment — ~20 fields we cannot remove without an ADR. Better than the
+  status quo, where 40+ are *accidentally* committed via the header, but not free.
+- `fields` adds a validation path that is security-load-bearing. A lazy implementation that
+  name-indexes the header is a leak, so this needs a test that tries to request a tier-3 field.
+- More surface to test: absence-vs-`false` normalization, tier enforcement, and the
+  `where`-scoped default each need their own cases.
 
 ### Neutral
 
 - Watch for the first genuine `$or` consumer; that is the signal to extend, and not before.
-- Watch whether `archivedAt`/`kanbanColumn` acquire real consumers — the two most likely
-  candidates for a later, additive widening.
+- Watch whether the bare-call default becomes a live source of bugs. If it does, the flip
+  becomes a separate, deliberate decision with its own ADR — not a rider on this one.
+- Watch upstream's `list_sessions` contract; §6 is the trigger to revisit.
 - The cost measurements below were taken via a Python proxy over the same corpus, not by
   instrumenting the TypeScript path. They establish orders of magnitude, not the constant.
 
@@ -319,10 +399,24 @@ protect is already fully open.
 - **A SQLite index over sessions.** Solves a problem we do not have — filtering is 0.038 ms
   in memory and stays sub-millisecond at 10×. It would add a schema, a migration path, and a
   second source of truth for state the header already owns.
-- **Keep archived in the default set and document the trap.** Documentation has already been
-  tried: both automations carry inline warnings. The trap was still walked into twice, and the
-  warnings exist *because* it was. A default that is wrong 93% of the time is a defect, not a
-  documentation gap.
+- **Flip the archived default globally** (this ADR's own first draft). Rejected: it is
+  non-additive, and its failure mode is the worst available — a historical search returns an
+  empty set, which is indistinguishable from "no such session exists". The `where`-scoped
+  default in §4 captures nearly all the value at zero compatibility cost. If the bare-call
+  default later proves to cause real bugs, that flip deserves its own ADR rather than riding
+  along with this one.
+- **Keep archived in the default set everywhere and just document the trap.** Rejected as the
+  *only* measure: documentation has already been tried — both automations carry inline warnings,
+  and the warnings exist *because* the trap was walked into twice. §4 keeps the legacy default
+  for compatibility but does not rely on documentation to protect new code; the `where` path
+  defaults safely on its own.
+- **A fixed, wider contract set with no `fields` option.** This ADR's first draft, holding
+  `archivedAt`/`kanbanColumn` back as reviewable. Rejected in favour of shaping: it forces the
+  contract argument to be won at the default, commits us to more up front, and makes every
+  caller pay context for fields it did not ask for.
+- **A second, parallel query API** (`query_sessions` alongside `list_sessions`). Rejected today
+  as speculative — the additive path has not collided with anything yet. §6 names the condition
+  under which this becomes the right answer.
 - **Leave the on-disk workarounds in place.** They are correct and fast today. But they pin two
   production automations to a serialization format with no compatibility guarantee, and the
   next `SESSION_PERSISTENT_FIELDS` change breaks them silently at 05:20.
