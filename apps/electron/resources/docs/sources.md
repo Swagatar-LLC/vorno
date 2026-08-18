@@ -10,16 +10,16 @@ This guide explains how to configure sources (MCP servers, APIs, local filesyste
 
 When a user wants to add a new source, follow this conversational setup process to create a tailored, well-documented integration.
 
-### 0. Check for a Specialized Source Guide (REQUIRED FIRST STEP)
+### 0. Research the Service (REQUIRED FIRST STEP)
 
-**Before doing anything else**, check the product documentation at https://thecraftagents.com/docs for a service-specific setup guide (fetch pages with your web tools, e.g. search for "{service} source setup").
+**Before doing anything else**, establish the service's *current* auth and API surface with your web tools. Endpoints, auth flows, and MCP availability change often — your training data is not a reliable source for them, and a source built from a stale assumption fails at credential time, which is the most annoying place to fail.
 
-**Available guides:** GitHub, Linear, Slack, Gmail, Google Calendar, Google Drive, Google Docs, Google Sheets, Outlook, Microsoft Calendar, Teams, SharePoint, Craft, Filesystem, Brave Search, Memory
+**What to establish, in this order:**
+1. **Does an official MCP server exist?** Prefer it over a hand-rolled REST source — it ships its own tool schemas and stays current with the vendor.
+2. **Auth scheme and credential setup** — where the user creates a token or OAuth app, and the *narrowest* scopes the task actually needs. Scope the credential to the job, not to the user's whole account.
+3. **Prerequisites** — some services expect a CLI or app to be present first. Check before proceeding rather than failing halfway (e.g. GitHub sources work best when the `gh` CLI is installed and already authenticated).
 
-**If a guide exists for the service:**
-1. **Read the guide content** carefully
-2. **Pay special attention to the "Setup Hints" section** - it contains critical instructions
-3. **Follow any CRITICAL/MANDATORY instructions** before proceeding (e.g., GitHub requires checking for `gh` CLI first)
+Then read `permissions.md` for how the source will behave in each permission mode.
 4. **ALWAYS verify current API endpoints via WebSearch and/or in-app browser** - URLs and docs change frequently
 
 **Why this matters:** Some services have important prerequisites or gotchas that MUST be checked before creating a source. Skipping this step can lead to failed setups or redundant configurations.
@@ -204,7 +204,7 @@ Concrete examples tailored to the user's workflow:
 ```
 User: I want to add Linear
 
-Agent: [FIRST: Fetches the Linear setup guide from https://thecraftagents.com/docs]
+Agent: [FIRST: Researches Linear's current API + MCP options with web tools]
 
 Agent: I found the Linear setup guide! A few questions:
 1. What will you primarily use Linear for? (issue tracking, sprint planning, reporting?)
