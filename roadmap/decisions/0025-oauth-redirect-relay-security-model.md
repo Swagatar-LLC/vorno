@@ -1,13 +1,24 @@
 ---
 id: ADR-0025
 title: Vorno-owned OAuth redirect relay — allowlist-not-open-redirector, tiered by deployment
-status: proposed
+status: accepted
 date: 2026-08-17
+accepted: 2026-08-17
 supersedes: []
 superseded-by: []
 ---
 
 # ADR-0025 — Vorno-owned OAuth redirect relay — allowlist-not-open-redirector, tiered by deployment
+
+**Accepted 2026-08-17** by Jeff. The security model is adopted as proposed: a Vorno-owned
+relay that refuses to be an open redirector (forwards only to loopback or a per-`instanceId`
+registered origin, never a wildcard or a raw wire URL), tiered by deployment, with the
+registered-origin binding signed by a relay-only HMAC key. Recorded as PLAN-023 Phase 2's
+relay sub-decision and discharging ADR-0013 SEC-004. Implementation is carried forward under
+**PLAN-036**, gated behind Cloudflare provisioning and the `vorno.ai/privacy` prerequisite —
+no public auth endpoint is stood up before that policy exists (a one-way, brand-facing door
+reserved to Jeff). The build-baked Slack client secret (decision 5) is tracked as its own
+security item regardless of relay timing.
 
 ## Context
 
