@@ -30,9 +30,12 @@ export default defineConfig({
     port: 5174, // Different from Electron dev server
     open: true,
     proxy: {
-      // Proxy API requests to production R2 during local dev
+      // Proxy API requests to the production share backend during local dev.
+      // Vorno hosts its own shares (ADR-0024) — this used to point at upstream.
+      // Run `bunx wrangler dev` and set this to http://localhost:8787 to work
+      // against a local Worker + R2 instead.
       '/s/api': {
-        target: 'https://thecraftagents.com',
+        target: 'https://share.vorno.ai',
         changeOrigin: true,
         secure: true,
       },
