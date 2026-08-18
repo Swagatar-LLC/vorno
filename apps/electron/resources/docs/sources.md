@@ -12,15 +12,22 @@ When a user wants to add a new source, follow this conversational setup process 
 
 ### 0. Check for a Specialized Source Guide (REQUIRED FIRST STEP)
 
-**Before doing anything else**, check the product documentation at https://thecraftagents.com/docs for a service-specific setup guide (fetch pages with your web tools, e.g. search for "{service} source setup").
+**Before doing anything else**, check for a service-specific guide in the [`sources/`](./sources/) directory next to this file. Read the [index](./sources/README.md), or list the directory.
 
-**Available guides:** GitHub, Linear, Slack, Gmail, Google Calendar, Google Drive, Google Docs, Google Sheets, Outlook, Microsoft Calendar, Teams, SharePoint, Craft, Filesystem, Brave Search, Memory
+**Available guides:** [GitHub](./sources/github.md), [Linear](./sources/linear.md), [Slack](./sources/slack.md), [Craft](./sources/craft.md), [Gmail](./sources/gmail.md), [Google Calendar](./sources/google-calendar.md), [Google Drive](./sources/google-drive.md), [Google Docs](./sources/google-docs.md), [Google Sheets](./sources/google-sheets.md), [Outlook](./sources/outlook.md), [Microsoft Calendar](./sources/microsoft-calendar.md), [Teams](./sources/teams.md), [SharePoint](./sources/sharepoint.md), [Filesystem](./sources/filesystem.md), [Brave Search](./sources/brave-search.md), [Memory](./sources/memory.md)
+
+Google and Microsoft services also have shared prerequisite guides — [google.md](./sources/google.md) and [microsoft.md](./sources/microsoft.md) — which the service guides link to. Read those too; **Microsoft OAuth needs an environment variable that is not set by default**, and the Google flow has a refresh-token expiry trap that surfaces a week after setup.
 
 **If a guide exists for the service:**
-1. **Read the guide content** carefully
-2. **Pay special attention to the "Setup Hints" section** - it contains critical instructions
-3. **Follow any CRITICAL/MANDATORY instructions** before proceeding (e.g., GitHub requires checking for `gh` CLI first)
-4. **ALWAYS verify current API endpoints via WebSearch and/or in-app browser** - URLs and docs change frequently
+1. **Read the whole guide** before writing any config — the blocking prerequisites are not always at the top
+2. **Follow any prerequisite it names** before proceeding (e.g. GitHub works best when the `gh` CLI is already installed and authenticated; Slack and Microsoft both have setup that must happen outside Vorno)
+3. **Use the narrowest scope that does the job.** The guides list read-only and per-file alternatives to the broad defaults. Ask the user what they actually want to do, then scope the credential to that — not to their whole account
+4. **Re-verify anything that fails.** The guides record a verification date; if a console path or endpoint does not match what the user sees, trust the live service and check with WebSearch or the in-app browser
+
+**If no guide exists for the service**, establish the following with your web tools before writing any config — your training data is not a reliable source for auth flows, and a source built from a stale assumption fails at credential time, which is the most annoying place to fail:
+1. **Does an official MCP server exist?** Prefer it over a hand-rolled REST source — it ships its own tool schemas and the vendor keeps it current
+2. **Auth scheme and credential setup** — where the user creates a token or OAuth app, and the narrowest scopes the task needs
+3. **Prerequisites** — some services expect a CLI, an admin approval, or an app registration first. Check before proceeding rather than failing halfway
 
 **Why this matters:** Some services have important prerequisites or gotchas that MUST be checked before creating a source. Skipping this step can lead to failed setups or redundant configurations.
 
@@ -204,12 +211,14 @@ Concrete examples tailored to the user's workflow:
 ```
 User: I want to add Linear
 
-Agent: [FIRST: Fetches the Linear setup guide from https://thecraftagents.com/docs]
+Agent: [FIRST: Reads sources/linear.md]
 
 Agent: I found the Linear setup guide! A few questions:
 1. What will you primarily use Linear for? (issue tracking, sprint planning, reporting?)
 2. Are there specific teams or projects you want to focus on?
 3. Should I set it up for read-only exploration or full access?
+   (Linear has a dedicated read-only endpoint — if you want read-only, I'll use that
+   rather than relying on permission rules alone.)
 
 User: Issue tracking for my iOS team, project called "Craft iOS"
 
@@ -824,6 +833,8 @@ For favicon resolution, a cache maps provider names to their canonical domains a
 
 ## Common Providers
 
+Quick reference only. **The per-service guides in [`sources/`](./sources/) are authoritative** — they cover scopes, prerequisites, and gotchas this table cannot.
+
 ### Gmail (and other Google services)
 Provider: `google`, Type: `api`
 Requires user-provided OAuth credentials in the source config:
@@ -831,15 +842,26 @@ Requires user-provided OAuth credentials in the source config:
 - `googleOAuthClientSecret`: Your Google OAuth Client Secret
 
 Create credentials at [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (Desktop app type).
-Uses OAuth via `source_google_oauth_trigger`.
+Uses OAuth via `source_google_oauth_trigger`. → [google.md](./sources/google.md)
+
+### Microsoft services (Outlook, Calendar, Teams, SharePoint)
+Provider: `microsoft`, Type: `api`, Base URL: `https://graph.microsoft.com/v1.0/`
+**Requires the `MICROSOFT_OAUTH_CLIENT_ID` environment variable** — there is no config field for it. → [microsoft.md](./sources/microsoft.md)
 
 ### Linear
 Provider: `linear`, Type: `mcp`
-URL: `https://mcp.linear.app`, OAuth auth.
+URL: `https://mcp.linear.app/mcp` (include the `/mcp` path; `/sse` is deprecated), OAuth auth.
+Read-only variant: `https://mcp.linear.app/mcp/readonly`. → [linear.md](./sources/linear.md)
 
 ### GitHub
 Provider: `github`, Type: `mcp`
 URL: `https://api.githubcopilot.com/mcp/`, **bearer auth** (PAT required - OAuth will fail).
+Read-only variant: `https://api.githubcopilot.com/mcp/readonly`. → [github.md](./sources/github.md)
+
+### Slack
+Provider: `slack`, Type: `mcp`
+Official server: `https://mcp.slack.com/mcp`, OAuth. Requires an admin-approved Slack app.
+The built-in `source_slack_oauth_trigger` needs `SLACK_OAUTH_CLIENT_ID` / `SLACK_OAUTH_CLIENT_SECRET` env vars. → [slack.md](./sources/slack.md)
 
 ### Exa (Search)
 Provider: `exa`, Type: `api`
@@ -847,11 +869,13 @@ Base URL: `https://api.exa.ai`, header auth with `x-api-key`.
 
 ### Brave Search
 Provider: `brave`, Type: `mcp`
-Transport: `stdio`, Command: `npx -y @modelcontextprotocol/server-brave-search`, requires `BRAVE_API_KEY` env.
+Transport: `stdio`, Command: `npx -y @brave/brave-search-mcp-server --transport stdio`, requires `BRAVE_API_KEY` env.
+**Not `@modelcontextprotocol/server-brave-search`** — that reference package was retired. → [brave-search.md](./sources/brave-search.md)
 
 ### Memory
 Provider: `memory`, Type: `mcp`
 Transport: `stdio`, Command: `npx -y @modelcontextprotocol/server-memory`, no auth.
+Set `MEMORY_FILE_PATH` or the graph lives in the npx cache. → [memory.md](./sources/memory.md)
 
 ## Workflow
 
