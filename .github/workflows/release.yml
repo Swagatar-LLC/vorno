@@ -26,6 +26,10 @@ jobs:
     name: Build & release (macOS arm64)
     # macos-14 is Apple Silicon — required for a native arm64 build.
     runs-on: macos-14
+    outputs:
+      # Consumed by publish-docs: documentation is only published for a release
+      # that actually reached the feed.
+      has_signing: ${{ steps.gate.outputs.has_signing }}
     steps:
       - uses: actions/checkout@v4
 
@@ -173,3 +177,114 @@ jobs:
             apps/electron/release/Vorno-arm64.dmg
             apps/electron/release/Vorno-arm64.zip
           if-no-files-found: error
+
+  # -----------------------------------------------------------------------
+  # Publish the documentation and changelog for this release (PLAN-034 Lane C,
+  # ADR-0023).
+  #
+  # ADR-0023 made documentation a release artifact: DOCS_URL points at
+  # vorno.ai/docs, so if the site is not rebuilt at the tag, a shipped build
+  # links users and agents at stale or missing pages. That is a user-visible
+  # failure with no build failure — the LEARNING-048 shape.
+  #
+  # It has already happened once. v0.17.0 shipped green while vorno.ai stayed
+  # on the previous build: /changelog/0.17.0/ and eighteen new service guides
+  # 404'd, and only an explicit manual check caught it. Nothing here is
+  # theoretical.
+  #
+  # Gated on has_signing because an ad-hoc build publishes nothing to the feed.
+  # Publishing docs for a version with no release would also break the site
+  # build outright, which cross-checks its rendered version pages against the
+  # release feed and fails on a mismatch.
+  # -----------------------------------------------------------------------
+  publish-docs:
+    name: Publish docs + changelog (vorno.ai)
+    needs: release-macos
+    if: needs.release-macos.outputs.has_signing == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch to Swagatar-LLC/vorno-site
+        id: dispatch
+        env:
+          # Fine-grained PAT with Contents: read and write on
+          # Swagatar-LLC/vorno-site — the permission the repository-dispatch
+          # API requires. The built-in GITHUB_TOKEN cannot reach another repo.
+          GH_TOKEN: ${{ secrets.VORNO_SITE_DISPATCH_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "dispatched=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::VORNO_SITE_DISPATCH_TOKEN is not set — docs and changelog were NOT published for ${TAG}. Publish by hand, or run the 'Publish docs + changelog' workflow in Swagatar-LLC/vorno-site with tag=${TAG}."
+            exit 0
+          fi
+          jq -n --arg tag "${TAG}" \
+            '{event_type: "vorno-release", client_payload: {tag: $tag}}' \
+            | gh api repos/Swagatar-LLC/vorno-site/dispatches --input -
+          echo "dispatched=true" >> "$GITHUB_OUTPUT"
+          echo "Dispatched vorno-release (${TAG}) to Swagatar-LLC/vorno-site."
+
+      # ---------------------------------------------------------------------
+      # Confirm the docs actually went live.
+      #
+      # The dispatch API returns 204 as soon as the event is queued — it says
+      # nothing about whether the site built or deployed. Without this step a
+      # green release would still not mean published documentation, which is
+      # the exact gap this job exists to close. The site workflow verifies
+      # itself too; this is the independent check on the release side, and it
+      # is what makes "release is green" honest.
+      #
+      # Polls rather than asserting once: the site has to build and deploy
+      # first, and freshly uploaded Workers assets propagate across PoPs
+      # asynchronously.
+      # ---------------------------------------------------------------------
+      - name: Verify docs + changelog are live
+        if: steps.dispatch.outputs.dispatched == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -uo pipefail
+          VERSION="${TAG#v}"
+          DEADLINE=$(( SECONDS + 900 ))   # 15 minutes
+          PATHS="/docs/ /changelog/${VERSION}/"
+          echo "Waiting for vorno.ai to publish ${TAG} (up to 15 min)..."
+          while :; do
+            ALL_OK=1
+            for p in ${PATHS}; do
+              CODE=$(curl -sL -o /dev/null -w '%{http_code}' "https://vorno.ai${p}" || echo 000)
+              echo "  ${p} -> ${CODE}"
+              [ "${CODE}" = "200" ] || ALL_OK=0
+            done
+            if [ "${ALL_OK}" = "1" ]; then
+              echo "Documentation for ${TAG} is live."
+              exit 0
+            fi
+            if [ "${SECONDS}" -ge "${DEADLINE}" ]; then
+              echo "::error::The app release for ${TAG} succeeded and is published, but the documentation site did NOT update within 15 minutes. Check the 'Publish docs + changelog' run in Swagatar-LLC/vorno-site. DOCS_URL now points at stale pages."
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Summary
+        if: always()
+        env:
+          TAG: ${{ github.ref_name }}
+          DISPATCHED: ${{ steps.dispatch.outputs.dispatched }}
+        run: |
+          {
+            echo "## Documentation for ${TAG}"
+            echo
+            if [ "${DISPATCHED}" = "true" ]; then
+              echo "Dispatched to \`Swagatar-LLC/vorno-site\` and verified live."
+              echo
+              echo "- <https://vorno.ai/docs/>"
+              echo "- <https://vorno.ai/changelog/${TAG#v}/>"
+            else
+              echo "**Not published** — \`VORNO_SITE_DISPATCH_TOKEN\` is not set on this repository."
+              echo
+              echo "The app release itself is unaffected. To publish the docs, run the"
+              echo "**Publish docs + changelog** workflow in \`Swagatar-LLC/vorno-site\` with"
+              echo "\`tag=${TAG}\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
