@@ -37,7 +37,7 @@ export const SESSION_PERSISTENT_FIELDS = [
   // Model/Connection
   'model', 'llmConnection', 'connectionLocked', 'thinkingLevel', 'fastMode',
   // Sharing
-  'sharedUrl', 'sharedId',
+  'sharedUrl', 'sharedId', 'shareEditToken',
   // Plan execution
   'pendingPlanExecution',
   // Archive
@@ -152,6 +152,18 @@ export interface SessionConfig {
   sharedUrl?: string;
   /** Shared session ID in viewer (for revoke) */
   sharedId?: string;
+  /**
+   * Capability for updating/revoking this share, issued by the share backend at
+   * create time (ADR-0024).
+   *
+   * Deliberately NOT on SessionHeader or SessionMetadata: it is a credential, and
+   * those DTOs go to renderers and list payloads. It lives here so it persists, and
+   * is read only by SessionManager's update/revoke paths.
+   *
+   * Absent for shares created before Vorno hosted its own backend — those live on
+   * upstream infrastructure, which authenticates on the share id alone.
+   */
+  shareEditToken?: string;
   /** Model to use for this session (overrides global config if set) */
   model?: string;
   /** LLM connection slug for this session (locked after first message) */
