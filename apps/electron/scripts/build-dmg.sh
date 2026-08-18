@@ -45,7 +45,6 @@ export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}"
 ARCH="arm64"
 UPLOAD=false
 UPLOAD_LATEST=false
-UPLOAD_SCRIPT=false
 
 show_help() {
     cat << EOF
@@ -55,7 +54,6 @@ Arguments:
   arm64|x64    Target architecture (default: arm64)
   --upload     Upload DMG to S3 after building
   --latest     Also update electron/latest (requires --upload)
-  --script     Also upload install-app.sh (requires --upload)
 
 Environment variables (from .env or environment):
   APPLE_SIGNING_IDENTITY    - Code signing identity
@@ -72,7 +70,6 @@ while [[ $# -gt 0 ]]; do
         arm64|x64)     ARCH="$1"; shift ;;
         --upload)      UPLOAD=true; shift ;;
         --latest)      UPLOAD_LATEST=true; shift ;;
-        --script)      UPLOAD_SCRIPT=true; shift ;;
         -h|--help)     show_help ;;
         *)
             echo "Unknown option: $1"
@@ -300,7 +297,6 @@ EOF
     # Build upload flags
     UPLOAD_FLAGS="--electron"
     [ "$UPLOAD_LATEST" = true ] && UPLOAD_FLAGS="$UPLOAD_FLAGS --latest"
-    [ "$UPLOAD_SCRIPT" = true ] && UPLOAD_FLAGS="$UPLOAD_FLAGS --script"
 
     cd "$ROOT_DIR"
     bun run scripts/upload.ts $UPLOAD_FLAGS
