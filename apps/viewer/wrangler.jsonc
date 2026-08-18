@@ -1,0 +1,37 @@
+// Wrangler config for the vorno-share Worker (ADR-0024, PLAN-035).
+//
+// Serves the built viewer SPA and the share API from ONE origin, because
+// src/App.tsx fetches `/s/api/{id}` relative. `run_worker_first` is required so
+// the Worker sees /s/api before the assets pipeline answers it.
+//
+// Deploy: `bun run build && bunx wrangler deploy` from apps/viewer.
+// See README.md for the provisioning Jeff must do first and the post-deploy
+// HTTP verification (a green deploy is not evidence of a correct service).
+{
+  "name": "vorno-share",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none",
+    "run_worker_first": true
+  },
+  "r2_buckets": [
+    {
+      "binding": "SHARES",
+      "bucket_name": "vorno-shares"
+    }
+  ],
+  // Burst brake on unauthenticated creates. Per-colo and permissive by design
+  // (Cloudflare's own words) — a brake, not a quota. `period` must be 10 or 60.
+  "ratelimits": [
+    {
+      "name": "SHARE_CREATE_LIMIT",
+      "namespace_id": "1001",
+      "simple": { "limit": 5, "period": 60 }
+    }
+  ],
+  "routes": [{ "pattern": "share.vorno.ai", "custom_domain": true }]
+}

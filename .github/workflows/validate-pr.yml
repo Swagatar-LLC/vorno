@@ -150,6 +150,24 @@ jobs:
         run: bun run test:doc-tools
 
   # ---------------------------------------------------------------------------
+  # Share Worker — the vorno-share backend behind VIEWER_URL (ADR-0024).
+  # Its own job because nothing else runs tests under apps/, and an untested
+  # auth path on a public write endpoint is the last place to accept that.
+  # ---------------------------------------------------------------------------
+  test-share-worker:
+    name: Test share Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      # No `bun install` needed: the Worker imports only Web platform globals.
+
+      - name: Run share Worker tests (strict — 0 failures allowed)
+        run: cd apps/viewer && bun test worker/
+
+  # ---------------------------------------------------------------------------
   # i18n gates — locale parity, alphabetical sort, and t()/Trans coverage
   # ---------------------------------------------------------------------------
   i18n:
