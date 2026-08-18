@@ -110,6 +110,7 @@ import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, 
 import type { PromptAction as AutomationPromptAction, PendingSessionAction, AutomationCause, SessionActionSkip, ContextActionRejection } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, buildRuntimeEnvelope, filterAttachmentsForModelInput } from './runtime-config'
 import { validateArchiveTarget } from './archive-guards'
+import { shareApiBase } from './share-target'
 
 // Import from server-core domain utilities
 import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
@@ -888,6 +889,9 @@ interface ManagedSession {
   sharedUrl?: string
   // Shared session ID in viewer (for revoke)
   sharedId?: string
+  // Capability for updating/revoking the share (ADR-0024). Absent for shares
+  // created before Vorno hosted its own backend.
+  shareEditToken?: string
   // Model to use for this session (overrides global config if set)
   model?: string
   // LLM connection slug for this session (locked after first message)
@@ -2091,6 +2095,7 @@ export class SessionManager implements ISessionManager {
       if (managed.hasUnread === undefined) managed.hasUnread = stored.hasUnread
       if (managed.sharedUrl === undefined) managed.sharedUrl = stored.sharedUrl
       if (managed.sharedId === undefined) managed.sharedId = stored.sharedId
+      if (managed.shareEditToken === undefined) managed.shareEditToken = stored.shareEditToken
       if (managed.transferredSessionSummary === undefined) managed.transferredSessionSummary = stored.transferredSessionSummary
       if (managed.transferredSessionSummaryApplied === undefined) managed.transferredSessionSummaryApplied = stored.transferredSessionSummaryApplied
 
@@ -2560,6 +2565,7 @@ export class SessionManager implements ISessionManager {
       managed.enabledSourceSlugs = storedSession.enabledSourceSlugs
       managed.sharedUrl = storedSession.sharedUrl
       managed.sharedId = storedSession.sharedId
+      managed.shareEditToken = storedSession.shareEditToken
       // Sync name from disk - ensures title persistence across lazy loading
       managed.name = storedSession.name
       // Restore LLM connection state - ensures correct provider on resume
@@ -4984,15 +4990,19 @@ export class SessionManager implements ISessionManager {
         return { success: false, error: 'Failed to upload session' }
       }
 
-      const data = await response.json() as { id: string; url: string }
+      // editToken is issued by Vorno's own backend (ADR-0024) and absent when
+      // sharing against upstream's, which authenticates on the share id alone.
+      const data = await response.json() as { id: string; url: string; editToken?: string }
 
       // Store shared info in session
       managed.sharedUrl = data.url
       managed.sharedId = data.id
+      managed.shareEditToken = data.editToken
       const workspaceRootPath = managed.workspace.rootPath
       await updateSessionMetadata(workspaceRootPath, sessionId, {
         sharedUrl: data.url,
         sharedId: data.id,
+        shareEditToken: data.editToken,
       })
 
       sessionLog.info(`Session ${sessionId} shared at ${data.url}`)
@@ -5034,9 +5044,15 @@ export class SessionManager implements ISessionManager {
       }
 
       const { VIEWER_URL } = await import('@craft-agent/shared/branding')
-      const response = await fetch(`${VIEWER_URL}/s/api/${managed.sharedId}`, {
+      // Resolve the backend from the share's own URL, not the constant — this
+      // share may predate Vorno's own backend. See share-target.ts.
+      const base = shareApiBase(managed.sharedUrl, VIEWER_URL)
+      const response = await fetch(`${base}/s/api/${managed.sharedId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(managed.shareEditToken ? { Authorization: `Bearer ${managed.shareEditToken}` } : {}),
+        },
         body: JSON.stringify(storedSession)
       })
 
@@ -5079,9 +5095,17 @@ export class SessionManager implements ISessionManager {
 
     try {
       const { VIEWER_URL } = await import('@craft-agent/shared/branding')
+      // Same as updateShare: a pre-cutover share must be revoked where it
+      // actually lives, or it stays public with no way to take it down.
+      const base = shareApiBase(managed.sharedUrl, VIEWER_URL)
       const response = await fetch(
-        `${VIEWER_URL}/s/api/${managed.sharedId}`,
-        { method: 'DELETE' }
+        `${base}/s/api/${managed.sharedId}`,
+        {
+          method: 'DELETE',
+          headers: managed.shareEditToken
+            ? { Authorization: `Bearer ${managed.shareEditToken}` }
+            : {},
+        }
       )
 
       if (!response.ok) {
@@ -5092,10 +5116,12 @@ export class SessionManager implements ISessionManager {
       // Clear shared info
       delete managed.sharedUrl
       delete managed.sharedId
+      delete managed.shareEditToken
       const workspaceRootPath = managed.workspace.rootPath
       await updateSessionMetadata(workspaceRootPath, sessionId, {
         sharedUrl: undefined,
         sharedId: undefined,
+        shareEditToken: undefined,
       })
 
       sessionLog.info(`Session ${sessionId} share revoked`)
@@ -5793,9 +5819,16 @@ export class SessionManager implements ISessionManager {
     if (managed.sharedId) {
       try {
         const { VIEWER_URL } = await import('@craft-agent/shared/branding')
+        const base = shareApiBase(managed.sharedUrl, VIEWER_URL)
         const response = await fetch(
-          `${VIEWER_URL}/s/api/${managed.sharedId}`,
-          { method: 'DELETE', signal: AbortSignal.timeout(5000) }
+          `${base}/s/api/${managed.sharedId}`,
+          {
+            method: 'DELETE',
+            signal: AbortSignal.timeout(5000),
+            headers: managed.shareEditToken
+              ? { Authorization: `Bearer ${managed.shareEditToken}` }
+              : {},
+          }
         )
         if (!response.ok) {
           sessionLog.warn(`Failed to revoke share for ${sessionId}: HTTP ${response.status}`)
