@@ -174,7 +174,7 @@ await runStep('Building Electron bundle', ['bun', 'run', 'electron:build'])
 const banner = [
   '',
   '┌──────────────────────────────────────────────────────────────────',
-  '│ Craft Agent — Daily Driver',
+  '│ Vorno — Daily Driver',
   '├──────────────────────────────────────────────────────────────────',
   `│  Tailnet URL     : ${tailnetHttpsUrl}`,
   `│  Local URL       : ${localHttpUrl}`,
