@@ -204,12 +204,27 @@ remain:
   window**: stand up `auth.vorno.ai`, let users add it alongside the old URI, then flip
   `OAUTH_RELAY_CALLBACK_URL`. Users who *replace* rather than *add* strand their own in-flight
   auths until they re-add — call this out in migration docs.
-- **The old relay must stay reachable through the flip window**, because a flow whose auth
-  request already went out points the provider's browser redirect at the *old* origin. This
-  is the transit-leg equivalent of "keep the old backend alive during cutover" — bounded by
-  the flow store's short TTL, not by resource lifetime. Since the old relay is upstream's
-  `agents.craft.do` (which upstream only promises "during the transition"), the flip must not
-  outlast that promise; sequence the flip while the old endpoint is still honored.
+- **The old relay must stay reachable through the flow-completion window**, because a flow
+  whose auth request already went out points the provider's browser redirect at the *old*
+  origin. This is the transit-leg equivalent of "keep the old backend alive during cutover" —
+  bounded by the flow store's short TTL (minutes), not by resource lifetime. **The exposure
+  is not a window we can size — it is a dependency on upstream's uptime for a deprecated
+  host.** The old relay is `agents.craft.do`, which upstream promises only "during the
+  transition"; it already moved `agents.craft.do → thecraftagents.com` and deleted the docs
+  MCP in a single release, with no deprecation signal we can observe. So the accurate risk
+  statement is not "an in-flight flow might fail for N minutes" but "an in-flight flow fails
+  whenever upstream retires the host, and we learn it from users." Because the flow-completion
+  window is genuinely short (minutes), **the honest mitigation is brevity, not a guarantee**:
+  keep the window small and accept it; we have neither a contract nor a deprecation signal to
+  make it safe.
+
+**Shared cross-lane risk (raised with Lane F / ADR-0024).** This lane's residual exposure and
+the session-share lane's are the *same* underlying risk seen from two sides: **for the
+deprecated half of each migration we depend on a third party's uptime we do not control and
+cannot close.** Here, in-flight auths complete only while Craft keeps serving the relay;
+there, existing shares resolve only while Craft keeps serving `VIEWER_URL`. Neither lane can
+fix it from inside its own design. That is the strongest argument for executing *both*
+migrations sooner rather than later, and Jeff should see it as one risk, not two footnotes.
 
 Slack/Microsoft (Vorno-owned apps) need **no user action** — Vorno adds the new URI to its
 own app config — *unless* Slack also moves to per-user apps (decision 5), a separate opt-in
