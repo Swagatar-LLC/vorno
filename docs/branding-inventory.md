@@ -47,7 +47,8 @@ bundle identifiers, and logo assets across `apps/electron`, `apps/webui`,
 | `COMPANY_NAME` / `SUPPORT_EMAIL` | `Swagatar LLC` / `support@swagatar.co` | installers, manifests |
 | `GIT_COAUTHOR` | `Vorno <agents-noreply@swagatar.co>` | system-prompt git trailer |
 | `OAUTH_CLIENT_NAME` | `Claude Code (Vorno)` | MCP dynamic-client-registration ⚠ some servers gate on this |
-| `SERVICE_BASE_URL` / `VIEWER_URL` / `DOCS_URL` | `https://agents.craft.do…` | ⚠ **kept on upstream infra** — registered OAuth-relay / docs endpoints; flip requires re-registration |
+| `SERVICE_BASE_URL` / `DOCS_URL` | `https://agents.craft.do…` | ⚠ **kept on upstream infra** — registered OAuth-relay / docs endpoints; flip requires re-registration |
+| `VIEWER_URL` | `https://share.vorno.ai` | Vorno-hosted shares (ADR-0024). Used to **create** only — update/revoke follow the share's own stored URL, so pre-cutover shares stay revocable on upstream |
 | `OAUTH_RELAY_CALLBACK_URL` / `SLACK_OAUTH_RELAY_CALLBACK_URL` | `agents.craft.do/auth/*` | ⚠ wire-registered with OAuth providers |
 | `UPDATE_MANIFEST_BASE_URL` | `github.com/Swagatar-LLC/vorno-releases/releases/latest` | "get the newest build" link (auto-updater reads the github feed via `electron-builder.yml`) |
 | `VORNO_LOGO` / `VORNO_LOGO_HTML` | ASCII "VORNO" | OAuth callback pages |

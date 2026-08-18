@@ -60,15 +60,36 @@ export const OAUTH_CLIENT_NAME = `Claude Code (${PRODUCT_NAME_SINGULAR})`;
 // ---------------------------------------------------------------------------
 
 /**
- * Base URL for the hosted service (viewer, docs, OAuth relay). NOTE: the update
- * feed is no longer derived from this — see UPDATE_MANIFEST_BASE_URL (ADR-0009).
- * Kept pointing at upstream infra on purpose: these are registered OAuth relay
- * / docs endpoints; flipping them breaks source OAuth (see the endpoints below).
+ * Base URL for the **upstream-hosted** service the fork still rides: the OAuth relay.
+ *
+ * NOTE: the update feed is not derived from this (see UPDATE_MANIFEST_BASE_URL,
+ * ADR-0009), nor are the docs (DOCS_URL, ADR-0023), nor session sharing any more
+ * (VIEWER_URL, ADR-0024).
+ *
+ * Kept pointing at upstream infra on purpose. The redirect URIs below are registered
+ * with OAuth providers, so flipping them breaks source auth until every provider app
+ * is re-registered. That migration is its own decision with its own cost — do not fold
+ * it into an unrelated change. When it lands, this constant can be deleted outright.
  */
 export const SERVICE_BASE_URL = 'https://agents.craft.do';
 
-/** Session viewer base URL. */
-export const VIEWER_URL = SERVICE_BASE_URL;
+/**
+ * Session viewer + shared-session API base URL.
+ *
+ * DECOUPLED from SERVICE_BASE_URL (ADR-0024): Vorno hosts its own shared sessions.
+ * Backed by the `vorno-share` Worker and an R2 bucket on the Swagatar account; the
+ * Worker and the viewer SPA it serves both live in `apps/viewer`.
+ *
+ * Its own origin, deliberately — unlike docs, a share is untrusted content submitted
+ * by anyone who can reach an unauthenticated POST endpoint, and that does not belong
+ * on the apex alongside the marketing site.
+ *
+ * This constant is used only to CREATE a share. Updating and revoking an *existing*
+ * share resolves its origin from the share's own stored URL — see
+ * `packages/server-core/src/sessions/share-target.ts`. Shares created before this
+ * flip live on upstream's infrastructure and must stay revocable there.
+ */
+export const VIEWER_URL = 'https://share.vorno.ai';
 
 /** In-app documentation links. */
 export const DOCS_URL = `${SERVICE_BASE_URL}/docs`;
