@@ -60,20 +60,35 @@ export const OAUTH_CLIENT_NAME = `Claude Code (${PRODUCT_NAME_SINGULAR})`;
 // ---------------------------------------------------------------------------
 
 /**
- * Base URL for the hosted service (viewer, docs, OAuth relay). NOTE: the update
- * feed is no longer derived from this — see UPDATE_MANIFEST_BASE_URL (ADR-0009).
- * Kept pointing at upstream infra on purpose: these are registered OAuth relay
- * / docs endpoints; flipping them breaks source OAuth (see the endpoints below).
+ * Base URL for the **upstream-hosted** services the fork still rides: the shared-session
+ * viewer/API and the OAuth relay. NOTE: the update feed is not derived from this (see
+ * UPDATE_MANIFEST_BASE_URL, ADR-0009) and neither are the docs any more (see DOCS_URL,
+ * ADR-0023).
+ *
+ * Kept pointing at upstream infra on purpose. These are registered OAuth relay endpoints
+ * and a hosted share backend; flipping them breaks source OAuth and session sharing. That
+ * migration is a separate decision with a separate cost — do not fold it into an unrelated
+ * change.
  */
 export const SERVICE_BASE_URL = 'https://agents.craft.do';
 
-/** Session viewer base URL. */
+/** Session viewer base URL. Upstream-hosted — see SERVICE_BASE_URL. */
 export const VIEWER_URL = SERVICE_BASE_URL;
 
-/** In-app documentation links. */
-export const DOCS_URL = `${SERVICE_BASE_URL}/docs`;
-export const DOCS_MCP_URL = `${DOCS_URL}/mcp`;
-export const DOCS_SHARING_URL = `${DOCS_URL}/go-further/sharing`;
+/**
+ * In-app documentation links.
+ *
+ * DECOUPLED from SERVICE_BASE_URL (ADR-0023): Vorno publishes its own documentation,
+ * generated at each release tag from `apps/electron/resources/docs/*.md` and served by
+ * the `vorno-site` Worker. Upstream deleted its docs MCP server in v0.12.0 and moved its
+ * docs twice in one release; doc discovery no longer depends on a domain we do not own.
+ *
+ * These pages are a RELEASE ARTIFACT. If the publish step breaks, this constant points at
+ * stale or missing pages with no build failure anywhere — the same silent-failure shape as
+ * LEARNING-048. The release checklist verifies them over real HTTP for that reason.
+ */
+export const DOCS_URL = 'https://vorno.ai/docs';
+export const DOCS_SHARING_URL = `${DOCS_URL}/sharing`;
 
 /**
  * "Download the latest release" link for the Vorno fork.
