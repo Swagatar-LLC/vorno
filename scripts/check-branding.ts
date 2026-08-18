@@ -74,8 +74,10 @@ const RULES: Rule[] = [
   },
   {
     id: 'upstream-domain',
-    re: /craft\.do/i,
-    description: 'Upstream craft.do endpoint — import SERVICE_BASE_URL / DOCS_URL / UPDATE_MANIFEST_BASE_URL / OAUTH_RELAY_* from the branding module',
+    // Upstream migrated agents.craft.do -> thecraftagents.com in v0.12.0; both must be caught
+    // so a sync cannot silently reintroduce a hardcoded upstream endpoint.
+    re: /craft\.do|thecraftagents\.com/i,
+    description: 'Upstream endpoint (craft.do / thecraftagents.com) — import SERVICE_BASE_URL / DOCS_URL / UPDATE_MANIFEST_BASE_URL / OAUTH_RELAY_* from the branding module',
   },
   {
     id: 'lukilabs',
@@ -107,6 +109,11 @@ function isAllowed(relPath: string, ruleId: string): boolean {
 
 function isCommentLine(line: string): boolean {
   const t = line.trimStart();
+  // Markdown bold (`**Product documentation:** …`) is NOT a comment — it is prompt/UX
+  // text inside a template literal. JSDoc continuation lines are `* text`, never `** text`,
+  // so excluding the `**` case is safe and closes a real blind spot: upstream v0.12.0 landed
+  // a brand-visible docs pointer in the system prompt that this heuristic silently skipped.
+  if (t.startsWith('**')) return false;
   return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t.startsWith('#') || t.startsWith('<!--');
 }
 

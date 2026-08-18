@@ -69,7 +69,7 @@ vorno-cli label auto-rule-validate linear-issue
 Manage workspace sources stored under `sources/{slug}/`.
 
 ### Commands
-- `vorno-cli source list [--include-builtins true|false]`
+- `vorno-cli source list`
 - `vorno-cli source get <slug>`
 - `vorno-cli source create` (see flags below)
 - `vorno-cli source update <slug> --json '{...}'`

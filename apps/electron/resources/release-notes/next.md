@@ -6,6 +6,8 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Improvements
 
+- Agents now reference product documentation via the public docs site instead of a built-in documentation MCP source — one less background connection per session (from upstream v0.12.0)
+
 ## Bug Fixes
 
 ## Breaking Changes
