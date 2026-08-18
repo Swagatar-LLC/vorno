@@ -10,7 +10,8 @@
 
 import { join } from 'path';
 import { homedir } from 'os';
-import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, rmSync, type Dirent } from 'fs';
+import { dirname } from 'path';
 import { getBundledAssetsDir } from '../utils/paths.ts';
 import { debug } from '../utils/debug.ts';
 import { CONFIG_DIR } from '../config/paths.ts';
@@ -38,22 +39,44 @@ function loadBundledDocs(): Record<string, string> {
   const assetsDir = getAssetsDir();
   const docs: Record<string, string> = {};
 
-  // Auto-discover all files in the bundled docs directory.
+  // Auto-discover all files in the bundled docs directory, including one level of
+  // subdirectories (docs/sources/*.md holds the per-service setup guides).
   // No hardcoded list — any file dropped into resources/docs/ is synced automatically.
-  let files: string[];
+  // Keys are paths relative to assetsDir, so a subdirectory key is "sources/github.md".
+  let entries: Dirent[];
   try {
-    files = existsSync(assetsDir) ? readdirSync(assetsDir) : [];
+    entries = existsSync(assetsDir) ? readdirSync(assetsDir, { withFileTypes: true }) : [];
   } catch {
     console.warn(`[docs] Could not read assets dir: ${assetsDir}`);
     return docs;
   }
 
-  for (const filename of files) {
-    const filePath = join(assetsDir, filename);
+  for (const entry of entries) {
+    const entryPath = join(assetsDir, entry.name);
+    if (entry.isDirectory()) {
+      // Nested docs (e.g. sources/). One level only — deeper nesting has no use
+      // case and would just be a way to hide docs from the sync.
+      let nested: string[];
+      try {
+        nested = readdirSync(entryPath);
+      } catch (error) {
+        console.error(`[docs] Failed to read ${entry.name}/:`, error);
+        continue;
+      }
+      for (const filename of nested) {
+        const key = `${entry.name}/${filename}`;
+        try {
+          docs[key] = readFileSync(join(entryPath, filename), 'utf-8');
+        } catch (error) {
+          console.error(`[docs] Failed to load ${key}:`, error);
+        }
+      }
+      continue;
+    }
     try {
-      docs[filename] = readFileSync(filePath, 'utf-8');
+      docs[entry.name] = readFileSync(entryPath, 'utf-8');
     } catch (error) {
-      console.error(`[docs] Failed to load ${filename}:`, error);
+      console.error(`[docs] Failed to load ${entry.name}:`, error);
     }
   }
 
@@ -125,6 +148,10 @@ export const DOC_REFS = {
   browserTools: `${APP_ROOT}/docs/browser-tools.md`,
   craftCli: `${APP_ROOT}/docs/vorno-cli.md`,
   docsDir: `${APP_ROOT}/docs/`,
+  // Directory, not per-service files. There are ~16 service guides and the system
+  // prompt is not the place to enumerate them — the agent lists the directory when
+  // it is actually setting up a source.
+  sourceGuides: `${APP_ROOT}/docs/sources/`,
 } as const;
 
 /**
@@ -165,14 +192,74 @@ export function initializeDocs(): void {
   // docs are always up-to-date with the running version.
   for (const [filename, content] of Object.entries(bundledDocs)) {
     const docPath = join(DOCS_DIR, filename);
+    // Subdirectory keys (sources/github.md) need their parent created first.
+    mkdirSync(dirname(docPath), { recursive: true });
     writeFileSync(docPath, content, 'utf-8');
   }
+
+  pruneStaleSourceGuides(bundledDocs);
 
   debug(`[docs] Synced ${Object.keys(bundledDocs).length} docs`);
 }
 
+/**
+ * Remove service guides that are no longer bundled.
+ *
+ * The sync is otherwise write-only, so a guide deleted or renamed upstream would
+ * linger in the user's docs dir forever — and a setup guide naming a dead OAuth
+ * console path or a retired endpoint is worse than no guide at all, because the
+ * agent follows it confidently until it fails at credential time.
+ *
+ * Deliberately scoped to docs/sources/ only. The top level of DOCS_DIR is a
+ * directory users can drop their own files into; pruning it would turn a docs
+ * sync into silent data loss. docs/sources/ is wholly ours and did not exist
+ * before the guides did, so nothing user-authored can be in it.
+ */
+function pruneStaleSourceGuides(bundledDocs: Record<string, string>): void {
+  const guidesDir = join(DOCS_DIR, 'sources');
+  if (!existsSync(guidesDir)) return;
+
+  const bundled = new Set(
+    Object.keys(bundledDocs)
+      .filter((key) => key.startsWith('sources/'))
+      .map((key) => key.slice('sources/'.length)),
+  );
+
+  let removed = 0;
+  try {
+    for (const filename of readdirSync(guidesDir)) {
+      if (bundled.has(filename)) continue;
+      try {
+        rmSync(join(guidesDir, filename), { recursive: true });
+        removed++;
+      } catch (error) {
+        console.error(`[docs] Failed to prune stale guide sources/${filename}:`, error);
+      }
+    }
+  } catch (error) {
+    console.error('[docs] Could not prune stale source guides:', error);
+    return;
+  }
+
+  if (removed > 0) debug(`[docs] Pruned ${removed} stale source guide(s)`);
+}
+
 // Export the lazy getter for external access
 export { getBundledDocs };
+
+/**
+ * Drop the once-per-process guards so docs re-sync on the next initializeDocs().
+ *
+ * Test-only. `docsInitialized` and the `_bundledDocs` cache exist to stop hot
+ * reload re-running the sync, but they also mean the first module to call
+ * initializeDocs() in a process decides what every later caller sees — in the
+ * shared suite that is `config/storage.ts`, long before any docs test runs.
+ * Without this, a docs test passes alone and silently no-ops in a full run.
+ */
+export function resetDocsSyncForTests(): void {
+  docsInitialized = false;
+  _bundledDocs = null;
+}
 
 // Re-export source guides utilities (parsing only - bundled guides removed)
 export {
