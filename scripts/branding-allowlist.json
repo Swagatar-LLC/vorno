@@ -45,6 +45,42 @@
       "rules": ["product-name"],
       "class": "upstream-internal",
       "reason": "Lint-rule message shown to developers at lint time — not shipped UX."
+    },
+    {
+      "path": "scripts/electron-dev.ts",
+      "rules": ["product-name"],
+      "class": "wire-contract",
+      "reason": "The CRAFT_APP_NAME *value* is a filesystem path component: apps/electron/src/main/index.ts sets userData to appData/$CRAFT_APP_NAME for multi-instance dev. Renaming it silently orphans every existing dev profile, so this is a stored-path contract, not a display string."
+    },
+    {
+      "path": "scripts/build-server.ts",
+      "rules": ["product-name"],
+      "class": "upstream-internal",
+      "reason": "Upstream standalone-server build script (present in upstream v0.12.0). Strings are developer terminal output plus the generated systemd unit Description; the deployment unit is Vorno-owned and rebranded separately by PLAN-013/023, not by the branding flip."
+    },
+    {
+      "path": "scripts/install-server.sh",
+      "rules": ["product-name"],
+      "class": "upstream-internal",
+      "reason": "Upstream server installer (present in upstream v0.12.0); a POSIX shell script that cannot import the TS branding module. Developer terminal output only — not shipped UX."
+    },
+    {
+      "path": "scripts/browser-tool.ts",
+      "rules": ["product-name"],
+      "class": "upstream-internal",
+      "reason": "Upstream dev helper (present in upstream v0.12.0) — the string is its --help banner printed to a developer terminal, not shipped UX."
+    },
+    {
+      "path": "apps/electron/scripts/build-linux.sh",
+      "rules": ["product-name"],
+      "class": "upstream-internal",
+      "reason": "Pristine upstream AppImage builder, byte-identical to upstream v0.12.0. Vorno ships macOS arm64 only (ADR-0009), so this never runs for us; keeping it unmodified avoids a permanent merge conflict on every upstream sync."
+    },
+    {
+      "path": "apps/electron/scripts/build-win.ps1",
+      "rules": ["product-name"],
+      "class": "upstream-internal",
+      "reason": "Pristine upstream Windows builder, byte-identical to upstream v0.12.0. Vorno ships macOS arm64 only (ADR-0009); kept unmodified to avoid a permanent merge conflict on every upstream sync."
     }
   ]
 }

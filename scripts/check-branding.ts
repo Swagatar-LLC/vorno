@@ -31,10 +31,20 @@ import { join, relative } from 'node:path';
 
 const REPO_ROOT = join(import.meta.dir, '..');
 
-/** The branding module itself (and its re-export) — the one allowed home. */
-const BRANDING_MODULES = new Set([
+/**
+ * Files the gate cannot scan without flagging itself.
+ *
+ * The branding module (and its re-export) is the one allowed home for these
+ * strings. The gate's own rule table and its allowlist necessarily *contain*
+ * the patterns they match — scanning them is a guaranteed false positive, so
+ * they are exempt structurally rather than via an allowlist entry that would
+ * itself need an allowlist entry.
+ */
+const SELF_EXEMPT_FILES = new Set([
   'packages/core/src/branding.ts',
   'packages/shared/src/branding.ts',
+  'scripts/check-branding.ts',
+  'scripts/branding-allowlist.json',
 ]);
 
 /** Surfaces under the gate. packages/server-core and packages/server are
@@ -50,10 +60,28 @@ const SCAN_ROOTS = [
   'packages/ui',
   'packages/session-tools-core',
   'packages/session-mcp-server',
+  'scripts',
 ];
+
+/**
+ * Individually-listed repo-root files. Scanned by name, bypassing SCAN_EXTENSIONS
+ * (`Dockerfile.server` would read as extension `.server`, `.dockerignore` as
+ * `.dockerignore`). These ship real artifacts: OCI image LABELs are user-visible
+ * in `docker inspect` and registry UIs, and the .dockerignore is where upstream's
+ * v0.12.0 `apps/docs-site` stanza landed.
+ *
+ * Root markdown is deliberately NOT scanned. README/NOTICE/TRADEMARK/CONTRIBUTING/
+ * ROADMAP/CODE_OF_CONDUCT name "Craft Agents" as required attribution and
+ * trademark notice (Apache-2.0 + TRADEMARK.md) — measured at ~30 hits across six
+ * files, all correct. Gating them would mean blanket per-file allowlists, which is
+ * how a gate stops meaning anything. `.md` is absent from SCAN_EXTENSIONS for the
+ * same reason.
+ */
+const SCAN_ROOT_FILES = ['Dockerfile.server', '.dockerignore'];
 
 const SCAN_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.html', '.json', '.yml', '.yaml', '.css',
+  '.sh', '.ps1',
 ]);
 
 const SKIP_DIR_NAMES = new Set(['node_modules', 'dist', 'out', 'coverage', 'build', '.vite', '__tests__', '__snapshots__']);
@@ -139,28 +167,35 @@ interface Violation {
 
 const violations: Violation[] = [];
 
+const filesToScan: string[] = [];
 for (const root of SCAN_ROOTS) {
   for (const file of walk(join(REPO_ROOT, root))) {
     const relPath = relative(REPO_ROOT, file);
     const ext = relPath.slice(relPath.lastIndexOf('.'));
     if (!SCAN_EXTENSIONS.has(ext)) continue;
-    if (SKIP_FILE_RE.test(relPath)) continue;
-    if (BRANDING_MODULES.has(relPath)) continue;
+    filesToScan.push(file);
+  }
+}
+for (const name of SCAN_ROOT_FILES) filesToScan.push(join(REPO_ROOT, name));
 
-    const lines = readFileSync(file, 'utf8').split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const rawLine = lines[i]!;
-      if (isCommentLine(rawLine)) continue;
-      // Trailing line comments are not user-visible; `https://` never matches
-      // the ' // ' separator, so URLs in code survive the split.
-      // Known limitation: the split is textual — a string literal that itself
-      // contains ' // ' would have its tail (and any violation there) skipped.
-      const line = rawLine.split(' // ')[0]!;
-      for (const rule of RULES) {
-        if (!rule.re.test(line)) continue;
-        if (isAllowed(relPath, rule.id)) continue;
-        violations.push({ file: relPath, line: i + 1, ruleId: rule.id, text: line.trim().slice(0, 160) });
-      }
+for (const file of filesToScan) {
+  const relPath = relative(REPO_ROOT, file);
+  if (SKIP_FILE_RE.test(relPath)) continue;
+  if (SELF_EXEMPT_FILES.has(relPath)) continue;
+
+  const lines = readFileSync(file, 'utf8').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i]!;
+    if (isCommentLine(rawLine)) continue;
+    // Trailing line comments are not user-visible; `https://` never matches
+    // the ' // ' separator, so URLs in code survive the split.
+    // Known limitation: the split is textual — a string literal that itself
+    // contains ' // ' would have its tail (and any violation there) skipped.
+    const line = rawLine.split(' // ')[0]!;
+    for (const rule of RULES) {
+      if (!rule.re.test(line)) continue;
+      if (isAllowed(relPath, rule.id)) continue;
+      violations.push({ file: relPath, line: i + 1, ruleId: rule.id, text: line.trim().slice(0, 160) });
     }
   }
 }
