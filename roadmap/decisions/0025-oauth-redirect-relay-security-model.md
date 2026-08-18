@@ -139,10 +139,19 @@ trusted from the wire.** The design is tiered by deployment shape.
 - The remote tier adds a registration step and relay-side state (KV; registration is rare,
   1,000 writes/day free tier is ample) — more than a pure-localhost product needs, carried
   because the remote future requires it.
-- Provisioning is Jeff-gated: no agent has a working Cloudflare deploy path (IP-allowlisted
-  token). Jeff must create the Worker, the `auth.vorno.ai` custom-domain binding, the HMAC
-  Worker secret, and (for the remote tier) a KV namespace — ideally as one consolidated ask
-  alongside Lane F's `share.vorno.ai` (ADR-0024).
+- Provisioning is Jeff-gated. The workspace `cloudflare` source token *reads* account state
+  from Jeff's network (Lane F listed R2 buckets 2026-08-17), but **no agent has an
+  unattended deploy path** — `wrangler whoami` is unauthenticated and standing up a public
+  auth endpoint is Jeff's call. What Jeff must create for this lane, to consolidate with Lane
+  F's `share.vorno.ai` list (ADR-0024 / PLAN-035) into one ask:
+
+  | # | Thing | Notes |
+  |---|---|---|
+  | 1 | Worker `vorno-auth-relay` + `auth.vorno.ai` custom domain | custom domain auto-creates the DNS record; separate Worker/origin from apex and from `share.vorno.ai` |
+  | 2 | HMAC signing key as a Worker secret | for the remote-tier binding tokens (decision 3); `kid`-tagged for rotation |
+  | 3 | KV namespace for the callback-origin registry | remote tier only; registration is rare (1,000 writes/day free is ample) |
+  | 4 | `CLOUDFLARE_API_TOKEN` for deploys | shared blocker with Lane F — `wrangler` not authenticated today |
+  | 5 | A privacy policy at `vorno.ai/privacy` | **blocks cutover** — see below; shared with Lane F |
 - Moving user auth traffic onto Swagatar infrastructure makes Swagatar LLC the data
   controller for it; `vorno.ai` has no privacy policy / terms today. A cutover prerequisite,
   raised in ADR-0024 and referenced here.
@@ -153,6 +162,58 @@ trusted from the wire.** The design is tiered by deployment shape.
   keeps it non-breaking but must be documented.
 - The relay could later adopt RFC 8628 device flow for providers that support it, further
   shrinking the redirect surface for headless cases — out of scope here, noted as a door.
+
+## Migration & resource-stranding analysis
+
+LEARNING-057 (vorno-internal, filed by Lane F 2026-08-17) names the trap: **a branding/
+endpoint constant is the address of a *service*, never the address of a *resource*.**
+Flipping `VIEWER_URL` in the share lane aimed live operations at a new backend for objects
+that still lived on the old one — a green typecheck, test suite, and branding gate, and a
+user's transcript stranded publicly-readable forever. Lane F flagged that the OAuth case is
+*potentially worse*, because a redirect URI is registered **with the provider**, so old
+addresses are referenced by more than local state. That warning was correct to raise, and I
+answered its three diagnostic questions against the code rather than by assertion. The
+verified conclusion: **for this lane the cutover is clean** — the relay is a service address
+transited during a stateless leg, not a resource address. Evidence:
+
+1. **What already exists at the old (`agents.craft.do`) address?** Registered redirect URIs
+   inside users' *own* OAuth apps (Google / generic / MCP) and Vorno's own apps (Slack /
+   Microsoft); ephemeral in-flight flows in the server flow store; and stored access/refresh
+   tokens in the vault.
+2. **Is each one's address persisted, or only an opaque id?** The relay callback is **not
+   persisted as a resource address that later operations target.** Stored tokens reference
+   the *provider's* token/API endpoints, never the relay. The redirect URI is persisted only
+   for the lifetime of a single flow, as `flow.redirectUri` in the flow store — not as a
+   durable property of any credential.
+3. **Which call sites mutate an existing resource rather than create one?** **None address
+   the relay by URL to mutate a resource** — Lane F's stranding-shape grep (a `${...URL}`
+   interpolation followed by a `${...Id}` in the same template literal) returns **zero
+   matches** in this lane. Token exchange *replays* `redirect_uri`, but resolves it from the stored flow
+   (`flow.redirectUri`, `packages/server-core/src/handlers/rpc/oauth.ts:55`), **not from the
+   constant** — so a flow that began before a flip still exchanges correctly after it. Token
+   **refresh** carries no `redirect_uri` at all (`grant_type=refresh_token` + client creds;
+   verified in `google-oauth.ts:207`, `generic-oauth.ts:162`, `slack-oauth.ts` refresh) —
+   **stored tokens do not reference the relay and survive the flip untouched.**
+
+This is why the cutover looks like ADR-0023's *stateless* docs flip, not Lane F's stateful
+share flip: no resource is created against the relay address. The two real obligations that
+remain:
+
+- **Re-authorization needs the new URI registered** in each user's own OAuth app
+  (Google/generic/MCP) — the only user-visible migration. Handled by the **dual-registration
+  window**: stand up `auth.vorno.ai`, let users add it alongside the old URI, then flip
+  `OAUTH_RELAY_CALLBACK_URL`. Users who *replace* rather than *add* strand their own in-flight
+  auths until they re-add — call this out in migration docs.
+- **The old relay must stay reachable through the flip window**, because a flow whose auth
+  request already went out points the provider's browser redirect at the *old* origin. This
+  is the transit-leg equivalent of "keep the old backend alive during cutover" — bounded by
+  the flow store's short TTL, not by resource lifetime. Since the old relay is upstream's
+  `agents.craft.do` (which upstream only promises "during the transition"), the flip must not
+  outlast that promise; sequence the flip while the old endpoint is still honored.
+
+Slack/Microsoft (Vorno-owned apps) need **no user action** — Vorno adds the new URI to its
+own app config — *unless* Slack also moves to per-user apps (decision 5), a separate opt-in
+migration.
 
 ## Alternatives considered
 
@@ -181,6 +242,8 @@ trusted from the wire.** The design is tiered by deployment shape.
 - PLAN-023 — Hosted Workspace Server (Phase 2 owns this; lines 41, 118–123, Risks).
 - ADR-0013 — hosted-workspace AuthN/AuthZ (SEC-004 discharged here; `instanceId` decision 5;
   auth ≠ decryption decision 4b).
+- LEARNING-057 (vorno-internal) — flipping an endpoint constant strands resources created
+  against the old one; the diagnostic answered in the migration analysis above.
 - ADR-0023 — Vorno owns its documentation endpoint (own-origin precedent).
 - ADR-0024 (session 260817-windy-vista, Lane F) — own-origin share backend; privacy-policy
   prerequisite; consolidated provisioning ask.
