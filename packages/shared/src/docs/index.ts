@@ -30,14 +30,29 @@ function getAssetsDir(): string {
     ?? join(process.cwd(), 'resources', 'docs');
 }
 
+interface LoadedBundledDocs {
+  /** Doc key → content. Keys are POSIX paths relative to the assets dir, so a
+   *  subdirectory guide is "sources/github.md". This is the shipped manifest. */
+  docs: Record<string, string>;
+  /**
+   * True only if EVERY entry under the assets dir was enumerated and read without
+   * error. When false the manifest may be missing docs this build actually ships,
+   * so the reconcile must delete nothing — a partial manifest wiping real guides
+   * is the exact "worse than no guide" failure the sync exists to prevent.
+   */
+  complete: boolean;
+}
+
 /**
  * Load bundled docs from asset files.
  * Called once at module initialization.
- * Returns empty strings if files don't exist (graceful degradation).
+ * Returns an empty (but `complete: false` on read failure) manifest if files
+ * don't exist, so callers degrade gracefully and never delete on a bad read.
  */
-function loadBundledDocs(): Record<string, string> {
+function loadBundledDocs(): LoadedBundledDocs {
   const assetsDir = getAssetsDir();
   const docs: Record<string, string> = {};
+  let complete = true;
 
   // Auto-discover all files in the bundled docs directory, including one level of
   // subdirectories (docs/sources/*.md holds the per-service setup guides).
@@ -48,7 +63,9 @@ function loadBundledDocs(): Record<string, string> {
     entries = existsSync(assetsDir) ? readdirSync(assetsDir, { withFileTypes: true }) : [];
   } catch {
     console.warn(`[docs] Could not read assets dir: ${assetsDir}`);
-    return docs;
+    // Could not enumerate the bundle at all — flag incomplete so a transient read
+    // failure is never mistaken for "this build ships no docs" and used to prune.
+    return { docs, complete: false };
   }
 
   for (const entry of entries) {
@@ -56,19 +73,29 @@ function loadBundledDocs(): Record<string, string> {
     if (entry.isDirectory()) {
       // Nested docs (e.g. sources/). One level only — deeper nesting has no use
       // case and would just be a way to hide docs from the sync.
-      let nested: string[];
+      let nested: Dirent[];
       try {
-        nested = readdirSync(entryPath);
+        nested = readdirSync(entryPath, { withFileTypes: true });
       } catch (error) {
         console.error(`[docs] Failed to read ${entry.name}/:`, error);
+        complete = false;
         continue;
       }
-      for (const filename of nested) {
-        const key = `${entry.name}/${filename}`;
+      for (const nestedEntry of nested) {
+        const key = `${entry.name}/${nestedEntry.name}`;
+        if (nestedEntry.isDirectory()) {
+          // A doc two levels deep can't be represented as a key, so it would never
+          // sync. Flag the manifest incomplete rather than silently dropping it —
+          // otherwise the reconcile could delete on-disk copies of shipped docs.
+          console.error(`[docs] Ignoring unsupported nested directory ${key}/`);
+          complete = false;
+          continue;
+        }
         try {
-          docs[key] = readFileSync(join(entryPath, filename), 'utf-8');
+          docs[key] = readFileSync(join(entryPath, nestedEntry.name), 'utf-8');
         } catch (error) {
           console.error(`[docs] Failed to load ${key}:`, error);
+          complete = false;
         }
       }
       continue;
@@ -77,26 +104,32 @@ function loadBundledDocs(): Record<string, string> {
       docs[entry.name] = readFileSync(entryPath, 'utf-8');
     } catch (error) {
       console.error(`[docs] Failed to load ${entry.name}:`, error);
+      complete = false;
     }
   }
 
-  return docs;
+  return { docs, complete };
 }
 
 // Lazy-loaded bundled docs cache.
 // IMPORTANT: Must NOT load at module initialization because setBundledAssetsRoot()
 // hasn't been called yet. Loading eagerly causes empty docs on fresh install.
-let _bundledDocs: Record<string, string> | null = null;
+let _loaded: LoadedBundledDocs | null = null;
 
 /**
- * Get bundled docs, loading them lazily on first access.
+ * Get the loaded bundle (docs + completeness), loading lazily on first access.
  * This ensures docs are loaded AFTER setBundledAssetsRoot() has been called.
  */
-function getBundledDocs(): Record<string, string> {
-  if (_bundledDocs === null) {
-    _bundledDocs = loadBundledDocs();
+function getLoadedBundledDocs(): LoadedBundledDocs {
+  if (_loaded === null) {
+    _loaded = loadBundledDocs();
   }
-  return _bundledDocs;
+  return _loaded;
+}
+
+/** Get bundled docs (the shipped manifest, keyed by relative path). */
+function getBundledDocs(): Record<string, string> {
+  return getLoadedBundledDocs().docs;
 }
 
 /**
@@ -185,7 +218,8 @@ export function initializeDocs(): void {
   }
 
   // Load bundled docs lazily (after setBundledAssetsRoot has been called)
-  const bundledDocs = getBundledDocs();
+  const loaded = getLoadedBundledDocs();
+  const bundledDocs = loaded.docs;
 
   // Always write bundled docs to disk on launch.
   // This ensures consistent behavior between debug and release modes —
@@ -197,51 +231,100 @@ export function initializeDocs(): void {
     writeFileSync(docPath, content, 'utf-8');
   }
 
-  pruneStaleSourceGuides(bundledDocs);
+  reconcileDocsDir(loaded);
 
   debug(`[docs] Synced ${Object.keys(bundledDocs).length} docs`);
 }
 
 /**
- * Remove service guides that are no longer bundled.
- *
- * The sync is otherwise write-only, so a guide deleted or renamed upstream would
- * linger in the user's docs dir forever — and a setup guide naming a dead OAuth
- * console path or a retired endpoint is worse than no guide at all, because the
- * agent follows it confidently until it fails at credential time.
- *
- * Deliberately scoped to docs/sources/ only. The top level of DOCS_DIR is a
- * directory users can drop their own files into; pruning it would turn a docs
- * sync into silent data loss. docs/sources/ is wholly ours and did not exist
- * before the guides did, so nothing user-authored can be in it.
+ * Top-level prefix reserved for user-authored docs. Anything under
+ * `<docs>/local/` is never written or deleted by the sync, so offline notes and
+ * power-user copies survive every upgrade. Everything else in the docs dir is
+ * owned by the build and reconciled to match exactly what it ships.
  */
-function pruneStaleSourceGuides(bundledDocs: Record<string, string>): void {
-  const guidesDir = join(DOCS_DIR, 'sources');
-  if (!existsSync(guidesDir)) return;
+const USER_DOCS_PREFIX = 'local';
 
-  const bundled = new Set(
-    Object.keys(bundledDocs)
-      .filter((key) => key.startsWith('sources/'))
-      .map((key) => key.slice('sources/'.length)),
-  );
+/**
+ * Reconcile the on-disk docs dir to exactly what this build ships.
+ *
+ * Writing the bundled docs is not enough: the agent reads this directory to set
+ * sources up, and a guide renamed or dropped in a later build would otherwise
+ * linger from an earlier install. A setup guide naming a dead OAuth console path
+ * or a renamed scope is worse than no guide — it sends the agent down a path that
+ * only fails at credential time. So after writing, we delete what the build no
+ * longer ships, recursively (a stale `sources/<service>.md` is the whole point,
+ * but a renamed top-level doc must go too).
+ *
+ * Deleting user-visible files is the part to get right. Two invariants keep this
+ * from becoming data loss:
+ *
+ *  - Reconcile against the *shipped manifest*, never a wildcard. If that manifest
+ *    is empty or was read incompletely, skip the entire pass — an unexpected
+ *    empty/partial manifest must never wipe the directory.
+ *  - Anything under `local/` is the user's and is left untouched, so offline and
+ *    power-user copies keep working.
+ */
+function reconcileDocsDir(loaded: LoadedBundledDocs): void {
+  if (!existsSync(DOCS_DIR)) return;
 
-  let removed = 0;
-  try {
-    for (const filename of readdirSync(guidesDir)) {
-      if (bundled.has(filename)) continue;
-      try {
-        rmSync(join(guidesDir, filename), { recursive: true });
-        removed++;
-      } catch (error) {
-        console.error(`[docs] Failed to prune stale guide sources/${filename}:`, error);
-      }
-    }
-  } catch (error) {
-    console.error('[docs] Could not prune stale source guides:', error);
+  // A partial read may be missing docs this build actually ships; deleting their
+  // on-disk copies would be the exact failure we're guarding against. Written
+  // docs already landed above — only deletion has to fail safe.
+  if (!loaded.complete) {
+    debug('[docs] Skipping reconcile: bundled manifest read incompletely');
     return;
   }
 
-  if (removed > 0) debug(`[docs] Pruned ${removed} stale source guide(s)`);
+  const shipped = new Set(Object.keys(loaded.docs));
+  if (shipped.size === 0) {
+    // Empty manifest — almost certainly a broken/missing bundle, not a build that
+    // genuinely ships zero docs. Never let it empty the directory.
+    debug('[docs] Skipping reconcile: bundled manifest is empty');
+    return;
+  }
+
+  let removed = 0;
+  const walk = (dirRel: string): void => {
+    const abs = dirRel ? join(DOCS_DIR, dirRel) : DOCS_DIR;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(abs, { withFileTypes: true });
+    } catch (error) {
+      console.error(`[docs] Could not read ${abs} during reconcile:`, error);
+      return;
+    }
+    for (const entry of entries) {
+      // POSIX-style key ("sources/github.md") to match the shipped manifest.
+      const rel = dirRel ? `${dirRel}/${entry.name}` : entry.name;
+
+      // Never touch the user's namespace.
+      if (rel === USER_DOCS_PREFIX || rel.startsWith(`${USER_DOCS_PREFIX}/`)) continue;
+
+      if (entry.isDirectory()) {
+        const childAbs = join(abs, entry.name);
+        walk(rel);
+        // Drop a directory the build no longer populates (e.g. a whole retired
+        // guide subdir), but only once it's empty — never blind-recursive-delete.
+        try {
+          if (readdirSync(childAbs).length === 0) rmSync(childAbs, { recursive: true });
+        } catch {
+          // Non-empty or already gone — leave it.
+        }
+        continue;
+      }
+
+      if (shipped.has(rel)) continue;
+      try {
+        rmSync(join(abs, entry.name));
+        removed++;
+      } catch (error) {
+        console.error(`[docs] Failed to prune stale doc ${rel}:`, error);
+      }
+    }
+  };
+  walk('');
+
+  if (removed > 0) debug(`[docs] Reconciled docs dir: removed ${removed} stale file(s)`);
 }
 
 // Export the lazy getter for external access
@@ -258,7 +341,7 @@ export { getBundledDocs };
  */
 export function resetDocsSyncForTests(): void {
   docsInitialized = false;
-  _bundledDocs = null;
+  _loaded = null;
 }
 
 // Re-export source guides utilities (parsing only - bundled guides removed)
