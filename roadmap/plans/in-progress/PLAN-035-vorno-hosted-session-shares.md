@@ -123,7 +123,7 @@ reviewable and mergeable while `VIEWER_URL` still points at Craft, where it is a
 
 ### Lane 3 — provisioning (**Jeff**) and deploy
 
-Cloudflare account `c3e447a3c0a726801eeb9a1148ff09de`. R2 is already enabled (two
+the Swagatar Cloudflare account. R2 is already enabled (two
 unrelated buckets exist), so no billing action is required. See *What Jeff must create*.
 
 - [ ] R2 bucket `vorno-shares` + lifecycle rule: delete objects 180 days after creation.
