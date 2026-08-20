@@ -1,6 +1,6 @@
 {
   "name": "@craft-agent/electron",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Electron desktop app for Vorno",
   "main": "dist/main.cjs",
   "private": true,
