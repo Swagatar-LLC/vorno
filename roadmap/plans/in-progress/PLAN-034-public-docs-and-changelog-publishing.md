@@ -48,9 +48,8 @@ Fallout from the v0.12.0 merge that PR #152 deliberately left alone.
 
 ### Lane B — docs + changelog site (`Swagatar-LLC/vorno-site`)
 
-Publish to the **existing** `vorno-site` Cloudflare Worker (account
-`c3e447a3c0a726801eeb9a1148ff09de`, zone `2725363d3a92fd613c937ec791ffab9a`, free tier).
-No new DNS, no new Worker.
+Publish to the **existing** `vorno-site` Cloudflare Worker (Swagatar account, free tier;
+IDs are not recorded in this public repo). No new DNS, no new Worker.
 
 - [ ] `/docs` — generated from `apps/electron/resources/docs/*.md` **fetched at the
       release tag** from the public `Swagatar-LLC/vorno` repo, so published docs are
@@ -68,18 +67,40 @@ No new DNS, no new Worker.
 
 ### Lane C — shortener + release dispatch
 
-- [ ] `vrno.io` slugs → `LINKS` map in `~/dev/vrno-shortener/worker/index.js` + redeploy
+- [x] `vrno.io` slugs → `LINKS` map in `~/dev/vrno-shortener/worker/index.js` + redeploy
       (curated slugs are git-reviewable; the KV namespace is for ad-hoc only):
-      `/docs` → `https://vorno.ai/docs`, `/changelog` → `https://vorno.ai/changelog`.
-- [ ] Push `vrno-shortener` to GitHub (long-standing open thread; authorized 2026-08-17).
-- [ ] `release.yml` (vorno) fires a `repository_dispatch` to `vorno-site` after a
+      `/docs` → `https://vorno.ai/docs/`, `/changelog` → `https://vorno.ai/changelog/`
+      (the latter was already correct). Deployed via the Cloudflare REST API —
+      `wrangler` holds no credentials on this machine. Both verified live.
+      The `/docs` comment promised a repoint at `docs.vorno.ai`, a host ADR-0023
+      **rejected** and that has no DNS record; the comment was replaced, not just the
+      value, so it stops misdirecting the next maintainer.
+- [x] Push `vrno-shortener` to GitHub (long-standing open thread; authorized 2026-08-17)
+      → public `Swagatar-LLC/vrno-shortener`.
+- [x] `release.yml` (vorno) fires a `repository_dispatch` to `vorno-site` after a
       successful publish, carrying the version; `vorno-site` builds at that tag and
-      deploys.
-- [ ] **Human-gated:** the dispatch needs a GitHub token secret in `vorno`, and
-      `vorno-site` needs `CLOUDFLARE_API_TOKEN`. An agent must not mint or install those.
-      Until Jeff adds them, publication is a documented one-liner
-      (`bunx wrangler deploy`) run from the release session — the pipeline is built and
-      tested, the last mile is manual.
+      deploys. **PR #165** (sender) + `vorno-site@main` (receiver:
+      `.github/workflows/publish.yml`, `build/verify-live.mjs`). The receiver lives on
+      the default branch because GitHub only honours `repository_dispatch` /
+      `workflow_dispatch` there — on a PR branch it would be untriggerable and so
+      untestable. It also carries a `workflow_dispatch` tag input, so the whole
+      pipeline is runnable by hand without cutting a release.
+      Dispatching is not enough on its own: the API returns 204 as soon as the event
+      is queued, so both sides verify the *live site* over HTTP afterwards.
+- [ ] **Human-gated:** an agent must not mint or install these.
+      - `VORNO_SITE_DISPATCH_TOKEN` in `vorno` — **already exists** (created
+        2026-08-18 02:38 UTC). Scopes unverified: a secret's value is not readable,
+        and the job has never fired.
+      - `CLOUDFLARE_API_TOKEN` in **`vorno-site`** — **still missing**; that repo has
+        no secrets at all. Needs *Workers Scripts: Edit* on the Swagatar account,
+        minted **separately from the workspace
+        `cloudflare` source token** on least-privilege grounds: one permission on one
+        account, living in shared CI rather than a local credential store, revocable
+        without breaking interactive sessions. Note a `CLOUDFLARE_API_TOKEN` exists on
+        `vorno`, where the pipeline does not use it; the deploy runs in `vorno-site`.
+      Until it lands the receiver builds, gates, and warns instead of deploying, and
+      publication is a documented manual step (`npm run build && npx wrangler deploy
+      && npm run verify:live`).
 
 ### Lane D — flip + release
 

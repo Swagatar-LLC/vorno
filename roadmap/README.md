@@ -17,7 +17,8 @@ roadmap/
 │   └── documented/                # Completed AND user-facing docs landed
 ├── decisions/                     # ADRs (Architecture Decision Records)
 │   └── _template.md
-├── discussions/                   # Captured conversations, dossiers, research
+├── discussions/                   # Captured conversations, dossiers, one-off research
+├── research/                      # Multi-document research dossiers (NOT decisions, NOT plans)
 └── upstream/                      # Tracking craft-ai-agents/craft-agents-oss
     ├── compatibility.md           # Wire/protocol commitments (public)
     └── README.md                  # How upstream tracking works
