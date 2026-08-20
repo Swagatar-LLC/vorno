@@ -4,12 +4,12 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Features
 
-- New workspace setting **Idle agent timeout**: an idle session's warm agent process is now released after a configurable number of minutes (default 60, `0` disables). Sessions resume transparently on their next message.
+- **Idle agent timeout is now a workspace setting** — an idle session's warm agent process is released after a configurable number of minutes (default 60; `0` keeps agents alive until quit). The session itself stays fully usable: the next message transparently restarts its agent and the conversation resumes where it left off. Find it under Workspace Settings → Advanced. ([#167](https://github.com/Swagatar-LLC/vorno/pull/167), `9d6d5549`)
 
 ## Improvements
 
 ## Bug Fixes
 
-- Fixed unbounded accumulation of idle agent subprocesses: sessions that finished a turn (including scheduled-automation runs) kept a live agent process forever, and archiving a session never released it. Idle and archived sessions now release their agent process; background tasks in flight are never interrupted.
+- **Idle and archived sessions no longer accumulate live agent processes.** Every session kept its agent subprocess alive until the app quit — scheduled automations added ~25–30 leaked processes a day, and archiving a session never released its runtime. Idle sessions past the workspace timeout and archived sessions now release their agent process; sessions with background tasks still running are never interrupted. ([#167](https://github.com/Swagatar-LLC/vorno/pull/167), `1cee69f9`)
 
 ## Breaking Changes

@@ -3314,15 +3314,28 @@ export class SessionManager implements ISessionManager {
     let evicted = 0
     for (const managed of this.sessions.values()) {
       if (!managed.agent) continue
-      const ttlMinutes = this.resolveIdleAgentTtlMinutes(managed)
-      if (ttlMinutes <= 0) continue
-      const idleMs = now - Math.max(managed.lastMessageAt, managed.lastActivityAt ?? 0)
-      if (idleMs <= ttlMinutes * 60_000) continue
+      // Archived sessions bypass the TTL entirely (including TTL 0): the
+      // archive-time dispose is one-shot and skips a busy runtime, so the
+      // sweep is the retry path that makes archived cleanup eventually
+      // consistent — an archived session never needs a warm subprocess.
+      let idleMs = 0
+      let ttlMinutes = 0
+      if (!managed.isArchived) {
+        ttlMinutes = this.resolveIdleAgentTtlMinutes(managed)
+        if (ttlMinutes <= 0) continue
+        idleMs = now - Math.max(managed.lastMessageAt, managed.lastActivityAt ?? 0)
+        if (idleMs <= ttlMinutes * 60_000) continue
+      }
       if (!this.isAgentRuntimeQuiescent(managed)) continue
       try {
-        if (await this.disposeAgentRuntimeIfQuiescent(managed, 'idle-ttl')) {
+        const reason = managed.isArchived ? 'archived catch-up' : 'idle-ttl'
+        if (await this.disposeAgentRuntimeIfQuiescent(managed, reason)) {
           evicted++
-          sessionLog.info(`Evicted idle agent runtime for session ${managed.id} (idle ${Math.round(idleMs / 60_000)}m > ttl ${ttlMinutes}m)`)
+          sessionLog.info(
+            managed.isArchived
+              ? `Evicted agent runtime for archived session ${managed.id}`
+              : `Evicted idle agent runtime for session ${managed.id} (idle ${Math.round(idleMs / 60_000)}m > ttl ${ttlMinutes}m)`
+          )
         }
       } catch (error) {
         sessionLog.warn(`Idle-TTL eviction failed for ${managed.id}: ${error instanceof Error ? error.message : error}`)

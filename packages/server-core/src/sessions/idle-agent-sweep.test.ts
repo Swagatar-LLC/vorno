@@ -261,4 +261,31 @@ describe('idle agent-runtime TTL sweep', () => {
     expect(agent.dispose).not.toHaveBeenCalled()
     expect(managed.agent).toBe(agent)
   })
+
+  it('sweep catches up an archived session that was busy at archive time, even with TTL 0', async () => {
+    const agent = createAgentStub()
+    // TTL 0 (never evict) and zero idle time: neither idle gate may apply to
+    // an archived session — archive cleanup must be eventually consistent.
+    privates(sm).idleAgentTtlMinutesForced = 0
+    const managed = injectSession('archive-catchup', agent, { idleMinutes: 0 })
+    managed.backgroundTaskRegistry.set('task_10', {
+      taskId: 'task_10',
+      startTime: Date.now(),
+      status: 'running',
+    })
+
+    await sm.archiveSession('archive-catchup')
+    expect(agent.dispose).not.toHaveBeenCalled()
+
+    // Task still running: the sweep must leave the runtime alone.
+    await sweep()
+    expect(agent.dispose).not.toHaveBeenCalled()
+
+    // Task finishes; the next sweep reaps the archived runtime despite TTL 0.
+    managed.backgroundTaskRegistry.get('task_10')!.status = 'completed'
+    await sweep()
+    expect(agent.dispose).toHaveBeenCalledTimes(1)
+    expect(managed.agent).toBeNull()
+    expect(managed.sdkSessionId).toBe('sdk-archive-catchup')
+  })
 })
