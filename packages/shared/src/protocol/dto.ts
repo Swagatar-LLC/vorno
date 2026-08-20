@@ -770,6 +770,11 @@ export interface WorkspaceSettings {
   tokenUsageThresholds?: Record<string, TokenUsageThresholdsDto>
   /** Per-model token-usage threshold overrides, keyed by model ID. Beats the per-provider default. */
   tokenUsageModelOverrides?: Record<string, TokenUsageThresholdsDto>
+  /**
+   * Minutes an idle session keeps its warm agent runtime before SessionManager
+   * disposes it (PLAN-038). 0 disables eviction. Default: 60.
+   */
+  idleAgentTtlMinutes?: number
   /** Feature flag for the Workbench surface (ADR-0014, PLAN-024). Default off. */
   workbenchEnabled?: boolean
   /** Feature flag for the Artifact Home surface (ADR-0016, PLAN-025). Default off. */

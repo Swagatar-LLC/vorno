@@ -123,6 +123,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       enabledSourceSlugs: config?.defaults?.enabledSourceSlugs ?? [],
       tokenUsageThresholds: config?.defaults?.tokenUsageThresholds,
       tokenUsageModelOverrides: config?.defaults?.tokenUsageModelOverrides,
+      idleAgentTtlMinutes: config?.defaults?.idleAgentTtlMinutes,
       workbenchEnabled: config?.defaults?.workbenchEnabled ?? false,
       artifactsEnabled: config?.defaults?.artifactsEnabled ?? false,
       artifactRoots: config?.defaults?.artifactRoots ?? {},
@@ -137,7 +138,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'workbenchEnabled', 'artifactsEnabled', 'artifactRoots']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'idleAgentTtlMinutes', 'workbenchEnabled', 'artifactsEnabled', 'artifactRoots']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
     }
@@ -208,6 +209,16 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
             throw new Error(`${key}.${entryKey}: warn and danger must be numbers in (0, 1) with warn < danger`)
           }
         }
+      }
+    }
+
+    // Validate idleAgentTtlMinutes (PLAN-038): whole minutes, 0 = eviction
+    // disabled, capped at one week (10080). The generic defaults write below
+    // persists it — no dedicated storage path.
+    if (key === 'idleAgentTtlMinutes' && normalizedValue !== undefined && normalizedValue !== null) {
+      const v = normalizedValue
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 10080) {
+        throw new Error('idleAgentTtlMinutes must be an integer between 0 (disabled) and 10080 (one week)')
       }
     }
 

@@ -1356,6 +1356,8 @@
   "settings.workspace.enterWorkspaceName": "Workspace名を入力...",
   "settings.workspace.failedToSave": "{{setting}}の保存に失敗しました",
   "settings.workspace.icon": "アイコン",
+  "settings.workspace.idleAgentTtl": "アイドルエージェントのタイムアウト（分）",
+  "settings.workspace.idleAgentTtlDesc": "セッションのウォームエージェントプロセスを、指定した分数アイドル状態が続いた後に破棄します。次のメッセージで透過的に再起動します。0 に設定すると終了までエージェントを維持します。",
   "settings.workspace.localMcpServers": "ローカルMCPサーバー",
   "settings.workspace.localMcpServersDesc": "stdioサブプロセスサーバーを有効にする",
   "settings.workspace.modeCycling": "モードサイクル",

@@ -1356,6 +1356,8 @@
   "settings.workspace.enterWorkspaceName": "Add meg a munkaterület nevét...",
   "settings.workspace.failedToSave": "{{setting}} mentése sikertelen",
   "settings.workspace.icon": "Ikon",
+  "settings.workspace.idleAgentTtl": "Tétlen ügynök időkorlátja (perc)",
+  "settings.workspace.idleAgentTtlDesc": "Ennyi tétlen perc után leállítja a munkamenet betöltött ügynökfolyamatát. A következő üzenetnél átlátszóan újraindul. A 0 érték kilépésig életben tartja az ügynököket.",
   "settings.workspace.localMcpServers": "Helyi MCP szerverek",
   "settings.workspace.localMcpServersDesc": "stdio alfolyamat-szerverek engedélyezése",
   "settings.workspace.modeCycling": "Módváltás",

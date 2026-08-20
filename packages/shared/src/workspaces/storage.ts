@@ -309,6 +309,7 @@ export function createWorkspaceAtPath(
     // defaultLlmConnection: undefined - falls back to app default
     permissionMode: globalDefaults.workspaceDefaults.permissionMode,
     cyclablePermissionModes: globalDefaults.workspaceDefaults.cyclablePermissionModes,
+    idleAgentTtlMinutes: globalDefaults.workspaceDefaults.idleAgentTtlMinutes,
     enabledSourceSlugs: [],
     workingDirectory: undefined,
     ...defaults, // User-provided defaults override global defaults

@@ -1356,6 +1356,8 @@
   "settings.workspace.enterWorkspaceName": "输入 Workspace 名称...",
   "settings.workspace.failedToSave": "无法保存 {{setting}}",
   "settings.workspace.icon": "图标",
+  "settings.workspace.idleAgentTtl": "空闲代理超时（分钟）",
+  "settings.workspace.idleAgentTtlDesc": "会话的预热代理进程在空闲达到该分钟数后将被释放，并会在下一条消息时透明地重新启动。0 表示代理保持存活直到退出。",
   "settings.workspace.localMcpServers": "本地 MCP 服务器",
   "settings.workspace.localMcpServersDesc": "启用 stdio 子进程服务器",
   "settings.workspace.modeCycling": "模式切换",

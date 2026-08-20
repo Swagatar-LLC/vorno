@@ -1356,6 +1356,8 @@
   "settings.workspace.enterWorkspaceName": "Enter workspace name...",
   "settings.workspace.failedToSave": "Failed to save {{setting}}",
   "settings.workspace.icon": "Icon",
+  "settings.workspace.idleAgentTtl": "Idle agent timeout (minutes)",
+  "settings.workspace.idleAgentTtlDesc": "Dispose a session's warm agent process after this many idle minutes. It restarts transparently on the next message. 0 keeps agents alive until quit.",
   "settings.workspace.localMcpServers": "Local MCP Servers",
   "settings.workspace.localMcpServersDesc": "Enable stdio subprocess servers",
   "settings.workspace.modeCycling": "Mode Cycling",

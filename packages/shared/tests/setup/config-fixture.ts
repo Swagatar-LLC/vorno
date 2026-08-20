@@ -59,6 +59,7 @@ if (!process.env.CRAFT_CONFIG_DIR) {
             thinkingLevel: 'medium',
             permissionMode: 'ask',
             cyclablePermissionModes: ['safe', 'ask', 'allow-all'],
+            idleAgentTtlMinutes: 60, // fork(PLAN-038)
             localMcpServers: { enabled: true },
           },
         },
