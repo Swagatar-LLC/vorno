@@ -69,7 +69,7 @@ Three further facts shape the design rather than just motivating it:
 
 **Vorno hosts its own shared sessions.** `VIEWER_URL` splits out of `SERVICE_BASE_URL`
 the same way `DOCS_URL` did in ADR-0023, and points at a Cloudflare Worker on the
-Swagatar account (`c3e447a3c0a726801eeb9a1148ff09de`) backed by R2.
+Swagatar Cloudflare account backed by R2.
 
 1. `VIEWER_URL = 'https://share.vorno.ai'`, independent of `SERVICE_BASE_URL`.
 2. A new Worker, `vorno-share`, serves the built `apps/viewer` SPA **and** the four API
