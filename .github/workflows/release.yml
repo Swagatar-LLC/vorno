@@ -239,6 +239,7 @@ jobs:
       # asynchronously.
       # ---------------------------------------------------------------------
       - name: Verify docs + changelog are live
+        id: verify
         if: steps.dispatch.outputs.dispatched == 'true'
         env:
           TAG: ${{ github.ref_name }}
@@ -266,20 +267,60 @@ jobs:
             sleep 30
           done
 
+      # ---------------------------------------------------------------------
+      # The summary is what a maintainer reads after a failed release, so it
+      # has to name the state it is actually in. There are four, and they have
+      # different recovery actions:
+      #
+      #   token absent     -> nothing was attempted; publish by hand
+      #   dispatch failed  -> the token exists but was rejected; check scopes
+      #   not live in time -> the site build/deploy is the thing that broke
+      #   verified live    -> done
+      #
+      # Branching on `dispatched` alone conflates them: a rejected dispatch
+      # never writes the output, so it reads as "token not set", and a
+      # verification timeout still reads as "verified live" — each pointing at
+      # the wrong repository. Branch on step outcomes instead.
+      # ---------------------------------------------------------------------
       - name: Summary
         if: always()
         env:
           TAG: ${{ github.ref_name }}
           DISPATCHED: ${{ steps.dispatch.outputs.dispatched }}
+          DISPATCH_OUTCOME: ${{ steps.dispatch.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
         run: |
           {
             echo "## Documentation for ${TAG}"
             echo
-            if [ "${DISPATCHED}" = "true" ]; then
+            if [ "${DISPATCHED}" = "true" ] && [ "${VERIFY_OUTCOME}" = "success" ]; then
               echo "Dispatched to \`Swagatar-LLC/vorno-site\` and verified live."
               echo
               echo "- <https://vorno.ai/docs/>"
               echo "- <https://vorno.ai/changelog/${TAG#v}/>"
+            elif [ "${DISPATCHED}" = "true" ] && [ "${VERIFY_OUTCOME}" = "failure" ]; then
+              echo "**Dispatched, but NOT live** — \`vorno.ai\` did not serve \`/docs/\` and"
+              echo "\`/changelog/${TAG#v}/\` within 15 minutes, so \`DOCS_URL\` points at stale pages."
+              echo
+              echo "The app release itself is unaffected. The failure is on the receiving side:"
+              echo "check the **Publish docs + changelog** run in \`Swagatar-LLC/vorno-site\`"
+              echo "(a missing \`CLOUDFLARE_API_TOKEN\` there makes it build and warn instead of"
+              echo "deploying), then re-run it with \`tag=${TAG}\`."
+            elif [ "${DISPATCHED}" = "true" ]; then
+              echo "**Publication state unknown** — the dispatch succeeded but verification did"
+              echo "not complete (outcome: \`${VERIFY_OUTCOME:-none}\`)."
+              echo
+              echo "Check <https://vorno.ai/changelog/${TAG#v}/> by hand before assuming the"
+              echo "documentation for ${TAG} is published."
+            elif [ "${DISPATCH_OUTCOME}" = "failure" ]; then
+              echo "**Not published** — the \`repository_dispatch\` to \`Swagatar-LLC/vorno-site\`"
+              echo "failed. The token is set, so this is a token or API problem, not a missing"
+              echo "secret: verify \`VORNO_SITE_DISPATCH_TOKEN\` still has **Contents: read and"
+              echo "write** on \`Swagatar-LLC/vorno-site\` and has not expired."
+              echo
+              echo "The app release itself is unaffected. To publish the docs meanwhile, run the"
+              echo "**Publish docs + changelog** workflow in \`Swagatar-LLC/vorno-site\` with"
+              echo "\`tag=${TAG}\`."
             else
               echo "**Not published** — \`VORNO_SITE_DISPATCH_TOKEN\` is not set on this repository."
               echo
