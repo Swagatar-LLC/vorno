@@ -163,7 +163,7 @@ with **AND**. There is no OR, no NOT-tree, no nesting.
 
 ```ts
 where?: {
-  isArchived?: boolean            // absence normalizes to false
+  isArchived?: boolean | { in: boolean[] }   // absence normalizes to false; { in: [true, false] } = both states
   isFlagged?: boolean
   hidden?: boolean
   status?: string | { in: string[] } | { not: string }

@@ -168,6 +168,8 @@ implementation work.
       it is explicitly `false`. Both representations asserted separately. (Guards the defect that
       would otherwise match zero of 105, or silently drop every restored session.)
 - [ ] A call passing `where` without `isArchived` returns no archived sessions.
+- [ ] `isArchived: { in: [true, false] }` returns both states — including sessions whose header
+      omits the key (the absent-normalizes-to-false representation counts as `false` here too).
 - [ ] A call passing **no** `where` — including `list_sessions()` with no arguments and
       `{status:'done'}` — returns byte-identical results to pre-change `main`. This is the
       backwards-compatibility guarantee and gets an explicit regression test.
