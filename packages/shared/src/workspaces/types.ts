@@ -78,6 +78,14 @@ export interface WorkspaceConfig {
      */
     tokenUsageModelOverrides?: Record<string, TokenUsageThresholds>;
 
+    /**
+     * Minutes an idle session keeps its warm agent runtime before
+     * SessionManager disposes it (PLAN-038). The runtime restarts
+     * transparently on the next message. 0 disables eviction (agents stay
+     * alive until quit). Default: 60.
+     */
+    idleAgentTtlMinutes?: number;
+
     /** Feature flag for the Workbench surface (ADR-0014, PLAN-024). Default off. */
     workbenchEnabled?: boolean;
 

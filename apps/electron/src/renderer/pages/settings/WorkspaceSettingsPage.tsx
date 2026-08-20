@@ -49,6 +49,7 @@ import {
   SettingsRow,
   SettingsToggle,
   SettingsMenuSelectRow,
+  SettingsNumberInput,
 } from '@/components/settings'
 
 export const meta: DetailsPageMeta = {
@@ -77,6 +78,8 @@ export default function WorkspaceSettingsPage() {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('ask')
   const [workingDirectory, setWorkingDirectory] = useState('')
   const [localMcpEnabled, setLocalMcpEnabled] = useState(true)
+  // fork(PLAN-038): idle agent runtime TTL (minutes; 0 = disabled)
+  const [idleAgentTtlMinutes, setIdleAgentTtlMinutes] = useState(60)
   // fork(PLAN-024): Review Workbench feature flag
   const [workbenchEnabled, setWorkbenchEnabled] = useState(false)
   // fork(PLAN-025 C1): Artifact plane feature flag + registered roots
@@ -112,6 +115,7 @@ export default function WorkspaceSettingsPage() {
           setPermissionMode(settings.permissionMode || 'ask')
           setWorkingDirectory(settings.workingDirectory || '')
           setLocalMcpEnabled(settings.localMcpEnabled ?? true)
+          setIdleAgentTtlMinutes(settings.idleAgentTtlMinutes ?? 60)
           setWorkbenchEnabled(settings.workbenchEnabled ?? false)
           setArtifactsEnabled(settings.artifactsEnabled ?? false)
           setArtifactRoots(settings.artifactRoots ?? {})
@@ -302,6 +306,16 @@ export default function WorkspaceSettingsPage() {
     async (enabled: boolean) => {
       setLocalMcpEnabled(enabled)
       await updateWorkspaceSetting('localMcpEnabled', enabled)
+    },
+    [updateWorkspaceSetting]
+  )
+
+  // fork(PLAN-038): idle agent runtime TTL. Consumers read live from workspace
+  // config, so the change applies to future idle checks; no push needed.
+  const handleIdleAgentTtlCommit = useCallback(
+    async (minutes: number) => {
+      setIdleAgentTtlMinutes(minutes)
+      await updateWorkspaceSetting('idleAgentTtlMinutes', minutes)
     },
     [updateWorkspaceSetting]
   )
@@ -654,6 +668,19 @@ export default function WorkspaceSettingsPage() {
                   checked={localMcpEnabled}
                   onCheckedChange={handleLocalMcpEnabledChange}
                 />
+                {/* fork(PLAN-038): idle agent runtime TTL */}
+                <SettingsRow
+                  label={t("settings.workspace.idleAgentTtl")}
+                  description={t("settings.workspace.idleAgentTtlDesc")}
+                >
+                  <SettingsNumberInput
+                    aria-label={t("settings.workspace.idleAgentTtl")}
+                    value={idleAgentTtlMinutes}
+                    onCommit={handleIdleAgentTtlCommit}
+                    min={0}
+                    max={10080}
+                  />
+                </SettingsRow>
                 {/* fork(PLAN-024): Review Workbench feature flag */}
                 <SettingsToggle
                   label={t("settings.workspace.workbench")}

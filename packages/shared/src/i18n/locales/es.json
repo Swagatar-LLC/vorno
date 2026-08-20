@@ -1356,6 +1356,8 @@
   "settings.workspace.enterWorkspaceName": "Introduce el nombre del Workspace...",
   "settings.workspace.failedToSave": "No se pudo guardar {{setting}}",
   "settings.workspace.icon": "Icono",
+  "settings.workspace.idleAgentTtl": "Tiempo de espera del agente inactivo (minutos)",
+  "settings.workspace.idleAgentTtlDesc": "Elimina el proceso de agente activo de una sesión tras estos minutos de inactividad. Se reinicia de forma transparente con el siguiente mensaje. 0 mantiene los agentes activos hasta salir.",
   "settings.workspace.localMcpServers": "Servidores MCP locales",
   "settings.workspace.localMcpServersDesc": "Activar servidores de subprocesos stdio",
   "settings.workspace.modeCycling": "Ciclo de modos",

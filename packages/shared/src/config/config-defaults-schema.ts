@@ -33,6 +33,11 @@ export interface ConfigDefaults {
     thinkingLevel: ThinkingLevel;
     permissionMode: PermissionMode;
     cyclablePermissionModes: PermissionMode[];
+    /**
+     * Minutes an idle session keeps its warm agent runtime before
+     * SessionManager disposes it (PLAN-038). 0 disables eviction.
+     */
+    idleAgentTtlMinutes: number;  // fork(PLAN-038)
     localMcpServers: {
       enabled: boolean;
     };

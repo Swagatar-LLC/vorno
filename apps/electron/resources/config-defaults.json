@@ -19,6 +19,7 @@
     "thinkingLevel": "think",
     "permissionMode": "safe",
     "cyclablePermissionModes": ["safe", "allow-all"],
+    "idleAgentTtlMinutes": 60,
     "localMcpServers": {
       "enabled": true
     }

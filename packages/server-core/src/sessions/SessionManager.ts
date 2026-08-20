@@ -812,6 +812,14 @@ interface ManagedSession {
   /** Set when user requests stop - allows event loop to drain before clearing isProcessing */
   stopRequested?: boolean
   lastMessageAt: number
+  /**
+   * Runtime-only: ms timestamp of the last turn completion (the true→false
+   * `isProcessing` transition in setProcessing). `lastMessageAt` is stamped at
+   * turn START, so a long turn would look "idle" for its whole duration if the
+   * TTL sweep read it alone. Idle time for agent-runtime eviction is therefore
+   * measured from max(lastMessageAt, lastActivityAt ?? 0). Not persisted.
+   */
+  lastActivityAt?: number
   streamingText: string
   // Incremented each time a new message starts processing.
   // Used to detect if a follow-up message has superseded the current one (stale-request guard).
@@ -1095,6 +1103,9 @@ export function createManagedSession(
     messages: [],
     isProcessing: false,
     lastMessageAt: (s.lastMessageAt ?? s.lastUsedAt ?? Date.now()) as number,
+    // Seed the activity clock from the same source so a freshly-loaded session
+    // starts its idle-TTL countdown from its last persisted use, not from 0.
+    lastActivityAt: (s.lastMessageAt ?? s.lastUsedAt ?? Date.now()) as number,
     streamingText: '',
     processingGeneration: 0,
     isFlagged: (s.isFlagged ?? false) as boolean,
@@ -1273,6 +1284,19 @@ export class SessionManager implements ISessionManager {
   }
   private set keepBackgroundTasksAlive(v: boolean) { this.keepBackgroundTasksAliveForced = v }
   /**
+   * Idle agent-runtime TTL (PLAN-038). Resolution is LIVE on every sweep tick
+   * (workspace config → global workspaceDefaults → 60), so a settings change
+   * applies without a restart. 0 or negative disables eviction. The forced
+   * field is a test seam mirroring keepBackgroundTasksAliveForced above.
+   */
+  private idleAgentTtlMinutesForced: number | null = null
+  /**
+   * Periodic idle-runtime sweep handle. Started at the end of initialize() —
+   * never in the constructor, because tests construct SessionManager directly
+   * and would leak intervals. Cleared in cleanup().
+   */
+  private idleSweepTimer: ReturnType<typeof setInterval> | null = null
+  /**
    * Per-session in-flight runtime-refresh promise. Ensures `updateRuntimeConfig`
    * (or a dispose) cannot overlap with another refresh OR with a send-path
    * `getOrCreateAgent` on the same session. Without this serialization, a
@@ -1308,6 +1332,10 @@ export class SessionManager implements ISessionManager {
     if (!was && processing) {
       sessionRuntimeHooks.onSessionStarted()
     } else if (was && !processing) {
+      // Turn completion is the activity signal for idle-TTL eviction:
+      // lastMessageAt is stamped at turn START, so without this a long turn
+      // would count as idle time and could be evicted right after finishing.
+      managed.lastActivityAt = Date.now()
       sessionRuntimeHooks.onSessionStopped()
     }
   }
@@ -1977,6 +2005,12 @@ export class SessionManager implements ISessionManager {
 
       // Signal that initialization is complete — IPC handlers waiting on initGate will proceed
       this.initGate.markReady()
+
+      // Idle agent-runtime TTL sweep (PLAN-038). Started here rather than in
+      // the constructor so directly-constructed test instances don't leak
+      // intervals. unref keeps the timer from pinning the process open.
+      this.idleSweepTimer = setInterval(() => { void this.sweepIdleAgentRuntimes() }, 60_000)
+      this.idleSweepTimer.unref?.()
     } catch (error) {
       this.initGate.markFailed(error)
       throw error
@@ -3196,6 +3230,120 @@ export class SessionManager implements ISessionManager {
     managed.backendRuntimeSignature = undefined
     managed.backendRestartSignature = undefined
     unregisterSessionScopedToolCallbacks(sessionId)
+  }
+
+  /**
+   * Resolve the idle agent-runtime TTL (minutes) for a session's workspace.
+   * Precedence mirrors the permissionMode idiom in createSession: workspace
+   * config → global workspaceDefaults → 60. <= 0 disables eviction. Read live
+   * per sweep tick so a Settings change applies without a restart.
+   */
+  private resolveIdleAgentTtlMinutes(managed: ManagedSession): number {
+    if (this.idleAgentTtlMinutesForced !== null) return this.idleAgentTtlMinutesForced
+    const wsDefaults = loadWorkspaceConfig(managed.workspace.rootPath)?.defaults
+    return wsDefaults?.idleAgentTtlMinutes
+      ?? loadConfigDefaults().workspaceDefaults.idleAgentTtlMinutes
+      ?? 60
+  }
+
+  /**
+   * A session's agent runtime may be disposed only when NOTHING is (or is
+   * about to be) using the subprocess. Every clause here is a live-work guard:
+   * an in-flight turn (either flag — sendMessage flips managed.isProcessing
+   * before the agent starts streaming), a stop still draining, queued messages
+   * awaiting replay, a paused auth handoff, a pending source-activation retry,
+   * or a running background task whose sub-agents live inside the subprocess.
+   */
+  private isAgentRuntimeQuiescent(managed: ManagedSession): boolean {
+    if (!managed.agent) return false
+    if (managed.isProcessing || managed.agent.isProcessing()) return false
+    if (managed.stopRequested) return false
+    if (managed.messageQueue.length > 0) return false
+    if (managed.pendingAuthRequestId) return false
+    if (managed.autoRetryPending) return false
+    for (const task of managed.backgroundTaskRegistry.values()) {
+      if (task.status === 'running') return false
+    }
+    return true
+  }
+
+  /**
+   * Dispose a session's agent runtime iff it is quiescent, serialized through
+   * `agentRefreshLocks` like tryRefreshAgentRuntime — a dispose must not
+   * overlap a runtime refresh or a send-path getOrCreateAgent. Quiescence is
+   * re-checked AFTER any in-flight lock resolves: the awaited refresh may have
+   * recreated the agent or a message may have started a turn in the interim.
+   *
+   * Shared by the idle-TTL sweep (which additionally gates on idle time) and
+   * archiveSession (which disposes immediately — archived sessions never need
+   * a warm subprocess, so no clock applies). Returns whether a dispose ran.
+   */
+  private async disposeAgentRuntimeIfQuiescent(managed: ManagedSession, reason: string): Promise<boolean> {
+    if (!this.isAgentRuntimeQuiescent(managed)) return false
+
+    const inflight = this.agentRefreshLocks.get(managed.id)
+    if (inflight) {
+      await inflight.catch(() => undefined)
+      if (!this.isAgentRuntimeQuiescent(managed)) return false
+    }
+
+    const work = this.disposeManagedAgentRuntime(managed, reason)
+    // Track the work so concurrent refresh/dispose callers serialize behind it.
+    // Errors surface to our own await below, not to lock waiters.
+    const tracked = work.then(() => undefined, () => undefined)
+    this.agentRefreshLocks.set(managed.id, tracked)
+    try {
+      await work
+      return true
+    } finally {
+      if (this.agentRefreshLocks.get(managed.id) === tracked) {
+        this.agentRefreshLocks.delete(managed.id)
+      }
+    }
+  }
+
+  /**
+   * Idle-TTL eviction sweep (PLAN-038). Runs every minute (see initialize());
+   * disposes the backend runtime of sessions that have been quiescent past
+   * their workspace's TTL. The session itself stays fully usable — the next
+   * send lazily recreates the agent via getOrCreateAgent, and sdkSessionId is
+   * untouched so the conversation resumes where it left off.
+   */
+  private async sweepIdleAgentRuntimes(): Promise<void> {
+    const now = Date.now()
+    let evicted = 0
+    for (const managed of this.sessions.values()) {
+      if (!managed.agent) continue
+      // Archived sessions bypass the TTL entirely (including TTL 0): the
+      // archive-time dispose is one-shot and skips a busy runtime, so the
+      // sweep is the retry path that makes archived cleanup eventually
+      // consistent — an archived session never needs a warm subprocess.
+      let idleMs = 0
+      let ttlMinutes = 0
+      if (!managed.isArchived) {
+        ttlMinutes = this.resolveIdleAgentTtlMinutes(managed)
+        if (ttlMinutes <= 0) continue
+        idleMs = now - Math.max(managed.lastMessageAt, managed.lastActivityAt ?? 0)
+        if (idleMs <= ttlMinutes * 60_000) continue
+      }
+      if (!this.isAgentRuntimeQuiescent(managed)) continue
+      try {
+        const reason = managed.isArchived ? 'archived catch-up' : 'idle-ttl'
+        if (await this.disposeAgentRuntimeIfQuiescent(managed, reason)) {
+          evicted++
+          sessionLog.info(
+            managed.isArchived
+              ? `Evicted agent runtime for archived session ${managed.id}`
+              : `Evicted idle agent runtime for session ${managed.id} (idle ${Math.round(idleMs / 60_000)}m > ttl ${ttlMinutes}m)`
+          )
+        }
+      } catch (error) {
+        sessionLog.warn(`Idle-TTL eviction failed for ${managed.id}: ${error instanceof Error ? error.message : error}`)
+      }
+    }
+    if (evicted > 0) {
+      sessionLog.debug(`Idle agent sweep evicted ${evicted} runtime(s)`)
+    }
   }
 
   /**
@@ -4726,6 +4874,16 @@ export class SessionManager implements ISessionManager {
       // Notify all windows for this workspace
       this.sendEvent({ type: 'session_archived', sessionId }, managed.workspace.id)
       this.emitUnreadSummaryChanged()
+      // An archived session never needs a warm subprocess — dispose the
+      // runtime immediately when quiescent (no TTL clock). The quiescence
+      // guards still apply: a running background task or in-flight turn keeps
+      // the runtime alive, and the session archives regardless. Failure here
+      // must not fail the archive itself.
+      try {
+        await this.disposeAgentRuntimeIfQuiescent(managed, 'session archived')
+      } catch (error) {
+        sessionLog.warn(`Failed to dispose runtime for archived session ${sessionId}: ${error instanceof Error ? error.message : error}`)
+      }
     }
   }
 
@@ -9636,6 +9794,12 @@ export class SessionManager implements ISessionManager {
       }
     }
     this.automationSystems.clear()
+
+    // Stop the idle agent-runtime TTL sweep
+    if (this.idleSweepTimer) {
+      clearInterval(this.idleSweepTimer)
+      this.idleSweepTimer = null
+    }
 
     // Clear all pending delta flush timers
     for (const [sessionId, timer] of this.deltaFlushTimers) {

@@ -1356,6 +1356,8 @@
   "settings.workspace.enterWorkspaceName": "Wprowadź nazwę Workspace...",
   "settings.workspace.failedToSave": "Nie udało się zapisać {{setting}}",
   "settings.workspace.icon": "Ikona",
+  "settings.workspace.idleAgentTtl": "Limit czasu bezczynności agenta (minuty)",
+  "settings.workspace.idleAgentTtlDesc": "Zamyka rozgrzany proces agenta sesji po tylu minutach bezczynności. Uruchamia się on ponownie w sposób przezroczysty przy następnej wiadomości. 0 utrzymuje agentów przy życiu do zamknięcia aplikacji.",
   "settings.workspace.localMcpServers": "Lokalne serwery MCP",
   "settings.workspace.localMcpServersDesc": "Włącz serwery podprocesów stdio",
   "settings.workspace.modeCycling": "Przełączanie trybów",
