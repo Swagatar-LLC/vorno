@@ -1,7 +1,7 @@
 ---
 id: PLAN-038
 title: Idle agent-runtime TTL eviction and dispose-on-archive
-status: in-progress
+status: done
 direction: none
 owner: jh
 created: 2026-08-20
@@ -80,16 +80,17 @@ read live per sweep tick so changes apply without restart. UI:
 
 ## Acceptance
 
-- [ ] Idle session past TTL has its agent disposed; next message transparently
+- [x] Idle session past TTL has its agent disposed; next message transparently
       resumes via `sdkSessionId`.
-- [ ] Sessions with running background tasks, queued messages, pending auth, or
+- [x] Sessions with running background tasks, queued messages, pending auth, or
       in-flight turns are never evicted.
-- [ ] `archiveSession` disposes the runtime under the same guards.
-- [ ] TTL editable per workspace in Settings; `0` disables; default 60.
-- [ ] Tests added/updated (sweep predicate, archive dispose, handler validation).
-- [ ] All nine CI gates green; Greptile 5/5.
+- [x] `archiveSession` disposes the runtime under the same guards.
+- [x] TTL editable per workspace in Settings; `0` disables; default 60.
+- [x] Tests added/updated (sweep predicate, archive dispose, handler validation).
+- [x] All nine CI gates green; Greptile 5/5.
 
 ## Status log
 
 - `2026-08-20` — created in `planned/`
 - `2026-08-20` — moved to `in-progress/` (implementation in this PR)
+- `2026-08-20` — shipped in v0.18.0 (PRs #167 merge + #168 lockfile unblock + #169 release); all acceptance boxes verified: eviction + transparent resume covered by 13 tests, TTL setting live in Workspace Settings, Greptile 5/5, feed + docs/changelog publication verified over HTTP. Moved to `done/`.
