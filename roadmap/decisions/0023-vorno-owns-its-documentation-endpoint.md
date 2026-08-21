@@ -1,7 +1,7 @@
 ---
 id: ADR-0023
 title: Vorno owns its documentation endpoint; DOCS_URL splits from SERVICE_BASE_URL
-status: proposed
+status: accepted
 date: 2026-08-17
 supersedes: []
 superseded-by: []
