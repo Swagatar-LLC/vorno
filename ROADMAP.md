@@ -141,10 +141,11 @@ folder for detail.
   shipped as one milestone. **Workflows**: a saved, versioned, parameterized Workflow
   Definition becomes a first-class object over the existing task engine — run it from a
   typed form, view it as a DAG, and trust steps to produce schema-validated outputs;
-  a task becomes one bound instance of a definition (PLAN-039). **Headroom**: the
-  token-headroom accounting and gated durable memory Vorno needs for long-running work,
-  extracted as a harness-agnostic open-source library that Vorno itself consumes
-  (PLAN-040). Staged deliberately behind this milestone: server-homed instances with
+  a task becomes one bound instance of a definition (PLAN-039). **Context discipline**: the
+  [Headroom](https://github.com/headroomlabs-ai/headroom) OSS compression engine adopted
+  into the supply chain (vetted, policy-gated), plus the complement it doesn't provide —
+  token-headroom accounting, budget policy, and gated durable memory — extracted as our
+  own harness-agnostic open-source library that Vorno itself consumes (PLAN-040). Staged deliberately behind this milestone: server-homed instances with
   authentication and team management (PLAN-041, PLAN-042 — stubs). Tracked as
   [`roadmap/directions/05-workflows-and-headroom.md`](roadmap/directions/05-workflows-and-headroom.md).
 - **Artifact plane** — the first rung of Dynamic Workspaces (C1): a typed, versioned,

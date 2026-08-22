@@ -6,7 +6,7 @@ opened: 2026-08-22
 related-decisions: []
 related-plans:
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md
-  - PLAN-040-headroom-oss-token-and-memory-library.md
+  - PLAN-040-context-discipline-adopt-headroom-extract-memory-library.md
   - PLAN-041-server-homed-instances-with-auth.md
   - PLAN-042-team-management.md
 ---
@@ -17,7 +17,8 @@ related-plans:
 > a declarative workflow contract a session must satisfy, not a prompt."*
 
 **This is the current top roadmap priority.** The next milestone has two major
-pieces — **Workflows** (PLAN-039) and **Headroom** (PLAN-040) — and one sequel
+pieces — **Workflows** (PLAN-039) and **Context Discipline: Headroom + our
+token/memory library** (PLAN-040) — and one sequel
 milestone deliberately staged behind it: **server-homed instances with auth and
 team management** (PLAN-041, PLAN-042, both stubs until this milestone lands).
 
@@ -41,13 +42,19 @@ schema's entire control-flow half (`when`, `loop`, `for_each`, `retry`,
 `params`, `outputs`, `aggregate`, `approval`) has **zero** authored uses —
 dead surface, because no authoring or viewing UI can reach it.
 
-The second half of the bet: the context disciplines Vorno had to build to keep
-long-running agent work alive — token headroom accounting, budget thresholds,
-context trimming, and gated durable memory — are not Vorno-specific. They are a
-**library other harnesses need too**, and per the project charter
-(harness-agnosticism), extracting them as an OSS library both hardens Vorno's
-own implementation and stakes an open position: **Headroom**, a token + memory
-library with pluggable storage and no heavy runtime dependency.
+The second half of the bet is **context discipline**, built as a layered stack
+with a deliberate supply-chain choice at the bottom. The compression layer is
+**adopted, not built**: [Headroom](https://github.com/headroomlabs-ai/headroom)
+(Apache-2.0, ~67k stars; content-aware, reversible context compression with
+TS/Python SDKs, a local proxy, and an MCP server) enters Vorno's supply chain
+as the trimming engine. What Vorno had to invent to keep long-running agent
+work alive — token headroom *accounting*, budget thresholds and *policy*, and
+*gated durable memory* — is the part Headroom does not do, is not
+Vorno-specific, and is a library other harnesses need too. Per the project
+charter (harness-agnosticism), we extract it as our own OSS library (working
+name TBD — a product-owner call; it cannot be "Headroom"): pluggable storage,
+no heavy runtime dependency, with Headroom compression invoked as the flagship
+trim strategy under our policy layer.
 
 ## Why these two together
 
@@ -61,7 +68,7 @@ discovering the ceiling in production.
 ```mermaid
 graph LR
     A[PLAN-039<br/>Workflows] --> M[Milestone:<br/>reusable, durable,<br/>self-serve agent work]
-    B[PLAN-040<br/>Headroom] --> M
+    B[PLAN-040<br/>Context discipline:<br/>Headroom adopted +<br/>our token/memory lib] --> M
     M --> C[PLAN-041<br/>Server-homed instances + auth]
     M --> D[PLAN-042<br/>Team management]
 ```
