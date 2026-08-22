@@ -3,12 +3,16 @@ id: DIR-05
 title: Durable Workflows & Headroom — reusable work, portable context
 status: active
 opened: 2026-08-22
-related-decisions: []
+related-decisions:
+  - 0027-lean-on-the-os-for-lifecycle-chores.md
 related-plans:
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md
   - PLAN-040-context-discipline-adopt-headroom-extract-memory-library.md
   - PLAN-041-server-homed-instances-with-auth.md
   - PLAN-042-team-management.md
+  - PLAN-043-roadmap-console-interactive-work-surface.md
+  - PLAN-044-cross-system-work-requests.md
+  - PLAN-045-roadmap-reduction-pass.md
 ---
 
 # Direction 5 — Durable Workflows & Headroom
@@ -21,6 +25,14 @@ pieces — **Workflows** (PLAN-039) and **Context Discipline: Headroom + our
 token/memory library** (PLAN-040) — and one sequel
 milestone deliberately staged behind it: **server-homed instances with auth and
 team management** (PLAN-041, PLAN-042, both stubs until this milestone lands).
+
+**Sequence.** One deliberate detour runs *first*: **PLAN-043** upgrades the
+roadmap console into an interactive work surface that decomposes plans into
+runnable tasks — dogfooding that discovers the workflow structure's real
+requirements and becomes PLAN-039's test harness. Then PLAN-039 → PLAN-040
+(the milestone), then the staged stubs (PLAN-041/042/044). PLAN-045 is a
+scheduled roadmap-reduction pass (2026-08-29) that trims the surrounding
+surface so this direction stands on longer poles.
 
 ## The bet
 
@@ -67,11 +79,35 @@ discovering the ceiling in production.
 
 ```mermaid
 graph LR
-    A[PLAN-039<br/>Workflows] --> M[Milestone:<br/>reusable, durable,<br/>self-serve agent work]
+    T[PLAN-043<br/>Roadmap-console detour:<br/>dogfood the task breakdown] --> A[PLAN-039<br/>Workflows]
+    A --> M[Milestone:<br/>reusable, durable,<br/>self-serve agent work]
     B[PLAN-040<br/>Context discipline:<br/>Headroom adopted +<br/>our token/memory lib] --> M
     M --> C[PLAN-041<br/>Server-homed instances + auth]
     M --> D[PLAN-042<br/>Team management]
+    M --> E[PLAN-044<br/>Cross-system work requests]
 ```
+
+## Seeing the work: ask → task → project
+
+A workflow that runs unattended is only trustworthy if you can *see where
+things stand*. This direction carries an explicit **visualization
+requirement**: during a workflow run, a zoomable, legible view of where a
+given ask sits — the **ask**, the **task** executing it, and the **project**
+(an overall body of work) it belongs to. This has immediate application
+beyond Vorno itself in a sibling Swagatar product.
+
+- **Near term:** "lanes of work" composed from primitives Vorno already has —
+  projects, labels, and the kanban board. No new surface; sharper use of the
+  existing ones.
+- **Long term, stated plainly:** kanban starts to fall apart once workflows
+  exist, because it cannot show **information flows** — processes flowing
+  *through* agents, including work arriving from other departments or
+  external systems (PLAN-044's inbound work requests are exactly such
+  flows). The board shows where cards sit; it cannot show what is moving
+  between them. The DAG projection (PLAN-039 W3) is the first artifact on
+  the path to a flow-native view, and its interactivity bar (clickable
+  nodes that open the underlying session or artifact) is the stepping stone
+  toward DIR-04 dynamic workspaces and, eventually, a node-graph editor.
 
 ## The audience bar
 
@@ -84,10 +120,13 @@ Concretely:
   contracts, and settings. The worker sees fields, never YAML.
 - **Schemas are inferred, not composed.** Run a node once, inspect what it
   returned, offer "lock this shape." Confirmation, not authorship.
-- **The DAG view starts as a projection, not an editor.** Vorno renders Mermaid
-  natively; a definition compiles to a graph with decision diamonds for `when`
-  and back-edges for `loop`. Legible on day one, before any node-graph editor
-  is attempted.
+- **The DAG view starts as a projection, not an editor — but not a static
+  one.** Vorno renders Mermaid natively; a definition compiles to a graph with
+  decision diamonds for `when` and back-edges for `loop`. Legible on day one,
+  before any node-graph editor is attempted. A static picture is not the end
+  state, though: PLAN-039 W3 sets an **interactivity bar** (click a node →
+  open its session/artifact; collapse/expand groups), built on the seams the
+  shell's renderer already exposes.
 
 ## What sits behind this milestone
 
@@ -101,11 +140,33 @@ runs them*. That is the sequel milestone, staged deliberately behind this one:
   (PLAN-023, in progress).
 - **Team management** (PLAN-042, stub) — users, roles, and sharing within an
   instance, so a definition authored once can be run by a team.
+- **Cross-system work requests** (PLAN-044, stub) — dynamically generated
+  inbound webhooks that ask an instance for a body of work, with async
+  responses and an A2A-protocol evaluation.
 
 These stubs exist so the workflow-definition data model is designed with
 multi-user, server-homed ownership in mind — not so that any of it is built
 now. Storage stays file-backed and single-writer for this milestone;
-coordination (run leases, instance ownership) is a PLAN-041 concern.
+coordination (run leases, instance ownership) is a PLAN-041 concern. The
+user-facing halves of that future — instance-level user awareness, access
+control on workflow files, workflow versioning — land **incrementally via
+ADRs and guiding principles** as this milestone's design decisions are made,
+not as one big build afterward.
+
+**Hostable unit (business note, post-milestone).** Once PLAN-041 makes an
+instance a real deployment unit, the same artifact becomes a *trustable
+hostable unit* we can shop to deploy-target platforms: ship first-class
+`fly.toml` / `render.yaml` definitions and pursue referral/partnership
+arrangements per instance started. Deliberately brief here — it is a
+business opportunity contingent on the milestone and PLAN-041 landing well,
+not a work item in it.
+
+**Lifecycle chores follow ADR-0027 ("lean on the OS").** Everything this
+direction accumulates on disk — run directories, instance folders, workflow
+artifacts — gets its retention and pruning from filesystem + OS-scheduler
+recipes per ADR-0027, with app code involved only where quiescence needs
+app semantics (PLAN-038's precedent). No in-app lifecycle subsystem gets
+built for workflows.
 
 ## Non-goals for this direction
 

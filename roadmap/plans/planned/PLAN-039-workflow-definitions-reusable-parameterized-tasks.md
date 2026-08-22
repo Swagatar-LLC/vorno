@@ -9,7 +9,9 @@ updated: 2026-08-22
 related:
   - PLAN-041-server-homed-instances-with-auth.md (sequel — definition ownership model must not preclude it)
   - PLAN-042-team-management.md (sequel)
-blocked-by: []
+  - PLAN-043-roadmap-console-interactive-work-surface.md (the detour that precedes W1 and becomes this plan's test harness)
+blocked-by:
+  - PLAN-043
 ---
 
 # PLAN-039 — Workflow Definitions: reusable, parameterized, inspectable tasks
@@ -69,11 +71,35 @@ bounded failure-aware retry, token budgets, and a verify/repair loop.
 - `${params.<name>}` interpolation already works in the runner; this phase is
   authoring + binding UI only.
 
-### W3 — DAG view (read-only, Mermaid projection)
+### W3 — DAG view (Mermaid projection with an interactivity bar)
 
 - Compile a definition (and a live run) to a natively-rendered Mermaid graph:
   nodes, `depends_on` edges, decision diamonds for `when`, back-edges for
   `loop`, run-state coloring from the existing node-state events.
+- **Interactivity bar — a static picture is not enough.** The projection must
+  support, at minimum: **click a node → open the thing it represents** (the
+  node's session, or its output artifact once W4 lands) and
+  **collapse/expand groups** (subgraphs). The shell's renderer already
+  provides the seam: `beautiful-mermaid` inlines the SVG into the React tree
+  (no iframe, no message bridge needed) and stamps every node/edge/subgraph
+  with semantic `data-id` / `data-from` / `data-to` attributes — one
+  delegated click handler over `g.node` elements is node-level interaction
+  with **no renderer change**. Pan/zoom already exists in the fullscreen
+  overlay (`useRichBlockInteractions`); the work is composing per-node
+  clicks with it (drag-vs-click discrimination, and suppressing the current
+  whole-block tap-to-fullscreen behavior on this surface). Upstream
+  mermaid.js `click` directives are *not* the mechanism — the vendored
+  renderer doesn't parse them.
+- **Project-level execution visualization.** During a run, the answer to
+  "where does this ask sit?" must be zoomable across three levels: the
+  **ask**, the **task** (this DAG), and the **project** — an overall body of
+  work. Near-term this is "lanes of work" composed from existing primitives
+  (projects, labels, kanban); the DAG view is the task-level pane of that
+  picture, not a standalone artifact. See DIR-05 "Seeing the work" for the
+  long-term concern (kanban cannot show information flows once workflows
+  exist) — W3 does not solve that, but its click-through-to-session
+  behavior is deliberately the first stepping stone toward DIR-04 dynamic
+  workspaces and an eventual node-graph editor.
 - Explicitly *not* a node-graph editor; comprehension before authoring.
 
 ### W4 — Typed node outputs (the contract at the session boundary)
@@ -120,6 +146,7 @@ bounded failure-aware retry, token budgets, and a verify/repair loop.
 - [ ] Two instances of one definition coexist with independent runs, statuses, and board cards.
 - [ ] A definition with params presents a typed form on run; the bound instance records the supplied values.
 - [ ] A definition and a live run render as a DAG (Mermaid projection) including `when`/`loop` where authored.
+- [ ] Clicking a DAG node opens the node's session (or output artifact); subgraph groups collapse/expand; no renderer fork required.
 - [ ] A node with an output schema fails-and-retries on invalid output via the `'invalid'` retry trigger; `${nodes.<id>.output.<field>}` resolves typed fields.
 - [ ] "Lock this shape" proposes a schema from an observed run output.
 - [ ] Round-trip tests: definition → instance → editor → definition is lossless (extends the `task-spec-form` invariant).
@@ -128,3 +155,4 @@ bounded failure-aware retry, token budgets, and a verify/repair loop.
 ## Status log
 
 - `2026-08-22` — created in `planned/` as the first half of the DIR-05 milestone (top roadmap priority).
+- `2026-08-22` — amended from product-owner review of PR #171: W3 gains an interactivity bar (clickable nodes, collapse/expand — grounded in the shell's `beautiful-mermaid` `data-*`/inline-SVG seam) and the ask→task→project visualization requirement; sequenced behind the PLAN-043 dogfooding detour.
