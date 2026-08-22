@@ -38,7 +38,24 @@ Workspaces and workflow definitions homed on headless server instances
   before.*
 - **Multi-instance configuration** — a configuration layer for managing
   several instances without a heavyweight external service.
+- **A trustable hostable unit** — the instance packaged as a one-command
+  deploy target (`fly.toml`, `render.yaml`) suitable for shopping to
+  hosting platforms, with referral/partnership arrangements per instance
+  started as the business angle. Post-milestone; see the note in DIR-05.
+
+## How this lands: incrementally, not as one build
+
+Product-owner framing (2026-08-22): instance-level **user awareness**,
+**access control on workflow files**, and **proper workflow versioning** do
+not arrive as a single server-auth epic. They land **incrementally, via
+ADRs and guiding principles** — each DIR-05-era design decision (definition
+identity, storage layout, run records) carries a short "server-homed
+consequences" note, so that by the time this stub becomes a real plan, most
+of the architecture is already settled on paper and the build is small.
+Expanding this stub should begin by collecting those notes, not by
+designing from scratch.
 
 ## Status log
 
 - `2026-08-22` — created as a stub behind the DIR-05 milestone.
+- `2026-08-22` — amended from product-owner review of PR #171: user awareness / access control / versioning land incrementally via ADRs + guiding principles; hostable-unit + deploy-target partnership note added.
