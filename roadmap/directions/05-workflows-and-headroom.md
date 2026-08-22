@@ -7,7 +7,7 @@ related-decisions:
   - 0027-lean-on-the-os-for-lifecycle-chores.md
 related-plans:
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md
-  - PLAN-040-context-discipline-adopt-headroom-extract-memory-library.md
+  - PLAN-040-integrate-headroom.md
   - PLAN-041-server-homed-instances-with-auth.md
   - PLAN-042-team-management.md
   - PLAN-043-roadmap-console-interactive-work-surface.md
@@ -21,8 +21,8 @@ related-plans:
 > a declarative workflow contract a session must satisfy, not a prompt."*
 
 **This is the current top roadmap priority.** The next milestone has two major
-pieces — **Workflows** (PLAN-039) and **Context Discipline: Headroom + our
-token/memory library** (PLAN-040) — and one sequel
+pieces — **Workflows** (PLAN-039) and **Headroom integration** (PLAN-040) —
+and one sequel
 milestone deliberately staged behind it: **server-homed instances with auth and
 team management** (PLAN-041, PLAN-042, both stubs until this milestone lands).
 
@@ -54,19 +54,17 @@ schema's entire control-flow half (`when`, `loop`, `for_each`, `retry`,
 `params`, `outputs`, `aggregate`, `approval`) has **zero** authored uses —
 dead surface, because no authoring or viewing UI can reach it.
 
-The second half of the bet is **context discipline**, built as a layered stack
-with a deliberate supply-chain choice at the bottom. The compression layer is
-**adopted, not built**: [Headroom](https://github.com/headroomlabs-ai/headroom)
-(Apache-2.0, ~67k stars; content-aware, reversible context compression with
-TS/Python SDKs, a local proxy, and an MCP server) enters Vorno's supply chain
-as the trimming engine. What Vorno had to invent to keep long-running agent
-work alive — token headroom *accounting*, budget thresholds and *policy*, and
-*gated durable memory* — is the part Headroom does not do, is not
-Vorno-specific, and is a library other harnesses need too. Per the project
-charter (harness-agnosticism), we extract it as our own OSS library (working
-name TBD — a product-owner call; it cannot be "Headroom"): pluggable storage,
-no heavy runtime dependency, with Headroom compression invoked as the flagship
-trim strategy under our policy layer.
+The second half of the bet is **context discipline, by integration**:
+[Headroom](https://github.com/headroomlabs-ai/headroom) (Apache-2.0, ~67k
+stars; Rust core with TS/Python SDKs, a local proxy, and an MCP server) enters
+Vorno's supply chain as *the* context-discipline layer — content-aware
+reversible compression, token measurement and management, and multi-layer
+cross-agent memory. **We are not building a library.** Vorno's work is
+integration (vetted, pinned, flag-gated, reversible) plus one deliberate build
+item: a **pluggable extension interface for additional memory storage formats
+and querying** — interface first, pursued as an upstream contribution to
+Headroom — behind which Vorno's existing gated memory engine plugs in as a
+backend rather than living beside it.
 
 ## Why these two together
 
@@ -81,7 +79,7 @@ discovering the ceiling in production.
 graph LR
     T[PLAN-043<br/>Roadmap-console detour:<br/>dogfood the task breakdown] --> A[PLAN-039<br/>Workflows]
     A --> M[Milestone:<br/>reusable, durable,<br/>self-serve agent work]
-    B[PLAN-040<br/>Context discipline:<br/>Headroom adopted +<br/>our token/memory lib] --> M
+    B[PLAN-040<br/>Headroom integration:<br/>compression, tokens,<br/>memory + extension seam] --> M
     M --> C[PLAN-041<br/>Server-homed instances + auth]
     M --> D[PLAN-042<br/>Team management]
     M --> E[PLAN-044<br/>Cross-system work requests]
@@ -130,9 +128,9 @@ Concretely:
 
 ## What sits behind this milestone
 
-Once workflows are reusable objects and context/memory management is a
-portable library, the natural next question is *where workflows live and who
-runs them*. That is the sequel milestone, staged deliberately behind this one:
+Once workflows are reusable objects and context/memory discipline is handled
+by the integrated Headroom layer, the natural next question is *where
+workflows live and who runs them*. That is the sequel milestone, staged deliberately behind this one:
 
 - **Server-homed instances with auth** (PLAN-041, stub) — the headless server
   (PLAN-013, shipped) becomes the home for workspaces and workflow definitions,

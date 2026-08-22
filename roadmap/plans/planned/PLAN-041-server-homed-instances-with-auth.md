@@ -10,7 +10,7 @@ related:
   - PLAN-013-server-only-deployment.md (shipped foundation)
   - PLAN-023-hosted-workspace-server.md (in-progress foundation)
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md
-  - PLAN-040-context-discipline-adopt-headroom-extract-memory-library.md
+  - PLAN-040-integrate-headroom.md
 blocked-by:
   - PLAN-039
   - PLAN-040

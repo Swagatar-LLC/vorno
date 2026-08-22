@@ -141,11 +141,13 @@ folder for detail.
   shipped as one milestone. **Workflows**: a saved, versioned, parameterized Workflow
   Definition becomes a first-class object over the existing task engine — run it from a
   typed form, view it as a DAG, and trust steps to produce schema-validated outputs;
-  a task becomes one bound instance of a definition (PLAN-039). **Context discipline**: the
-  [Headroom](https://github.com/headroomlabs-ai/headroom) OSS compression engine adopted
-  into the supply chain (vetted, policy-gated), plus the complement it doesn't provide —
-  token-headroom accounting, budget policy, and gated durable memory — extracted as our
-  own harness-agnostic open-source library that Vorno itself consumes (PLAN-040).
+  a task becomes one bound instance of a definition (PLAN-039). **Headroom integration**: the
+  [Headroom](https://github.com/headroomlabs-ai/headroom) OSS project adopted into the
+  supply chain (vetted, pinned, flag-gated) as the context-discipline layer —
+  compression, token management, and multi-layer memory — with one build item on our
+  side: a pluggable extension interface for additional memory storage formats and
+  querying, pursued as an upstream contribution, behind which Vorno's existing memory
+  engine plugs in as a backend (PLAN-040).
   One deliberate detour runs first: the roadmap console becomes an interactive work
   surface that decomposes plans into runnable tasks — dogfooding that doubles as
   PLAN-039's test harness (PLAN-043). The direction also carries an explicit

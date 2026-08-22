@@ -1,0 +1,133 @@
+---
+id: PLAN-040
+title: Integrate Headroom — context compression, token management, and memory
+status: planned
+direction: DIR-05
+owner: jh
+created: 2026-08-22
+updated: 2026-08-22
+related:
+  - PLAN-002-token-usage-display.md (surface that migrates onto Headroom stats)
+  - PLAN-003-token-usage-thresholds-workspace-settings.md (surface that migrates onto Headroom stats)
+  - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md (milestone sibling)
+blocked-by: []
+---
+
+# PLAN-040 — Integrate Headroom: context compression, token management, memory
+
+> **We are not building a library.** [Headroom](https://github.com/headroomlabs-ai/headroom)
+> (Apache-2.0, ~67k stars; Rust core, TypeScript/Python SDKs, local proxy, MCP
+> server) is adopted into Vorno's supply chain as **the** context-discipline
+> layer: compression, token management, and multi-layer memory. Vorno's work is
+> **integration** — plus one deliberate build item: a **pluggable extension
+> interface for additional memory storage formats and querying**, where the
+> *interface* is the priority, pursued as an upstream contribution first.
+
+## Goal
+
+Long-running and repeated agent work (PLAN-039 workflows especially) runs on
+Headroom for context discipline: tool outputs and context compressed
+(reversibly, originals retrievable), token behavior measured and managed, and
+memory shared across agents — with Vorno's existing memory engine plugged in
+*behind Headroom's interface* rather than beside it.
+
+## What Headroom provides (verify at integration time, not from README claims)
+
+- **Compression:** content-aware (JSON / code / prose engines), reversible with
+  on-demand retrieval of originals; output-token verbosity steering.
+- **Token measurement:** savings/perf analytics (`headroom stats`, dashboard).
+- **Memory, multi-layer:** cross-agent shared store (Claude/Codex/Gemini/Grok,
+  auto-dedup, provenance) + `headroom learn` (mines failed sessions, writes
+  corrections to agent context files). Default substrate: local markdown —
+  philosophically aligned with our file-first, human-readable bias (ADR-0027).
+- **Extension seams:** pipeline lifecycle hooks (`on_pipeline_event`),
+  compression hooks, provider slices, downstream MCP tools.
+- **Integration surfaces:** TS/Python libraries, HTTP proxy
+  (OpenAI/Anthropic-compatible), MCP server (`headroom_compress`,
+  `headroom_retrieve`, `headroom_stats`), framework adapters.
+
+## Scope
+
+### I0 — Adoption + vetting (supply-chain hygiene, not evaluation-to-decide)
+
+The decision to integrate is made. Vetting is about *how safely*, not *whether*:
+license/NOTICE audit, network/telemetry behavior audit (it sits in the token
+path and sees all context — nothing leaves the machine without explicit
+opt-in), version pinning with a documented update cadence (no `latest`
+dist-tags — LEARNING-062 class), and benchmarks on real Vorno workloads to set
+rollout defaults. Rollout is flag-gated per workspace and reversible; Vorno
+must degrade gracefully if Headroom is absent.
+
+### I1 — Integration surface + wiring
+
+- Choose the surface: bias to the **TypeScript SDK in-process** (Vorno is a TS
+  codebase; the agent loop and Conductor are ours to instrument); the proxy and
+  MCP server remain fallbacks/companions where in-process is wrong. Record the
+  choice as a short ADR if it constrains architecture.
+- Wire compression into the agent session loop and Conductor node dispatch;
+  wire retrieval so reversibility is a user-visible affordance, not just an
+  internal cache.
+- Vorno's token surfaces (PLAN-002/003 displays and thresholds) read through
+  Headroom's stats where they overlap; Vorno-side glue stays thin app code.
+  **Any gap found between Vorno's token-management needs and Headroom's
+  features is handled as thin glue or an upstream contribution — explicitly
+  not a new library.**
+
+### I2 — Memory: adopt the layers, build the extension interface
+
+- Adopt Headroom's multi-layer memory as the memory substrate for agent
+  sessions and workflows.
+- **The priority build item of this plan:** a **pluggable extension interface
+  for additional memory storage formats and querying** — so alternative
+  backends (different formats, different query semantics) can sit behind
+  Headroom's memory rather than beside it. Design against Headroom's existing
+  extension seams (pipeline hooks / provider slices); **pursue it as an
+  upstream contribution first** (per the roadmap's standing posture of
+  contributing portable improvements upstream), carrying it as a maintained
+  patch only if upstream declines.
+- **First consumer of that interface:** the private agentic-memory v2 engine
+  (gated loads, logged retrieval, PRG trims, archive semantics) plugs in as a
+  backend; the `agentic-memory` MCP source becomes a thin host over that
+  plugged backend. Its gated semantics become an adapter behavior, not a
+  parallel engine.
+
+## Non-goals
+
+- **Building our own compression, token, or memory library.** (Corrected twice
+  during planning; recording it so it cannot drift back in: the earlier
+  "extract our own OSS library" framing is dead.)
+- **Forking Headroom.** Extension via its seams and upstream PRs only.
+- **Vector-DB / RAG infrastructure.** A retrieval backend could arrive later
+  *through* the extension interface; building one is out of scope.
+- **Replacing Vorno's run-log durability.** Conductor persistence (run logs,
+  node outputs) is untouched; Headroom manages context, not execution state.
+
+## Open questions (resolve during I0/I1)
+
+1. Integration surface: TS SDK vs proxy vs MCP — and whether Vorno's existing
+   MCP source machinery makes the MCP server the cheapest *first* step even if
+   the SDK is the end state.
+2. The upstream-contribution path for the memory extension interface: what do
+   Headroom maintainers accept, and what shape (storage-adapter trait / hook
+   contract) fits their architecture?
+3. How much of the v2 memory engine's gated behavior (PRG trims, retrieval
+   logging, archive markers) expresses cleanly as a backend behind Headroom's
+   interface vs. needing interface support upstream.
+4. Where budget *enforcement* lives if Headroom's token features are
+   measurement-first: thin Vorno glue over `headroom_stats`, or an upstream
+   feature request.
+
+## Acceptance
+
+- [ ] I0: vetting report (license, telemetry/network audit, pinning + update cadence) and benchmark results on real Vorno workloads committed to `roadmap/evidence/`.
+- [ ] Headroom integrated behind a per-workspace flag, off by default until benchmarks set defaults; Vorno fully functional with it absent or disabled.
+- [ ] A workflow run (PLAN-039) executes with compression active; originals retrievable through a user-visible affordance.
+- [ ] Token displays/thresholds (PLAN-002/003 surfaces) read through Headroom stats where they overlap; gaps documented as glue or filed upstream — no new library introduced.
+- [ ] Memory extension interface designed against Headroom's seams; upstream contribution opened (or their decline documented and the patch carried with rationale).
+- [ ] agentic-memory v2 runs as a plugged backend behind that interface; the MCP source is a thin host over it.
+- [ ] Docs: a `vorno.ai/docs` page on Vorno + Headroom — what it does, how to toggle it, what leaves the machine (nothing without opt-in).
+
+## Status log
+
+- `2026-08-22` — created in `planned/` as the second half of the DIR-05 milestone (top roadmap priority).
+- `2026-08-22` — reframed once (adoption vs. name-collision misread), then **corrected to final form on product-owner direction: pure integration.** Headroom provides compression, token management, and multi-layer memory; Vorno builds only integration glue plus the pluggable memory-extension interface (formats + querying), interface-first, upstream-first. No library of ours, full stop.
