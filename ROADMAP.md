@@ -145,8 +145,15 @@ folder for detail.
   [Headroom](https://github.com/headroomlabs-ai/headroom) OSS compression engine adopted
   into the supply chain (vetted, policy-gated), plus the complement it doesn't provide —
   token-headroom accounting, budget policy, and gated durable memory — extracted as our
-  own harness-agnostic open-source library that Vorno itself consumes (PLAN-040). Staged deliberately behind this milestone: server-homed instances with
-  authentication and team management (PLAN-041, PLAN-042 — stubs). Tracked as
+  own harness-agnostic open-source library that Vorno itself consumes (PLAN-040).
+  One deliberate detour runs first: the roadmap console becomes an interactive work
+  surface that decomposes plans into runnable tasks — dogfooding that doubles as
+  PLAN-039's test harness (PLAN-043). The direction also carries an explicit
+  execution-visualization requirement (ask → task → project; interactive DAG views).
+  Staged deliberately behind the milestone: server-homed instances with
+  authentication, team management, and cross-system work requests (PLAN-041,
+  PLAN-042, PLAN-044 — stubs); a scheduled roadmap-reduction pass trims the
+  surrounding surface (PLAN-045, 2026-08-29). Tracked as
   [`roadmap/directions/05-workflows-and-headroom.md`](roadmap/directions/05-workflows-and-headroom.md).
 - **Artifact plane** — the first rung of Dynamic Workspaces (C1): a typed, versioned,
   context-aware index of everything a workspace produces, with an Artifact Home surface
