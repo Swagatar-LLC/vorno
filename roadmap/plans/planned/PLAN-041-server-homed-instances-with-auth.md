@@ -8,7 +8,7 @@ created: 2026-08-22
 updated: 2026-08-22
 related:
   - PLAN-013-server-only-deployment.md (shipped foundation)
-  - PLAN-023-hosted-workspace-server.md (in-progress foundation)
+  - PLAN-023-hosted-workspace-server.md (archived; Phase 0 remains authoritative)
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md
   - PLAN-040-integrate-headroom.md
 blocked-by:
