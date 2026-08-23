@@ -10,7 +10,19 @@ related:
   - ADR-0028-suv-as-the-shippable-unit-between-plan-and-task.md (the governance shape this plan implements)
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md (this detour is its test harness and requirements probe)
   - PLAN-045-roadmap-reduction-pass.md (the mining pass runs on this surface)
-related-suvs: []
+related-suvs:
+  - SUV-0001-put-the-roadmap-console-under-version-control.md (P1)
+  - SUV-0002-suv-corpus-scaffolding-and-work-management-instructions.md (P2)
+  - SUV-0003-teach-corpus-py-the-suv-type.md (P2)
+  - SUV-0004-render-suvs-on-the-console-board-and-workstream-view.md (P2)
+  - SUV-0005-dispatch-feedback-through-the-cli-instead-of-a-deep-link.md (P3)
+  - SUV-0006-isolate-each-feedback-run-in-its-own-git-worktree.md (P3)
+  - SUV-0007-corpus-validator-as-the-termination-predicate.md (P3)
+  - SUV-0008-reconciling-feedback-prompt-with-a-bounded-loop.md (P3)
+  - SUV-0009-incremental-task-yaml-composer-with-dag-preview.md (P4)
+  - SUV-0010-validate-task-definitions-against-the-real-schema.md (P4)
+  - SUV-0011-publish-a-definition-into-a-vorno-workspace.md (P5)
+  - SUV-0012-run-one-published-task-unattended-and-report-findings-to-plan-039.md (P6)
 blocked-by: []
 ---
 
@@ -222,3 +234,4 @@ relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
 - `2026-08-23` — first implementation attempt reverted (PR #173 closed, recovery SHA `6714dcf3`). Scope drifted into Vorno product change — a `new-task` deep-link action and an `availableModelRoutes` field on the upstream `TaskGenerateRequest` DTO — because "Break Down" was built as a prompt launcher rather than an authoring tool, leaving the task artifact reachable only inside Vorno. Root cause is a governance gap, not agent error: a plan is a feature, and nothing smaller declared a shippable boundary.
 - `2026-08-23` — console feedback anchoring rebuilt after the handoff proved unusable on its first real trial. Two defects: quotes were captured from *rendered* text but matched against *raw markdown*, so any quote crossing a hard wrap or sitting inside `**bold**` could never resolve; and staleness was a whole-document hash, so appending to a status log — the most common write in this corpus — reported every intact anchor as broken. Fixed by matching against a rendered-text projection and re-resolving the quote plus 64 chars of stored context, yielding `ok` / `moved` / `ambiguous` / `missing`. Console-side only; survived the revert.
 - `2026-08-23` — rewritten around ADR-0028. Five sequenced phases; the load-bearing correction is that a task definition is authored and versioned in the roadmap repo, and publishing is a plain file write into the layout `storage.ts` already scans — so this plan requires no Vorno change at all.
+- `2026-08-23` — decomposed into twelve SUVs (`SUV-0001`–`SUV-0012`) covering all six phases, and the SUV corpus itself was scaffolded: `roadmap/suvs/` with the plan status folders verbatim plus `definitions/`, a template, a folder README, the `roadmap-suv-create` skill, and the ladder written into `CLAUDE.md` / `AGENTS.md` / `roadmap/README.md` / `roadmap/plans/README.md`. `roadmap-plan-advance` now serves both corpora off one transition graph. That is SUV-0002's own scope, landed alongside the record describing it.

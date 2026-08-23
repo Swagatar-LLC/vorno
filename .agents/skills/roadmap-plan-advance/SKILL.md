@@ -1,24 +1,34 @@
 ---
 name: roadmap-plan-advance
-description: Advance a plan to a new status by performing git mv between folders and rewriting frontmatter status, with a status-log entry
+description: Advance a plan or an SUV to a new status by performing git mv between folders and rewriting frontmatter status, with a status-log entry
 ---
 
 # Skill: roadmap-plan-advance
 
-Move a plan from one status folder to another, keeping frontmatter and folder name in sync. Append a status-log entry. Optionally stage for commit.
+Move a plan **or an SUV** from one status folder to another, keeping frontmatter and folder name in sync. Append a status-log entry. Optionally stage for commit.
+
+> **Serves both corpora.** Plans and SUVs share one status set and one
+> transition graph verbatim (ADR-0028), and the roadmap console renders them
+> from that single graph. The only difference is the root: `roadmap/plans/` vs
+> `roadmap/suvs/`. Derive it from the ID prefix — `PLAN-` (three digits) or
+> `SUV-` (four digits) — and everything below applies unchanged.
+>
+> `roadmap/suvs/definitions/` is **not** a status folder. Never move a
+> `SUV-NNNN.task.yaml` when advancing its SUV.
 
 ## When to invoke
 
 - "Move PLAN-007 to in-progress"
 - "PLAN-002 is blocked on tldraw license review"
 - "Mark PLAN-001 done"
+- "SUV-0003 is done"
 
 ## Inputs
 
-- **plan-id** (required) — `PLAN-NNN`
-- **target-status** (required) — one of `planned`, `in-progress`, `blocked`, `done`, `documented`
+- **id** (required) — `PLAN-NNN` or `SUV-NNNN`
+- **target-status** (required) — one of `planned`, `in-progress`, `blocked`, `done`, `documented`, `archived`
 - **note** (optional) — context for the status-log entry. For `blocked`, this should describe what blocks it.
-- **blocked-by** (only when target = `blocked`) — array of strings (other plan IDs, links, "external decision X")
+- **blocked-by** (only when target = `blocked`) — array of strings (other plan/SUV IDs, links, "external decision X")
 
 ## Allowed transitions
 
@@ -36,7 +46,7 @@ Reject other transitions with a clear error. Don't allow self-transitions (alrea
 
 ## Procedure
 
-1. **Locate the plan.** Glob `roadmap/plans/*/PLAN-NNN-*.md`. If not found, error.
+1. **Locate the record.** From the ID prefix, pick the root: `PLAN-` → `roadmap/plans/*/PLAN-NNN-*.md`, `SUV-` → `roadmap/suvs/*/SUV-NNNN-*.md`. If not found, error.
 2. **Verify transition allowed.** Reject if illegal.
 3. **Read** the file. Parse frontmatter.
 4. **Update frontmatter:**
@@ -46,8 +56,8 @@ Reject other transitions with a clear error. Don't allow self-transitions (alrea
    - For non-`blocked`: clear `blocked-by` to `[]`.
 5. **Append a status-log entry** at the end of the body's `## Status log` section:
    - `- YYYY-MM-DD — moved from {old-status} to {target-status}{: note if provided}`
-6. **Move the file** with `git mv` from `roadmap/plans/{old-status}/...` to `roadmap/plans/{target-status}/...`. Same filename.
-7. **Don't commit.** Report what was moved and remind the user to commit when ready (suggest message: `roadmap: PLAN-NNN → {target-status}`).
+6. **Move the file** with `git mv` from `{root}/{old-status}/...` to `{root}/{target-status}/...`. Same filename.
+7. **Don't commit.** Report what was moved and remind the user to commit when ready (suggest message: `roadmap: {id} → {target-status}`).
 
 ## Constraints
 
@@ -74,6 +84,11 @@ roadmap-plan-advance PLAN-001 in-progress
 
 roadmap-plan-advance PLAN-002 blocked --blocked-by "tldraw license review"
   → moves to blocked/, sets blocked-by, logs note
+
+roadmap-plan-advance SUV-0003 done
+  → roadmap/suvs/in-progress/SUV-0003-....md
+  → roadmap/suvs/done/SUV-0003-....md
+  (roadmap/suvs/definitions/SUV-0003.task.yaml is untouched)
 ```
 
 ## Edge cases
