@@ -1,11 +1,11 @@
 ---
 id: PLAN-043
 title: Roadmap console as an interactive work surface — the DIR-05 detour
-status: planned
+status: in-progress
 direction: DIR-05
 owner: jh
 created: 2026-08-22
-updated: 2026-08-22
+updated: 2026-08-23
 related:
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md (this detour is its test harness and requirements probe)
   - PLAN-045-roadmap-reduction-pass.md (the mining pass runs on this surface)
@@ -152,3 +152,4 @@ relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
 ## Status log
 
 - `2026-08-22` — created from product-owner review of PR #171; explicitly sequenced as the first executable step of DIR-05, before PLAN-039 W1.
+- `2026-08-23` — moved from `planned` to `in-progress`: Starting implementation path
