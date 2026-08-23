@@ -512,9 +512,11 @@ export function TaskEditor({
   const fallbackModel = defaultModel || groups[0]?.models[0]?.id || DEFAULT_MODEL
   const { projects } = useProjects(workspaceId)
   const [tab, setTab] = React.useState<Tab>('definition')
-  const [mode, setMode] = React.useState<Mode>('manual')
-  const [title, setTitle] = React.useState('')
-  const [goal, setGoal] = React.useState('')
+  const [mode, setMode] = React.useState<Mode>(
+    target.mode === 'create' ? (target.initialMode ?? 'manual') : 'manual',
+  )
+  const [title, setTitle] = React.useState(target.mode === 'create' ? (target.initialTitle ?? '') : '')
+  const [goal, setGoal] = React.useState(target.mode === 'create' ? (target.initialGoal ?? '') : '')
   const [acceptanceCriteria, setAcceptanceCriteria] = React.useState('')
   // Empty string = "use the runner default"; a number pins the spec's max_iterations.
   const [maxRepairs, setMaxRepairs] = React.useState('')
@@ -533,7 +535,7 @@ export function TaskEditor({
   // "No Project" can't silently drop a binding, and the gate for whether "No Project" is offered.
   const [boundProjectId, setBoundProjectId] = React.useState('')
   const [subtasks, setSubtasks] = React.useState<EditorSubtask[]>([])
-  const [cwd, setCwd] = React.useState('')
+  const [cwd, setCwd] = React.useState(target.mode === 'create' ? (target.initialCwd ?? '') : '')
   // Task-level sources (enabled on orchestrator + children) and skills (read as context
   // before each child works). Empty = leave workspace defaults / no skill preamble.
   const [sourceSlugs, setSourceSlugs] = React.useState<string[]>([])
@@ -795,6 +797,12 @@ export function TaskEditor({
         ...(projectId ? { projectId } : {}),
         ...(sourceSlugs.length ? { enabledSourceSlugs: sourceSlugs } : {}),
         cwd: cwd.trim() || undefined,
+        availableModelRoutes: groups.flatMap((group) =>
+          group.models.map((option) => ({
+            model: option.id,
+            llmConnection: modelToConnection.get(option.id),
+          })),
+        ),
       })
       // Authoring continues on the server; the spec arrives via onTaskGenerated. Keep busy until
       // then, with a fallback timer that releases the spinner if the event never lands.

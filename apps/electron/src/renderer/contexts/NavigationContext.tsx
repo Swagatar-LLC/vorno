@@ -78,6 +78,7 @@ import {
 import { sessionMetaMapAtom, updateSessionMetaAtom, type SessionMeta } from '@/atoms/sessions'
 import { sourcesAtom } from '@/atoms/sources'
 import { skillsAtom } from '@/atoms/skills'
+import { kanbanEditorTargetAtom } from '@/atoms/kanban'
 import {
   panelStackAtom,
   pushPanelAtom,
@@ -691,6 +692,9 @@ export function NavigationProvider({
       if (!workspaceId) return
 
       switch (parsed.name) {
+        // `new-chat` is the public deep-link spelling documented since the original
+        // action shipped; keep it as an alias for the internal `new-session` route.
+        case 'new-chat':
         case 'new-session': {
           const createOptions: import('../../shared/types').CreateSessionOptions = {}
           if (parsed.params.mode) {
@@ -791,6 +795,19 @@ export function NavigationProvider({
               }, 100)
             }
           }
+          break
+        }
+
+        case 'new-task': {
+          store.set(kanbanEditorTargetAtom, {
+            mode: 'create',
+            initialProjectId: parsed.params.project,
+            initialTitle: parsed.params.title,
+            initialGoal: parsed.params.goal,
+            initialCwd: parsed.params.cwd,
+            initialMode: parsed.params.author === 'generate' ? 'generate' : 'manual',
+          })
+          store.set(updateFocusedPanelRouteAtom, routes.view.board())
           break
         }
 

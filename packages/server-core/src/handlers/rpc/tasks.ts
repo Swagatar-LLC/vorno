@@ -260,7 +260,7 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
         // authored spec fails validation (commonly a ${nodes.X.output} ref to an undeclared
         // node) hand the concrete errors back and re-validate. Bounded so a model that can't
         // self-correct can't loop forever — the last attempt's validation is returned as-is.
-        let prompt = buildGeneratorPrompt(req.goal, req.title)
+        let prompt = buildGeneratorPrompt(req.goal, req.title, req.availableModelRoutes)
         let yaml = ''
         let parsed = parseTaskYaml(yaml)
         let attempts = 0

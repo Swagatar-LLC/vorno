@@ -269,6 +269,9 @@ export interface TaskGenerateRequest {
   /** Permission mode for the draft orchestrator, so its authoring turn matches the task's chosen
    *  autonomy from the start instead of running at the workspace default until adoption. */
   permissionMode?: PermissionMode
+  /** Executable model/connection pairs the author may assign to individual nodes. Optional for
+   *  backward compatibility; when present the generator must not invent routes outside this list. */
+  availableModelRoutes?: Array<{ model: string; llmConnection?: string }>
 }
 
 /**

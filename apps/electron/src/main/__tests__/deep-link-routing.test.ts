@@ -37,6 +37,20 @@ describe('parseDeepLink dual schemes', () => {
     expect(target?.actionParams).toEqual({ input: 'hi', send: 'true' })
   })
 
+  it.each(['craftagents', 'vorno'])('preserves %s:// new-task authoring context', (scheme) => {
+    const target = parseDeepLink(
+      `${scheme}://action/new-task?title=PLAN-043&goal=Break%20down%20the%20plan&cwd=%2Ftmp%2Frepo&project=proj_123&author=generate`,
+    )
+    expect(target?.action).toBe('new-task')
+    expect(target?.actionParams).toEqual({
+      title: 'PLAN-043',
+      goal: 'Break down the plan',
+      cwd: '/tmp/repo',
+      project: 'proj_123',
+      author: 'generate',
+    })
+  })
+
   it('parses both schemes identically for workspace-targeted routes', () => {
     expect(parseDeepLink('vorno://workspace/ws123/allSessions/session/abc123'))
       .toEqual(parseDeepLink('craftagents://workspace/ws123/allSessions/session/abc123'))

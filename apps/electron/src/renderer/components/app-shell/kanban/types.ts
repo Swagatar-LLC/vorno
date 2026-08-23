@@ -31,7 +31,15 @@ export type SubtaskRunState = 'done' | 'running' | 'pending' | 'failed'
  * without importing a component module.
  */
 export type TaskEditorTarget =
-  | { mode: 'create'; initialProjectId?: string }
+  | {
+      mode: 'create'
+      initialProjectId?: string
+      /** Optional external-authoring handoff (for example `vorno://action/new-task`). */
+      initialTitle?: string
+      initialGoal?: string
+      initialCwd?: string
+      initialMode?: 'manual' | 'generate'
+    }
   | { mode: 'edit'; sessionId: string; taskSlug?: string; initialTitle?: string }
 
 export interface KanbanSubtask {

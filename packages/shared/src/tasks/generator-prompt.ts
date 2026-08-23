@@ -6,7 +6,14 @@
  * prompt is legibility-first (#7): bias toward the simplest graph that achieves
  * the goal, with clear titles and explicit dependencies — not the cleverest one.
  */
-export function buildGeneratorPrompt(goal: string, title?: string): string {
+export function buildGeneratorPrompt(
+  goal: string,
+  title?: string,
+  availableModelRoutes: Array<{ model: string; llmConnection?: string }> = [],
+): string {
+  const routeLines = availableModelRoutes.map(
+    (route) => `  - model: ${route.model}${route.llmConnection ? `; llmConnection: ${route.llmConnection}` : ''}`,
+  )
   return [
     'You are authoring a `task.yaml` that decomposes a goal into a small DAG of subtasks.',
     'Each node becomes a child AI session; a `depends_on` edge passes the upstream node\'s output to the dependent.',
@@ -18,6 +25,13 @@ export function buildGeneratorPrompt(goal: string, title?: string): string {
     '- Reference an upstream result inside a prompt with ${nodes.<id>.output}.',
     '- Every ${nodes.<id>.output} reference MUST point to an `id` that you actually declare under `nodes`. Never reference a node you did not create. Verify each reference resolves before emitting the YAML.',
     '- Add `acceptance_criteria`: a short, checkable rubric for the FINISHED task (what "done and correct" means). It is what you will grade the result against when the run finishes — make it concrete and testable, not a restatement of the goal.',
+    ...(availableModelRoutes.length
+      ? [
+          '- Assign `model` and `llmConnection` on EVERY node, choosing only from the executable routes below. Use stronger models for implementation/synthesis/adversarial verification and cheaper models for bounded inventory work.',
+          'Executable model routes:',
+          ...routeLines,
+        ]
+      : []),
     '',
     'Schema:',
     '  id: kebab-case-slug',
@@ -28,6 +42,8 @@ export function buildGeneratorPrompt(goal: string, title?: string): string {
     '    - id: kebab-id',
     '      title: short title (becomes the subtask/session name)',
     '      prompt: the full instruction for this subtask (may include ${nodes.<id>.output})',
+    '      model: executable model id',
+    '      llmConnection: connection slug serving that model',
     '      depends_on: [other-node-id]   # omit when the node has no dependencies',
     '',
     'Example:',

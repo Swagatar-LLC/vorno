@@ -143,13 +143,16 @@ relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
 
 ## Acceptance
 
-- [ ] From a rendered roadmap doc, select a region, attach feedback, and a Vorno session opens pre-loaded with doc id + excerpt + feedback.
-- [ ] Workstream view shows the active direction, driving ADR(s), and sequenced plans with relations.
+- [x] From a rendered roadmap doc, select a region, attach feedback, and a Vorno session opens pre-loaded with doc id + excerpt + feedback.
+- [x] Workstream view shows the active direction, driving ADR(s), and sequenced plans with relations.
 - [ ] A plan can be broken down into a generated `task.yaml` that loads cleanly in TaskEditor and runs via the existing task surface.
 - [ ] At least one generated breakdown runs unattended start-to-finish in the Vorno project, including an adversarial verification node.
-- [ ] Each gap or awkwardness the generator hits is recorded (status log or discussion doc) as input to PLAN-039 W1.
+- [x] Each gap or awkwardness the generator hits is recorded (status log or discussion doc) as input to PLAN-039 W1.
 
 ## Status log
 
 - `2026-08-22` — created from product-owner review of PR #171; explicitly sequenced as the first executable step of DIR-05, before PLAN-039 W1.
 - `2026-08-23` — moved from `planned` to `in-progress`: Starting implementation path
+- `2026-08-23` — first usable work-surface slice built and live in the tailnet console. D2 now renders DIR-05 → ADR-0027 plus a plan lane ordered by current status, `related-plans`, and hard `blocked-by` edges. D1 stores quote-anchored feedback JSON with a document content hash and hands it to the existing `vorno://action/new-session` seam. D3 adds `vorno://action/new-task`, which opens the existing TaskEditor prefilled from the plan; the console never writes `task.yaml`.
+- `2026-08-23` — D1 live journey verified: selecting “deliberate dogfooding” in the rendered PLAN-043 document wrote a quote-anchored feedback record, and the exact generated deep link opened session `260823-deft-nebula` in the Vorno project with the repo cwd and preloaded context. The in-app Chromium test window does not hand custom protocols to macOS; invoking the identical URL through the registered OS handler does.
+- `2026-08-23` — requirements-probe findings for PLAN-039 W1: (1) sequence is not first-class in roadmap frontmatter — `blocked-by` expresses gates but not the intended PLAN-043 → PLAN-039 → PLAN-040 lane, so the console must combine current status and `related-plans` order; (2) TaskEditor knew the real model/connection catalog, but `tasks:generate` did not pass it to the authoring prompt, making valid explicit per-node routing impossible to request reliably — `TaskGenerateRequest.availableModelRoutes` now carries the optional catalog; (3) public deep-link parsing and renderer action handling were separate contracts — documented `new-chat` parsed and forwarded but had no renderer case, so it is now an explicit alias; (4) custom-protocol handoff cleanly avoids server credentials, but a running desktop build must contain the new action before the browser-side console can use it.

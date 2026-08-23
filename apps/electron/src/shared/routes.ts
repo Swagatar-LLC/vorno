@@ -49,6 +49,10 @@ export const routes = {
     newSession: (params?: { input?: string; name?: string; send?: boolean; status?: string; label?: string; project?: string }) =>
       `action/new-session${toQueryString(params ? { ...params, send: params.send ? 'true' : undefined } : undefined)}` as const,
 
+    /** Open TaskEditor in create mode with an optional external authoring handoff. */
+    newTask: (params?: { title?: string; goal?: string; cwd?: string; project?: string; author?: 'manual' | 'generate' }) =>
+      `action/new-task${toQueryString(params)}` as const,
+
     /** Rename a session */
     renameSession: (sessionId: string, name: string) =>
       `action/rename-session/${sessionId}?name=${encodeURIComponent(name)}` as const,

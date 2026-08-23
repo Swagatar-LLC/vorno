@@ -21,6 +21,8 @@
  * Actions:
  *   new-chat                  - Create new chat, optional ?input=text&name=name&send=true
  *                               If send=true is provided with input, immediately sends the message
+ *   new-task                  - Open TaskEditor create mode, optional
+ *                               ?title=...&goal=...&cwd=...&project=...&author=generate
  *   resume-sdk-session/{id}   - Resume Claude Code session by SDK session ID
  *   delete-session/{id}       - Delete session
  *   flag-session/{id}         - Flag session
@@ -32,6 +34,7 @@
  *   craftagents://settings/shortcuts                     (shortcuts page)
  *   craftagents://sources/source/github                  (github source info)
  *   craftagents://action/new-chat                        (uses active window)
+ *   vorno://action/new-task?title=Audit&author=generate  (prefilled TaskEditor)
  *   craftagents://action/resume-sdk-session/{sdkId}      (resume Claude Code session)
  *   craftagents://workspace/ws123/allSessions/session/abc123   (targets specific workspace)
  */
