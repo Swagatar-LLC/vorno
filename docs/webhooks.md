@@ -8,7 +8,7 @@ event-based automations, so conditions, labels, and permission modes all apply
 unchanged.
 
 For the design rationale and internals, see
-[`PLAN-014`](../roadmap/plans/in-progress/PLAN-014-workspace-webhooks.md) and the
+[`PLAN-014`](../roadmap/plans/done/PLAN-014-workspace-webhooks.md) and the
 colocated
 [`webhook-ingest/SECURITY.md`](../packages/shared/src/automations/webhook-ingest/SECURITY.md).
 

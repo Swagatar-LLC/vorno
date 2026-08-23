@@ -1,14 +1,15 @@
 ---
 id: PLAN-024
 title: Review Workbench — first dynamic workspace surface (v0.13.0)
-status: in-progress
+status: blocked
 direction: DIR-01
 owner: jh
 created: 2026-07-19
-updated: 2026-07-24
+updated: 2026-08-22
 related:
   - PLAN-023-hosted-workspace-server.md
-blocked-by: []
+blocked-by:
+  - "Owner disposition: retire the dark standalone workbench or retain it as an artifact-plane consumer"
 ---
 
 # PLAN-024 — Review Workbench — first dynamic workspace surface (v0.13.0)

@@ -292,7 +292,7 @@ that works in testing and 500s on exactly the large sessions people most want to
 
 - [ADR-0023](0023-vorno-owns-its-documentation-endpoint.md) — the `DOCS_URL` split this extends
 - ADR-0025 — the OAuth relay, the remaining `SERVICE_BASE_URL` consumer
-- [PLAN-035](../plans/in-progress/PLAN-035-vorno-hosted-session-shares.md) — implementation and cutover
+- [PLAN-035](../plans/blocked/PLAN-035-vorno-hosted-session-shares.md) — implementation and cutover
 - [ADR-0009](0009-vorno-rebrand-appid-release-feed-signing.md) — the precedent for decoupling an endpoint from upstream
 - `roadmap/upstream/compatibility.md` — what wire compatibility does and does not cover
 - [vorno.ai/docs/sharing](https://vorno.ai/docs/sharing/) — the disclosure this change makes obsolete

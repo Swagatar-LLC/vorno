@@ -3,7 +3,7 @@
 > Scope: the code in this directory (`packages/shared/src/automations/webhook-ingest/`)
 > plus its two collaborators `../utils.ts` (env expansion) and `../security.ts`
 > (shell sanitization). Canonical design rationale lives in
-> [`roadmap/plans/in-progress/PLAN-014-workspace-webhooks.md` §12](../../../../../roadmap/plans/in-progress/PLAN-014-workspace-webhooks.md).
+> [`roadmap/plans/done/PLAN-014-workspace-webhooks.md` §12](../../../../../roadmap/plans/done/PLAN-014-workspace-webhooks.md).
 
 The webhook ingest path is **unauthenticated by necessity** — a provider (GitHub,
 Linear, Stripe, …) can only present the capability URL, and the request body is

@@ -1,11 +1,11 @@
 ---
 id: PLAN-029
 title: Storage-provider config, management, and documentation surfaces
-status: in-progress
+status: documented
 direction: DIR-04
 owner: jh
 created: 2026-07-24
-updated: 2026-07-25
+updated: 2026-08-22
 related:
   - 0019-storage-root-config-schema-and-provider-kind-namespace.md
   - 0018-storage-provider-seam-and-pure-admissibility.md
@@ -175,3 +175,5 @@ and extend, or the bundled in-app docs set):
   `ArtifactRootsEditor` (KindBadge/HealthDot/CapabilityChips + kind-first add menu) behind
   `artifactsEnabled`; +14 i18n keys × 7 locales; +8 artifact tests. All seven validate-pr gates green.
   Moved to `in-progress/`.
+- `2026-08-22` — moved from in-progress to done: every acceptance item is verified; PRs #114, #117, and #122 are merged and the storage-root/provider surfaces shipped in v0.13.0.
+- `2026-08-22` — moved from done to documented: v0.13.0 release notes cover the artifact storage roots and pluggable provider foundation; contributor documentation and in-app help were already merged. Docs touched: this plan.
