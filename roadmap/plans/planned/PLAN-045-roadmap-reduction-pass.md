@@ -33,6 +33,16 @@ now belongs to (with a pointer back), not left where it is. Output: a short
 mining report in `roadmap/discussions/` listing what was salvaged and where
 it went.
 
+**Named agenda item — PLAN-023 split.** [PLAN-023](../blocked/PLAN-023-hosted-workspace-server.md)
+is the clearest instance of the problem this pass exists to fix: Phase 0
+shipped and is load-bearing (eight ADRs/plans defer object-store and
+identity-federation work to "ADR-0013 / PLAN-023"), while Phases 1–3 never
+started and have been re-homed into PLAN-036 and PLAN-041. The proposed
+resolution — Phase 0 retitled and advanced to `documented`, Phases 1–3
+folded into PLAN-041 — is a scope decision this pass owns. **Mine before
+deprecating:** archiving it without first re-pointing those eight
+references would strand them.
+
 ### Pass 2 — Deprecate
 
 With the value extracted, retire what no longer earns its place: plans that

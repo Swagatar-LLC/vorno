@@ -35,7 +35,7 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0005](0005-fork-owned-config-dir-vorno-agent.md) | Fork-owned config dir `~/.vorno-agent` + one-time copy migration | accepted |
 | [0006](0006-pause-vorno-align-0.11-drop-activity-pane.md) | Pause VORNO, align to 0.11.x, drop fork Activity pane | accepted |
 | [0007](0007-trigger-server-host-adapter.md) | Trigger-server host adapter — embedded Electron host, Bun standalone host | accepted |
-| [0008](0008-apps-server-headless-deployment-unit.md) | apps/server is the fork's headless deployment unit; Docker primary | proposed |
+| [0008](0008-apps-server-headless-deployment-unit.md) | apps/server is the fork's headless deployment unit; Docker primary | accepted |
 | [0009](0009-vorno-rebrand-appid-release-feed-signing.md) | Vorno rebrand — appId `co.swagatar.vorno`, public update feed, parameterized signing | accepted |
 | [0010](0010-independent-vorno-versioning.md) | Vorno versions independently of upstream from 0.11.2 onward | accepted |
 | [0011](0011-public-repo-rename-and-internal-corpus-split.md) | Public source repo, rename to `Swagatar-LLC/vorno`, private internal corpus split | accepted |

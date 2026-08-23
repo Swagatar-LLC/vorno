@@ -1,16 +1,22 @@
 ---
 id: PLAN-023
 title: Hosted Workspace Server (self-hosted app-server; desktop + phone as thin clients)
-status: in-progress
+status: blocked
 direction: DIR-03
 owner: jh
 created: 2026-07-17
-updated: 2026-07-18
+updated: 2026-08-22
 related:
   - PLAN-013-server-only-deployment.md
   - PLAN-005-webui-tailscale-launcher.md
   - PLAN-022-webui-remote-access-single-port-proxy-and-tunnel.md
-blocked-by: []
+  - PLAN-036-vorno-owned-oauth-redirect-relay.md (Phase 2 relay, re-homed)
+  - PLAN-041-server-homed-instances-with-auth.md (Phases 1/3 destination)
+  - PLAN-045-roadmap-reduction-pass.md (owns the structural split)
+blocked-by:
+  - PLAN-039
+  - PLAN-040
+  - "Phase 2 only: vorno.ai/privacy policy must exist before any public auth endpoint (ADR-0025 gate, inherited via PLAN-036)"
 ---
 
 # PLAN-023 — Hosted Workspace Server
@@ -88,10 +94,10 @@ graph TB
   SM --> W
 ```
 
-**Phase 0 acceptance**
-- [ ] `docs/hosted-workspace-architecture.md` merged: instance identity, single-user-now / multi-user-future user identity, the three trust boundaries, onboarding surface.
-- [ ] ADR authored + accepted stating: app-server is the hosted-workspace unit; single bearer/password model now; multi-user is a named future the design does not preclude.
-- [ ] Reviewed against ADR-0005 (config-dir / `~/.claude` pairing) and ADR-0008 (trigger unit) for coexistence.
+**Phase 0 acceptance** — met 2026-07-19 (PR #103, commit `dc5c4259`)
+- [x] `docs/hosted-workspace-architecture.md` merged: instance identity, single-user-now / multi-user-future user identity, the three trust boundaries, onboarding surface.
+- [x] ADR authored + accepted stating: app-server is the hosted-workspace unit; single bearer/password model now; multi-user is a named future the design does not preclude. — ADR-0013, accepted 2026-07-19.
+- [x] Reviewed against ADR-0005 (config-dir / `~/.claude` pairing) and ADR-0008 (trigger unit) for coexistence. — ADR-0013 decision 1 (distinct CONFIG_DIRs; both take `.server.lock`).
 
 ## Phase 1 — single-user hosted server over Tailscale/TLS
 
@@ -142,6 +148,24 @@ Designed *after* Phase 1 teaches the sharp edges (deliberately sequenced last).
 - [ ] A non-technical user completes source OAuth via the wizard's guided browser walk.
 - [ ] Desktop first-run offers "Connect to your online Vorno?"; choosing it connects the thin client without manual `CRAFT_SERVER_URL` editing.
 
+## Inherited verification checkpoints (from PLAN-013)
+
+PLAN-013 moved to `done/` on 2026-07-25 with two PoC checkpoints still open, and Phase 1 above is where they were assigned. Naming them here so they do not vanish if this plan is later split or archived — whoever inherits Phase 1 inherits these:
+
+1. **Live LLM turn in-container** — PLAN-013's deferred PoC step 4 (the `PONG` turn). Steps 1/2/3/5 passed on OrbStack arm64; step 4 needs a real deployment with an LLM key. See [`PLAN-013` status log](../done/PLAN-013-server-only-deployment.md) (`2026-07-08` entry) and [`docs/server-deployment.md`](../../../docs/server-deployment.md) § "Remaining verification (real deployment)".
+2. **SDK node-subprocess resolution under bun-on-Linux** — the Claude Agent SDK spawns a CLI subprocess out of `node_modules`; the image installs Node defensively, but the resolution path is unverified. Named in ADR-0008 ("a named verification checkpoint, not an assumption") and PLAN-013 Risks.
+
+Neither is a defect report against PLAN-013 — its shipped scope was the trigger surface, and both checkpoints require a live deployment it never had.
+
+## Scope re-homing — and what PLAN-045 decides
+
+Phase 0 shipped and is cited independently by ADR-0016/0017/0018/0019, ADR-0024, PLAN-029, and DIR-04 tenet 7, all of which defer object-store and identity-federation work to "ADR-0013 / PLAN-023". Phases 1–3 never started, and their scope has since been re-homed:
+
+- **Phase 2's relay** → [ADR-0025](../../decisions/0025-oauth-redirect-relay-security-model.md) (accepted 2026-08-17), which states it *is* "PLAN-023 Phase 2's relay sub-decision"; implemented by [PLAN-036](../planned/PLAN-036-vorno-owned-oauth-redirect-relay.md).
+- **Phases 1 and 3** → [PLAN-041](../planned/PLAN-041-server-homed-instances-with-auth.md), which names this plan its "in-progress foundation" and is itself staged behind PLAN-039/PLAN-040.
+
+The likely end state is therefore: Phase 0 retitled and advanced to `documented`, Phases 1–3 folded into PLAN-041, this file retired. **That is a scope decision, not bookkeeping** — it belongs to the [PLAN-045](../planned/PLAN-045-roadmap-reduction-pass.md) reduction pass (2026-08-29), where the mine-then-deprecate order protects the downstream gate references above. Until then this plan stays whole and blocked.
+
 ## Open questions
 
 - **SessionPool vs SessionManager convergence** (carried from PLAN-013 / ADR-0008): the trigger server's `SessionPool` and the app-server's `SessionManager` remain two stacks. Hosting workspaces is squarely `SessionManager`; does the trigger surface eventually compose over the same `SessionManager`, or do they stay parallel on one host?
@@ -163,3 +187,4 @@ Designed *after* Phase 1 teaches the sharp edges (deliberately sequenced last).
 - `2026-07-17` — created in `planned/`
 - `2026-07-18` — moved from planned to in-progress: Phase 0 (architecture doc + ADR-0013) underway
 - `2026-07-19` — Jeff signed off all four Phase-0 one-way doors; ADR-0013 **accepted** with conditions (additive-only vault header, opaque `serverId` + `vorno:server:info` metadata rule, ALIGN-widened identity/RBAC semantics, git-HTTPS as written). ALIGN review paper edits (N-1..N-7) folded into ADR + architecture doc.
+- `2026-08-22` — moved from in-progress to blocked: blocked-by PLAN-039/PLAN-040 (the DIR-05 milestone that now outranks it), plus the ADR-0025 privacy-policy gate for Phase 2. Audit basis (read-only code review at `e2273c57`): Phase 0 is the plan's only commit — `dc5c4259` / PR #103 touched four docs files, +305/-2, and **no** commit has touched `packages/` or `apps/` for this plan. Phases 1–3 verified unimplemented: `deploy/Dockerfile:65` still targets `apps/server/src/index.ts` (the trigger surface) and `docs/server-deployment.md` explicitly puts `packages/server` out of that recipe; `serverId` still defaults to `'headless'` (`packages/server-core/src/bootstrap/headless-start.ts:392,427`) with no `instance.json` and no `vorno:server:info` channel (ADR-0013 decision 5); zero occurrences of a git-provider interface, a client-owned vault key, or pairing/known-instance code. No release note 0.11.2–0.18.0 announces hosted workspaces. Phase-0 acceptance boxes ticked (stale since #103); PLAN-013's two open checkpoints named explicitly above; structural split deferred to PLAN-045.
