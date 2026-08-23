@@ -88,10 +88,10 @@ graph TB
   SM --> W
 ```
 
-**Phase 0 acceptance**
-- [ ] `docs/hosted-workspace-architecture.md` merged: instance identity, single-user-now / multi-user-future user identity, the three trust boundaries, onboarding surface.
-- [ ] ADR authored + accepted stating: app-server is the hosted-workspace unit; single bearer/password model now; multi-user is a named future the design does not preclude.
-- [ ] Reviewed against ADR-0005 (config-dir / `~/.claude` pairing) and ADR-0008 (trigger unit) for coexistence.
+**Phase 0 acceptance** — all met `2026-07-19` by `dc5c4259` (PR #103); ticked `2026-08-22` during PLAN-045 Pass 2 cleanup, which archived this plan.
+- [x] `docs/hosted-workspace-architecture.md` merged: instance identity, single-user-now / multi-user-future user identity, the three trust boundaries, onboarding surface.
+- [x] ADR authored + accepted stating: app-server is the hosted-workspace unit; single bearer/password model now; multi-user is a named future the design does not preclude. → [`ADR-0013`](../../decisions/0013-hosted-workspace-authn-authz-architecture.md), `accepted: 2026-07-19` with binding conditions.
+- [x] Reviewed against ADR-0005 (config-dir / `~/.claude` pairing) and ADR-0008 (trigger unit) for coexistence. → architecture doc §"Reviewed against" and the single-writer `.server.lock` finding: a trigger deployment and a hosted app-server on the *same* CONFIG_DIR are mutually exclusive by construction.
 
 ## Phase 1 — single-user hosted server over Tailscale/TLS
 
