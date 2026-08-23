@@ -9,7 +9,9 @@ related-plans:
   - PLAN-005-webui-tailscale-launcher.md
   - PLAN-007-orchestration-activity-panel-done.md
   - PLAN-013-server-only-deployment.md
-  - PLAN-023-hosted-workspace-server.md
+  # PLAN-023 hosted workspace server — archived 2026-08-22 (PLAN-045 Pass 2).
+  # Phase 0 (ADR-0013) remains authoritative; Phases 1-3 are carried by
+  # PLAN-041-server-homed-instances-with-auth.md under DIR-05.
   - PLAN-030-session-lifecycle-automation.md
   - PLAN-031-status-invariants-at-the-choke-point.md
   - PLAN-033-hermetic-config-dir-for-test-runs.md

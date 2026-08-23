@@ -258,3 +258,89 @@ Neither should be closed as "done."
 - Deprecations touching shipped surface are **listed for sign-off, not acted on**
   (candidates 10–12).
 - Bounded event: one report, one sitting.
+
+---
+
+# PLAN-045 Pass 2 — deprecation record
+
+> Appended 2026-08-22, a separate sitting from Pass 1 above, per PLAN-045's
+> ground rule that no plan is archived in the same sitting it is mined.
+> **Five files moved or deleted, four dispositions corrected, three plans held
+> for product-owner sign-off.**
+
+## Plans archived (4 public)
+
+Each was `git mv`'d to `roadmap/plans/archived/`, had `status:` set to
+`archived`, and carries a one-line reason in its own status log.
+
+| Plan | From | Reason |
+|---|---|---|
+| **PLAN-023** hosted workspace server | `in-progress/` | Split, not shipped. Phase 0 (architecture doc + ADR-0013) is complete and **remains authoritative — archiving does not retract it**. Unbuilt Phases 1–3 are now carried verbatim by PLAN-041, with PLAN-036 holding the OAuth-relay slice. Not closed as "done". |
+| **PLAN-026** composed surfaces (C2) | `planned/` | Pre-DIR-05 and blocked behind PLAN-025, which is itself blocked on owner QA — a queued plan with no live head. Its one durable idea (typed run form as an instance of the composed-surface spec) went to PLAN-039. |
+| **PLAN-027** interactive surfaces (C3) | `planned/` | Third link of a three-deep blocked chain (C3 → C2 → C1) with no live head. Both ideas salvaged: adopt-don't-invent (SEP-1865) → PLAN-044; security-review-before-code on trust boundaries → PLAN-041. |
+| **PLAN-032** session-sticky skills | `planned/` | Its principle — *a field accepted but not honoured is a defect* — is now load-bearing in PLAN-039, where it names the central hazard. The residual feature question belongs to PLAN-039 W1. Built nothing; no surface affected. |
+
+## Private corpus (`vorno-internal:plans/`)
+
+The private `plans/` directory is **flat** — it has no status subfolders — so
+dispositions there are frontmatter and status-log changes, not folder moves. No
+`archived/` folder was invented for a three-file outcome.
+
+| Plan | Action | Reason |
+|---|---|---|
+| **PLAN-007** (dup) | **deleted** | Verified a strict stale subset of the public `archived/PLAN-007-orchestration-activity-panel-done.md`: byte-identical except an older `status:`/`updated:`, and the public file additionally carries the archive banner and one further status-log line. Nothing was unique to it, so it was deleted rather than archived twice. |
+| **PLAN-010** live model enumeration | **corrected → `done`** | See below — the one disposition Pass 1 got wrong. |
+| **PLAN-016** M2 integration verification | **→ `done`** | A completed VOR-45 verification record left filed as `in-progress`; every packaged smoke item passed and its findings are independently filed as LEARNING-015/018. Status drift, not open work. |
+
+### The correction: PLAN-010 shipped
+
+Pass 1 listed PLAN-010 as "mined + stale status" and asked Pass 2 to reconcile
+PR #36 before archiving it as abandoned. **It merged.** PR #36 landed on `main`
+as `4f7572d5` on **2026-06-25**, shipping the live OpenAI `/v1/models` fetcher,
+`inferAnthropicContextWindow`, and the `isLiveFetchPiConnection` generalization.
+Merge commit verified present on `main`.
+
+The file said otherwise because the corpus-wide banner — *"Archived 2026-07-08 —
+superseded by upstream v0.11.0…; VORNO program paused. Retained for research
+only"* — was swept across every private plan **two weeks after this one merged**,
+overwriting a shipped plan with an abandonment notice. Had Pass 2 acted on Pass
+1's disposition without checking, a shipped feature would have been recorded as
+abandoned research.
+
+**Standing lesson: a blanket status marker applied across a corpus is evidence
+about the sweep, not about the file.** Anything carrying one needs its own
+check before its status is trusted.
+
+## Held for product-owner sign-off — nothing touched
+
+These retire *shipped surface*, not just plans. None was moved, and no code was
+touched.
+
+1. **PLAN-025 / the artifact plane.** Code, seven `vorno:artifacts:*` channels, Artifact Home, and 78 tests are on `main` behind `artifactsEnabled`. PLAN-043's D2 may be about to become its first real consumer. Recommendation unchanged: archive the plan, keep the surface, let D2 decide — but that is a sign-off, not a sweep.
+2. **PLAN-024 / the review workbench.** **Pass 2 reversed Pass 1 here.** Pass 1 listed PLAN-024 under "archive outright" on the reasoning that the owner's 2026-07-21/22 strategic verdict had settled it. It had not: the plan's own `2026-07-24` status-log entry carries an explicit standing instruction — *"do not close or move this plan unilaterally"* — and a mining pass is precisely the unilateral sweep that instruction exists to stop. The store, annotation, and anchor layers are live on `main` behind `workbenchEnabled`, so moving the file would read as settling a disposition that is still open. Held, with the reversal recorded in the plan's status log.
+3. **PLAN-035 / session shares.** Not an archival candidate at all. The merged back-compat fix is shipped and load-bearing; only the cutover is unfinished, and it is blocked on two owner decisions (retention period, privacy policy) rather than on engineering.
+
+## Retained, not archived
+
+- **PLAN-028** CI user-journey tests — considered and declined. Unblocked, and its premise is unchanged: journey bugs pass every unit suite. It now has a concrete consumer in PLAN-043's `task.yaml` generator, whose output is load-bearing. **Re-homed: `direction:` changed from `null` to `DIR-05`.**
+- **PLAN-031** status invariants — two genuine end-to-end regressions still open; principles salvaged, plan stays active.
+- **PLAN-036**, **PLAN-037** — implement accepted ADRs (0025, 0026); gated on owner decisions, not superseded.
+
+## Index updates
+
+- `ROADMAP.md` — hosted workspace server now tracked as PLAN-041, with PLAN-023's Phase 0 and ADR-0013 noted as still authoritative.
+- `roadmap/directions/03-observatory.md` — PLAN-023 delisted with a pointer to PLAN-041.
+- `roadmap/directions/04-dynamic-workspaces.md` — PLAN-026/027 delisted; C2/C3 marked *(archived)* in the ladder table, with the ambitions retained as direction text.
+- `roadmap/directions/05-workflows-and-headroom.md` — PLAN-041's "builds on PLAN-023, in progress" corrected to reflect the relocation and archival.
+
+## Carry for whoever merges this
+
+This branch was cut from `main` and does **not** carry PR #171's status-audit
+folder moves. PLAN-023 was archived here from `in-progress/`, while #171 moves it
+to `blocked/`. **That is a rename/rename conflict on merge — resolve in favour of
+`roadmap/plans/archived/`,** which is the later decision. PLAN-024/025/035 are
+untouched here, so #171's moves for them apply cleanly.
+
+PLAN-045's own folder was deliberately left alone for the same reason: #171 moves
+it `planned/` → `in-progress/`, and duplicating that move would add a second
+avoidable conflict. Moving it to `done/` is a follow-up once #171 lands.

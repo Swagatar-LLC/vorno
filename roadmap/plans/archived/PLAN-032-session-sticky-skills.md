@@ -1,11 +1,11 @@
 ---
 id: PLAN-032
 title: Session-sticky skills — make skills a session knob so a context profile can carry them
-status: planned
+status: archived
 direction: DIR-03
 owner: jh
 created: 2026-08-07
-updated: 2026-08-07
+updated: 2026-08-22
 related:
   - PLAN-030
   - ADR-0022
@@ -89,3 +89,4 @@ the exact defect PLAN-030 exists to eliminate.
 - `2026-08-07` — created in `planned/`, split out of PLAN-030 Phase 3 per that plan's
   "Phase 3 is separable and may be split into its own plan" clause. Phase 3 shipped the
   other three knobs; this is the fourth.
+- `2026-08-22` — **archived (PLAN-045 Pass 2)**: its *principle* — a field accepted but not honoured is a defect, not a shortcut — is now load-bearing in `PLAN-039-workflow-definitions-reusable-parameterized-tasks.md`, where it names the central hazard (the task schema parses `params`/`outputs`/`when`/`loop`/`retry` and the editor exposes none). The remaining feature question, whether a workflow *definition* should carry skills, belongs to PLAN-039 W1 and should be decided there rather than tracked separately. No shipped surface is affected: this plan built nothing. Mining record: [`2026-08-22-plan-045-mining-report.md`](../../discussions/2026-08-22-plan-045-mining-report.md).
