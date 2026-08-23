@@ -1,7 +1,7 @@
 ---
 id: ADR-0028
 title: SUV as the shippable unit between a plan and an executable task
-status: proposed
+status: accepted
 date: 2026-08-23
 supersedes: []
 superseded-by: []

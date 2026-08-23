@@ -53,7 +53,7 @@ Two corrections follow, and they define this rewrite:
 
 ## Scope
 
-Five phases, in order. Each phase is one or more SUVs; no phase starts before
+Six phases, in order. Each phase is one or more SUVs; no phase starts before
 its predecessor is green.
 
 ### P1 — Put the console under version control
@@ -76,7 +76,46 @@ the same axis the roadmap split uses.
   `roadmap-suv-create` skill alongside the existing plan skills. An agent
   reading this repo cold must learn the ladder without being told.
 
-### P3 — task.yaml composer
+### P3 — Reconciling feedback loop (CLI-driven, worktree-isolated)
+
+Today's feedback tool captures intent and hands it to a human-attended session.
+It must become a mechanism that *reconciles the corpus*.
+
+- **Dispatch via the CLI, not a deep link.** `vorno-cli run <message>
+  --workspace-dir <path>` spawns a server, runs headless, streams, and exits —
+  a self-contained agent invocation the console can start and wait on. The
+  deep-link path requires an attended desktop app; this does not.
+- **The prompt instructs reconciliation, not editing.** The agent reads the
+  governing ADRs, the owning PLAN, and any affected SUVs, then makes *every*
+  change the feedback implies — across all of them — and continues until the
+  corpus is internally consistent. Touching only the quoted line is a failure.
+- **Every run gets its own git worktree.** Concurrent feedback runs will collide
+  on the same ADR/PLAN/SUV. One worktree per feedback record, branch per record,
+  merged deliberately. **Never `git stash` in this repo, even transiently** — a
+  repo-global stash has already pulled another session's work into a worktree
+  twice.
+- **Conflicts are expected; resolve them by the corpus's own principles:**
+
+  | Conflict | Resolution |
+  |---|---|
+  | Both sides appended to a status log | Union, ordered by date — never pick a side |
+  | `updated:` frontmatter | Latest wins |
+  | Same plan moved to two statuses | The transition graph decides; the terminal-most legal state wins (precedent: PLAN-023 rename/rename → `archived/`) |
+  | Contradictory prose edits | **Escalate to the human.** Two intents in genuine conflict is not a merge problem. |
+
+- **Intent carries through.** The human's words are stored verbatim, travel
+  verbatim into the prompt and the commit message, and are never paraphrased
+  into a summary. Conflict resolution preserves intent; it does not average it.
+- **Termination is defined, not hoped for.** A run is reconciled when the corpus
+  validates — frontmatter agrees with folder, transitions are legal, internal
+  links resolve — and the feedback's intent is satisfied. Bound the loop and
+  surface an unreconciled run rather than letting it spin.
+
+Note for P6: this loop is itself a small DAG with a verification node. It is the
+first honest customer of the composer, and what it needs is direct evidence for
+PLAN-039.
+
+### P4 — task.yaml composer
 
 - Create and edit `roadmap/suvs/definitions/SUV-NNNN.task.yaml` incrementally —
   add a node, wire `depends_on`, edit inputs, save, come back later.
@@ -88,7 +127,7 @@ the same axis the roadmap split uses.
 - Definitions stay machine-neutral: no cwd, no project id, no model routes
   baked in.
 
-### P4 — Publish to Vorno
+### P5 — Publish to Vorno
 
 - Write the definition to `{workspaceRoot}/tasks/<slug>/task.yaml`, supplying
   the machine-local values at publish time.
@@ -97,7 +136,7 @@ the same axis the roadmap split uses.
 - Republish overwrites the spec and never touches `runs/`. Drift is resolved by
   re-publishing; nothing is ever copied back into the repo.
 
-### P5 — Feed PLAN-039
+### P6 — Feed PLAN-039
 
 Every awkwardness hit in P3/P4 is recorded as a status-log entry or discussion
 doc. This is the deliverable that makes the detour worth taking — the input to
@@ -170,6 +209,7 @@ relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
 - [ ] The console is a git repository with a remote and a stated branch discipline.
 - [ ] `SUV-NNNN` exists as a corpus type: template, status folders, transition graph, board/list rendering, and a create skill.
 - [ ] The repo's work-management instructions teach DIR → ADR → PLAN → SUV → task without external explanation.
+- [ ] Feedback from a rendered doc starts a headless CLI run in its own worktree that reconciles the ADR/PLAN/SUV set and stops in a defined state.
 - [ ] A `task.yaml` definition can be built incrementally across sessions, validated by the real `validateTaskInput`, and previewed as a DAG.
 - [ ] Publishing writes a task Vorno picks up, with **zero diff under `packages/` or `apps/`**.
 - [ ] One published task runs unattended start-to-finish, including an adversarial verification node.
