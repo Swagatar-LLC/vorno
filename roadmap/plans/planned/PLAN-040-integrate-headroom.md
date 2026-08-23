@@ -117,6 +117,32 @@ must degrade gracefully if Headroom is absent.
    measurement-first: thin Vorno glue over `headroom_stats`, or an upstream
    feature request.
 
+## Salvaged from prior plans (PLAN-045 Pass 1)
+
+- **A token percentage is only as true as its denominator.** The fork's own
+  model-enumeration work found that `/v1/models` carries no context window, so
+  enrichment misses and the model defaults to `contextWindow: 200_000` — wrong
+  for a 1M-context model, and every percentage computed from it is a confident
+  lie. Any Headroom-backed stat that Vorno's displays consume must carry its own
+  denominator or declare it unknown.
+  ← `vorno-internal:plans/PLAN-010-live-model-enumeration.md`
+- **Threshold precedence is already specified.** `resolveThresholds()` resolves
+  per-model override → per-provider → default, with warn < danger validation.
+  When PLAN-002/003's surfaces migrate onto Headroom stats, that precedence is
+  the contract to preserve, not to redesign.
+  ← `PLAN-003-token-usage-thresholds-workspace-settings.md`
+- **Do not fabricate what the source does not provide.** Prior orchestration
+  work confirmed no SDK percent/total-steps exists and refused to synthesise
+  one. The same discipline applies to compression-savings and memory-hit
+  statistics: measured or absent, never interpolated.
+  ← `vorno-internal:plans/PLAN-008`, `PLAN-009`
+- **Frontmatter is free query surface.** The shipped artifact plane parses
+  markdown frontmatter into its index, making existing conventions (roadmap
+  docs, skills, Obsidian properties) queryable without new schema. Headroom's
+  default memory substrate is local markdown; the extension interface's query
+  semantics should assume frontmatter is already structured data.
+  ← `PLAN-025-artifact-plane-v1.md`
+
 ## Acceptance
 
 - [ ] I0: vetting report (license, telemetry/network audit, pinning + update cadence) and benchmark results on real Vorno workloads committed to `roadmap/evidence/`.

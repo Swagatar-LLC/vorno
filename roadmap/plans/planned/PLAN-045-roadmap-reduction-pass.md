@@ -60,3 +60,15 @@ with a one-line reason in its status log — reversible, and honest about why.
 ## Status log
 
 - `2026-08-22` — created from product-owner review of PR #171 ("longer poles to stand on"); scheduled for 2026-08-29 with a dated board task (workspace task `roadmap-reduction-pass-2026-08-29-plan-045`, in todo — starting it is the product owner's call).
+- `2026-08-22` — **Pass 1 (Mine) executed** on branch `roadmap/plan-045-reduction-pass`.
+  46 plans inventoried (40 public across every status folder + 6 private paused);
+  48 salvaged ideas relocated with back-pointers into PLAN-039/040/041/042/043/044.
+  Report: [`roadmap/discussions/2026-08-22-plan-045-mining-report.md`](../../discussions/2026-08-22-plan-045-mining-report.md).
+  **No file was moved, archived, or deleted** — Pass 2 (Deprecate) is a separate
+  sitting per this plan's own ground rule. Twelve deprecation candidates are listed
+  there, three of which touch shipped surface and are flagged for product-owner
+  sign-off rather than acted on. The PLAN-023/024 scope disposition asked for
+  alongside this pass is answered in the report's final section.
+  Two carries for Pass 2: it must run **after PR #171 merges** (this branch was cut
+  from `main` and does not see the status-audit folder moves), and
+  `vorno-internal:plans/PLAN-010` needs reconciling against `main` before disposition.

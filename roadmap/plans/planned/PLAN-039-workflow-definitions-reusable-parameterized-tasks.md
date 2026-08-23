@@ -140,6 +140,74 @@ bounded failure-aware retry, token budgets, and a verify/repair loop.
 - Mermaid rendering, validation (`mermaid_validate`), and theming are already
   native to the shell; W3 is a compiler, not a renderer.
 
+## Salvaged from prior plans (PLAN-045 Pass 1)
+
+Ideas mined 2026-08-22 from plans that predate DIR-05. Each is carried here with
+a back-pointer; the source plan is not the place to look them up again.
+
+**Constraints this plan inherits**
+
+- **A field the system accepts but cannot honour is a defect, not a shortcut.**
+  PLAN-032 refused to add `ContextProfile.skills` as a no-op field precisely
+  because "a silently ignored field is the exact defect PLAN-030 exists to
+  eliminate." W5 is the same hazard at schema scale: never surface a
+  control-flow construct the runner will not execute, and never leave one
+  executable that W3 cannot display. ← `PLAN-032-session-sticky-skills.md`
+- **A rule the API cannot express is a rule that silently never runs.** The
+  `session-archive-sweeper` carried "never archive a flagged session" for its
+  entire life and could not check it once, because the surface returned no such
+  field; two flagged sessions were archived. A node `outputs` contract with no
+  evaluation path is the same shape. ← `PLAN-037-session-query-predicate-surface.md`
+- **Dispatched is not achieved.** Automation `ok` means the action was
+  dispatched, never that it succeeded (LEARNING-052). W4's node success must be
+  *structurally observed* — schema-validated output at the boundary — and never
+  inferred from the child session's prose. ← `PLAN-030-session-lifecycle-automation.md`
+- **Guards are proven by mutation, not assertion.** PLAN-030 Phase 0 shipped a
+  `KNOWN_ACTION_TYPES` guard that was a tautology and passed unconditionally;
+  PLAN-031 answered with documented mutation checks and a fail-closed default.
+  The definition/instance drift guards inherit both rules.
+  ← `PLAN-031-status-invariants-at-the-choke-point.md`
+- **Do not fabricate progress you do not have.** There is no SDK task
+  percent/total-steps signal (the only `percentage` fields are context-window
+  usage), and PLAN-009 deliberately shipped "ran 2m 3s" rather than fake a
+  relative "ago" it had no timestamp for. W3 run-state coloring derives from
+  real node-state events only. ← `vorno-internal:plans/PLAN-008`, `PLAN-009`
+
+**Reusable material**
+
+- **The SDK already emits task progress that Vorno drops on the floor.**
+  `SDKTaskProgressMessage` (`task_id`, `description`, `subagent_type`,
+  `usage{total_tokens, tool_uses, duration_ms}`, `last_tool_name`, `summary`)
+  and `SDKTaskStartedMessage.workflow_name` arrive with no
+  `subtype === 'task_progress' | 'task_started'` case in `ClaudeEventAdapter`.
+  Investigated against SDK `0.3.170`; **re-verify against the pinned version
+  before relying on it.** This is W3's per-node progress substrate for free.
+  ← `vorno-internal:plans/PLAN-008-orchestration-richer-progress.md`
+- **Item-renderer registry as the contribution seam.** `Map<itemKind,
+  RendererComponent>` with a default renderer, already shipped in
+  `packages/ui/src/components/orchestration/`. A DAG node kind or a run-record
+  row can register a renderer without a new surface.
+  ← `PLAN-007-orchestration-activity-panel-done.md`
+- **Derive, don't re-plumb.** PLAN-007 Phase 1 built a whole orchestration
+  surface with zero new wire traffic, purely as derived state, and only *then*
+  scoped an additive protocol phase. W3 should exhaust the same path before
+  proposing any new event field. ← `PLAN-007`
+- **Layout persistence for a graph view.** Time-axis on first paint, user drag
+  sticky in a per-session sidecar — the one piece of the abandoned canvas work
+  that survives its stack. ← `PLAN-001-canvas-session-spectator-v0.md`
+- **A typed run form is a composed surface.** PLAN-026 specifies a versioned
+  JSON composition over the existing trusted block catalog. W2/W4's
+  schema→form renderer may be an instance of that spec rather than bespoke UI —
+  worth deciding once, not twice. ← `PLAN-026-composed-surfaces-v1.md`
+
+**Open question this raises**
+
+- **Pinned model ids go stale.** A definition pins `model`/`llmConnection` per
+  node, and vendor model drops/retirements are routine — the fork already built
+  live enumeration because static catalogs fell behind. A saved definition needs
+  a resolution-and-validation story at bind time, not a hard failure months
+  later. ← `vorno-internal:plans/PLAN-010-live-model-enumeration.md`
+
 ## Acceptance
 
 - [ ] A task can be saved as a definition and a new task instantiated from it; the original task's session binding is undisturbed.
