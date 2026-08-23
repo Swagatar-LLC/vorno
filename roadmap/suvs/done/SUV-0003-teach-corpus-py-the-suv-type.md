@@ -1,7 +1,7 @@
 ---
 id: SUV-0003
 title: Teach corpus.py the SUV type
-status: planned
+status: done
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -50,3 +50,5 @@ resolved in both directions.
 ## Status log
 
 - `2026-08-23` — created in `planned/`. A concurrent console session has already landed most of this (`STATUS_FOLDER_TYPES`, `ID_WIDTH`, the reverse edge); treat the acceptance list as the audit.
+- `2026-08-23` — moved from `planned` to `in-progress`: Work executed 2026-08-23 in the PLAN-043 SUV bring-up.
+- `2026-08-23` — moved from `in-progress` to `done`: corpus.py SUV type landed on console branch plan-043-p2-suv-corpus-type (dee3c7e). Verified against the live corpus: 12 SUV records scan as type=suv/status=planned, definitions/ leaks nothing into the record set, next-id returns SUV-0013 zero-padded, PLAN-043 exposes 12 derived SUVs, 19 tests pass.

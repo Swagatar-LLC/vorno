@@ -1,7 +1,7 @@
 ---
 id: SUV-0004
 title: Render SUVs on the console board and workstream view
-status: planned
+status: done
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -45,3 +45,5 @@ views, and as a lane under their owning plan in the D2 workstream view.
 ## Status log
 
 - `2026-08-23` — created in `planned/`
+- `2026-08-23` — moved from `planned` to `in-progress`: Work executed 2026-08-23 in the PLAN-043 SUV bring-up.
+- `2026-08-23` — moved from `in-progress` to `done`: Console UI landed (a0b2647). Verified in-browser: SUV facet and board columns, plan lane listing 12 SUVs, owning-plan panel on the SUV view, acceptance tracker, MOVE TO transitions, and the not-decomposed flag on in-progress PLAN-031. Break Down now creates SUVs; the reverted new-task deep link is gone.

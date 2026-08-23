@@ -1,7 +1,7 @@
 ---
 id: SUV-0002
 title: SUV corpus scaffolding and work-management instructions
-status: planned
+status: done
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -55,3 +55,5 @@ DIR → ADR → PLAN → SUV → task ladder without being told.
 ## Status log
 
 - `2026-08-23` — created in `planned/`. Written alongside the scaffolding it describes, on `jh/plan-043-roadmap-work-surface`.
+- `2026-08-23` — moved from `planned` to `in-progress`: Work executed 2026-08-23 in the PLAN-043 SUV bring-up.
+- `2026-08-23` — moved from `in-progress` to `done`: Corpus scaffolding, template, READMEs, CLAUDE/AGENTS ladder, and roadmap-suv-create skill landed in b3d39e9d. Verified: all seven status folders tracked, template frontmatter matches ADR-0028 order, hooks passed without --no-verify.

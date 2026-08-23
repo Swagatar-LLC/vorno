@@ -1,14 +1,14 @@
 ---
 id: SUV-0001
 title: Put the roadmap console under version control
-status: planned
+status: blocked
 plan: PLAN-043
 direction: DIR-05
 owner: jh
 created: 2026-08-23
 updated: 2026-08-23
 related: []
-blocked-by: []
+blocked-by: [Owner decision: whether the console repo is public or private, and which Swagatar-LLC remote it pushes to]
 ---
 
 # SUV-0001 — Put the roadmap console under version control
@@ -47,3 +47,5 @@ remote, an ignore file, and a stated branch discipline.
 ## Status log
 
 - `2026-08-23` — created in `planned/`. Partially landed already: the console has a local repo (`89fdbff`, "Initial commit") and a `.gitignore`. Outstanding: the remote, the public/private decision, and the README branch-discipline section.
+- `2026-08-23` — moved from `planned` to `in-progress`: Repo initialised (89fdbff); .gitignore, vendored assets committed deliberately, README documents branch discipline.
+- `2026-08-23` — moved from `in-progress` to `blocked`: Local repo done, but two acceptance criteria remain open and both hinge on one owner decision. There is no remote, so the push criterion cannot be met. The private-path criterion is coupled to the same call: corpus.py documents the internal corpus root (~/dev/vorno-internal) in its module docstring, which is a private-repo path only if this repo goes public. Resolve the public/private question and both close together.
