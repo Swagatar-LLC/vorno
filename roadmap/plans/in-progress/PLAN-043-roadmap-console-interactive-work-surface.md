@@ -1,123 +1,152 @@
 ---
 id: PLAN-043
-title: Roadmap console as an interactive work surface — the DIR-05 detour
+title: Roadmap console as the SUV and task-authoring surface — the DIR-05 detour
 status: in-progress
 direction: DIR-05
 owner: jh
 created: 2026-08-22
 updated: 2026-08-23
 related:
+  - ADR-0028-suv-as-the-shippable-unit-between-plan-and-task.md (the governance shape this plan implements)
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md (this detour is its test harness and requirements probe)
   - PLAN-045-roadmap-reduction-pass.md (the mining pass runs on this surface)
+related-suvs: []
 blocked-by: []
 ---
 
-# PLAN-043 — Roadmap console as an interactive work surface
+# PLAN-043 — Roadmap console as the SUV and task-authoring surface
 
-> **This is the immediate detour — the first executable step of DIR-05,
-> sequenced *before* PLAN-039 W1.** The roadmap console (the tailnet
-> read/write PM surface over both corpora) grows from a viewer/editor into a
-> real work surface that plans, decomposes, and dispatches agent work.
+> **The immediate detour — the first executable step of DIR-05, sequenced
+> *before* PLAN-039 W1.** The roadmap console grows from a viewer/editor into
+> the surface where plans are cut into SUVs, SUVs are composed into `task.yaml`
+> definitions, and those definitions are published to Vorno.
 
 ## Why a detour, and why first
 
-Product-owner rationale, preserved as stated: this is **deliberate
-dogfooding** — building the tool that *consumes* task breakdowns teaches us
-what the workflow/task structure must be, and it becomes the **test harness
-for PLAN-039** as it lands. Every gap the console hits when generating a
-`task.yaml` from a plan is a requirement discovered *before* the
-definition/instance split is designed, not after. The corpus evidence in
-PLAN-039 (75 nodes, eight fields, zero control-flow uses) was gathered by
-reading; this detour generates the *next* corpus deliberately.
+Product-owner rationale, preserved as stated: this is deliberate dogfooding —
+building the tool that *consumes* task breakdowns teaches us what the
+workflow/task structure must be, and it becomes the **test harness for
+PLAN-039** as it lands. Every gap hit while authoring a `task.yaml` by hand is a
+requirement discovered *before* the definition/instance split is designed, not
+after.
+
+## What the first attempt got wrong
+
+PR #173 (closed; reverted, recovery SHA `6714dcf3`) implemented "Break Down" as
+a **prompt launcher**: assemble prose, put it in a `vorno://` URL, hand off to
+TaskEditor's Generate mode, which authors the whole DAG in one in-app LLM pass.
+Because the artifact then only ever existed inside Vorno, the console had to
+grow a new Vorno entry point to reach it — a `new-task` deep-link action, plus
+`availableModelRoutes` on the upstream-owned `TaskGenerateRequest` DTO to
+compensate for the generator not knowing the model catalog. Eleven files of
+product change, none of it in the console, to serve a surface this plan calls
+throwaway.
+
+Two corrections follow, and they define this rewrite:
+
+1. **The task definition is authored in the console and stored in the roadmap
+   repo** (ADR-0028). It is a real, incremental, reviewable artifact, not a
+   prompt.
+2. **Publishing is a file write** to `{workspaceRoot}/tasks/<slug>/`, which
+   `storage.ts` already scans. No Vorno change is required, and none should be
+   made under this plan.
 
 ## Scope
 
-The console today: board/list/map views, omnisearch, in-place editing, plan
-moves, roadmap-scoped commits (a local, tailnet-only, stdlib-Python app; the
-markdown corpus stays the single source of truth). Four additions:
+Five phases, in order. Each phase is one or more SUVs; no phase starts before
+its predecessor is green.
 
-### D1 — Follow-up tool (feedback → session)
+### P1 — Put the console under version control
 
-- Select/highlight a region of any roadmap document, attach feedback text,
-  and **spawn a Vorno session pre-loaded with that context** (document id,
-  the selected excerpt, the feedback) to plan the work.
-- Dispatch mechanism is a design choice inside the phase: the app's
-  deep-link scheme, the local trigger server's webhook surface (PLAN-014),
-  or the CLI — pick the narrowest one that can carry a context payload;
-  record the choice in the plan's status log.
+`~/.craft-agent/serve/apps/vorno-roadmap/` has no `.git`. It is load-bearing PM
+infrastructure that can write to both roadmap repos, and it has no history, no
+branches, and no backup — determining when the "Break Down" button was added
+required filesystem forensics. Give it a repository, a remote, and the same
+never-push-to-main discipline as everything else. Decide public vs private on
+the same axis the roadmap split uses.
 
-### D2 — Workstream view
+### P2 — SUV as a first-class corpus type
 
-- A view answering "what is the current workstream?": the active direction,
-  its driving ADR(s), and the sequenced plans with their inter-relations
-  (blocked-by edges, sibling groupings) — the Map view sharpened from
-  "everything referencing DIR-NN" into an ordered, annotated lane.
+- `SUV-NNNN` ids, `roadmap/suvs/<status>/`, plan status set and transition graph
+  reused verbatim, `plan:` / `related-suvs:` relation edges (ADR-0028).
+- `corpus.py`: type derivation, `ID_PREFIX` / `ID_WIDTH`, template.
+- Console: SUVs on the board and list views, filtered by owning plan.
+- **Bake it into the repo's work-management instructions** — `CLAUDE.md`,
+  `AGENTS.md`, `roadmap/README.md`, `roadmap/plans/README.md`, and a
+  `roadmap-suv-create` skill alongside the existing plan skills. An agent
+  reading this repo cold must learn the ladder without being told.
 
-### D3 — Plan → task breakdown (the load-bearing piece)
+### P3 — task.yaml composer
 
-- Break a plan into an executable decomposition and **generate a
-  `task.yaml`** from it.
-- Hand the breakdown to the existing task surface — TaskEditor /
-  `tasks:create` — rather than a parallel one. Per-node `model` /
-  `llmConnection` already exist in the schema; the breakdown assigns them.
-- Queue the generated tasks in the Vorno project to run **unattended
-  start-to-finish, including adversarial verification runs** (verify nodes
-  are part of the generated breakdown, not an afterthought).
+- Create and edit `roadmap/suvs/definitions/SUV-NNNN.task.yaml` incrementally —
+  add a node, wire `depends_on`, edit inputs, save, come back later.
+- **Validate against the real schema.** `packages/shared/src/tasks/schema.ts` is
+  Zod and `validate.ts` exports `validateTaskInput`; the console is stdlib
+  Python. Shell out to `bun` so there is exactly one definition of valid, rather
+  than reimplementing the schema and letting the two drift.
+- Mermaid DAG preview (`beautiful-mermaid` is already vendored in the console).
+- Definitions stay machine-neutral: no cwd, no project id, no model routes
+  baked in.
 
-### D4 — Relations render (optional)
+### P4 — Publish to Vorno
 
-- An initial Mermaid render of plan/task relations inside the console
-  (Mermaid is already vendored there); nice-to-have, cut first if time
-  presses.
+- Write the definition to `{workspaceRoot}/tasks/<slug>/task.yaml`, supplying
+  the machine-local values at publish time.
+- Deep-link only to *focus* the board — `vorno://` already supports this today,
+  unchanged.
+- Republish overwrites the spec and never touches `runs/`. Drift is resolved by
+  re-publishing; nothing is ever copied back into the repo.
 
-## Throwaway vs load-bearing (mark it honestly)
+### P5 — Feed PLAN-039
 
-| Piece | Status | Why |
-|---|---|---|
-| Console-side UI (views, selection tool, workstream lane) | **Throwaway** | The console is a stopgap PM surface; DIR-04 dynamic workspaces is the destination for this UI |
-| Anything that generates `task.yaml` (decomposition shape, node/verify structure, param plumbing) | **Load-bearing** | This *is* the requirements probe for PLAN-039's definition model; its output format migrates into the definition store |
-| Session-dispatch-with-context mechanism (D1) | **Load-bearing** | Whatever carries "here is context, go plan" is the same seam PLAN-044 work requests will need |
+Every awkwardness hit in P3/P4 is recorded as a status-log entry or discussion
+doc. This is the deliverable that makes the detour worth taking — the input to
+PLAN-039 W1's definition model.
 
 ## Non-goals
 
-- No hardening of the console for anyone but the workspace owner; it stays
-  local + tailnet-only, stdlib-only.
-- No workflow-definition storage here — generated `task.yaml`s land in the
-  existing `tasks/` surface; the definition store is PLAN-039 W1.
-- No board/kanban replacement (that concern is DIR-05's visualization
-  requirement, addressed in PLAN-039 W3 and beyond).
+- **No Vorno product change under this plan.** If a phase appears to need one,
+  that is a finding for PLAN-039, not a license to edit `packages/`.
+- No hardening of the console for anyone but the workspace owner; local +
+  tailnet-only, stdlib-only.
+- No workflow-definition *store* — a flat directory of yaml files is the whole
+  mechanism here. The real store is PLAN-039 W1.
+- No board/kanban replacement (DIR-05 visualization; PLAN-039 W3 and beyond).
+
+## Already built, keep
+
+D2's workstream view is live in the console: DIR-05 → ADR-0027 plus a plan lane
+ordered by current status, `related-plans`, and hard `blocked-by` edges. It
+survived the revert because it is console-side. P2 extends it with SUVs.
+
+D1's quote-anchored feedback tool is live, and its anchoring was rebuilt on
+2026-08-23 after the first version proved unusable — see the status log.
 
 ## Salvaged from prior plans (PLAN-045 Pass 1)
 
-**D1 has been built once already — check before building it a third time.**
+**The feedback loop has been built once already — check before building it a
+third time.**
 
 The review workbench shipped exactly this loop: select text in a rendered
 markdown document → attach a comment → **route it as a question into a chosen
 session** via `sessions:sendMessage`, embedding the artifact path, the quoted
 anchor, and the thread id, with replies linked back on the thread. The code is
-on `main` behind the `workbenchEnabled` flag. D1's "dispatch mechanism is a
-design choice inside the phase" should start by evaluating that seam, not by
-picking among deep-link / webhook / CLI from scratch.
+on `main` behind the `workbenchEnabled` flag.
 ← `PLAN-024-review-workbench-dynamic-workspace-v1.md`
 
-Two disciplines come with it, and D1 needs both because roadmap documents change
-under a selection:
+Two disciplines come with it, and both were re-learned the hard way:
 
-- **Anchoring**: quote-anchored `AnnotationV1` targets plus an artifact
-  `contentHash` (and `gitSha` for repo files).
+- **Anchoring**: quote-anchored targets plus a content hash.
 - **Staleness**: badge the stale version; **never silently re-anchor.**
   ← `PLAN-024`, ADR-0014
 
-**D2's corpus index may already exist.**
+**The corpus index may already exist.**
 
 The artifact plane shipped in v0.13.0 behind `artifactsEnabled` and provides,
 over `vorno:artifacts:*`: a zero-config scan of session `plans/` + `data/` plus
 configured corpus roots (`roadmap/` is the named example), **frontmatter parsed
-into the index** so roadmap ids/tags/titles are queryable for free, **typed
-relations** (`derived-from`, `references`, `renders`, `discussed-in`), and a
-join against `SessionHeader` context (project, labels, status). D2's workstream
-view — "active direction, its driving ADRs, sequenced plans with blocked-by
-edges" — is that relation model applied to the roadmap corpus. The console is
+into the index**, **typed relations** (`derived-from`, `references`, `renders`,
+`discussed-in`), and a join against `SessionHeader` context. The console is
 stdlib-Python and tailnet-local by design, so reuse may mean *reading the same
 conventions* rather than calling the channels; either way, do not invent a third
 relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
@@ -126,30 +155,30 @@ relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
 
 - **Agent-minable by construction.** The workbench stored threads as plain JSON
   under the workspace specifically so agents could find them with Read/Grep and
-  no new tools were needed. The console's feedback and breakdown artifacts
-  should hold the same property — it is what makes the dogfooding loop closed.
-  ← `PLAN-024`
+  no new tools were needed. SUVs, definitions, and feedback records all hold
+  this property — it is what makes the dogfooding loop closed. ← `PLAN-024`
 - **Cross-session roll-up as the shape for "what is the current workstream?"**
-  The orchestration panel answered the runtime version of D2's question —
-  active + recently-completed work across *all* sessions, grouped, with the
-  focused one pinned — and completed items persisted rather than vanishing.
   ← `PLAN-007-orchestration-activity-panel-done.md`
-- **The generator needs a journey test, not a unit test.** The console UI is
-  declared throwaway and the `task.yaml` generator load-bearing; a generator
-  regression is exactly the runtime, journey-level class of failure that passed
-  every unit suite and lint gate in the PR #106 QA. The standard to borrow: *a
-  deliberately reintroduced bug must make the check fail.*
-  ← `PLAN-028-ci-user-journey-build-tests.md`
+- **The composer needs a journey test, not a unit test.** The console UI is
+  throwaway and the definitions are load-bearing; a composer regression is
+  exactly the runtime, journey-level failure that passed every unit suite in the
+  PR #106 QA. The standard to borrow: *a deliberately reintroduced bug must make
+  the check fail.* ← `PLAN-028-ci-user-journey-build-tests.md`
 
 ## Acceptance
 
-- [ ] From a rendered roadmap doc, select a region, attach feedback, and a Vorno session opens pre-loaded with doc id + excerpt + feedback.
-- [ ] Workstream view shows the active direction, driving ADR(s), and sequenced plans with relations.
-- [ ] A plan can be broken down into a generated `task.yaml` that loads cleanly in TaskEditor and runs via the existing task surface.
-- [ ] At least one generated breakdown runs unattended start-to-finish in the Vorno project, including an adversarial verification node.
-- [ ] Each gap or awkwardness the generator hits is recorded (status log or discussion doc) as input to PLAN-039 W1.
+- [ ] The console is a git repository with a remote and a stated branch discipline.
+- [ ] `SUV-NNNN` exists as a corpus type: template, status folders, transition graph, board/list rendering, and a create skill.
+- [ ] The repo's work-management instructions teach DIR → ADR → PLAN → SUV → task without external explanation.
+- [ ] A `task.yaml` definition can be built incrementally across sessions, validated by the real `validateTaskInput`, and previewed as a DAG.
+- [ ] Publishing writes a task Vorno picks up, with **zero diff under `packages/` or `apps/`**.
+- [ ] One published task runs unattended start-to-finish, including an adversarial verification node.
+- [ ] Every gap hit while authoring by hand is recorded as input to PLAN-039 W1.
 
 ## Status log
 
 - `2026-08-22` — created from product-owner review of PR #171; explicitly sequenced as the first executable step of DIR-05, before PLAN-039 W1.
 - `2026-08-23` — moved from `planned` to `in-progress`: Starting implementation path
+- `2026-08-23` — first implementation attempt reverted (PR #173 closed, recovery SHA `6714dcf3`). Scope drifted into Vorno product change — a `new-task` deep-link action and an `availableModelRoutes` field on the upstream `TaskGenerateRequest` DTO — because "Break Down" was built as a prompt launcher rather than an authoring tool, leaving the task artifact reachable only inside Vorno. Root cause is a governance gap, not agent error: a plan is a feature, and nothing smaller declared a shippable boundary.
+- `2026-08-23` — console feedback anchoring rebuilt after the handoff proved unusable on its first real trial. Two defects: quotes were captured from *rendered* text but matched against *raw markdown*, so any quote crossing a hard wrap or sitting inside `**bold**` could never resolve; and staleness was a whole-document hash, so appending to a status log — the most common write in this corpus — reported every intact anchor as broken. Fixed by matching against a rendered-text projection and re-resolving the quote plus 64 chars of stored context, yielding `ok` / `moved` / `ambiguous` / `missing`. Console-side only; survived the revert.
+- `2026-08-23` — rewritten around ADR-0028. Five sequenced phases; the load-bearing correction is that a task definition is authored and versioned in the roadmap repo, and publishing is a plain file write into the layout `storage.ts` already scans — so this plan requires no Vorno change at all.

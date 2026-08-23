@@ -55,3 +55,4 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0025](0025-oauth-redirect-relay-security-model.md) | Vorno-owned OAuth redirect relay security model | accepted |
 | [0026](0026-session-query-as-a-composable-predicate-surface.md) | Session query as a composable predicate surface with allowlisted projection | proposed |
 | [0027](0027-lean-on-the-os-for-lifecycle-chores.md) | Lean on filesystem and OS primitives for lifecycle chores | proposed |
+| [0028](0028-suv-as-the-shippable-unit-between-plan-and-task.md) | SUV as the shippable unit between a plan and an executable task | proposed |
