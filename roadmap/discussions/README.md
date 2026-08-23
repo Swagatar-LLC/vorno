@@ -30,3 +30,4 @@ related-directions: [DIR-01, DIR-02, DIR-03]
 | Date | Title | Topic |
 |------|-------|-------|
 | 2026-04-28 | [Canvas paradigm directions](2026-04-28-canvas-paradigm-directions.md) | Three integration directions for AI-native dynamic workspaces |
+| 2026-08-22 | [PLAN-045 Pass 1 — mining report](2026-08-22-plan-045-mining-report.md) | Inventory of all 46 plans; 48 salvaged ideas relocated into the DIR-05 plans; deprecation candidates for Pass 2 |

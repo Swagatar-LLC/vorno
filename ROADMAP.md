@@ -170,11 +170,12 @@ folder for detail.
 - **Artifact plane** — the first rung of Dynamic Workspaces (C1): a typed, versioned,
   context-aware index of everything a workspace produces, with an Artifact Home surface
   and native JSON Canvas / frontmatter formats. Shipped to `main` behind a feature flag;
-  blocked on the recorded owner runtime-QA checks before closeout. Tracked as PLAN-025.
-- **Hosted workspace server** — Phase 0's AuthN/AuthZ architecture is complete, but the
-  deployable hosted-workspace runtime did not ship. Remaining implementation is blocked
-  behind PLAN-039/PLAN-040 and is being re-homed incrementally into PLAN-036/PLAN-041;
-  PLAN-045 owns the final scope reduction. Tracked as PLAN-023.
+  composed surfaces (C2) are next. Tracked as PLAN-025.
+- **Hosted workspace server** — a self-hosted server instance that hosts workspaces
+  centrally, with the desktop app acting as a thin client and phones connecting via the
+  WebUI. Includes server-side source authentication and a non-technical, one-command
+  setup path so a single person can stand up their own instance. Tracked as PLAN-041
+  (PLAN-023 archived 2026-08-22; its Phase 0 architecture and ADR-0013 remain authoritative).
 - **Protocol evolution** — additive `vorno:*` namespaces layered on top of the
   maintained Craft wire protocol, so fork-specific capabilities extend the contract
   without breaking compatibility with upstream clients.

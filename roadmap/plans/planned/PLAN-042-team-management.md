@@ -37,6 +37,24 @@ small ADR-sized commitments while the DIR-05 milestone is built, so the
 data model grows toward multi-user shape continuously rather than being
 retrofitted.
 
+## Salvaged from prior plans (PLAN-045 Pass 1)
+
+- **Attribution has a shipped home already — extend it, don't parallel it.**
+  `StatusChangeOrigin` (`agent` / `user` / `host` / `automation`) is enforced at
+  the `SessionManager.setSessionStatus` choke point, defaults fail-closed, and
+  encodes exactly the authority question this plan asks ("who may close, who may
+  approve"). A multi-user principal threads *into* that discriminator; a second
+  authority model beside it would recreate the "asserted in three places,
+  enforced in one" shape the fork spent a plan removing.
+  ← `PLAN-031-status-invariants-at-the-choke-point.md`, ADR-0021
+- **The single-user→multi-user seam is already drawn.** PLAN-023 Phase 0 was
+  required to show where a user principal would thread through `bootstrapServer`
+  handler deps and `SessionManager` *without reshaping today's single-token
+  path* — and to resist designing multi-user code. That constraint ("the
+  architecture must not preclude it," not "build it") is the same posture this
+  stub takes, and its output lives in `docs/hosted-workspace-architecture.md`.
+  ← `PLAN-023-hosted-workspace-server.md`
+
 ## Status log
 
 - `2026-08-22` — created as a stub behind PLAN-041.

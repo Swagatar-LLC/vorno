@@ -87,6 +87,60 @@ markdown corpus stays the single source of truth). Four additions:
 - No board/kanban replacement (that concern is DIR-05's visualization
   requirement, addressed in PLAN-039 W3 and beyond).
 
+## Salvaged from prior plans (PLAN-045 Pass 1)
+
+**D1 has been built once already — check before building it a third time.**
+
+The review workbench shipped exactly this loop: select text in a rendered
+markdown document → attach a comment → **route it as a question into a chosen
+session** via `sessions:sendMessage`, embedding the artifact path, the quoted
+anchor, and the thread id, with replies linked back on the thread. The code is
+on `main` behind the `workbenchEnabled` flag. D1's "dispatch mechanism is a
+design choice inside the phase" should start by evaluating that seam, not by
+picking among deep-link / webhook / CLI from scratch.
+← `PLAN-024-review-workbench-dynamic-workspace-v1.md`
+
+Two disciplines come with it, and D1 needs both because roadmap documents change
+under a selection:
+
+- **Anchoring**: quote-anchored `AnnotationV1` targets plus an artifact
+  `contentHash` (and `gitSha` for repo files).
+- **Staleness**: badge the stale version; **never silently re-anchor.**
+  ← `PLAN-024`, ADR-0014
+
+**D2's corpus index may already exist.**
+
+The artifact plane shipped in v0.13.0 behind `artifactsEnabled` and provides,
+over `vorno:artifacts:*`: a zero-config scan of session `plans/` + `data/` plus
+configured corpus roots (`roadmap/` is the named example), **frontmatter parsed
+into the index** so roadmap ids/tags/titles are queryable for free, **typed
+relations** (`derived-from`, `references`, `renders`, `discussed-in`), and a
+join against `SessionHeader` context (project, labels, status). D2's workstream
+view — "active direction, its driving ADRs, sequenced plans with blocked-by
+edges" — is that relation model applied to the roadmap corpus. The console is
+stdlib-Python and tailnet-local by design, so reuse may mean *reading the same
+conventions* rather than calling the channels; either way, do not invent a third
+relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
+
+**Other carried material**
+
+- **Agent-minable by construction.** The workbench stored threads as plain JSON
+  under the workspace specifically so agents could find them with Read/Grep and
+  no new tools were needed. The console's feedback and breakdown artifacts
+  should hold the same property — it is what makes the dogfooding loop closed.
+  ← `PLAN-024`
+- **Cross-session roll-up as the shape for "what is the current workstream?"**
+  The orchestration panel answered the runtime version of D2's question —
+  active + recently-completed work across *all* sessions, grouped, with the
+  focused one pinned — and completed items persisted rather than vanishing.
+  ← `PLAN-007-orchestration-activity-panel-done.md`
+- **The generator needs a journey test, not a unit test.** The console UI is
+  declared throwaway and the `task.yaml` generator load-bearing; a generator
+  regression is exactly the runtime, journey-level class of failure that passed
+  every unit suite and lint gate in the PR #106 QA. The standard to borrow: *a
+  deliberately reintroduced bug must make the check fail.*
+  ← `PLAN-028-ci-user-journey-build-tests.md`
+
 ## Acceptance
 
 - [ ] From a rendered roadmap doc, select a region, attach feedback, and a Vorno session opens pre-loaded with doc id + excerpt + feedback.

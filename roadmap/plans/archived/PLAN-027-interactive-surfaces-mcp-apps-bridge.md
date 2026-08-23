@@ -1,11 +1,11 @@
 ---
 id: PLAN-027
 title: Interactive surfaces — allow-scripts sandbox + MCP Apps ui/* bridge (C3)
-status: planned
+status: archived
 direction: DIR-04
 owner: jh
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-08-22
 related:
   - PLAN-026-composed-surfaces-v1.md
 blocked-by:
@@ -48,3 +48,4 @@ Lift the host-side requirements directly from the SEP-1865 spec (sandbox, CSP te
 ## Status log
 
 - `2026-07-21` — created in `planned/` (C3 of the ADR-0015 ladder)
+- `2026-08-22` — **archived (PLAN-045 Pass 2)**: third link of a three-deep blocked chain (C3 → PLAN-026 → PLAN-025) with no live head. Both durable ideas were salvaged: the adopt-don't-invent precedent (SEP-1865 lifted verbatim) into `PLAN-044-cross-system-work-requests.md`, and the security-review-before-code gate on any trust boundary into `PLAN-041-server-homed-instances-with-auth.md`. The MCP-Apps-host ambition is a direction, not a queued plan. Mining record: [`2026-08-22-plan-045-mining-report.md`](../../discussions/2026-08-22-plan-045-mining-report.md).

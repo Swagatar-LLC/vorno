@@ -10,8 +10,9 @@ related-decisions:
   - 0019-storage-root-config-schema-and-provider-kind-namespace.md
 related-plans:
   - PLAN-025-artifact-plane-v1.md
-  - PLAN-026-composed-surfaces-v1.md
-  - PLAN-027-interactive-surfaces-mcp-apps-bridge.md
+  # PLAN-026 (C2) and PLAN-027 (C3) archived 2026-08-22 (PLAN-045 Pass 2):
+  # a three-deep blocked chain with no live head. The C2/C3 ambitions survive
+  # as direction text below; neither is a queued plan.
   - PLAN-029-storage-provider-config-and-management-surfaces.md
 ---
 
@@ -28,8 +29,8 @@ This direction operationalizes the VISION's "open, extensible shell for AI-nativ
 | Phase | Delivers | Plan |
 |---|---|---|
 | **C1** | Artifact plane, thin: `vorno:artifacts:*`, open type registry, context-aware zero-config index, relations, Artifact Home; JSON Canvas + frontmatter as native formats; Obsidian file-native projection | PLAN-025 |
-| **C2** | Composed surfaces: versioned declarative spec over the existing block catalog, one generic host page, surfaces persisted as artifacts, round-trip v0 | PLAN-026 |
-| **C3** | Interactive surfaces: `allow-scripts` sandbox class + postMessage bridge aligned to MCP Apps SEP-1865 | PLAN-027 |
+| **C2** | Composed surfaces: versioned declarative spec over the existing block catalog, one generic host page, surfaces persisted as artifacts, round-trip v0 | PLAN-026 *(archived)* |
+| **C3** | Interactive surfaces: `allow-scripts` sandbox class + postMessage bridge aligned to MCP Apps SEP-1865 | PLAN-027 *(archived)* |
 | **C4** | Opportunistic: external first-class integrations, DIR-02 skill contributions targeting the surface spec, canvas projection | future |
 
 ## Relationship to the other directions

@@ -134,8 +134,10 @@ workflows live and who runs them*. That is the sequel milestone, staged delibera
 
 - **Server-homed instances with auth** (PLAN-041, stub) — the headless server
   (PLAN-013, shipped) becomes the home for workspaces and workflow definitions,
-  with per-instance authentication. Builds on the Hosted Workspace Server work
-  (PLAN-023, in progress).
+  with per-instance authentication. Carries the Hosted Workspace Server work
+  forward: PLAN-023's Phase 0 architecture and ADR-0013 remain authoritative, and
+  its unbuilt Phases 1-3 were relocated here by PLAN-045 Pass 1 before PLAN-023
+  itself was archived (2026-08-22).
 - **Team management** (PLAN-042, stub) — users, roles, and sharing within an
   instance, so a definition authored once can be run by a team.
 - **Cross-system work requests** (PLAN-044, stub) — dynamically generated
