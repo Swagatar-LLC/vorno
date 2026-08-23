@@ -132,6 +132,16 @@ folder for detail.
 - **Headless / Docker server deployment path** — run the server without the desktop
   shell as a standalone deployment unit, including containerized deployment
   (PLAN-013).
+- **Artifact storage roots and provider seam** — configure local artifact roots through
+  provider-aware settings and a pluggable storage foundation, documented for users and
+  contributors (PLAN-029; v0.13.0).
+- **Session lifecycle automation and status safeguards** — event-triggered session
+  actions, visible refusal history, context profiles, repaired built-in statuses, and
+  declared closure authority (PLAN-030/PLAN-031; v0.15.0–v0.16.0). PLAN-031 retains two
+  explicit end-to-end regression tests before its own closeout.
+- **Vorno-owned documentation and changelog** — the bundled guides publish at
+  `vorno.ai/docs`, release notes publish at `vorno.ai/changelog`, and every release
+  republishes and verifies both surfaces automatically (PLAN-034; v0.17.0–v0.18.0).
 
 ---
 
@@ -160,11 +170,11 @@ folder for detail.
 - **Artifact plane** — the first rung of Dynamic Workspaces (C1): a typed, versioned,
   context-aware index of everything a workspace produces, with an Artifact Home surface
   and native JSON Canvas / frontmatter formats. Shipped to `main` behind a feature flag;
-  composed surfaces (C2) are next. Tracked as PLAN-025.
-- **Hosted workspace server** — a self-hosted server instance that hosts workspaces
-  centrally, with the desktop app acting as a thin client and phones connecting via the
-  WebUI. Includes server-side source authentication and a non-technical, one-command
-  setup path so a single person can stand up their own instance. Tracked as PLAN-023.
+  blocked on the recorded owner runtime-QA checks before closeout. Tracked as PLAN-025.
+- **Hosted workspace server** — Phase 0's AuthN/AuthZ architecture is complete, but the
+  deployable hosted-workspace runtime did not ship. Remaining implementation is blocked
+  behind PLAN-039/PLAN-040 and is being re-homed incrementally into PLAN-036/PLAN-041;
+  PLAN-045 owns the final scope reduction. Tracked as PLAN-023.
 - **Protocol evolution** — additive `vorno:*` namespaces layered on top of the
   maintained Craft wire protocol, so fork-specific capabilities extend the contract
   without breaking compatibility with upstream clients.

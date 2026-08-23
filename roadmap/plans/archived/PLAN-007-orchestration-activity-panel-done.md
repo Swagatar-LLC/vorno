@@ -1,5 +1,3 @@
-> **Archived 2026-07-08** — superseded by upstream v0.11.0 background-task/Conductor system; VORNO program paused. Retained for research only.
-
 ---
 id: PLAN-007
 title: Persistent orchestration/activity panel (mini-Observatory)
@@ -7,11 +5,13 @@ status: archived
 direction: DIR-03
 owner: jh
 created: 2026-06-08
-updated: 2026-06-08
+updated: 2026-07-08
 related:
   - PLAN-005-webui-tailscale-launcher.md
 blocked-by: []
 ---
+
+> **Archived 2026-07-08** — superseded by upstream v0.11.0 background-task/Conductor system; VORNO program paused. Retained for research only.
 
 # PLAN-007 — Persistent orchestration/activity panel (mini-Observatory)
 

@@ -1,13 +1,17 @@
 ---
 id: PLAN-035
 title: Vorno-hosted session shares; flip VIEWER_URL to share.vorno.ai
-status: in-progress
+status: blocked
 direction: DIR-04
 owner: jh
 created: 2026-08-17
-updated: 2026-08-17
+updated: 2026-08-22
 related: [ADR-0024, ADR-0023, PLAN-034]
-blocked-by: []
+blocked-by:
+  - ADR-0024 owner acceptance
+  - "Jeff retention-policy decision"
+  - "Privacy policy at https://vorno.ai/privacy"
+  - "Cloudflare R2/Worker/custom-domain provisioning and live HTTP verification"
 ---
 
 # PLAN-035 — Vorno-hosted session shares
@@ -217,3 +221,4 @@ not a dependable deploy path. `bunx wrangler deploy` with a real token is the du
 
 - `2026-08-17` — created in `in-progress/`; ADR-0024 proposed. Lane F pulled forward from
   ADR-0023 open thread #2 at Jeff's direction.
+- `2026-08-22` — moved from in-progress to blocked: Lane 1 (Worker) and Lane 2 (client back-compat) merged as PRs #157/#159; the back-compat fix shipped in v0.18.0. The cutover PR #160 was closed without merging, `VIEWER_URL` still targets `agents.craft.do`, `share.vorno.ai` is not provisioned, and the privacy/retention gates remain Jeff decisions. Current shipping docs remain accurate.

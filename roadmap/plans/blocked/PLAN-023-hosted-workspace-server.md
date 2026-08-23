@@ -1,16 +1,18 @@
 ---
 id: PLAN-023
 title: Hosted Workspace Server (self-hosted app-server; desktop + phone as thin clients)
-status: in-progress
+status: blocked
 direction: DIR-03
 owner: jh
 created: 2026-07-17
-updated: 2026-07-18
+updated: 2026-08-22
 related:
   - PLAN-013-server-only-deployment.md
   - PLAN-005-webui-tailscale-launcher.md
   - PLAN-022-webui-remote-access-single-port-proxy-and-tunnel.md
-blocked-by: []
+blocked-by:
+  - PLAN-039
+  - PLAN-040
 ---
 
 # PLAN-023 — Hosted Workspace Server
@@ -89,9 +91,9 @@ graph TB
 ```
 
 **Phase 0 acceptance**
-- [ ] `docs/hosted-workspace-architecture.md` merged: instance identity, single-user-now / multi-user-future user identity, the three trust boundaries, onboarding surface.
-- [ ] ADR authored + accepted stating: app-server is the hosted-workspace unit; single bearer/password model now; multi-user is a named future the design does not preclude.
-- [ ] Reviewed against ADR-0005 (config-dir / `~/.claude` pairing) and ADR-0008 (trigger unit) for coexistence.
+- [x] `docs/hosted-workspace-architecture.md` merged: instance identity, single-user-now / multi-user-future user identity, the three trust boundaries, onboarding surface.
+- [x] ADR authored + accepted stating: app-server is the hosted-workspace unit; single bearer/password model now; multi-user is a named future the design does not preclude.
+- [x] Reviewed against ADR-0005 (config-dir / `~/.claude` pairing) and ADR-0008 (trigger unit) for coexistence.
 
 ## Phase 1 — single-user hosted server over Tailscale/TLS
 
@@ -163,3 +165,4 @@ Designed *after* Phase 1 teaches the sharp edges (deliberately sequenced last).
 - `2026-07-17` — created in `planned/`
 - `2026-07-18` — moved from planned to in-progress: Phase 0 (architecture doc + ADR-0013) underway
 - `2026-07-19` — Jeff signed off all four Phase-0 one-way doors; ADR-0013 **accepted** with conditions (additive-only vault header, opaque `serverId` + `vorno:server:info` metadata rule, ALIGN-widened identity/RBAC semantics, git-HTTPS as written). ALIGN review paper edits (N-1..N-7) folded into ADR + architecture doc.
+- `2026-08-22` — moved from in-progress to blocked: Phase 0 is complete and architecture-only; Phases 1–3 have no PLAN-023 runtime implementation or release-note evidence. The remaining hosted-instance work is now sequenced behind PLAN-039/PLAN-040 and partially re-homed into PLAN-036/PLAN-041. PLAN-045 should reconcile the final scope split rather than falsely closing this plan as shipped.

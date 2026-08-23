@@ -5,7 +5,7 @@ status: in-progress
 direction: DIR-03
 owner: jh
 created: 2026-08-05
-updated: 2026-08-05
+updated: 2026-08-22
 related:
   - ADR-0021
   - PLAN-030
@@ -244,3 +244,5 @@ point while the MCP handler's own refusal stays.
   Neither blocks ADR-0021 (accepted 2026-08-07 — §2's choke point is implemented and enforced) and
   neither is a bookkeeping lag. Recorded here rather than silently carried so the folder state
   keeps meaning what it says.
+
+- `2026-08-22` — lifecycle audit confirmed `in-progress` remains correct. The TaskRunner test still uses a fake host rather than a defaults-seeded workspace/disk readback, and the renderer has no Kanban drop regression. v0.15.0 shipped the underlying behavior, but these two explicit code acceptance items are genuinely incomplete. Also recorded for follow-up: the standalone server enforces automation closure through `checkStatusAction` rather than the SessionManager choke point, so the invariant is single-point per host rather than globally single-point.

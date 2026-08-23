@@ -1,14 +1,15 @@
 ---
 id: PLAN-024
 title: Review Workbench — first dynamic workspace surface (v0.13.0)
-status: in-progress
+status: blocked
 direction: DIR-01
 owner: jh
 created: 2026-07-19
-updated: 2026-07-24
+updated: 2026-08-22
 related:
   - PLAN-023-hosted-workspace-server.md
-blocked-by: []
+blocked-by:
+  - "Owner disposition: retire the dark standalone workbench or retain it as an artifact-plane consumer"
 ---
 
 # PLAN-024 — Review Workbench — first dynamic workspace surface (v0.13.0)
@@ -78,4 +79,5 @@ Anchoring (ADR-0014): quote-anchored `AnnotationV1` targets + artifact `contentH
 - `2026-07-19` — moved to `in-progress/`: build underway on branch plan-024-review-workbench
 - `2026-07-19` — v0.1 built end-to-end (contract → store/index/handlers → renderer page → gates). CI-parity gates green: 6-package typecheck clean, shared 3180 tests 0 fail, server 190 tests 0 fail, doc-tools OK, i18n ×3 OK, branding gate clean, server build OK, electron tsc at 108 pre-existing baseline (0 new). Remaining unchecked acceptance items are runtime QA (Jeff): open the ALIGN artifacts, annotate, ask-agent round-trip, stale badge in UI.
 - `2026-07-21` — PR #104 merged to main (`595a3bda`) after G1 quality review (session 260721-ivory-aspen, verdict green; feature-flagged dark, decoupled from v0.13.0 per ADR-0015 §9). Advisory findings A1–A6 carried into PLAN-025/C1. Per ADR-0015, the review workbench becomes a consumer of the generalized artifact plane (PLAN-025) — kernel generalization must keep this workbench functional with no data loss.
-- `2026-07-24` — status reconciliation (no build activity). Two facts recorded here that had been missing from this log: (1) **strategic verdict (owner, 2026-07-21/22): the Workbench, as a standalone review surface, is *not* the answer** to the dynamic-workspaces question. The generalized artifact plane (PLAN-025/C1) and the DIR-04 program supersede it as the primary bet; this plan is retained as a *consumer* of the artifact plane, not as an independent DIR-01 build. (2) The kernel this plan seeded shipped: **PLAN-025/C1 merged to main via PR #106 (`e8b2fa41`) on 2026-07-24** (feature-flagged dark), so the workbench's store/annotation/anchor layers now live under the artifact plane. **Disposition is an OPEN OWNER DECISION** — keep-dark / salvage the store+annotation layers into C-ladder work / park — and the folder is deliberately **not** moved pending Jeff's ruling (standing instruction: do not close or move this plan unilaterally).
+- `2026-07-24` — status reconciliation (no build activity). Two facts recorded here that had been missing from this log: (1) **strategic verdict (owner, 2026-07-21/22): the Workbench, as a standalone review surface, is *not* the answer** to the dynamic-workspaces question. The generalized artifact plane (PLAN-025/C1) and the DIR-04 program supersede it as the primary bet; this plan is retained as a *consumer* of the artifact plane, not as an independent DIR-01 build. (2) The kernel this plan seeded shipped: **PLAN-025/C1 merged to main via PR #106 (`e8b2fa41`) on 2026-07-24** (feature-flagged dark), so the workbench's store/annotation/anchor layers now live under the artifact plane. **Disposition is an OPEN OWNER DECISION** — keep-dark / salvage the store+annotation layers into C-ladder work / park.
+- `2026-08-22` — moved from in-progress to blocked: code remains present behind `workbenchEnabled`, but the standalone surface was strategically superseded and four runtime acceptance items remain unchecked. Awaiting the recorded owner disposition; no active implementation is underway.

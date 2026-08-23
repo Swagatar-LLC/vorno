@@ -1,7 +1,7 @@
 ---
 id: PLAN-045
 title: Roadmap reduction pass — mine, then deprecate (scheduled 2026-08-29)
-status: planned
+status: in-progress
 direction: DIR-05
 owner: jh
 created: 2026-08-22
@@ -60,3 +60,4 @@ with a one-line reason in its status log — reversible, and honest about why.
 ## Status log
 
 - `2026-08-22` — created from product-owner review of PR #171 ("longer poles to stand on"); scheduled for 2026-08-29 with a dated board task (workspace task `roadmap-reduction-pass-2026-08-29-plan-045`, in todo — starting it is the product owner's call).
+- `2026-08-22` — moved from `planned` to `in-progress`: Started in Vorno

@@ -6,7 +6,7 @@ them. Front-end in `src/`, backend in `worker/`.
 Both live here because the SPA fetches `/s/api/{id}` **relative** (`src/App.tsx`),
 so the API and the bundle must be served from one origin. See
 [ADR-0024](../../roadmap/decisions/0024-vorno-hosts-its-own-shared-sessions.md)
-and [PLAN-035](../../roadmap/plans/in-progress/PLAN-035-vorno-hosted-session-shares.md).
+and [PLAN-035](../../roadmap/plans/blocked/PLAN-035-vorno-hosted-session-shares.md).
 
 ## The share API
 

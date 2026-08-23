@@ -1,14 +1,15 @@
 ---
 id: PLAN-025
 title: Artifact plane v1 — registry, context-aware index, relations, Artifact Home (C1)
-status: in-progress
+status: blocked
 direction: DIR-04
 owner: jh
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-08-22
 related:
   - PLAN-024-review-workbench-dynamic-workspace-v1.md
-blocked-by: []
+blocked-by:
+  - "Jeff runtime QA: zero-config Artifact Home listing, JSON Canvas rendering, and Obsidian-open spot check"
 ---
 
 # PLAN-025 — Artifact plane v1: registry, context-aware index, relations, Artifact Home (C1)
@@ -57,4 +58,5 @@ Refactor-first: the workbench store/types/channels/handlers become the artifact 
 - `2026-07-21` — moved from planned to in-progress: PR #104 merged (`595a3bda`) unblocked the kernel; door ADR-0016 (URI scheme + open type registry) drafted as `proposed` on branch `plan-025-artifact-plane` — implementation gated on owner sign-off (G2a); detailed technical sketch lands post-sign-off
 - `2026-07-22` — **G2a closed**: owner signed all four doors (PR #106 review) with three inline amendments (storage-separation stated goal on root bindings; namespace reservation — un-prefixed ids reserved for system; read serves an *artifact*, not a file). ADR-0016 → `accepted` with amendments folded in. C1 build proceeding on `plan-025-artifact-plane`.
 - `2026-07-22` — **C1 built end-to-end** (three legs): (1) shared module `@craft-agent/shared/artifacts` — URI parse/format, root bindings + realpath containment, open type registry (markdown/json-canvas/json/file), zero-config index with frontmatter + SessionHeader context join, relations + lifecycle stores, read gate, JSON Canvas parse/emit, Obsidian vault projection, 78 tests; (2) `vorno:artifacts:*` wire surface (7 channels, REMOTE_ELIGIBLE) + server-authoritative handlers + `artifactsEnabled`/`artifactRoots` workspace settings; (3) renderer — Artifact Home page (filter rail / list / detail + relations w/ unresolvable-badge), read-only JSON Canvas view, settings toggle + roots editor (directory-picker), 57 i18n keys ×7 locales, workbench advisory fixes A3 (annotation-drop toast) + A4 (corpus-roots draft clobber). CI-parity gates all green. Remaining: Jeff runtime QA (G2c) + Obsidian-open spot check.
-- `2026-07-24` — **PR #106 merged to `main`** (merge commit `e8b2fa41`, head `336b4412`); C1 artifact plane now on main, flagged dark (`artifactsEnabled` default off). v0.13.0 candidate. Plan stays in-progress. Remaining: G2c runtime QA (Jeff) + Obsidian-open spot check.
+- `2026-07-24` — **PR #106 merged to `main`** (merge commit `e8b2fa41`, head `336b4412`); C1 artifact plane now on main, flagged dark (`artifactsEnabled` default off). v0.13.0 candidate. Remaining: G2c runtime QA (Jeff) + Obsidian-open spot check.
+- `2026-08-22` — moved from in-progress to blocked: code, handlers, tests, Artifact Home, and the feature flag remain present and the artifact-plane slice shipped in v0.13.0, but the three explicit runtime/Obsidian acceptance checks are still unverified. No implementation is active while those owner QA checks remain.

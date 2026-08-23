@@ -1,7 +1,7 @@
 ---
 id: ADR-0022
 title: Activate session context through named profiles, not one action type per knob
-status: proposed
+status: accepted
 date: 2026-08-07
 supersedes: []
 superseded-by: []
@@ -172,7 +172,7 @@ limitation precisely when they arrive — a far better error than "valid action 
 
 ## References
 
-- PLAN-030 Phase 3 — `roadmap/plans/in-progress/PLAN-030-session-lifecycle-automation.md`
+- PLAN-030 Phase 3 — `roadmap/plans/documented/PLAN-030-session-lifecycle-automation.md`
 - PLAN-032 — session-sticky skills (the deferred fourth knob)
 - ADR-0021 — session actions gated by declared intent (`allowClosed`, loop safety, the
   lenient-union ruling this ADR deliberately does not follow)
