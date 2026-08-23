@@ -1,11 +1,11 @@
 ---
 id: PLAN-023
 title: Hosted Workspace Server (self-hosted app-server; desktop + phone as thin clients)
-status: in-progress
+status: archived
 direction: DIR-03
 owner: jh
 created: 2026-07-17
-updated: 2026-07-18
+updated: 2026-08-22
 related:
   - PLAN-013-server-only-deployment.md
   - PLAN-005-webui-tailscale-launcher.md
@@ -88,10 +88,10 @@ graph TB
   SM --> W
 ```
 
-**Phase 0 acceptance**
-- [ ] `docs/hosted-workspace-architecture.md` merged: instance identity, single-user-now / multi-user-future user identity, the three trust boundaries, onboarding surface.
-- [ ] ADR authored + accepted stating: app-server is the hosted-workspace unit; single bearer/password model now; multi-user is a named future the design does not preclude.
-- [ ] Reviewed against ADR-0005 (config-dir / `~/.claude` pairing) and ADR-0008 (trigger unit) for coexistence.
+**Phase 0 acceptance** — all met `2026-07-19` by `dc5c4259` (PR #103); ticked `2026-08-22` during PLAN-045 Pass 2 cleanup, which archived this plan.
+- [x] `docs/hosted-workspace-architecture.md` merged: instance identity, single-user-now / multi-user-future user identity, the three trust boundaries, onboarding surface.
+- [x] ADR authored + accepted stating: app-server is the hosted-workspace unit; single bearer/password model now; multi-user is a named future the design does not preclude. → [`ADR-0013`](../../decisions/0013-hosted-workspace-authn-authz-architecture.md), `accepted: 2026-07-19` with binding conditions.
+- [x] Reviewed against ADR-0005 (config-dir / `~/.claude` pairing) and ADR-0008 (trigger unit) for coexistence. → architecture doc §"Reviewed against" and the single-writer `.server.lock` finding: a trigger deployment and a hosted app-server on the *same* CONFIG_DIR are mutually exclusive by construction.
 
 ## Phase 1 — single-user hosted server over Tailscale/TLS
 
@@ -163,3 +163,4 @@ Designed *after* Phase 1 teaches the sharp edges (deliberately sequenced last).
 - `2026-07-17` — created in `planned/`
 - `2026-07-18` — moved from planned to in-progress: Phase 0 (architecture doc + ADR-0013) underway
 - `2026-07-19` — Jeff signed off all four Phase-0 one-way doors; ADR-0013 **accepted** with conditions (additive-only vault header, opaque `serverId` + `vorno:server:info` metadata rule, ALIGN-widened identity/RBAC semantics, git-HTTPS as written). ALIGN review paper edits (N-1..N-7) folded into ADR + architecture doc.
+- `2026-08-22` — **archived (PLAN-045 Pass 2)**: split, not shipped. Phase 0 (architecture doc + ADR-0013, accepted with conditions) is complete and remains authoritative — archiving this plan does not retract it. Phases 1–3 were never built and are now carried verbatim by `PLAN-041-server-homed-instances-with-auth.md` (18 salvaged items, the largest single relocation of the pass), with `PLAN-036-vorno-owned-oauth-redirect-relay.md` holding the OAuth-relay slice. Not closed as "done". Mining record: [`2026-08-22-plan-045-mining-report.md`](../../discussions/2026-08-22-plan-045-mining-report.md).

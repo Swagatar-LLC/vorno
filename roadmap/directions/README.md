@@ -10,6 +10,7 @@ Multi-quarter strategic bets. Each direction is a coherent paradigm move that re
 | 02 | [Skills as Contribution Points](02-skill-contributions.md) | active | Skills register custom shapes, tools, views |
 | 03 | [The Live Observatory](03-observatory.md) | future | Multi-session, multi-device live spatial graph |
 | 04 | [Dynamic Workspaces](04-dynamic-workspaces.md) | active | Artifact plane + surface plane, coupled by "a surface is an artifact" (ADR-0015) |
+| 05 | [Durable Workflows & Headroom](05-workflows-and-headroom.md) | **active — top priority** | Reusable workflow definitions over the existing Conductor + Headroom OSS integrated as the context-discipline layer (compression, tokens, memory) |
 
 ## How a direction differs from a plan
 

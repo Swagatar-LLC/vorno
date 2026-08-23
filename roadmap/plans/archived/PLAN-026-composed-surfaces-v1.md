@@ -1,11 +1,11 @@
 ---
 id: PLAN-026
 title: Composed surfaces v1 — declarative spec over the trusted block catalog (C2)
-status: planned
+status: archived
 direction: DIR-04
 owner: jh
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-08-22
 related:
   - PLAN-025-artifact-plane-v1.md
 blocked-by:
@@ -51,3 +51,4 @@ The block catalog already renders everything; C2 adds composition (spec + host p
 ## Status log
 
 - `2026-07-21` — created in `planned/` (C2 of the ADR-0015 ladder)
+- `2026-08-22` — **archived (PLAN-045 Pass 2)**: pre-DIR-05, and blocked behind PLAN-025, which is itself blocked on owner QA — a queued plan with no live head. Its durable idea (a typed run form may be an instance of the composed-surface spec) was salvaged into `PLAN-039-workflow-definitions-reusable-parameterized-tasks.md`. The C2 ambition survives as DIR-04 direction text, not as a queued plan. Mining record: [`2026-08-22-plan-045-mining-report.md`](../../discussions/2026-08-22-plan-045-mining-report.md).

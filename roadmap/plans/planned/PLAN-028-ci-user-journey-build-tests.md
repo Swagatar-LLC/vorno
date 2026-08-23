@@ -2,10 +2,10 @@
 id: PLAN-028
 title: In-CI build + user-journey tests — WebUI suite first, Electron later
 status: planned
-direction: null
+direction: DIR-05
 owner: jh
 created: 2026-07-22
-updated: 2026-07-24
+updated: 2026-08-22
 related: [PLAN-020, PLAN-022]
 blocked-by: []
 ---
@@ -110,3 +110,9 @@ Pick a thin, high-signal set; the PR #106 bugs argue for annotations up front:
 > placeholder — not yet scheduled or bound to a direction. Scoped 2026-07-24
 > (session 260724-silver-inlet) to the browser journey layer after PR #113
 > landed the protocol-tier headless suites and the `test-webui` CI gate.
+
+## Status log
+
+- `2026-07-22` — stub captured as a future-plan placeholder, unbound to a direction.
+- `2026-07-24` — scoped to the browser journey layer after PR #113 landed the protocol-tier headless suites and the `test-webui` CI gate.
+- `2026-08-22` — **retained and re-homed under DIR-05 (PLAN-045 Pass 2)**, not archived. The pass considered it for deprecation and declined: it is unblocked, and its premise is unchanged — journey bugs pass every unit suite. It now has a concrete consumer: `PLAN-043-roadmap-console-interactive-work-surface.md` generates `task.yaml` breakdowns, which is load-bearing output that needs exactly this guard, and a reintroduced bug must fail a journey test rather than a unit test. `direction:` changed from `null` to `DIR-05`. Mining record: [`2026-08-22-plan-045-mining-report.md`](../../discussions/2026-08-22-plan-045-mining-report.md).

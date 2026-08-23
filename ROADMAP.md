@@ -137,6 +137,26 @@ folder for detail.
 
 ## In progress / next
 
+- **Durable Workflows & Headroom** *(top priority — next initiative)* — two pieces
+  shipped as one milestone. **Workflows**: a saved, versioned, parameterized Workflow
+  Definition becomes a first-class object over the existing task engine — run it from a
+  typed form, view it as a DAG, and trust steps to produce schema-validated outputs;
+  a task becomes one bound instance of a definition (PLAN-039). **Headroom integration**: the
+  [Headroom](https://github.com/headroomlabs-ai/headroom) OSS project adopted into the
+  supply chain (vetted, pinned, flag-gated) as the context-discipline layer —
+  compression, token management, and multi-layer memory — with one build item on our
+  side: a pluggable extension interface for additional memory storage formats and
+  querying, pursued as an upstream contribution, behind which Vorno's existing memory
+  engine plugs in as a backend (PLAN-040).
+  One deliberate detour runs first: the roadmap console becomes an interactive work
+  surface that decomposes plans into runnable tasks — dogfooding that doubles as
+  PLAN-039's test harness (PLAN-043). The direction also carries an explicit
+  execution-visualization requirement (ask → task → project; interactive DAG views).
+  Staged deliberately behind the milestone: server-homed instances with
+  authentication, team management, and cross-system work requests (PLAN-041,
+  PLAN-042, PLAN-044 — stubs); a scheduled roadmap-reduction pass trims the
+  surrounding surface (PLAN-045, 2026-08-29). Tracked as
+  [`roadmap/directions/05-workflows-and-headroom.md`](roadmap/directions/05-workflows-and-headroom.md).
 - **Artifact plane** — the first rung of Dynamic Workspaces (C1): a typed, versioned,
   context-aware index of everything a workspace produces, with an Artifact Home surface
   and native JSON Canvas / frontmatter formats. Shipped to `main` behind a feature flag;
@@ -144,7 +164,8 @@ folder for detail.
 - **Hosted workspace server** — a self-hosted server instance that hosts workspaces
   centrally, with the desktop app acting as a thin client and phones connecting via the
   WebUI. Includes server-side source authentication and a non-technical, one-command
-  setup path so a single person can stand up their own instance. Tracked as PLAN-023.
+  setup path so a single person can stand up their own instance. Tracked as PLAN-041
+  (PLAN-023 archived 2026-08-22; its Phase 0 architecture and ADR-0013 remain authoritative).
 - **Protocol evolution** — additive `vorno:*` namespaces layered on top of the
   maintained Craft wire protocol, so fork-specific capabilities extend the contract
   without breaking compatibility with upstream clients.
