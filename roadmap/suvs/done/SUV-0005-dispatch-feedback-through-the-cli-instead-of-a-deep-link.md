@@ -1,12 +1,12 @@
 ---
 id: SUV-0005
 title: Dispatch feedback through the CLI instead of a deep link
-status: in-progress
+status: done
 plan: PLAN-043
 direction: DIR-05
 owner: jh
 created: 2026-08-23
-updated: 2026-08-23
+updated: 2026-08-24
 related: []
 blocked-by: []
 ---
@@ -41,14 +41,15 @@ that requires an attended desktop app.
 
 ## Acceptance
 
-- [ ] Submitting feedback starts a `vorno-cli run` process from the console and returns its exit code.
-- [ ] Output streams into the feedback UI while the run is in flight.
-- [ ] A non-zero exit marks the record failed with the captured stderr attached, not silently swallowed.
-- [ ] The stored feedback text is byte-identical to what the human typed.
-- [ ] The Vorno desktop app is not required for a run to complete.
-- [ ] `git diff --stat packages/ apps/` is empty for this SUV's PR.
+- [x] Submitting feedback starts a `vorno-cli run` process from the console and returns its exit code.
+- [x] Output streams into the feedback UI while the run is in flight.
+- [x] A non-zero exit marks the record failed with the captured stderr attached, not silently swallowed.
+- [x] The stored feedback text is byte-identical to what the human typed.
+- [x] The Vorno desktop app is not required for a run to complete.
+- [x] `git diff --stat packages/ apps/` is empty for this SUV's PR.
 
 ## Status log
 
 - `2026-08-23` — created in `planned/`
 - `2026-08-23` — moved from `planned` to `in-progress`: Starting P3: console-side CLI dispatch replacing the deep-link handoff. Orchestrated from session 260823-true-meadow.
+- `2026-08-24` — moved from `in-progress` to `done`: Landed on console branch plan-043-p3-p6-work-surface (039f24d + anchoring fix 6c92fd2). Verified by the orchestrator end to end: 28 server tests green; browser e2e — follow-up dialog dispatched a real headless run, output streamed live into the UI mid-flight (state running, growing log), final state succeeded (exit 0) in 9.1s with the model reply visible; record carries exitCode/state/durations, feedback stored byte-identical (verified on disk); runs use a dedicated CRAFT_CONFIG_DIR (~/.craft-agent-roadmap-runner) with symlinked credential vault — live ~/.craft-agent/config.json hash-identical before/after; desktop app never involved; zero diff under packages/ or apps/. Deep-link submission path removed. Verification surfaced a second anchoring defect (inline-tag whitespace in the projection) — fixed, LEARNING-064. Vault OAuth expiry finding recorded for PLAN-039.
