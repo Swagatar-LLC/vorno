@@ -1,12 +1,12 @@
 ---
 id: SUV-0008
 title: Reconciling feedback prompt with a bounded loop
-status: planned
+status: in-progress
 plan: PLAN-043
 direction: DIR-05
 owner: jh
 created: 2026-08-23
-updated: 2026-08-23
+updated: 2026-08-24
 related:
   - SUV-0006-isolate-each-feedback-run-in-its-own-git-worktree.md
   - SUV-0007-corpus-validator-as-the-termination-predicate.md
@@ -60,3 +60,4 @@ only the quoted line.
 ## Status log
 
 - `2026-08-23` — created in `planned/`
+- `2026-08-24` — moved from `planned` to `in-progress`: Starting: reconciling prompt + bounded loop over the SUV-0005/0006 dispatch machinery with the SUV-0007 validator as termination predicate.
