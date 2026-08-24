@@ -1,12 +1,12 @@
 ---
 id: SUV-0009
 title: Incremental task.yaml composer with DAG preview
-status: planned
+status: in-progress
 plan: PLAN-043
 direction: DIR-05
 owner: jh
 created: 2026-08-23
-updated: 2026-08-23
+updated: 2026-08-24
 related:
   - SUV-0010-validate-task-definitions-against-the-real-schema.md
 blocked-by: []
@@ -51,3 +51,4 @@ as a DAG.
 ## Status log
 
 - `2026-08-23` — created in `planned/`
+- `2026-08-24` — moved from `planned` to `in-progress`: Starting: incremental task.yaml composer, developed in a console-repo worktree (plan-043-p4-composer) parallel to the P3 track.
