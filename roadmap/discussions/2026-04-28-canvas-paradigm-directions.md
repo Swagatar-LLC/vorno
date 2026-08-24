@@ -54,7 +54,7 @@ What this unlocks: spatial reasoning, forking, zoom-into-modality, branching, mu
 
 Cost is low: reuses existing `AgentEvent` stream, render blocks become shape contents, WebSocket push handles cross-client canvas ops for free.
 
-→ **Captured as [DIR-01](../directions/01-canvas-session.md), first plan [PLAN-001](../plans/planned/PLAN-001-canvas-session-spectator-v0.md).**
+→ **Captured as [DIR-01](../directions/01-canvas-session.md), first plan [PLAN-001](../plans/archived/PLAN-001-canvas-session-spectator-v0.md).**
 
 ### Direction 2 — Skills as Contribution Points
 
@@ -103,7 +103,7 @@ Each direction is independently shippable. The Observatory inherits the modality
 - Validates the core insight (the conversation is malleable spatial data, not a transcript)
 - Unlocks Directions 2 and 3 without committing to either yet
 
-→ **Operationalized as [PLAN-001](../plans/planned/PLAN-001-canvas-session-spectator-v0.md).**
+→ **Operationalized as [PLAN-001](../plans/archived/PLAN-001-canvas-session-spectator-v0.md).**
 
 ## Outcomes from this discussion
 
