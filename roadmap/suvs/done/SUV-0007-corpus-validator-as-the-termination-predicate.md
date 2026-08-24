@@ -1,7 +1,7 @@
 ---
 id: SUV-0007
 title: Corpus validator as the termination predicate
-status: in-progress
+status: done
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -40,14 +40,15 @@ condition rather than a hoped-for one.
 
 ## Acceptance
 
-- [ ] Running the validator on a clean `roadmap/` exits 0 with an empty violation list.
-- [ ] Moving a plan file between folders without rewriting frontmatter is reported, with the file path.
-- [ ] An SUV whose `plan:` names a nonexistent plan is reported.
-- [ ] A plan whose `related-suvs:` omits an SUV that claims it is reported.
-- [ ] A broken internal link to a corpus file is reported.
-- [ ] Each check has a test that fails when the check is deliberately removed.
+- [x] Running the validator on a clean `roadmap/` exits 0 with an empty violation list.
+- [x] Moving a plan file between folders without rewriting frontmatter is reported, with the file path.
+- [x] An SUV whose `plan:` names a nonexistent plan is reported.
+- [x] A plan whose `related-suvs:` omits an SUV that claims it is reported.
+- [x] A broken internal link to a corpus file is reported.
+- [x] Each check has a test that fails when the check is deliberately removed.
 
 ## Status log
 
 - `2026-08-23` — created in `planned/`
 - `2026-08-23` — moved from `planned` to `in-progress`: Starting P3: standalone corpus validator, developed in parallel with SUV-0005 (no shared files).
+- `2026-08-23` — moved from `in-progress` to `done`: validator.py + test_validator.py landed on console branch plan-043-p3-p6-work-surface (01096d4). Verified by the orchestrator: 44 validator tests + 19 server tests green; every check ablation-tested; first live run found five real violations (PLAN-023 committed conflict markers + duplicate, PLAN-001 link rot) which were repaired in dac1a7e1 — validator now exits 0 on the live corpus (109 files, 85 records). JSON report is deterministic with line-independent violation keys and a published check registry, designed as the SUV-0008 termination predicate.
