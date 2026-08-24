@@ -8,6 +8,7 @@ owner: jh
 created: 2026-08-23
 updated: 2026-08-24
 related:
+  - SUV-0005-dispatch-feedback-through-the-cli-instead-of-a-deep-link.md
   - SUV-0006-isolate-each-feedback-run-in-its-own-git-worktree.md
   - SUV-0007-corpus-validator-as-the-termination-predicate.md
 blocked-by: []
@@ -61,3 +62,4 @@ only the quoted line.
 
 - `2026-08-23` — created in `planned/`
 - `2026-08-24` — moved from `planned` to `in-progress`: Starting: reconciling prompt + bounded loop over the SUV-0005/0006 dispatch machinery with the SUV-0007 validator as termination predicate.
+- `2026-08-24` — first live run of the reconciliation loop. Feedback record `1787609926956-3e2a554f2d56`, dispatched through the SUV-0005 CLI path into its own SUV-0006 worktree on branch `feedback/1787609926956-3e2a554f2d56`, anchored on this record's "Bounded iterations; on exhaustion the record is surfaced as unreconciled" line. The run read the governing ADRs, the owning plan and all sibling SUVs, and reached past the quoted line into `SUV-0005` and `PLAN-043` — the reconciliation instruction behaved as specified end to end. Also added the missing reverse `related:` edge to SUV-0005, the dispatch path this SUV rides on.

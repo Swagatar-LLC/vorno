@@ -5,7 +5,7 @@ status: in-progress
 direction: DIR-05
 owner: jh
 created: 2026-08-22
-updated: 2026-08-23
+updated: 2026-08-24
 related:
   - ADR-0028-suv-as-the-shippable-unit-between-plan-and-task.md (the governance shape this plan implements)
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md (this detour is its test harness and requirements probe)
@@ -236,3 +236,4 @@ relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
 - `2026-08-23` — rewritten around ADR-0028. Five sequenced phases; the load-bearing correction is that a task definition is authored and versioned in the roadmap repo, and publishing is a plain file write into the layout `storage.ts` already scans — so this plan requires no Vorno change at all.
 - `2026-08-24` — the feedback tool's anchoring failed a second time, one day after the rebuild: the HTML-side projection turned every tag into a space, so any selection containing a linked corpus id / code span / bold followed by punctuation could never resolve — and SUV-0005's hard-reject on unresolvable anchors turned that into a submission blocker. Found live on this plan's own first paragraph during SUV-0005 verification. Fixed console-side (`6c92fd2`: inline tags contribute nothing, block tags are boundaries) → LEARNING-064. Dogfooding lesson for PLAN-039's anchoring surfaces: capture side and resolve side must be the same function of the same input.
 - `2026-08-23` — decomposed into twelve SUVs (`SUV-0001`–`SUV-0012`) covering all six phases, and the SUV corpus itself was scaffolded: `roadmap/suvs/` with the plan status folders verbatim plus `definitions/`, a template, a folder README, the `roadmap-suv-create` skill, and the ladder written into `CLAUDE.md` / `AGENTS.md` / `roadmap/README.md` / `roadmap/plans/README.md`. `roadmap-plan-advance` now serves both corpora off one transition graph. That is SUV-0002's own scope, landed alongside the record describing it.
+- `2026-08-24` — P3's reconciling loop took its first live run, on feedback record `1787609926956-3e2a554f2d56` against SUV-0008 itself. All three P3 mechanisms composed as designed: SUV-0005's CLI dispatch started the run, SUV-0006 gave it a private worktree and branch, and the prompt's reconciliation instruction carried the edit past the quoted line into two sibling records (SUV-0005 and this plan) rather than stopping at the anchor. Evidence for P6: the loop's own shape — dispatch, reconcile, validate, stop — is the first DAG the P4 composer has to be able to express, and it was exercised here by hand before the composer exists.

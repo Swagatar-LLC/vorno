@@ -7,7 +7,9 @@ direction: DIR-05
 owner: jh
 created: 2026-08-23
 updated: 2026-08-24
-related: []
+related:
+  - SUV-0006-isolate-each-feedback-run-in-its-own-git-worktree.md
+  - SUV-0008-reconciling-feedback-prompt-with-a-bounded-loop.md
 blocked-by: []
 ---
 
@@ -53,3 +55,4 @@ that requires an attended desktop app.
 - `2026-08-23` — created in `planned/`
 - `2026-08-23` — moved from `planned` to `in-progress`: Starting P3: console-side CLI dispatch replacing the deep-link handoff. Orchestrated from session 260823-true-meadow.
 - `2026-08-24` — moved from `in-progress` to `done`: Landed on console branch plan-043-p3-p6-work-surface (039f24d + anchoring fix 6c92fd2). Verified by the orchestrator end to end: 28 server tests green; browser e2e — follow-up dialog dispatched a real headless run, output streamed live into the UI mid-flight (state running, growing log), final state succeeded (exit 0) in 9.1s with the model reply visible; record carries exitCode/state/durations, feedback stored byte-identical (verified on disk); runs use a dedicated CRAFT_CONFIG_DIR (~/.craft-agent-roadmap-runner) with symlinked credential vault — live ~/.craft-agent/config.json hash-identical before/after; desktop app never involved; zero diff under packages/ or apps/. Deep-link submission path removed. Verification surfaced a second anchoring defect (inline-tag whitespace in the projection) — fixed, LEARNING-064. Vault OAuth expiry finding recorded for PLAN-039.
+- `2026-08-24` — `related:` completed with both edges this record already sits on the far side of: SUV-0008 (the reconciliation loop rides this dispatch path — added as the reverse of the edge SUV-0008 now carries) and SUV-0006, which had claimed SUV-0005 one-sidedly since it landed. No scope change; the record stays `done`. Its dispatch path carried the reconciliation loop's first live run the same day.
