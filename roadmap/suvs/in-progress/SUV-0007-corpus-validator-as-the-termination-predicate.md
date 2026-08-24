@@ -1,7 +1,7 @@
 ---
 id: SUV-0007
 title: Corpus validator as the termination predicate
-status: planned
+status: in-progress
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -50,3 +50,4 @@ condition rather than a hoped-for one.
 ## Status log
 
 - `2026-08-23` — created in `planned/`
+- `2026-08-23` — moved from `planned` to `in-progress`: Starting P3: standalone corpus validator, developed in parallel with SUV-0005 (no shared files).

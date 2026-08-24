@@ -1,7 +1,7 @@
 ---
 id: SUV-0005
 title: Dispatch feedback through the CLI instead of a deep link
-status: planned
+status: in-progress
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -51,3 +51,4 @@ that requires an attended desktop app.
 ## Status log
 
 - `2026-08-23` — created in `planned/`
+- `2026-08-23` — moved from `planned` to `in-progress`: Starting P3: console-side CLI dispatch replacing the deep-link handoff. Orchestrated from session 260823-true-meadow.
