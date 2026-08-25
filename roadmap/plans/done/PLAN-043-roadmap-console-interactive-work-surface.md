@@ -1,7 +1,7 @@
 ---
 id: PLAN-043
 title: Roadmap console as the SUV and task-authoring surface — the DIR-05 detour
-status: in-progress
+status: done
 direction: DIR-05
 owner: jh
 created: 2026-08-22
@@ -247,3 +247,4 @@ relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
 - `2026-08-24` — moved from `done` to `in-progress`: Reopened from done before close-out: the owner grew scope with SUV-0013 (iterative plan-to-SUV breakdown from the console) and asked for it to land before the plan closes.
 - `2026-08-24` — moved from `in-progress` to `done`: Closed again with SUV-0013 landed: all thirteen SUVs done. The breakdown loop was exercised live on PLAN-039 and its first candidate set awaits the owner merge gate.
 - `2026-08-25` — moved from `done` to `in-progress`: Reopened by owner directive (2026-08-25): the first solo breakdown exposed wrong-defaults that must be fixed in retrospect — merge target is whatever branch the checkout is on rather than a per-plan topic branch cut from fresh main; SUV id allocation ignores unmerged candidate branches (the SUV-0014 collision); runner sessions are invisible from the desktop app (SUV-0013 open box); the Add-SUV form writes plan: without the reverse related-suvs edge. Each lands as its own SUV. A separate ADR-level evaluation of per-plan SUV numbering/storage is also owner-directed.
+- `2026-08-25` — moved from `in-progress` to `done`: Re-closed after the owner-directed retrospective (2026-08-25): SUV-0019 (per-plan topic branch plan/plan-nnn cut from fresh main as the breakdown merge target, target named on every merge surface, owner checkout out of the blast radius), SUV-0020 (SUV id allocation consults unmerged candidate branches — the 0014 collision mechanism removed at every allocator), SUV-0021 (runner-session visibility: --no-cleanup + session archive workspace landed console-side; live visibility recorded as finding D7 for PLAN-039), SUV-0022 (Add-SUV form writes both sides of the ownership edge atomically). Console suite 214 green on branch plan-043-retrospective-fixes; corpus validator 0 violations. The separate per-plan numbering/storage evaluation (2026-08-25 discussion) recommends the status quo and awaits the owner decision.
