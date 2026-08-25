@@ -24,6 +24,10 @@ related-suvs:
   - SUV-0011-publish-a-definition-into-a-vorno-workspace.md (P5)
   - SUV-0012-run-one-published-task-unattended-and-report-findings-to-plan-039.md (P6)
   - SUV-0013-trigger-a-vorno-session-from-the-roadmap-console-to-break-do.md (owner-drafted 2026-08-24; acceptance TBD)
+  - SUV-0019-per-plan-topic-branch-as-the-breakdown-merge-target.md (retrospective)
+  - SUV-0020-suv-id-allocation-consults-unmerged-candidate-branches.md (retrospective)
+  - SUV-0021-investigate-runner-session-visibility-in-the-desktop-app.md (retrospective)
+  - SUV-0022-add-suv-form-records-the-reverse-related-suvs-edge.md (retrospective)
 blocked-by: []
 ---
 
