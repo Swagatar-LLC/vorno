@@ -1,7 +1,7 @@
 ---
 id: SUV-0019
 title: Per-plan topic branch as the breakdown merge target, visible in the UI
-status: planned
+status: done
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -58,3 +58,5 @@ on before the human accepts it.
 ## Status log
 
 - `2026-08-25` — created in `planned/`
+- `2026-08-25` — moved from `planned` to `in-progress`: Starting implementation.
+- `2026-08-25` — moved from `in-progress` to `done`: Landed on console branch plan-043-retrospective-fixes (9d87c78). First dispatch of a breakdown cuts plan/plan-nnn from the freshest reachable main (origin fetch best-effort), run worktrees stack on that branch, and acceptance merges into it inside a disposable merge worktree — the owner checkout is untouched and the dirty-checkout clash refusal no longer applies to plan-branch merges. Every merge surface names its target; API reports carry target for both kinds. Legacy records and feedback merges keep the checkout-branch target, now stated. 211 tests green (5 new). Live-verified after restart: all five existing records report their target correctly.
