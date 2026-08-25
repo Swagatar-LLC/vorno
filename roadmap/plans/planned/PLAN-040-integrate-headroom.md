@@ -5,11 +5,17 @@ status: planned
 direction: DIR-05
 owner: jh
 created: 2026-08-22
-updated: 2026-08-22
+updated: 2026-08-25
 related:
   - PLAN-002-token-usage-display.md (surface that migrates onto Headroom stats)
   - PLAN-003-token-usage-thresholds-workspace-settings.md (surface that migrates onto Headroom stats)
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md (milestone sibling)
+related-suvs:
+  - SUV-0014-vet-and-pin-headroom-for-adoption.md
+  - SUV-0015-headroom-boundary-module-with-noop-fallback.md
+  - SUV-0016-headroom-config-schema-storage-and-precedence.md
+  - SUV-0017-workspace-settings-ui-for-headroom.md
+  - SUV-0018-resolved-config-drives-the-headroom-boundary.md
 blocked-by: []
 ---
 
@@ -157,3 +163,4 @@ must degrade gracefully if Headroom is absent.
 
 - `2026-08-22` — created in `planned/` as the second half of the DIR-05 milestone (top roadmap priority).
 - `2026-08-22` — reframed once (adoption vs. name-collision misread), then **corrected to final form on product-owner direction: pure integration.** Headroom provides compression, token management, and multi-layer memory; Vorno builds only integration glue plus the pluggable memory-extension interface (formats + querying), interface-first, upstream-first. No library of ours, full stop.
+- `2026-08-25` — first breakdown round: SUV-0014..0018 cut covering vendoring/long-term support (vet+pin, boundary module) and the settings surfaces (config schema/storage/precedence, workspace UI, config-driven boundary). I1 compression wiring, benchmarks, token-surface migration, and I2 memory remain undecomposed.
