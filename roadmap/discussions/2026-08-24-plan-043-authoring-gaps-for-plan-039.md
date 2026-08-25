@@ -180,6 +180,31 @@ task-shaped.
 **D6 — `sessions:delete` on CLI exit destroys the only record of where the agent
 worked.** A run result should carry its effective working directory. (SUV-0006.)
 
+**D7 — A runner's sessions are unreachable by construction, and the runner
+deleted them anyway** *(added 2026-08-25, SUV-0021 — extends D6)*. The desktop
+app's discovery is one unbranched chain from a config dir frozen at module eval
+to a session list: `CRAFT_CONFIG_DIR` (`packages/shared/src/config/paths.ts:27`)
+→ `config.json`'s workspace list (`config/storage.ts:106,276,733`) →
+`readdir(<rootPath>/sessions)` at boot
+(`server-core/src/sessions/SessionManager.ts:2021-2029`). No product code
+enumerates a second config root, and the watcher path *drops* session ids it
+did not hydrate at boot (`SessionManager.ts:1737-1739`) — so even a workspace
+the app already watches only lists an externally written session after a
+restart. On top of that, `vorno-cli run` deletes its own session on exit unless
+`--no-cleanup` (`apps/cli/src/index.ts:643`), which the console did not pass:
+both completed live runs left `runs/<id>/workspace/sessions/` empty — D6,
+observed in practice. The console-side repair (SUV-0021) is deliberate
+inspection, not live visibility: dispatch passes `--no-cleanup`, and a finished
+run's session is copied into one stable archive workspace the owner registers
+in the app once, listed on the app's next launch. **The residual is a product
+question for W1/W3**: a run view that click-throughs to its sessions (W3)
+presumes a session written by another process is reachable — the smallest
+honest change is adopting unknown session ids in watched workspaces plus a
+`sessions:rescan` RPC; the general form (inspecting sessions homed on another
+instance) is PLAN-041's `RemoteServerConfig` shape, and multi-config-dir
+awareness should be ruled out there (it re-imports D2 and fights the frozen
+config-dir contract).
+
 ## Composer and authoring
 
 **C1 — The composer wrote a definition it then refused to rewrite.** This killed

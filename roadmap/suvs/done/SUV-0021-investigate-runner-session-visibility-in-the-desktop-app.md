@@ -1,7 +1,7 @@
 ---
 id: SUV-0021
 title: Investigate runner-session visibility in the desktop app
-status: planned
+status: done
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -46,3 +46,5 @@ written finding that it requires product change.
 ## Status log
 
 - `2026-08-25` — created in `planned/`
+- `2026-08-25` — moved from `planned` to `in-progress`: Starting: verifying the investigation claims in code first.
+- `2026-08-25` — moved from `in-progress` to `done`: Investigated from named code, then landed the safe console-side piece (console d8c2575). Invisibility explained: app discovery is one chain from CRAFT_CONFIG_DIR (paths.ts:27) through config.json workspaces (storage.ts:106/276/733) to a boot-time readdir (SessionManager.ts:2021-2029); unknown session ids are dropped by the watcher (SessionManager.ts:1737-1739); and vorno-cli deleted its session on exit (index.ts:643) — verified: both live runs left empty sessions dirs. Console fix: dispatch passes --no-cleanup, finished sessions are archived to a stable workspace (default ~/.craft-agent-roadmap-runner/archive) recorded on dispatch.sessions; owner registers it once via Open existing folder, sessions appear on next app launch. Product-change residual (live adoption + sessions:rescan) written as finding D7 in the authoring-gaps discussion, cross-referenced from SUV-0013. 214 console tests green.
