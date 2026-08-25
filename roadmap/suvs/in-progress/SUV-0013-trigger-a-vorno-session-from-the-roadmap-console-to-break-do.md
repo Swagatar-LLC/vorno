@@ -1,7 +1,7 @@
 ---
 id: SUV-0013
 title: Trigger a Vorno Session from the Roadmap console to break down a PLAN and generate candidate SUVs
-status: planned
+status: in-progress
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -32,3 +32,4 @@ The Roadmap UI user can break down a plan into SUVs, including modifying existin
 ## Status log
 
 - `2026-08-24` — created in `planned/`
+- `2026-08-24` — moved from `planned` to `in-progress`: Owner asked for this before plan close-out (2026-08-24 22:20 EDT). Acceptance criteria drafted from the owner goal statement by the orchestrator; the breakdown loop reuses SUV-0005/0006/0007/0008 machinery end to end.
