@@ -24,8 +24,10 @@ The Roadmap UI user can break down a plan into SUVs, including modifying existin
 
 ## Acceptance
 
-- [ ] Concrete, checkable claim 1
-- [ ] Concrete, checkable claim 2
+- [ ] Break down function can use prompt to create/modify SUVs
+- [ ] User can select available models with workspace default for prompt processing
+- [ ] Sessions are inspectable in Vorno for validation
+- [ ] Normal skill and tools mentions work as-normal
 
 ## Status log
 
