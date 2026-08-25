@@ -1,7 +1,7 @@
 ---
 id: SUV-0020
 title: SUV id allocation consults unmerged candidate branches
-status: planned
+status: done
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -49,3 +49,5 @@ no longer claim the same id.
 ## Status log
 
 - `2026-08-25` — created in `planned/`
+- `2026-08-25` — moved from `planned` to `in-progress`: Starting implementation.
+- `2026-08-25` — moved from `in-progress` to `done`: Landed on console branch plan-043-retrospective-fixes (f66767f). Reproduced first: five new tests showed the corpus-only allocator handing a branch-claimed id out again. suv_ids_on_candidate_branches() scans every breakdown/* and feedback/* head; the floor feeds next_suv_id_for (breakdown prompt floor), the New-SUV prefill, and api_create; an override into a claimed id is refused naming the branches; reservation lifts when the branch merges or is deleted. 206 console tests green; service restarted, live next-free id SUV-0023 (correct: 0022 on disk, parked candidate branch claims only 0014 which is below the disk max).
