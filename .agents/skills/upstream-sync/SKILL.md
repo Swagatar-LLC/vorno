@@ -193,6 +193,29 @@ After CI passes and PR merges, verify ancestry landed (`git rev-list --count mai
 - `INTERNAL_DIR/upstream/delta.md` — refresh via `[skill:upstream-delta-report]` (same repo)
 - `roadmap/upstream/compatibility.md` — public, stays in the main repo; add audit-log entry if any contracts touched
 
+### Step 0 — Reconcile tracking drift (runs first, every time)
+
+Step 6 is easy to skip when a sync ends late or the PR merges after the session closes — that happened to v0.12.0 (PR #152, merged 2026-08-17, never written back; caught 2026-08-25). **Treat tracking reconciliation as routine hygiene, not a finding to escalate.** Run this at the *start* of every sync, including runs that turn out to be 0-behind:
+
+```bash
+# What does the log claim was last merged?
+grep -m1 'Last merged upstream commit' INTERNAL_DIR/upstream/HEAD.md
+
+# Is that actually the tip we've merged?
+cd REPO_DIR && git fetch upstream && git fetch origin main:main
+git log --oneline --merges --grep='Upstream_Merge' origin/main | head -3
+```
+
+If `HEAD.md`'s recorded commit is **behind** the newest landed upstream merge, backfill it before doing anything else:
+
+1. Find the merge PR: `git log --oneline --ancestry-path <upstream-tip>..origin/main --merges | tail -3`
+2. Pull its body — `gh pr view <N> --repo Swagatar-LLC/vorno --json body,mergeCommit,mergedAt`. Sync PR bodies follow the Step 5 template, so conflicts, validations, and architecture notes are all recoverable from it; write the `HEAD.md` entry from that rather than re-deriving from the diff.
+3. Update the **Current state** table, add a `## Versions covered in last merge` bullet, demote the previous one to `## Versions covered in prior merge (PR #N, date)`, and mark the entry as backfilled with the date.
+4. Refresh `delta.md` per `[skill:upstream-delta-report]` — at minimum the header (last-refresh date, total count, ancestry verification, protocol posture via `git diff --numstat upstream/main...main -- packages/shared/src/protocol/`).
+5. Commit and push `vorno-internal`.
+
+Then continue to Step 1. **Do not report drift repair as a finding or route the session to `needs-review` for it** — fix it silently and mention it in one line of the summary. It only becomes a finding if the repair reveals something substantive (a squashed sync PR, broken ancestry, or a protocol delta that grew).
+
 ## Constraints
 
 - **Never** force-push. **Never** rebase merged commits.
