@@ -8,7 +8,8 @@ owner: jh
 created: 2026-08-25
 updated: 2026-08-25
 related: []
-blocked-by: []
+blocked-by:
+  - SUV-0016-headroom-config-schema-storage-and-precedence.md (the schema and storage this UI edits)
 ---
 
 # SUV-0017 — Workspace settings UI for Headroom

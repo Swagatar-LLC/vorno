@@ -8,7 +8,9 @@ owner: jh
 created: 2026-08-25
 updated: 2026-08-25
 related: []
-blocked-by: []
+blocked-by:
+  - SUV-0015-headroom-boundary-module-with-noop-fallback.md (the boundary factory being driven)
+  - SUV-0016-headroom-config-schema-storage-and-precedence.md (the resolved config being fed in)
 ---
 
 # SUV-0018 — Resolved config drives the Headroom boundary

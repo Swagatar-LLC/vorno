@@ -11,11 +11,11 @@ related:
   - PLAN-003-token-usage-thresholds-workspace-settings.md (surface that migrates onto Headroom stats)
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md (milestone sibling)
 related-suvs:
-  - SUV-0014-vet-and-pin-headroom-for-adoption.md
-  - SUV-0015-headroom-boundary-module-with-noop-fallback.md
-  - SUV-0016-headroom-config-schema-storage-and-precedence.md
-  - SUV-0017-workspace-settings-ui-for-headroom.md
-  - SUV-0018-resolved-config-drives-the-headroom-boundary.md
+  - SUV-0014-vet-and-pin-headroom-for-adoption.md (first — pins the SDK)
+  - SUV-0015-headroom-boundary-module-with-noop-fallback.md (after 0014)
+  - SUV-0016-headroom-config-schema-storage-and-precedence.md (independent of 0014/0015)
+  - SUV-0017-workspace-settings-ui-for-headroom.md (after 0016)
+  - SUV-0018-resolved-config-drives-the-headroom-boundary.md (last — needs 0015 and 0016)
 blocked-by: []
 ---
 

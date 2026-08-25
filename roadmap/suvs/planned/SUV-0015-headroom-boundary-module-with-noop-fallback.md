@@ -8,7 +8,8 @@ owner: jh
 created: 2026-08-25
 updated: 2026-08-25
 related: []
-blocked-by: []
+blocked-by:
+  - SUV-0014-vet-and-pin-headroom-for-adoption.md (the pinned SDK this boundary wraps)
 ---
 
 # SUV-0015 — Headroom boundary module with no-op fallback
