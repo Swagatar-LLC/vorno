@@ -1,7 +1,7 @@
 ---
 id: SUV-0010
 title: Validate task definitions against the real schema
-status: in-progress
+status: done
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -38,14 +38,15 @@ there is exactly one definition of "valid" and no second schema to drift from.
 
 ## Acceptance
 
-- [ ] A valid definition validates green through the real `validateTaskInput`.
-- [ ] A definition with an unknown node field is rejected with the field named.
-- [ ] The reported error text comes from the Zod issue, not a console-side string.
-- [ ] With `bun` unavailable, the UI shows "unvalidated" and no green state.
-- [ ] `grep` over the console finds no schema field list duplicating `schema.ts`.
-- [ ] `git diff --stat packages/ apps/` is empty for this SUV's PR.
+- [x] A valid definition validates green through the real `validateTaskInput`.
+- [x] A definition with an unknown node field is rejected with the field named.
+- [x] The reported error text comes from the Zod issue, not a console-side string.
+- [x] With `bun` unavailable, the UI shows "unvalidated" and no green state.
+- [x] `grep` over the console finds no schema field list duplicating `schema.ts`.
+- [x] `git diff --stat packages/ apps/` is empty for this SUV's PR.
 
 ## Status log
 
 - `2026-08-23` — created in `planned/`
 - `2026-08-24` — moved from `planned` to `in-progress`: Starting: bun bridge to the real validateTaskInput, on the p4 composer branch.
+- `2026-08-24` — moved from `in-progress` to `done`: Landed on console branch plan-043-p3-p6-work-surface via merge f5805aa (commit 2fd5f99). Verified by the orchestrator: 97 tests green in the p4 worktree, 151 green after the deliberate merge into the P3 track (two real merge defects found and fixed: colliding run_validator definitions renamed, and a union-truncated write_file restored — both parents structurally verified). Bridge validates through the real validateTaskInput plus runtime Zod-shape introspection for unknown keys (naming node and field, honouring the type:->kind: alias); degradation shows unvalidated with the reason, never a green tick; error text passes through from Zod verbatim; a non-vacuous grep test proves no second schema exists console-side. Live service healthy on the merged code.
