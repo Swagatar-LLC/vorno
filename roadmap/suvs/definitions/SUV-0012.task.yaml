@@ -30,7 +30,7 @@ nodes:
 
       Your working directory is a checkout of the Vorno roadmap repo. The governance corpus
       lives under `roadmap/`, and SUVs live at `roadmap/suvs/<status>/SUV-NNNN-*.md`, where
-      <status> is one of: planned, in-progress, done, abandoned.
+      <status> is one of: planned, in-progress, blocked, done, documented, archived.
 
       List EVERY SUV whose frontmatter `plan:` claims PLAN-043. For each one, output exactly one
       line, in this shape:

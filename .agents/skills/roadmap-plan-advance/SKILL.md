@@ -34,12 +34,16 @@ Move a plan **or an SUV** from one status folder to another, keeping frontmatter
 
 ```
 planned     → in-progress
+planned     → archived   (abandoned before starting)
 in-progress → blocked
 in-progress → done
+in-progress → archived   (abandoned mid-flight)
 blocked     → in-progress
 blocked     → planned    (rarely — if we de-prioritized)
+blocked     → archived   (abandoned while blocked)
 done        → documented
 documented  → (terminal — no further transitions)
+archived    → (terminal — kept for history)
 ```
 
 Reject other transitions with a clear error. Don't allow self-transitions (already in target folder).
