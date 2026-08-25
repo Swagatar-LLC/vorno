@@ -1,7 +1,7 @@
 ---
 id: SUV-0022
 title: Add-SUV form records the reverse related-suvs edge on the owning plan
-status: planned
+status: in-progress
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -46,3 +46,4 @@ invalid corpus.
 ## Status log
 
 - `2026-08-25` — created in `planned/`
+- `2026-08-25` — moved from `planned` to `in-progress`: Starting implementation: reproduce the one-edged corpus via /api/create first, then write the reverse edge in the same create.
