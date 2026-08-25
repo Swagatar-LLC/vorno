@@ -1,7 +1,7 @@
 ---
 id: PLAN-043
 title: Roadmap console as the SUV and task-authoring surface — the DIR-05 detour
-status: in-progress
+status: done
 direction: DIR-05
 owner: jh
 created: 2026-08-22
@@ -219,14 +219,14 @@ relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
 
 ## Acceptance
 
-- [ ] The console is a git repository with a remote and a stated branch discipline.
-- [ ] `SUV-NNNN` exists as a corpus type: template, status folders, transition graph, board/list rendering, and a create skill.
-- [ ] The repo's work-management instructions teach DIR → ADR → PLAN → SUV → task without external explanation.
-- [ ] Feedback from a rendered doc starts a headless CLI run in its own worktree that reconciles the ADR/PLAN/SUV set and stops in a defined state.
-- [ ] A `task.yaml` definition can be built incrementally across sessions, validated by the real `validateTaskInput`, and previewed as a DAG.
-- [ ] Publishing writes a task Vorno picks up, with **zero diff under `packages/` or `apps/`**.
-- [ ] One published task runs unattended start-to-finish, including an adversarial verification node.
-- [ ] Every gap hit while authoring by hand is recorded as input to PLAN-039 W1.
+- [x] The console is a git repository with a remote and a stated branch discipline.
+- [x] `SUV-NNNN` exists as a corpus type: template, status folders, transition graph, board/list rendering, and a create skill.
+- [x] The repo's work-management instructions teach DIR → ADR → PLAN → SUV → task without external explanation.
+- [x] Feedback from a rendered doc starts a headless CLI run in its own worktree that reconciles the ADR/PLAN/SUV set and stops in a defined state.
+- [x] A `task.yaml` definition can be built incrementally across sessions, validated by the real `validateTaskInput`, and previewed as a DAG.
+- [x] Publishing writes a task Vorno picks up, with **zero diff under `packages/` or `apps/`**.
+- [x] One published task runs unattended start-to-finish, including an adversarial verification node.
+- [x] Every gap hit while authoring by hand is recorded as input to PLAN-039 W1.
 
 ## Status log
 
@@ -239,3 +239,4 @@ relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
 - `2026-08-23` — decomposed into twelve SUVs (`SUV-0001`–`SUV-0012`) covering all six phases, and the SUV corpus itself was scaffolded: `roadmap/suvs/` with the plan status folders verbatim plus `definitions/`, a template, a folder README, the `roadmap-suv-create` skill, and the ladder written into `CLAUDE.md` / `AGENTS.md` / `roadmap/README.md` / `roadmap/plans/README.md`. `roadmap-plan-advance` now serves both corpora off one transition graph. That is SUV-0002's own scope, landed alongside the record describing it.
 - `2026-08-24` — P3's reconciling loop took its first live run, on feedback record `1787609926956-3e2a554f2d56` against SUV-0008 itself. All three P3 mechanisms composed as designed: SUV-0005's CLI dispatch started the run, SUV-0006 gave it a private worktree and branch, and the prompt's reconciliation instruction carried the edit past the quoted line into two sibling records (SUV-0005 and this plan) rather than stopping at the anchor. Evidence for P6: the loop's own shape — dispatch, reconcile, validate, stop — is the first DAG the P4 composer has to be able to express, and it was exercised here by hand before the composer exists.
 - `2026-08-24` — **P6 closed: a definition this plan authored ran unattended, and a deliberate break failed it.** SUV-0012 composed `roadmap/suvs/definitions/SUV-0012.task.yaml` entirely through the SUV-0009 composer API — the P3 reconciliation loop as a four-node DAG (`survey` + `validate` → `reconcile-report` → `adversarial-verify`), machine-neutral, green through the SUV-0010 bridge — published it with SUV-0011, and ran it five times start to finish with no intervention against a disposable detached worktree. **Run 1** (`run-1787622446237`) completed clean: 4/4 nodes `done`, `VERDICT: PASS`, worktree untouched. **Run 3** (`run-1787622990291`) sabotaged `survey` in the published instance with a fabricated 15-SUV list; the gate returned `VERDICT: FAIL — nodes=survey` and the run ended `run-failed`. **Run 5** (`run-1787623406869`) sabotaged the adversarial node's own upstream; `adversarial-verify` itself returned `VERDICT: FAIL` after listing ten fabrications, and the run failed on it. Restored by re-publishing from the repo definition — ADR-0028's drift rule exercised for real, leaving a two-line diff against the first publish. Zero diff under `packages/` and `apps/`. Two results are worth carrying forward past this plan: **run 2** (`run-1787622661840`) showed the runner's repair loop *absorbing* the sabotage, because it hands the verifier's rejection reason to the rejected node as its next prompt — a repair-enabled run cannot test whether a node is honest; and the adversarial node's scope turned out to be its input edge, not the run, so a sabotage its upstream reported honestly left it with nothing to fault. Everything hit along the way is written up as [`2026-08-24-plan-043-authoring-gaps-for-plan-039.md`](../../discussions/2026-08-24-plan-043-authoring-gaps-for-plan-039.md), referenced from PLAN-039 — the last of this plan's eight acceptance items.
+- `2026-08-24` — moved from `in-progress` to `done`: All twelve executed SUVs done (0001-0012; owner-drafted 0013 remains planned with acceptance TBD). P3 reconciling loop live-verified end to end and merged through its own human gate; P4 composer + real-schema bridge; P5 publish with machine-local injection; P6 ran the reconciliation-probe DAG unattended five times incl. adversarial-verify failing sabotaged runs, and produced the 31-finding authoring-gaps doc that PLAN-039 W1 now references. Zero diff under packages/ or apps/ across the whole arc. Console work on branch plan-043-p3-p6-work-surface (private remote); roadmap work goes to PR from jh/plan-043-roadmap-work-surface.
