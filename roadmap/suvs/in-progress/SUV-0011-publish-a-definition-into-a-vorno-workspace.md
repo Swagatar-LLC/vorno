@@ -1,12 +1,12 @@
 ---
 id: SUV-0011
 title: Publish a definition into a Vorno workspace
-status: planned
+status: in-progress
 plan: PLAN-043
 direction: DIR-05
 owner: jh
 created: 2026-08-23
-updated: 2026-08-23
+updated: 2026-08-24
 related:
   - SUV-0010-validate-task-definitions-against-the-real-schema.md
 blocked-by: []
@@ -49,3 +49,4 @@ and Vorno picks it up on the next board load, with zero product change.
 ## Status log
 
 - `2026-08-23` — created in `planned/`
+- `2026-08-24` — moved from `planned` to `in-progress`: Starting P5: publish a definition into a Vorno workspace, machine-local values supplied at publish time.
