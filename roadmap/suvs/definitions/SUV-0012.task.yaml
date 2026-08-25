@@ -1,0 +1,167 @@
+# Task definition for SUV-0012 — the executable DAG behind that SUV (ADR-0028).
+# Machine-neutral on purpose: no cwd, no project id, no model route. Those are
+# supplied at publish time. Composed in the roadmap console; safe to hand-edit.
+id: suv-0012-reconcile-corpus-probe
+title: SUV-0012 - reconciliation corpus probe
+goal: "Probe the P3 reconciliation loop's shape as an unattended DAG: survey the SUVs owned by PLAN-043, run the corpus validator, cross-check the two into a reconciliation report, and have an adversarial node try to fail the run. Read-only throughout - the deliverable is text, not a repo change."
+acceptance_criteria: |
+  This is a READ-ONLY analysis run: no node was permitted to modify the repository, so
+  "nothing changed on disk" is success, not a missing deliverable. Grade in this order.
+
+  1. The `adversarial-verify` node's output is the primary signal. Read its final
+     `VERDICT:` line. If it says FAIL, this run FAILS: reply
+     `VERDICT: FAIL - nodes=<the node(s) adversarial-verify blamed> - <its reason>`.
+     Do not overrule it, do not soften it, and do not substitute your own judgement of the
+     underlying claim.
+  2. The run also FAILS if `reconcile-report` contradicts the validator output carried by
+     `validate` — e.g. it calls the corpus internally consistent while the validator reported
+     `ok: false`, or the reverse.
+  3. The run also FAILS if `survey` lists an SUV id that does not exist in the corpus, or
+     omits one that does, or reports a count that disagrees with its own list.
+
+  Reply `VERDICT: PASS` only if `adversarial-verify` said PASS and none of 2 or 3 holds.
+nodes:
+  - id: survey
+    title: Survey the PLAN-043 SUV corpus
+    prompt: |
+      READ-ONLY NODE. Do not create, edit, move or delete any file, and do not run any git
+      command that writes (no add/commit/checkout/stash/worktree). Your entire deliverable is
+      the text of your final message.
+
+      Your working directory is a checkout of the Vorno roadmap repo. The governance corpus
+      lives under `roadmap/`, and SUVs live at `roadmap/suvs/<status>/SUV-NNNN-*.md`, where
+      <status> is one of: planned, in-progress, blocked, done, documented, archived.
+
+      List EVERY SUV whose frontmatter `plan:` claims PLAN-043. For each one, output exactly one
+      line, in this shape:
+
+        <SUV id> | <status folder> | <one-line goal>
+
+      Take the id and the goal from the file itself; take the status folder from the directory
+      the file actually sits in. Sort by id ascending.
+
+      Rules:
+      - Every line must come from a file you actually read. Do not invent, guess, extrapolate or
+        pattern-fill an entry, and do not include an SUV owned by any other plan.
+      - After the list, state the total count on its own line as `COUNT: <n>`.
+      - Then state the exact shell command(s) you used to enumerate the files, so another agent
+        can repeat your work and get the same answer.
+  - id: validate
+    title: Run the corpus validator
+    prompt: |
+      READ-ONLY NODE. Do not create, edit, move or delete any file, and do not run any git
+      command that writes (no add/commit/checkout/stash/worktree). Your entire deliverable is
+      the text of your final message.
+
+      Run exactly this command from your working directory:
+
+        python3 /Users/jeffhampton/.craft-agent/serve/apps/vorno-roadmap/validator.py --root "$PWD/roadmap" --json
+
+      Then report:
+      1. The command's stdout, VERBATIM, inside a fenced code block. Do not summarise it, do not
+         reformat it, do not drop or reorder fields.
+      2. Outside the block, on separate lines: the process exit code, the value of `ok`, and the
+         value of `counts.violations`.
+
+      If the command cannot run at all, say so and paste the error verbatim. Never substitute
+      your own reading of the corpus for the validator's output — you are a transport for this
+      tool's verdict, not a second opinion on it.
+  - id: reconcile-report
+    title: Reconciliation report
+    prompt: |
+      READ-ONLY NODE. Do not create, edit, move or delete any file, and do not run any git
+      command that writes (no add/commit/checkout/stash/worktree). Your entire deliverable is
+      the text of your final message.
+
+      You are the reconciliation step. You have two independent upstream inputs.
+
+      SURVEY — the SUV list under PLAN-043:
+      --- begin survey ---
+      ${nodes.survey.output}
+      --- end survey ---
+
+      VALIDATOR — the corpus validator's verbatim verdict:
+      --- begin validator ---
+      ${nodes.validate.output}
+      --- end validator ---
+
+      Produce a reconciliation report with exactly these four sections, each introduced by the
+      literal heading line shown (a markdown heading marker must NOT be used):
+
+      SECTION 1 - SURVEY
+      Restate the SUV list as you received it, with its count.
+
+      SECTION 2 - VALIDATOR
+      Restate the validator's `ok` value and its violation count, and list every violation it
+      reported (or write "none").
+
+      SECTION 3 - CROSS-CHECK
+      For each SUV in the survey, say whether the validator reported any violation naming it.
+      Name any SUV the survey lists that you cannot corroborate against the working directory,
+      and any violation the validator reports that the survey does not account for.
+
+      SECTION 4 - VERDICT
+      Write exactly one of these two sentences, on its own line:
+        The corpus is internally consistent.
+        The corpus is NOT internally consistent.
+      Then justify it, citing BOTH inputs explicitly.
+
+      Rules: you may re-read files in the working directory to corroborate, but you may NOT
+      replace either input with your own opinion. If your own reading disagrees with an input,
+      report the disagreement explicitly in SECTION 3 rather than silently correcting it.
+      Do not assert anything that neither input supports.
+    depends_on:
+      - survey
+      - validate
+  - id: adversarial-verify
+    title: Adversarial verification
+    prompt: |
+      READ-ONLY NODE. Do not create, edit, move or delete any file, and do not run any git
+      command that writes (no add/commit/checkout/stash/worktree). Your entire deliverable is
+      the text of your final message.
+
+      You are an ADVERSARIAL VERIFIER. Your job is to FAIL this run. Treat the report below as
+      wrong until you have proved otherwise with work you did yourself. Agreeing is the expensive
+      option: you may only conclude PASS if you genuinely could not find fault after doing every
+      independent check listed here.
+
+      THE REPORT UNDER TEST:
+      --- begin report ---
+      ${nodes.reconcile-report.output}
+      --- end report ---
+
+      Do all of the following YOURSELF, from scratch, trusting nothing above:
+
+      1. Re-run the corpus validator yourself:
+           python3 /Users/jeffhampton/.craft-agent/serve/apps/vorno-roadmap/validator.py --root "$PWD/roadmap" --json
+         Record `ok` and `counts.violations` from YOUR OWN run.
+      2. Re-derive the list of SUVs claiming PLAN-043 yourself, by reading `roadmap/suvs/*/`
+         directly. Record ids, status folders and goals from the files on disk.
+      3. Compare your two results against every claim in the report, item by item. Check
+         specifically for: SUV ids the report lists that do not exist on disk; SUVs on disk the
+         report omits; a status folder the report gets wrong; a count that does not match; a
+         validator figure that does not match yours; and any statement in the report that
+         neither of your own checks supports.
+
+      Then write these three sections, each introduced by the literal heading line shown (a
+      markdown heading marker must NOT be used):
+
+      SECTION 1 - INDEPENDENT CHECK
+      What YOU found: your validator figures, your own SUV list with its count, and the exact
+      commands you ran.
+
+      SECTION 2 - DISCREPANCIES
+      Every mismatch, quoting the report's claim and your finding side by side. Write
+      "none found" only if there are genuinely none.
+
+      SECTION 3 - REASONING
+      Why the discrepancies do, or do not, invalidate the run.
+
+      Finish with a verdict line, alone on the last line, in exactly one of these forms:
+        VERDICT: FAIL - <one-line reason>
+        VERDICT: PASS
+
+      Say FAIL if ANYTHING in the report is inconsistent, fabricated, or unsupported by your own
+      independent check — however small. Say PASS only if you could not find fault.
+    depends_on:
+      - reconcile-report

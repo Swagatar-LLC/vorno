@@ -10,6 +10,7 @@ related:
   - PLAN-041-server-homed-instances-with-auth.md (sequel — definition ownership model must not preclude it)
   - PLAN-042-team-management.md (sequel)
   - PLAN-043-roadmap-console-interactive-work-surface.md (the detour that precedes W1 and becomes this plan's test harness)
+  - ../discussions/2026-08-24-plan-043-authoring-gaps-for-plan-039.md (W1's evidence base — every gap PLAN-043 hit authoring, publishing and running a definition by hand)
 blocked-by:
   - PLAN-043
 ---
@@ -224,3 +225,4 @@ a back-pointer; the source plan is not the place to look them up again.
 
 - `2026-08-22` — created in `planned/` as the first half of the DIR-05 milestone (top roadmap priority).
 - `2026-08-22` — amended from product-owner review of PR #171: W3 gains an interactivity bar (clickable nodes, collapse/expand — grounded in the shell's `beautiful-mermaid` `data-*`/inline-SVG seam) and the ask→task→project visualization requirement; sequenced behind the PLAN-043 dogfooding detour.
+- `2026-08-24` — **W1 now has an evidence base**: [`2026-08-24-plan-043-authoring-gaps-for-plan-039.md`](../../discussions/2026-08-24-plan-043-authoring-gaps-for-plan-039.md), delivered by PLAN-043 SUV-0012. It records every gap hit authoring, validating, publishing and running a real definition by hand — grouped as schema/validation, dispatch/environment, composer/authoring, publish/instance-split, and run/verification — each with the artifact that produced it, plus the five unattended runs (one clean, four sabotaged) behind them. Three findings bear directly on W1's shape: a DAG node cannot fail a run (grading is always a session reading a prose rubric, and `kind: verify`/`kind: judge` parse but do not execute); the repair loop feeds the verifier's rejection reason back into the rejected node's prompt, so a repair-enabled run cannot test whether a node is honest; and the definition/instance split has no third, **run-local** scope, which is where a per-run working directory needs to live. The doc ends with the seven questions this forces W1 to answer — including whether the authoring surface's expressive ceiling gets to be lower than the schema's, now that two independently built authoring tools have landed on the same eight fields.

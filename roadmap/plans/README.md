@@ -1,6 +1,11 @@
 # Plans
 
-Active work. The folder a plan lives in *is* its status.
+Features. The folder a plan lives in *is* its status.
+
+A plan is not a unit of execution — it is a body of work. It decomposes into
+**SUVs** (`../suvs/`), each of which is what one PR closes. When you are asked
+to advance a plan, work at SUV granularity rather than choosing your own scope.
+See [ADR-0028](../decisions/0028-suv-as-the-shippable-unit-between-plan-and-task.md).
 
 ## Folders
 
@@ -66,11 +71,16 @@ owner: jh                # GitHub handle or initials
 created: 2026-04-28
 updated: 2026-04-28
 related: []
+related-suvs: []         # SUV ids this plan decomposes into (reverse of the SUV's `plan:`)
 blocked-by: []           # only used when status == blocked
 ---
 ```
 
 See [`_template.md`](_template.md) for the full structure.
+
+`related-suvs:` is maintained by `[skill:roadmap-suv-create]`, which writes both
+halves of the edge. A plan with no SUVs yet carries `related-suvs: []`; a plan
+in `in-progress/` with an empty list is a plan nobody has decomposed.
 
 ## Body sections (suggested)
 
@@ -80,6 +90,17 @@ See [`_template.md`](_template.md) for the full structure.
 - `## Approach` — short technical sketch
 - `## Acceptance` — checklist that must be ticked to advance to `done`
 - `## Status log` — append-only entries on each status transition
+
+## Decomposing a plan
+
+Before executing, cut the plan into SUVs:
+
+```
+[skill:roadmap-suv-create] --plan PLAN-043 "Put the roadmap console under version control"
+```
+
+Each SUV is one PR's worth of change with its own acceptance list. The plan's
+Acceptance stays as the feature-level checklist; the SUVs are how it gets ticked.
 
 ## When to write a plan
 

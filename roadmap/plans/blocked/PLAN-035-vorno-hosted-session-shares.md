@@ -5,7 +5,7 @@ status: blocked
 direction: DIR-04
 owner: jh
 created: 2026-08-17
-updated: 2026-08-22
+updated: 2026-08-23
 related: [ADR-0024, ADR-0023, PLAN-034]
 blocked-by:
   - ADR-0024 owner acceptance
@@ -198,9 +198,7 @@ needs the same kind of Worker + custom domain.
 | 5 | Decision: 180-day retention, or another number | — | must match the docs page |
 | 6 | A privacy policy at `vorno.ai/privacy` | vorno-site | **blocks Lane 4** |
 
-The workspace `cloudflare` source token reaches this account today, but it is
-IP-allowlisted and the MCP client egresses over a rotating IPv6 privacy address, so it is
-not a dependable deploy path. `bunx wrangler deploy` with a real token is the durable one.
+The workspace `cloudflare` source token reaches this account today. `bunx wrangler deploy` with a real token is the durable one.
 
 ## Acceptance
 
