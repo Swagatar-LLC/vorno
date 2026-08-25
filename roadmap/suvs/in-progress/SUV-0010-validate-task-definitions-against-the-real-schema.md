@@ -1,12 +1,12 @@
 ---
 id: SUV-0010
 title: Validate task definitions against the real schema
-status: planned
+status: in-progress
 plan: PLAN-043
 direction: DIR-05
 owner: jh
 created: 2026-08-23
-updated: 2026-08-23
+updated: 2026-08-24
 related:
   - SUV-0009-incremental-task-yaml-composer-with-dag-preview.md
 blocked-by: []
@@ -48,3 +48,4 @@ there is exactly one definition of "valid" and no second schema to drift from.
 ## Status log
 
 - `2026-08-23` — created in `planned/`
+- `2026-08-24` — moved from `planned` to `in-progress`: Starting: bun bridge to the real validateTaskInput, on the p4 composer branch.
