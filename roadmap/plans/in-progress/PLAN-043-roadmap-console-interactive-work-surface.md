@@ -23,6 +23,7 @@ related-suvs:
   - SUV-0010-validate-task-definitions-against-the-real-schema.md (P4)
   - SUV-0011-publish-a-definition-into-a-vorno-workspace.md (P5)
   - SUV-0012-run-one-published-task-unattended-and-report-findings-to-plan-039.md (P6)
+  - SUV-0013-trigger-a-vorno-session-from-the-roadmap-console-to-break-do.md (owner-drafted 2026-08-24; acceptance TBD)
 blocked-by: []
 ---
 
