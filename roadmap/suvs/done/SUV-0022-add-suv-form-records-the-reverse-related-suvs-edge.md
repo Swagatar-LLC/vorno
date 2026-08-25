@@ -1,7 +1,7 @@
 ---
 id: SUV-0022
 title: Add-SUV form records the reverse related-suvs edge on the owning plan
-status: in-progress
+status: done
 plan: PLAN-043
 direction: DIR-05
 owner: jh
@@ -47,3 +47,4 @@ invalid corpus.
 
 - `2026-08-25` — created in `planned/`
 - `2026-08-25` — moved from `planned` to `in-progress`: Starting implementation: reproduce the one-edged corpus via /api/create first, then write the reverse edge in the same create.
+- `2026-08-25` — moved from `in-progress` to `done`: Landed on console branch plan-043-retrospective-fixes (f2d9e19). Reproduced first: three new tests failed with missing-related-suv against the old create path; api_create now appends the SUV filename to the owning plan related-suvs (block layout and annotations preserved, updated: bumped), fails atomically when the plan cannot be rewritten (no SUV file left), and reports planUpdated. 201 console tests green (test_server + test_validator); service restarted and healthy.
