@@ -1,12 +1,12 @@
 ---
 id: SUV-0012
 title: Run one published task unattended and report findings to PLAN-039
-status: planned
+status: in-progress
 plan: PLAN-043
 direction: DIR-05
 owner: jh
 created: 2026-08-23
-updated: 2026-08-23
+updated: 2026-08-24
 related:
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md
   - SUV-0011-publish-a-definition-into-a-vorno-workspace.md
@@ -52,3 +52,4 @@ hand lands as written input to PLAN-039 W1.
 ## Status log
 
 - `2026-08-23` — created in `planned/`
+- `2026-08-24` — moved from `planned` to `in-progress`: Starting P6: compose the reconciliation-loop DAG as this SUV task definition, publish it, run it unattended with an adversarial verify node, and write the PLAN-039 findings doc.
