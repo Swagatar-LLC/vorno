@@ -32,6 +32,9 @@ instance records the definition id + version it was bound from.
 - **Out:** the "Save as workflow" / "New task from workflow" UI commands, any
   editor change, and the run-local third scope raised by the PLAN-043 evidence
   discussion (`P1`/`P2`) — this SUV only lands the two-way split.
+- **Out:** anything W2 — a definition's `params` are persisted as opaque schema
+  data here, with no typed bind-time form, no param authoring, and no change to
+  `${params.<name>}` interpolation.
 
 ## Acceptance
 
@@ -43,3 +46,6 @@ instance records the definition id + version it was bound from.
 ## Status log
 
 - `2026-08-24` — created in `planned/`
+- `2026-08-24` — sole SUV for this round: SUV-0015 (typed param form at bind
+  time) dropped at owner request, so W2 is explicitly named out of scope here
+  and this SUV covers the definition/instance split only.
