@@ -1,11 +1,11 @@
 ---
 id: PLAN-043
 title: Roadmap console as the SUV and task-authoring surface — the DIR-05 detour
-status: done
+status: in-progress
 direction: DIR-05
 owner: jh
 created: 2026-08-22
-updated: 2026-08-24
+updated: 2026-08-25
 related:
   - ADR-0028-suv-as-the-shippable-unit-between-plan-and-task.md (the governance shape this plan implements)
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md (this detour is its test harness and requirements probe)
@@ -242,3 +242,4 @@ relation vocabulary. ← `PLAN-025-artifact-plane-v1.md`
 - `2026-08-24` — moved from `in-progress` to `done`: All twelve executed SUVs done (0001-0012; owner-drafted 0013 remains planned with acceptance TBD). P3 reconciling loop live-verified end to end and merged through its own human gate; P4 composer + real-schema bridge; P5 publish with machine-local injection; P6 ran the reconciliation-probe DAG unattended five times incl. adversarial-verify failing sabotaged runs, and produced the 31-finding authoring-gaps doc that PLAN-039 W1 now references. Zero diff under packages/ or apps/ across the whole arc. Console work on branch plan-043-p3-p6-work-surface (private remote); roadmap work goes to PR from jh/plan-043-roadmap-work-surface.
 - `2026-08-24` — moved from `done` to `in-progress`: Reopened from done before close-out: the owner grew scope with SUV-0013 (iterative plan-to-SUV breakdown from the console) and asked for it to land before the plan closes.
 - `2026-08-24` — moved from `in-progress` to `done`: Closed again with SUV-0013 landed: all thirteen SUVs done. The breakdown loop was exercised live on PLAN-039 and its first candidate set awaits the owner merge gate.
+- `2026-08-25` — moved from `done` to `in-progress`: Reopened by owner directive (2026-08-25): the first solo breakdown exposed wrong-defaults that must be fixed in retrospect — merge target is whatever branch the checkout is on rather than a per-plan topic branch cut from fresh main; SUV id allocation ignores unmerged candidate branches (the SUV-0014 collision); runner sessions are invisible from the desktop app (SUV-0013 open box); the Add-SUV form writes plan: without the reverse related-suvs edge. Each lands as its own SUV. A separate ADR-level evaluation of per-plan SUV numbering/storage is also owner-directed.
