@@ -35,13 +35,13 @@ invalid corpus.
 
 ## Acceptance
 
-- [ ] Reproduced first: a test creating an SUV via `/api/create` shows the
+- [x] Reproduced first: a test creating an SUV via `/api/create` shows the
   validator rejecting the corpus before the fix and passing after.
-- [ ] `POST /api/create {kind: suv, plan: PLAN-NNN}` leaves the plan's
+- [x] `POST /api/create {kind: suv, plan: PLAN-NNN}` leaves the plan's
   `related-suvs:` containing the new filename, block-list layout preserved.
-- [ ] A create against a plan file the rewrite cannot parse fails atomically:
+- [x] A create against a plan file the rewrite cannot parse fails atomically:
   no SUV file left on disk, error names the plan.
-- [ ] `python3 -m unittest test_server test_validator` stays green.
+- [x] `python3 -m unittest test_server test_validator` stays green.
 
 ## Status log
 

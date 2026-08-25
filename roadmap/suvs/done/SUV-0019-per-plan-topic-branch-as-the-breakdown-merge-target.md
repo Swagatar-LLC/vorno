@@ -42,17 +42,17 @@ on before the human accepts it.
 
 ## Acceptance
 
-- [ ] First dispatch of a breakdown of a plan creates branch `plan/plan-nnn`
+- [x] First dispatch of a breakdown of a plan creates branch `plan/plan-nnn`
   from up-to-date main (fetched if a remote exists; local main otherwise), and
   a second breakdown of the same plan reuses it.
-- [ ] Accepting a breakdown merge lands the candidate branch on the plan topic
+- [x] Accepting a breakdown merge lands the candidate branch on the plan topic
   branch, `--no-ff`, and the primary checkout's branch and working tree are
   byte-identical before and after.
-- [ ] The merge proposal (API and UI) carries the target branch name for both
+- [x] The merge proposal (API and UI) carries the target branch name for both
   breakdown and feedback records.
-- [ ] A dirty primary checkout no longer blocks a breakdown merge (the clash
+- [x] A dirty primary checkout no longer blocks a breakdown merge (the clash
   check applies to the tree the merge actually runs in).
-- [ ] `python3 -m unittest test_server` stays green, with new tests covering
+- [x] `python3 -m unittest test_server` stays green, with new tests covering
   first-dispatch branch cut, reuse, merge target, and checkout isolation.
 
 ## Status log

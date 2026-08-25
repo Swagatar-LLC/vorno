@@ -36,11 +36,11 @@ written finding that it requires product change.
 
 ## Acceptance
 
-- [ ] The invisibility is explained from named files/lines, not asserted.
-- [ ] Either a console-side improvement lands with tests, or a written finding
+- [x] The invisibility is explained from named files/lines, not asserted.
+- [x] Either a console-side improvement lands with tests, or a written finding
   states what product change is required and where it belongs (PLAN-039/041),
   referenced from SUV-0013's open acceptance item.
-- [ ] SUV-0013's "Sessions are inspectable in Vorno" box is resolved one way or
+- [x] SUV-0013's "Sessions are inspectable in Vorno" box is resolved one way or
   the other: ticked with evidence, or explicitly re-homed to the finding.
 
 ## Status log

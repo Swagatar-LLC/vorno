@@ -37,14 +37,14 @@ no longer claim the same id.
 
 ## Acceptance
 
-- [ ] Reproduced first: a test that cuts a candidate branch claiming SUV-N and
+- [x] Reproduced first: a test that cuts a candidate branch claiming SUV-N and
   shows the old allocator hands out SUV-N again, then goes green with the fix.
-- [ ] With a candidate branch holding `roadmap/suvs/planned/SUV-0021-x.md`
+- [x] With a candidate branch holding `roadmap/suvs/planned/SUV-0021-x.md`
   unmerged, the New-SUV prefill and the breakdown prompt floor both report
   SUV-0022 as next free.
-- [ ] A deleted/merged candidate branch stops reserving its ids without any
+- [x] A deleted/merged candidate branch stops reserving its ids without any
   manual cleanup.
-- [ ] `python3 -m unittest test_server` stays green with the new cases.
+- [x] `python3 -m unittest test_server` stays green with the new cases.
 
 ## Status log
 
