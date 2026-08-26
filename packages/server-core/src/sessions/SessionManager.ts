@@ -74,7 +74,7 @@ import {
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, hasRenewEndpoint, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter } from '@craft-agent/shared/sources'
-import { listTaskSlugs, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
+import { listTaskSlugs, loadTaskSpec, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
 import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
@@ -2003,6 +2003,12 @@ export class SessionManager implements ISessionManager {
       // Load existing sessions from disk
       this.loadSessionsFromDisk()
 
+      // Adopt task definitions published by producers outside the app (SUV-0034).
+      // Must run AFTER loadSessionsFromDisk — the bound-slug set is derived from it.
+      for (const workspace of workspaces) {
+        await this.reconcilePublishedTasks(workspace.id, workspace.rootPath)
+      }
+
       // Signal that initialization is complete — IPC handlers waiting on initGate will proceed
       this.initGate.markReady()
 
@@ -2014,6 +2020,65 @@ export class SessionManager implements ISessionManager {
     } catch (error) {
       this.initGate.markFailed(error)
       throw error
+    }
+  }
+
+  /**
+   * Adopt published-but-unbound task definitions into board cards (SUV-0034).
+   *
+   * A board card IS a parentless session; a `tasks/<slug>/task.yaml` is only a
+   * definition. Publishing writes the yaml, but the orchestrator session that
+   * makes it visible is minted by `createTaskFromSpec` — so a definition written
+   * by any producer outside the app (the roadmap console's publish endpoint, a
+   * script, a sync) exists on disk and renders nowhere.
+   *
+   * Reconciliation closes that gap from the app side, so it holds regardless of
+   * which producer wrote the file. Idempotent: binding is keyed on
+   * `managed.taskSlug`, so a slug that already has a session is skipped.
+   *
+   * Fail-soft by design — a single malformed definition may not block workspace
+   * load, so every failure is a warning and the loop continues.
+   */
+  private async reconcilePublishedTasks(workspaceId: string, workspaceRoot: string): Promise<void> {
+    let slugs: string[]
+    try {
+      slugs = listTaskSlugs(workspaceRoot)
+    } catch (error) {
+      sessionLog.warn('reconcilePublishedTasks: could not list tasks', { workspaceRoot, error })
+      return
+    }
+    if (slugs.length === 0) return
+
+    // Bound slugs across the whole manager: sessions are keyed globally, and a
+    // slug is unique per workspace root, so this is the authoritative set.
+    const bound = new Set<string>()
+    for (const managed of this.sessions.values()) {
+      if (managed.taskSlug) bound.add(managed.taskSlug)
+    }
+
+    for (const slug of slugs) {
+      if (bound.has(slug)) continue
+      try {
+        const loaded = loadTaskSpec(workspaceRoot, slug)
+        if (!loaded?.spec) {
+          sessionLog.warn('reconcilePublishedTasks: skipping unparseable definition', {
+            slug,
+            errors: loaded?.errors?.map(e => e.message),
+          })
+          continue
+        }
+        // save:false — the definition is already on disk and is the source of
+        // truth here; re-serializing it would rewrite a file we only meant to read.
+        const created = await createTaskFromSpec(this, workspaceId, workspaceRoot, loaded.spec, { save: false })
+        bound.add(slug)
+        sessionLog.info('reconcilePublishedTasks: adopted published definition', {
+          slug,
+          orchestratorSessionId: created.orchestratorSessionId,
+          warnings: created.warnings,
+        })
+      } catch (error) {
+        sessionLog.warn('reconcilePublishedTasks: failed to adopt definition', { slug, error })
+      }
     }
   }
 
