@@ -1,0 +1,199 @@
+# Task definition for SUV-0014 — the executable DAG behind that SUV (ADR-0028).
+# Machine-neutral on purpose: no cwd, no project id, no model route. Those are
+# supplied at publish time. Derived from the SUV's own Goal/Scope/Acceptance —
+# if this file and the SUV disagree, the SUV is right and this is stale.
+id: suv-0014-vet-and-pin-headroom-for-adoption
+title: SUV-0014 - Vet and pin Headroom for adoption
+goal: |
+  Land the supply-chain vetting evidence and an exact version pin that clear the
+  Headroom TypeScript SDK for integration.
+acceptance_criteria: |
+  Grade in this order.
+
+  1. The `adversarial-verify` node's output is the primary signal. Read its final
+     `VERDICT:` line. If it says FAIL, this run FAILS: reply
+     `VERDICT: FAIL - nodes=<the node(s) it blamed> - <its reason>`.
+     Do not overrule it, do not soften it, and do not substitute your own judgement.
+  2. The run also FAILS if `verify` marks any acceptance item NOT VERIFIED, or if its
+     verified count disagrees with its own itemised list.
+  3. The run also FAILS if the change touched anything this SUV declares out of scope,
+     or if a second branch was created for it — PLAN-040 has exactly one branch.
+  4. The run also FAILS if any node reported a test, typecheck or lint suite as passing
+     when its own quoted output shows otherwise.
+
+  Reply `VERDICT: PASS` only if `adversarial-verify` said PASS and none of 2, 3 or 4 holds.
+
+  This SUV's acceptance list, for reference:
+  - [ ] `roadmap/evidence/` contains a Headroom vetting report covering license/NOTICE findings and an audit of network/telemetry behavior, including what (if anything) leaves the machine and the opt-in controlling it.
+  - [ ] The Headroom TS SDK appears in a package manifest pinned to an exact version; `bun.lock` resolves it; no `latest` or caret/tilde range is used.
+  - [ ] The vetting report documents the update cadence: how and when the pin is bumped, and who reviews the diff.
+  - [ ] No production source file imports the SDK yet — the dependency lands unreferenced (verifiable by grep).
+nodes:
+  - id: orient
+    title: Orient in PLAN-040 and SUV-0014
+    prompt: |
+      READ-ONLY NODE. Do not create, edit, move or delete any file, and do not run any git
+      command that writes. Your entire deliverable is the text of your final message.
+
+      Your working directory is a checkout of the Vorno repository on the branch that owns
+      PLAN-040. One plan, one branch: all work for this SUV lands on that branch and nowhere
+      else. Confirm which branch you are on and state it.
+
+      Read, in this order, and quote the lines you rely on:
+        1. The owning plan: roadmap/plans/*/PLAN-040-integrate-headroom.md
+        2. This SUV: roadmap/suvs/*/SUV-0014-*.md
+
+
+
+      Then report:
+        - The branch you are on.
+        - This SUV's goal, in one sentence, in your own words.
+        - Every item this SUV declares OUT of scope, quoted. You will be graded on staying
+          inside the boundary, so name it before you cross it.
+        - The acceptance items you will have to satisfy, restated as checks you can run.
+        - Anything in the plan or the SUV that is ambiguous enough to change what you build.
+          Say so now rather than resolving it silently later.
+
+      Assert nothing you did not read. If a file named above does not exist, say so plainly.
+  - id: implement
+    title: Implement SUV-0014
+    prompt: |
+      Implement SUV-0014 — Vet and pin Headroom for adoption.
+
+      Your working directory is a checkout of the Vorno repository on PLAN-040's branch.
+      Commit your work there. Do not create a second branch for this SUV, do not merge, do
+      not push, and do not move work between checkouts. One plan, one branch.
+
+      Never use `git stash` in this repository, even transiently — the stash is a single
+      repo-global stack shared by every worktree and process pointing at it, and using it
+      here has twice dragged an unrelated session's work into a tree that never asked for it.
+      If a dirty tree blocks you, report the paths in the way instead.
+
+      ORIENTATION (from the previous node — treat as context, verify anything you rely on):
+      --- begin orientation ---
+      ${nodes.orient.output}
+      --- end orientation ---
+
+      GOAL
+      Land the supply-chain vetting evidence and an exact version pin that clear the
+      Headroom TypeScript SDK for integration.
+
+      SCOPE — including what is deliberately OUT
+      - License/NOTICE audit and network/telemetry behavior audit (what the SDK can
+        send off-machine, and under what opt-in), written up as evidence documents in
+        `roadmap/evidence/`.
+      - Add the Headroom TS SDK as a dependency pinned to an exact version — no
+        `latest` or range dist-tags (LEARNING-062 class) — with a documented update
+        cadence in the evidence report.
+      - Deliberately out: any runtime wiring or call sites (SUV-0015), config
+        surfaces (SUV-0016), and workload benchmarks — benchmarks need compression
+        wired into real sessions (I1) and are cut separately when that exists.
+
+      ACCEPTANCE — every item must be true when you are done
+      - [ ] `roadmap/evidence/` contains a Headroom vetting report covering license/NOTICE findings and an audit of network/telemetry behavior, including what (if anything) leaves the machine and the opt-in controlling it.
+      - [ ] The Headroom TS SDK appears in a package manifest pinned to an exact version; `bun.lock` resolves it; no `latest` or caret/tilde range is used.
+      - [ ] The vetting report documents the update cadence: how and when the pin is bumped, and who reviews the diff.
+      - [ ] No production source file imports the SDK yet — the dependency lands unreferenced (verifiable by grep).
+
+      Rules that decide whether this run is graded a pass:
+        - Stay inside the scope boundary. Work the SUV declares out of scope is a defect,
+          not a bonus — an out-of-scope diff is the specific failure the SUV level exists
+          to prevent.
+        - Where the acceptance item asks for a test, write a test that genuinely fails
+          without your change. Verify that it does, and report the observed red-then-green.
+        - Run the repository's test, typecheck and lint suites before you finish, and report
+          their actual output. If something fails, say so with the output — do not describe
+          a failing suite as passing.
+        - Append a status-log entry to the SUV file recording what landed.
+        - Report the exact commands you ran, so the verifier can repeat them.
+    depends_on:
+      - orient
+  - id: verify
+    title: Independent verification against acceptance
+    prompt: |
+      READ-ONLY NODE. Do not create, edit, move or delete any file, and do not run any git
+      command that writes. Your entire deliverable is the text of your final message.
+
+      You are the independent verifier for SUV-0014. You did not do the work and you do not
+      trust the account of it. Check the repository itself.
+
+      THE IMPLEMENTER'S ACCOUNT:
+      --- begin account ---
+      ${nodes.implement.output}
+      --- end account ---
+
+      THE ACCEPTANCE LIST THIS IS GRADED AGAINST:
+      - [ ] `roadmap/evidence/` contains a Headroom vetting report covering license/NOTICE findings and an audit of network/telemetry behavior, including what (if anything) leaves the machine and the opt-in controlling it.
+      - [ ] The Headroom TS SDK appears in a package manifest pinned to an exact version; `bun.lock` resolves it; no `latest` or caret/tilde range is used.
+      - [ ] The vetting report documents the update cadence: how and when the pin is bumped, and who reviews the diff.
+      - [ ] No production source file imports the SDK yet — the dependency lands unreferenced (verifiable by grep).
+
+      Do all of the following yourself:
+        1. Read the actual diff on the branch (`git diff` against the branch point, and
+           `git log`). Judge the change from the diff, not from the account.
+        2. For each acceptance item, state VERIFIED or NOT VERIFIED and cite the file and
+           line, or the command and its output, that settles it. An item you cannot check
+           is NOT VERIFIED — never assume one true because the account asserts it.
+        3. Run the test, typecheck and lint suites yourself and report their real output.
+        4. Check the diff against the SUV's out-of-scope list and name anything that
+           crossed the boundary.
+        5. Confirm the work is on PLAN-040's branch and that no second branch was created.
+
+      Finish with a section headed VERIFICATION SUMMARY listing each acceptance item and its
+      verdict, then the count verified out of the total.
+    depends_on:
+      - implement
+  - id: adversarial-verify
+    title: Adversarial verification
+    prompt: |
+      READ-ONLY NODE. Do not create, edit, move or delete any file, and do not run any git
+      command that writes. Your entire deliverable is the text of your final message.
+
+      You are an ADVERSARIAL VERIFIER. Your job is to FAIL this run. Treat everything below as
+      wrong until you have proved otherwise with work you did yourself. Agreeing is the
+      expensive option: conclude PASS only if you genuinely could not find fault after doing
+      every independent check yourself.
+
+      THE VERIFIER'S REPORT UNDER TEST:
+      --- begin report ---
+      ${nodes.verify.output}
+      --- end report ---
+
+      Attack it in these specific ways, all of them, from scratch:
+
+        1. RE-DERIVE. Read the diff yourself and re-check every acceptance item yourself.
+           Do not reuse the report's citations — find your own or fail the item.
+        2. TESTS THAT CANNOT FAIL. For each test the run claims as evidence, ask whether it
+           would still pass if the implementation were reverted or stubbed. A test asserting
+           something already true before the change is not evidence. Name any you find.
+        3. SCOPE. Diff against the SUV's out-of-scope list. Any file touched outside the
+           stated boundary is a finding, however small and however tidy.
+        4. UNSUPPORTED CLAIMS. Find every statement in the report that neither the diff nor a
+           command output supports. Fabricated or interpolated numbers are an automatic FAIL —
+           this plan's standing rule is measured or absent, never estimated.
+        5. BRANCH DISCIPLINE. Confirm the work is on PLAN-040's branch, that no second branch
+           was cut for this SUV, and that nothing was merged or pushed.
+        6. SUITE HONESTY. Run the test, typecheck and lint suites yourself. If the run
+           reported them green and they are not, that alone is a FAIL.
+
+      Then write these sections, each introduced by the literal heading line shown (do NOT use
+      a markdown heading marker):
+
+      SECTION 1 - INDEPENDENT CHECK
+      What YOU found, with the exact commands you ran.
+
+      SECTION 2 - DISCREPANCIES
+      Every mismatch, quoting the claim and your finding side by side. Write "none found" only
+      if there are genuinely none.
+
+      SECTION 3 - REASONING
+      Why the discrepancies do, or do not, invalidate the run.
+
+      Finish with a verdict line, alone on the last line, in exactly one of these forms:
+        VERDICT: FAIL - <one-line reason>
+        VERDICT: PASS
+
+      Say FAIL if anything is inconsistent, fabricated, unsupported, out of scope, or
+      untested — however small. Say PASS only if you could not find fault.
+    depends_on:
+      - verify
