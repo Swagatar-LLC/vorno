@@ -14,6 +14,8 @@ related:
 related-suvs:
   - SUV-0033-definition-instance-split-data-model.md
   - SUV-0034-reconcile-published-task-definitions-into-board-cards.md
+  - SUV-0035-reuse-the-orchestrator-session-across-task-runs.md
+  - SUV-0036-surface-a-task-tile-whose-definition-is-missing.md
 blocked-by:
   - PLAN-043
 ---
