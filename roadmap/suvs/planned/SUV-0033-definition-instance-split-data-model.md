@@ -1,17 +1,17 @@
 ---
-id: SUV-0014
+id: SUV-0033
 title: Split workflow definitions from task instances in the store
 status: planned
 plan: PLAN-039
 direction: DIR-05
 owner: jh
 created: 2026-08-24
-updated: 2026-08-24
+updated: 2026-08-26
 related: []
 blocked-by: []
 ---
 
-# SUV-0014 — Split workflow definitions from task instances in the store
+# SUV-0033 — Split workflow definitions from task instances in the store
 
 ## Goal
 
@@ -49,3 +49,8 @@ instance records the definition id + version it was bound from.
 - `2026-08-24` — sole SUV for this round: SUV-0015 (typed param form at bind
   time) dropped at owner request, so W2 is explicitly named out of scope here
   and this SUV covers the definition/instance split only.
+- `2026-08-26` — renumbered SUV-0014 → SUV-0033. The id collided with
+  PLAN-040's `SUV-0014-vet-and-pin-headroom-for-adoption`, which was already on
+  `origin/main`; this unit was still unmerged, so it moved. Cause: this
+  breakdown record predates SUV-0019/0020, so it was allocated and merged
+  without consulting unmerged candidate branches.

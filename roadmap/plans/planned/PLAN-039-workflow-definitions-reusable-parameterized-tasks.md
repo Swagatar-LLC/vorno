@@ -12,7 +12,7 @@ related:
   - PLAN-043-roadmap-console-interactive-work-surface.md (the detour that precedes W1 and becomes this plan's test harness)
   - ../discussions/2026-08-24-plan-043-authoring-gaps-for-plan-039.md (W1's evidence base — every gap PLAN-043 hit authoring, publishing and running a definition by hand)
 related-suvs:
-  - SUV-0014-definition-instance-split-data-model.md
+  - SUV-0033-definition-instance-split-data-model.md
 blocked-by:
   - PLAN-043
 ---
