@@ -13,6 +13,7 @@ related:
   - ../discussions/2026-08-24-plan-043-authoring-gaps-for-plan-039.md (W1's evidence base — every gap PLAN-043 hit authoring, publishing and running a definition by hand)
 related-suvs:
   - SUV-0033-definition-instance-split-data-model.md
+  - SUV-0034-reconcile-published-task-definitions-into-board-cards.md
 blocked-by:
   - PLAN-043
 ---
