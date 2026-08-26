@@ -5,7 +5,7 @@ status: planned
 direction: DIR-05
 owner: jh
 created: 2026-08-22
-updated: 2026-08-24
+updated: 2026-08-26
 related:
   - PLAN-041-server-homed-instances-with-auth.md (sequel — definition ownership model must not preclude it)
   - PLAN-042-team-management.md (sequel)
@@ -126,6 +126,66 @@ bounded failure-aware retry, token budgets, and a verify/repair loop.
   constructs W3 can already display**. Runner execution for deferred kinds is
   enabled per-construct as authoring lands, not wholesale.
 
+### W6 — Run outcome semantics *(the vocabulary and the terminal states control flow needs)*
+
+Verified 2026-08-26 by reading `packages/server-core/src/tasks/TaskRunner.ts` (937 lines)
+against `packages/shared/src/tasks/schema.ts`. The driving shape is a single
+plan-level `task.yaml` for PLAN-040: ~60 nodes (15 SUVs × orient → implement →
+verify → adversarial-verify), published only at plan level. These are the four
+things that shape hits first, and this plan owns them because each is a
+*definition-layer* concept before it is a runner change.
+
+- **Firm up the vocabulary first.** `workflow`, `task`, `task set`, `subgraph`,
+  and `node` are used interchangeably across the schema, the runner, and the
+  roadmap, and the ambiguity is now load-bearing: the remaining W6 items all
+  need a name for "a group of nodes smaller than the run and larger than a
+  node." W1's definition/instance split is the moment to fix the terms, since
+  it is already renaming the objects. No new construct ships under a term this
+  plan has not defined.
+- **A partial-success terminal state.** `maybeFinish()` computes `allGood` over
+  *every* node (`state === 'done' || 'skipped'`); a single non-`done` node →
+  `finish('failed')` → `run-failed`, and `finish()` settles the orchestrator
+  tile to needs-review. A run where 14 of 15 SUV branches completed is
+  indistinguishable from one where nothing worked. The definition needs a way
+  to express "mostly succeeded, these branches are blocked" and the run needs a
+  terminal status that carries it.
+- **Repair must be reachable after a hard failure.** The verify→repair loop is
+  entered *only* from the `allGood` path in `maybeFinish()`
+  (`enterVerifying()` → orchestrator verdict → `handleVerdict()` →
+  `repairForVerdict()`). Any hard-failed node calls `finish('failed')` first and
+  skips verification entirely — so the repair loop can today only ever fix a run
+  in which nothing actually failed. This is the single highest-leverage fix: the
+  scoped-repair mechanism already exists (below) and is merely unreachable.
+- **Retry budget scoped to a subgraph.** Per-node `retry` (`limit` + `when`) *is*
+  honored today, in `failNode()`. `max_iterations` is run-global — clamped once
+  in the constructor into `this.maxRepairs` and consumed by `handleVerdict()`
+  for the whole run. There is no budget between those two scopes. A 60-node
+  graph needs "this SUV's four nodes get two repair passes", not one number for
+  all fifteen branches.
+- **`cache` is declared but dead.** `CACHE_MODES` (`pure` | `off`) exists at
+  `packages/shared/src/tasks/schema.ts:48` and the node field at `:166`; the
+  string `cache` appears **zero** times in `TaskRunner.ts`. Re-running a task
+  re-executes every node, so there is no way to restart one failed branch of a
+  large graph without re-running all of it. This is exactly the "a field the
+  system accepts but cannot honour is a defect" constraint below, already in the
+  shipped schema.
+
+**Already correct — preserve, do not "fix"**
+
+- **Failure isolation works.** `failNode()` does not abort the run: it marks the
+  node `failed` and calls `scheduleReady()`. `isReady()` requires every dep to be
+  `done`, so dependents of a failed node stay `pending` while independent
+  branches run to completion. This is the desired semantics and every W6 change
+  must preserve it.
+- **Scoped repair already exists as a mechanism.** The verdict grammar in
+  `sendVerification()` accepts `VERDICT: FAIL — nodes=<id>,<id> — <reason>`, and
+  `computeFrontier()` expands the named nodes to their transitive dependents.
+  Nothing needs inventing here; it is only unreachable per the item above.
+- **`node.kind` is never dispatched on.** `dispatch()` runs every node as a
+  session regardless of kind — the file header states v1 executes only
+  `kind: 'session'`, with route/loop/approval parsing but not executing. W5 owns
+  closing that; W6 assumes it stays true and does not depend on it.
+
 ## Non-goals
 
 - No second engine, no workflow-service dependency (Temporal/Hatchet/etc.).
@@ -221,6 +281,12 @@ a back-pointer; the source plan is not the place to look them up again.
 - [ ] A node with an output schema fails-and-retries on invalid output via the `'invalid'` retry trigger; `${nodes.<id>.output.<field>}` resolves typed fields.
 - [ ] "Lock this shape" proposes a schema from an observed run output.
 - [ ] Round-trip tests: definition → instance → editor → definition is lossless (extends the `task-spec-form` invariant).
+- [ ] The plan defines `workflow` / `task` / `task set` / `subgraph` / `node` once, and no construct ships under an undefined term.
+- [ ] A run where some branches complete and others hard-fail reaches a partial-success terminal state, not `run-failed`.
+- [ ] A run containing a hard-failed node still reaches verification, and a `nodes=` FAIL verdict repairs only the named nodes and their dependents.
+- [ ] A repair/retry budget can be declared for a subgraph, independent of both per-node `retry` and run-global `max_iterations`.
+- [ ] `cache: pure` is honored: re-running a task reuses prior node outputs and re-executes only the invalidated branch.
+- [ ] Failure isolation is unchanged: dependents of a failed node stay `pending` while independent branches finish (regression test).
 - [ ] Docs: a `vorno.ai/docs` guide authored for the information-worker audience.
 
 ## Status log
@@ -230,3 +296,4 @@ a back-pointer; the source plan is not the place to look them up again.
 - `2026-08-24` — **W1 now has an evidence base**: [`2026-08-24-plan-043-authoring-gaps-for-plan-039.md`](../../discussions/2026-08-24-plan-043-authoring-gaps-for-plan-039.md), delivered by PLAN-043 SUV-0012. It records every gap hit authoring, validating, publishing and running a real definition by hand — grouped as schema/validation, dispatch/environment, composer/authoring, publish/instance-split, and run/verification — each with the artifact that produced it, plus the five unattended runs (one clean, four sabotaged) behind them. Three findings bear directly on W1's shape: a DAG node cannot fail a run (grading is always a session reading a prose rubric, and `kind: verify`/`kind: judge` parse but do not execute); the repair loop feeds the verifier's rejection reason back into the rejected node's prompt, so a repair-enabled run cannot test whether a node is honest; and the definition/instance split has no third, **run-local** scope, which is where a per-run working directory needs to live. The doc ends with the seven questions this forces W1 to answer — including whether the authoring surface's expressive ceiling gets to be lower than the schema's, now that two independently built authoring tools have landed on the same eight fields.
 - `2026-08-24` — first decomposition round, scoped to the enabling move only: SUV-0014 (definition/instance split in the store) and SUV-0015 (typed param form at bind time). W2–W5 remain undecomposed.
 - `2026-08-24` — second decomposition round, at owner request: collapsed to a single SUV covering the definition/instance split only. SUV-0015 (typed param form at bind time) dropped and its file deleted; W2's params work is explicitly out of SUV-0014's scope and remains undecomposed alongside W3–W5.
+- `2026-08-26` — **W6 added**: four runtime gaps verified by reading `TaskRunner.ts` — no partial-success terminal state (`maybeFinish()`/`allGood`), repair unreachable after a hard failure (`finish('failed')` precedes `enterVerifying()`), no subgraph-scoped retry budget between per-node `retry` and run-global `max_iterations`, and a `cache` field the runner never reads. Firming up the workflow/task/task-set/subgraph/node vocabulary is folded in as W6's first item, at owner request. Driven by the plan-level ~60-node `task.yaml` for PLAN-040. Recorded alongside three behaviors that already work correctly and must be preserved.
