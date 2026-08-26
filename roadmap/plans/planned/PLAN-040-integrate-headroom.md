@@ -5,7 +5,7 @@ status: planned
 direction: DIR-05
 owner: jh
 created: 2026-08-22
-updated: 2026-08-25
+updated: 2026-08-26
 related:
   - PLAN-002-token-usage-display.md (surface that migrates onto Headroom stats)
   - PLAN-003-token-usage-thresholds-workspace-settings.md (surface that migrates onto Headroom stats)
@@ -15,7 +15,17 @@ related-suvs:
   - SUV-0015-headroom-boundary-module-with-noop-fallback.md (after 0014)
   - SUV-0016-headroom-config-schema-storage-and-precedence.md (independent of 0014/0015)
   - SUV-0017-workspace-settings-ui-for-headroom.md (after 0016)
-  - SUV-0018-resolved-config-drives-the-headroom-boundary.md (last — needs 0015 and 0016)
+  - SUV-0018-resolved-config-drives-the-headroom-boundary.md (needs 0015 and 0016)
+  - SUV-0023-compress-tool-outputs-in-the-agent-session-loop.md (I1 — after 0018)
+  - SUV-0024-compress-context-in-conductor-node-dispatch.md (I1 — after 0018)
+  - SUV-0025-benchmark-headroom-on-real-workloads-and-set-rollout-defaults.md (I0 benchmarks — after 0023)
+  - SUV-0026-user-visible-retrieval-of-compressed-originals.md (I1 — after 0023)
+  - SUV-0027-in-app-headroom-savings-and-stats-report-view.md (I1 — after 0023)
+  - SUV-0028-token-displays-and-thresholds-read-through-headroom-stats.md (I1 — after 0023)
+  - SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md (I2 — after 0018)
+  - SUV-0030-memory-extension-interface-designed-and-proposed-upstream.md (I2 — after 0029)
+  - SUV-0031-agentic-memory-v2-as-a-plugged-backend-behind-the-interface.md (I2 — after 0030)
+  - SUV-0032-vorno-plus-headroom-docs-page.md (last — documents shipped surfaces)
 blocked-by: []
 ---
 
@@ -164,3 +174,4 @@ must degrade gracefully if Headroom is absent.
 - `2026-08-22` — created in `planned/` as the second half of the DIR-05 milestone (top roadmap priority).
 - `2026-08-22` — reframed once (adoption vs. name-collision misread), then **corrected to final form on product-owner direction: pure integration.** Headroom provides compression, token management, and multi-layer memory; Vorno builds only integration glue plus the pluggable memory-extension interface (formats + querying), interface-first, upstream-first. No library of ours, full stop.
 - `2026-08-25` — first breakdown round: SUV-0014..0018 cut covering vendoring/long-term support (vet+pin, boundary module) and the settings surfaces (config schema/storage/precedence, workspace UI, config-driven boundary). I1 compression wiring, benchmarks, token-surface migration, and I2 memory remain undecomposed.
+- `2026-08-26` — second breakdown round, to completion: SUV-0023..0032 cut covering the full remainder — I1 compression call sites (session loop 0023, Conductor 0024), I0 benchmarks→defaults (0025), user-visible retrieval (0026), the in-app savings/stats report view (0027), token display/threshold migration onto Headroom stats (0028), I2 memory adoption (0029), the extension interface + upstream contribution (0030), agentic-memory v2 as plugged backend (0031), and the docs page (0032). Every plan acceptance item now maps to at least one SUV.
