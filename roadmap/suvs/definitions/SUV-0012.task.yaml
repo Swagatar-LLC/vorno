@@ -55,7 +55,7 @@ nodes:
 
       Run exactly this command from your working directory:
 
-        python3 /Users/jeffhampton/.craft-agent/serve/apps/vorno-roadmap/validator.py --root "$PWD/roadmap" --json
+        python3 "${VORNO_ROADMAP_TOOLS:-$HOME/.craft-agent/serve/apps/vorno-roadmap}/validator.py" --root "$PWD/roadmap" --json
 
       Then report:
       1. The command's stdout, VERBATIM, inside a fenced code block. Do not summarise it, do not
@@ -133,7 +133,7 @@ nodes:
       Do all of the following YOURSELF, from scratch, trusting nothing above:
 
       1. Re-run the corpus validator yourself:
-           python3 /Users/jeffhampton/.craft-agent/serve/apps/vorno-roadmap/validator.py --root "$PWD/roadmap" --json
+           python3 "${VORNO_ROADMAP_TOOLS:-$HOME/.craft-agent/serve/apps/vorno-roadmap}/validator.py" --root "$PWD/roadmap" --json
          Record `ok` and `counts.violations` from YOUR OWN run.
       2. Re-derive the list of SUVs claiming PLAN-043 yourself, by reading `roadmap/suvs/*/`
          directly. Record ids, status folders and goals from the files on disk.
