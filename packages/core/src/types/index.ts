@@ -110,3 +110,25 @@ export {
   sanitizeHeadroomConfigLayer,
   resolveHeadroomConfig,
 } from './headroom.ts';
+
+// Headroom adapter boundary contract (fork: PLAN-040, SUV-0015)
+export type {
+  HeadroomMessageRole,
+  HeadroomMessage,
+  HeadroomUnavailableReason,
+  HeadroomMeasurement,
+  HeadroomCompressStats,
+  HeadroomUsageStats,
+  HeadroomCompressRequest,
+  HeadroomCompressResult,
+  HeadroomRetrieveMiss,
+  HeadroomRetrieveResult,
+  HeadroomAdapterKind,
+  HeadroomAdapter,
+  HeadroomAdapterOptions,
+} from './headroom-adapter.ts';
+export {
+  HEADROOM_MESSAGE_ROLES,
+  headroomUnavailable,
+  headroomMeasured,
+} from './headroom-adapter.ts';

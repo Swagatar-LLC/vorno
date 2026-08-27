@@ -11,15 +11,18 @@
  *    repo. Headroom sits in the token path and sees all context; it is the last
  *    dependency that should float.
  *
- * 2. Nothing imports it yet. SUV-0014 deliberately lands the dependency
- *    unreferenced — runtime wiring is SUV-0015 (boundary module) and SUV-0016
- *    (config surfaces). This guard is the executable form of the SUV's
- *    "verifiable by grep" acceptance item, and it should be DELETED (not
- *    weakened) by whoever lands SUV-0015.
+ * 2. Only the boundary module imports it. SUV-0014 landed the dependency
+ *    unreferenced and guarded that with a "no production file imports this"
+ *    test, to be DELETED (not weakened) by whoever landed SUV-0015. SUV-0015
+ *    has landed, so that guard is gone — succeeded by
+ *    `scripts/check-headroom-boundary.ts`, which asserts the stronger and
+ *    permanent invariant: exactly one file, the boundary module, may import the
+ *    SDK. It runs as its own CI job and is unit-tested in
+ *    `src/headroom/__tests__/boundary-gate.test.ts`.
  */
 
 import { describe, expect, it } from 'bun:test'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const PACKAGE_NAME = 'headroom-ai'
@@ -57,68 +60,5 @@ describe('headroom-ai pin (SUV-0014)', () => {
 		const lock = readFileSync(join(REPO_ROOT, 'bun.lock'), 'utf8')
 
 		expect(lock).toContain(`"${PACKAGE_NAME}@${spec}"`)
-	})
-})
-
-/** Source roots that ship to users. Tests and this guard are excluded by name. */
-const SOURCE_ROOTS = [join(REPO_ROOT, 'apps'), join(REPO_ROOT, 'packages')]
-const SKIP_DIRS = new Set([
-	'node_modules',
-	'dist',
-	'build',
-	'out',
-	'.git',
-	'coverage',
-	'__tests__',
-	'tests',
-])
-const SOURCE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']
-
-function collectSourceFiles(dir: string, acc: string[] = []): string[] {
-	let entries: string[]
-	try {
-		entries = readdirSync(dir)
-	} catch {
-		return acc
-	}
-
-	for (const entry of entries) {
-		if (SKIP_DIRS.has(entry)) continue
-		const full = join(dir, entry)
-
-		let isDir: boolean
-		try {
-			isDir = statSync(full).isDirectory()
-		} catch {
-			continue
-		}
-
-		if (isDir) {
-			collectSourceFiles(full, acc)
-		} else if (
-			SOURCE_EXTS.some((ext) => entry.endsWith(ext)) &&
-			!entry.includes('.test.') &&
-			!entry.includes('.spec.')
-		) {
-			acc.push(full)
-		}
-	}
-
-	return acc
-}
-
-describe('headroom-ai is unreferenced (SUV-0014 boundary)', () => {
-	it('is imported by no production source file', () => {
-		// Matches `from 'headroom-ai'`, `require('headroom-ai')`, and
-		// `import('headroom-ai/adapters/...')` — but not the bare word in prose.
-		const importPattern = new RegExp(
-			`(from|require\\(|import\\()\\s*['"\`]${PACKAGE_NAME}(/[^'"\`]*)?['"\`]`,
-		)
-
-		const offenders = SOURCE_ROOTS.flatMap((root) => collectSourceFiles(root)).filter((file) =>
-			importPattern.test(readFileSync(file, 'utf8')),
-		)
-
-		expect(offenders.map((f) => f.slice(REPO_ROOT.length + 1))).toEqual([])
 	})
 })
