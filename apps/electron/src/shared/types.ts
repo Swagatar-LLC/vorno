@@ -733,6 +733,21 @@ export interface ElectronAPI {
   unwatchSessionFiles(): Promise<void>
   onSessionFilesChanged(callback: (sessionId: string) => void): () => void
 
+  // Headroom savings report (fork: PLAN-040 / SUV-0027)
+  /**
+   * Measured compression stats for a workspace, and optionally for one session.
+   * Every figure comes from a `HeadroomAdapter.stats()` call; a scope that
+   * measured nothing answers absent, with a reason, and no numeric fields.
+   */
+  getHeadroomStats(
+    workspaceId: string,
+    sessionId?: string,
+  ): Promise<import('@craft-agent/core/types').HeadroomStatsReport>
+  /** "The measurements moved — ask again." Carries ids only, never numbers. */
+  onHeadroomStatsChanged(
+    callback: (payload: { workspaceId: string; sessionId?: string }) => void,
+  ): () => void
+
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>
   createSource(workspaceId: string, config: Partial<FolderSourceConfig>): Promise<FolderSourceConfig>

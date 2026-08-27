@@ -23,6 +23,7 @@ import type { Workspace } from '../../config/storage.ts';
 import type { SessionConfig as Session } from '../../sessions/storage.ts';
 import type { SourceManager } from '../core/source-manager.ts';
 import type { HeadroomAdapterDeps } from '../../headroom/index.ts';
+import type { HeadroomAdapter } from '@craft-agent/core/types';
 
 // Import AbortReason and RecoveryMessage from core module (single source of truth)
 import { AbortReason, type RecoveryMessage } from '../core/index.ts';
@@ -610,6 +611,22 @@ export interface AgentBackend {
    * @param alwaysAllow - Whether to remember this permission for session
    */
   respondToPermission(requestId: string, allowed: boolean, alwaysAllow?: boolean): void;
+
+  // ============================================================
+  // Headroom (fork: PLAN-040 / SUV-0027)
+  // ============================================================
+
+  /**
+   * This session's Headroom adapter — the scope-counting one built in
+   * `createSessionHeadroomAdapter`, so its `stats()` answers for this session
+   * rather than for the shared compression service.
+   *
+   * Optional because it is a fork-side addition to a contract upstream also
+   * implements: a backend that predates PLAN-040 simply has no adapter, and the
+   * report treats a session with no adapter as "no measurement" rather than as
+   * zero. `BaseAgent` provides it for every backend built on it.
+   */
+  getHeadroomAdapter?(): Promise<HeadroomAdapter>;
 
   // ============================================================
   // Callbacks (set by facade after construction)

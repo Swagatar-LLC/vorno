@@ -126,14 +126,43 @@ export interface HeadroomCompressStats {
   readonly transformsApplied: readonly string[];
 }
 
-/** Cumulative usage measurement for the connected Headroom service. */
+/**
+ * Cumulative usage measurement for a Headroom scope.
+ *
+ * The four token/count fields are required: an implementation that cannot state
+ * all four has nothing to report and must answer with the absent arm of
+ * {@link HeadroomMeasurement} instead of a partially-populated object.
+ *
+ * The remaining fields are optional because "measured or absent" applies
+ * *within* a measurement too (fork: PLAN-040 / SUV-0027). The SDK-backed
+ * adapter reports the service's own cumulative numbers and fills them in; the
+ * scope-counting adapters that answer the report view observe compress and
+ * retrieve results and genuinely cannot see a cache hit, so they omit the field
+ * rather than write a zero nobody measured. An absent field renders as unknown
+ * — never as `0`.
+ *
+ * `totalRequests` doubles as the denominator for every other figure here: it is
+ * the number of compress results the scope actually measured, which is what the
+ * plan's "carry your own denominator or declare it unknown" rule asks for.
+ */
 export interface HeadroomUsageStats {
   readonly totalRequests: number;
   readonly totalTokensBefore: number;
   readonly totalTokensAfter: number;
   readonly totalTokensSaved: number;
-  readonly averageCompressionRatio: number;
-  readonly cacheHits: number;
+  /**
+   * Absent when the reporting implementation cannot measure it. A mean of
+   * per-call ratios is not the ratio of the totals, so a scope that only sees
+   * per-call results omits this rather than computing a misleading average.
+   */
+  readonly averageCompressionRatio?: number;
+  /** Absent when the reporting implementation cannot observe the cache. */
+  readonly cacheHits?: number;
+  /**
+   * Originals redeemed through {@link HeadroomAdapter.retrieve} in this scope.
+   * Absent when the reporting implementation does not count them.
+   */
+  readonly retrievals?: number;
 }
 
 export interface HeadroomCompressRequest {

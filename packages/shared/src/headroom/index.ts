@@ -38,6 +38,13 @@ export {
   headroomAdapterOptionsFor,
   type SessionHeadroomInput,
 } from './session-adapter.ts';
+// The report side (SUV-0027): scope-counting adapters, and the builder that
+// picks which one answers for which scope.
+export {
+  createScopedHeadroomAdapter,
+  createAggregateHeadroomAdapter,
+} from './scoped-adapter.ts';
+export { buildHeadroomStatsReport, type HeadroomReportInput } from './report.ts';
 
 /**
  * Seams for tests. Production callers pass nothing.

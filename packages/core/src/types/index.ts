@@ -137,3 +137,10 @@ export {
   headroomUnavailable,
   headroomMeasured,
 } from './headroom-adapter.ts';
+
+// Headroom savings/stats report (fork: PLAN-040, SUV-0027)
+export type {
+  HeadroomStatsScopeKind,
+  HeadroomStatsScope,
+  HeadroomStatsReport,
+} from './headroom-report.ts';

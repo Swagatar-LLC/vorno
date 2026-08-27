@@ -39,9 +39,12 @@ import {
   type WorkspaceInfo,
 } from '@craft-agent/shared/config'
 import type { ActiveSessionInfo, SessionProcessingStatus } from '@craft-agent/core/types'
+import type { HeadroomAdapter, HeadroomStatsReport } from '@craft-agent/core/types'
+import { HEADROOM_CONFIG_DEFAULTS } from '@craft-agent/core/types'
 import { loadWorkspaceConfig, loadEffectiveHeadroomConfig } from '@craft-agent/shared/workspaces'
-// Headroom retrieval for the session view's "view original" affordance (SUV-0026).
-import { createSessionHeadroomAdapter } from '@craft-agent/shared/headroom'
+// Headroom retrieval for the session view's "view original" affordance (SUV-0026),
+// and the savings report the workspace/session views read (SUV-0027).
+import { createSessionHeadroomAdapter, buildHeadroomStatsReport } from '@craft-agent/shared/headroom'
 import {
   // Session persistence functions
   listSessions as listStoredSessions,
@@ -2422,6 +2425,57 @@ export class SessionManager implements ISessionManager {
       if (managed.isProcessing) count++
     }
     return count
+  }
+
+  /**
+   * Headroom savings report for a workspace (fork: PLAN-040 / SUV-0027).
+   *
+   * Collects the scope-counting adapter each live agent holds and hands the set
+   * to the shared builder. No arithmetic happens here — the workspace total is
+   * produced by an aggregate adapter's `stats()`, like every other figure in the
+   * report, which is what keeps "no computation of savings outside the adapter"
+   * true from the agent all the way to React.
+   *
+   * A session with no agent yet, or whose runtime the idle sweep (PLAN-038)
+   * disposed, simply does not appear: the builder renders its absence as "no
+   * measurement", never as zero.
+   */
+  async getHeadroomStatsReport(workspaceId: string, sessionId?: string): Promise<HeadroomStatsReport> {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    const adapters = new Map<string, HeadroomAdapter>()
+
+    for (const managed of this.sessions.values()) {
+      if (managed.workspace.id !== workspaceId) continue
+      const getAdapter = managed.agent?.getHeadroomAdapter
+      if (!getAdapter) continue
+      try {
+        adapters.set(managed.id, await getAdapter.call(managed.agent))
+      } catch (err) {
+        // Contract says this cannot reject. Defence in depth: one misbehaving
+        // session must not be able to blank the whole workspace's report.
+        sessionLog.error(`Headroom adapter unavailable for session ${managed.id}:`, err)
+      }
+    }
+
+    return buildHeadroomStatsReport({
+      workspaceId,
+      ...(sessionId === undefined ? {} : { sessionId }),
+      // An unknown workspace resolves to the safe defaults, which have
+      // `exposeStats: false` — so it reports nothing rather than guessing.
+      config: workspace
+        ? loadEffectiveHeadroomConfig(workspace.rootPath)
+        : { ...HEADROOM_CONFIG_DEFAULTS, compressionEngines: [] },
+      sessionAdapters: adapters,
+    })
+  }
+
+  /** Tell every client that a workspace's Headroom measurements moved. Payload is ids only. */
+  private emitHeadroomStatsChanged(workspaceId: string, sessionId?: string): void {
+    if (!this.eventSink) return
+    this.eventSink(RPC_CHANNELS.headroom.STATS_CHANGED, { to: 'all' }, {
+      workspaceId,
+      ...(sessionId === undefined ? {} : { sessionId }),
+    })
   }
 
   getWorkspaceAutomationSummary(workspaceId: string): { automationCount: number; schedulerRunning: boolean } {
@@ -6900,6 +6954,13 @@ export class SessionManager implements ISessionManager {
   }
 
   private emitSessionComplete(evt: SessionCompletionEvent): void {
+    // fork(PLAN-040 / SUV-0027): a completed turn is exactly when a session's
+    // Headroom counters last moved, so this is where the report view is told to
+    // refetch. The signal carries ids only — never the numbers — so a client
+    // that has navigated away from the report costs nothing, and a client
+    // showing it re-reads through the same `exposeStats` gate as the first load.
+    this.emitHeadroomStatsChanged(evt.workspaceId, evt.sessionId)
+
     if (this.sessionCompletionListeners.size === 0) return
     for (const listener of this.sessionCompletionListeners) {
       try {

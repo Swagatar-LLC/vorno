@@ -39,6 +39,7 @@ import type {
   HeadroomConfig,
 } from '@craft-agent/core/types';
 import { createHeadroomAdapter, type HeadroomAdapterDeps } from './index.ts';
+import { createScopedHeadroomAdapter } from './scoped-adapter.ts';
 
 /** Session-scoped inputs that are not part of the persisted config. */
 export interface SessionHeadroomInput {
@@ -100,5 +101,21 @@ export async function createSessionHeadroomAdapter(
     );
   }
 
-  return adapter;
+  // fork(PLAN-040 / SUV-0027): every session's adapter is scope-counting, so the
+  // report view can ask *this session* what it saved. The wrapper delegates
+  // exactly — same `kind`, same result objects, including the no-op adapter's
+  // promise to hand back the caller's own `messages` array — so nothing
+  // downstream can tell the difference except `stats()`, which now answers for
+  // the session instead of for the shared service.
+  //
+  // The empty-scope reason is decided here because this is the only place that
+  // knows all three states apart: off, on-but-unavailable, and running.
+  return createScopedHeadroomAdapter(
+    adapter,
+    !options.enabled
+      ? 'disabled'
+      : adapter.kind === 'sdk'
+        ? 'service-unavailable'
+        : 'sdk-unavailable',
+  );
 }

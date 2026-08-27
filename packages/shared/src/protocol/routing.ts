@@ -541,6 +541,13 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.artifacts.LIFECYCLE_SET,
   RPC_CHANNELS.artifacts.ROOTS_LIST,
   RPC_CHANNELS.artifacts.TYPES_LIST,
+
+  // headroom — the savings report reads the adapters held by the *live agents*
+  // for a workspace, which run wherever that workspace's sessions run. Asking
+  // the local server about a remote workspace would report the wrong process's
+  // sessions, so this follows the workspace (fork: PLAN-040 / SUV-0027).
+  RPC_CHANNELS.headroom.STATS_GET,
+  RPC_CHANNELS.headroom.STATS_CHANGED,
 ])
 
 // ---------------------------------------------------------------------------

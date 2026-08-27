@@ -550,6 +550,20 @@ export const RPC_CHANNELS = {
     ROOTS_LIST: 'vorno:artifacts:roots:list',
     TYPES_LIST: 'vorno:artifacts:types:list',
   },
+
+  /**
+   * Headroom savings report (fork: PLAN-040 / SUV-0027).
+   *
+   * `STATS_GET` answers with a `HeadroomStatsReport` — measurements taken by the
+   * scope-counting adapters, never a computed figure. `STATS_CHANGED` is a
+   * signal with no payload: it says "ask again", which is what keeps the view
+   * live after a session completes without pushing numbers at a client that may
+   * have navigated away.
+   */
+  headroom: {
+    STATS_GET: 'vorno:headroom:stats:get',
+    STATS_CHANGED: 'vorno:headroom:stats:changed',
+  },
 } as const
 
 // IPC_CHANNELS compat alias removed — all consumers now use RPC_CHANNELS

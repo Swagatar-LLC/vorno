@@ -53,6 +53,8 @@ import {
 } from '@/components/settings'
 // fork(PLAN-040, SUV-0017): Headroom integration settings
 import { HeadroomSettingsSection } from './HeadroomSettingsSection'
+// fork(PLAN-040, SUV-0027): the measured-savings report, workspace scope
+import { HeadroomReportSection } from './HeadroomReportSection'
 import type { HeadroomConfigOverrides } from '@craft-agent/core'
 import type { HeadroomConfigViewDto } from '@craft-agent/shared/protocol'
 
@@ -742,6 +744,9 @@ export default function WorkspaceSettingsPage() {
 
             {/* fork(PLAN-040, SUV-0017): Headroom integration */}
             <HeadroomSettingsSection view={headroomView} onSaveOverrides={saveHeadroomOverrides} />
+
+            {/* fork(PLAN-040, SUV-0027): what Headroom measured across this workspace */}
+            <HeadroomReportSection workspaceId={activeWorkspaceId} />
 
           </div>
         </div>
