@@ -135,10 +135,25 @@ This is where the interface actually lives.
   `InMemoryGraph`, the default), `Mem0Backend`, `Mem0SystemAdapter`,
   `DirectMem0Adapter`.
 
-**Finding H3 — the extension point is undocumented.** `wiki/memory.md` is 753
-lines and never mentions `EXTERNAL`, `entry_points`, `store_backend_name`, or
-`ports.py`. It was found by reading `factory.py`. A reader following the docs
-would conclude no such seam exists — which is roughly what PLAN-040 concluded.
+**Finding H3 — the *registration mechanism* is undocumented; the Protocol layer
+is not.** Corrected 2026-08-27 on re-verification — the original wording
+("the extension point is undocumented", "a reader following the docs would
+conclude no such seam exists") was too strong, and overstating it would have
+oversold gap E to upstream.
+
+`wiki/memory.md` (753 lines) **does** document the Protocol architecture: a
+"Protocol-Based Design" section (L518) stating *"Headroom Memory uses **Protocol
+interfaces** (ports) for all components, enabling easy swapping"*, a
+component → Protocol → default-adapter table naming `MemoryStore` /
+`SQLiteMemoryStore` (L553–555), and a "Protocol-based extensibility ✅" feature
+row (L612).
+
+What it **never** mentions is how to register a *third-party* implementation:
+`EXTERNAL`, `entry_point`, `store_backend_name` and `ports.py` all return **0
+occurrences** (case-sensitive; see §9 for why the case matters). So a reader
+following the docs learns that backends are swappable and cannot learn how to
+supply one — they would have to read `factory.py`, which is how it was found
+here. That narrower claim is what gap E addresses.
 
 ### 1.3 The seam map
 
@@ -317,8 +332,11 @@ surface on the proxy, a memory client in the TS SDK, or "memory is Python/CLI
 only, stated explicitly" — and offers to contribute the first two. The third is
 a perfectly good answer and would settle SUV-0029.
 
-**E — document the seam.** H3. Offered as a PR unconditionally, independent of
-A–D.
+**E — document the registration mechanism.** H3. The wiki already documents the
+Protocol layer; what is missing is how a third party *supplies* an
+implementation — the `EXTERNAL` enum members, the three entry-point groups, and
+the `*_backend_name` config fields. Offered as a PR unconditionally, independent
+of A–D. (Scope narrowed 2026-08-27 — see H3.)
 
 ---
 
@@ -352,10 +370,24 @@ PRG's own thesis is that *"filtering at storage or query time is not enough; the
 check runs after retrieval, before use"* (POLICY §3). A storage-backend interface
 is, definitionally, a **query-time** seam.
 
-So even with A, B and C granted, this interface can only mechanize what the v2
-server already mechanizes: trims 1–3, archive exclusion, logging. Trims 4–8
-remain host and model discipline, exactly as the source guide says today
-(*"The server mechanizes trims 1–2 only … PRG steps 3–8 remain your judgment"*).
+So even with A, B and C granted, this interface tops out at trims 1–3, archive
+exclusion and logging. Trims 4–8 remain host and model discipline.
+
+> **Corrected 2026-08-27.** This paragraph previously read *"can only mechanize
+> what the v2 server already mechanizes: trims 1–3"* and quoted the source guide
+> as *"The server mechanizes trims 1–2 only"*. Both were wrong. The guide says
+> **backend**, not *server*, and it draws the line at **1–2**, not 1–3:
+>
+> > The backend mechanizes trims 1–2 only. PRG steps 3–8 in
+> > `~/dev/agentic-memory/POLICY.md` §3 — subject trim, no-pollution, subagent
+> > isolation, write-side inheritance, citation discipline, audience-aware
+> > destination — remain your judgment.
+>
+> The ceiling of *this interface* (1–3) is therefore **one trim above** what v2
+> mechanizes today, not equal to it: subject trim is expressible here because
+> `entity_refs` is an any-of filter (§3, row 3), and v2 leaves it to judgment.
+> The two must not be equated — the original sentence made the interface sound
+> like a re-implementation of the status quo when it is a modest advance on it.
 
 **This is a limit of the seam, not a gap to close upstream, and it should not be
 argued with.** Asking Headroom for a post-retrieval-pre-use gate would be asking
@@ -395,8 +427,15 @@ real seams are §1.1 and §1.2.
 |---|---|
 | **URL** | https://github.com/headroomlabs-ai/headroom/issues/3287 |
 | **Filed** | 2026-08-27, by `jhampton` |
-| **State at writing** | open, no response |
-| **Repo** | `headroomlabs-ai/headroom` — Apache-2.0, 67,721 stars, 549 open issues |
+| **Filed at** | `2026-08-27T04:20:38Z` (from the API, not interpolated) |
+| **State at writing** | open, **0 comments** — no response |
+| **Repo** | `headroomlabs-ai/headroom` — Apache-2.0, ~67.7k stars, ~550 open issues |
+
+> Star and open-issue counts are live counters that drift between any two runs
+> of §9 (67,721 → 67,730 across this document's two verification passes). They
+> are recorded to an order of magnitude deliberately; a reader reproducing §9
+> should expect a different exact number and should **not** read the difference
+> as a discrepancy. `state`, `comments` and `created_at` are the stable fields.
 
 **Why an issue and not a PR.** Plan open question 2 asks *what shape* upstream
 accepts. Gaps A and B widen public dataclasses and a Protocol in a repo of this
@@ -407,9 +446,20 @@ unconditionally because it cannot be the wrong shape.
 
 **Duplicate check.** Searched open and closed issues for `storage adapter`,
 `plugin interface` and `memory backend`. No existing proposal covers this. The
-memory-backend hits are bugs in the shipped Mem0 adapters
-(#2897, #2898, #2947), which incidentally confirm the backend seam is in real
-third-party-shaped use.
+memory-backend hits are all **closed bug reports against shipped memory
+backends**, which incidentally confirm the seam is in real use:
+
+| | | |
+|---|---|---|
+| #2897 | closed | `DirectMem0Adapter.close` leaves async writes and client connections alive |
+| #2898 | closed | Memory MCP stdio server never closes its initialized backend |
+| #2947 | closed | sanitize `entity_refs` to prevent dict-shaped entries crashing search |
+
+> **Corrected 2026-08-27.** These were previously described as *"bugs in the
+> shipped Mem0 adapters"*. Only #2897 is Mem0-specific. #2898 is an MCP stdio
+> server lifecycle bug and #2947 is an `entity_refs` sanitization fix in the
+> shared search path — backend-agnostic, and it touches the very field §2.2 maps
+> `subjects` onto. All three are closed; none is an open proposal.
 
 ---
 
@@ -515,14 +565,93 @@ gh api repos/headroomlabs-ai/headroom/contents/headroom/memory/config.py \
 gh api repos/headroomlabs-ai/headroom/contents/headroom/memory/factory.py \
   --jq '.content' | base64 -d | grep -n "_MEMORY_.*_GROUP\|entry_points"
 
-# H3 — the seam is undocumented
+# H3 — the registration mechanism is undocumented, but the Protocol layer IS.
+# NOTE: the -c/-i form printed here before 2026-08-27 was annotated "-> 0" and
+# in fact returns 3 — case-insensitively, "EXTERNAL" matches the English word
+# "external" in three prose lines about PostgreSQL/Mem0 being external services.
+# It must be case-SENSITIVE to test the enum member. Both halves now shown.
 gh api repos/headroomlabs-ai/headroom/contents/wiki/memory.md \
-  --jq '.content' | base64 -d | grep -ci "EXTERNAL\|entry_point\|store_backend_name"   # -> 0
+  --jq '.content' | base64 -d > /tmp/hr-memory-wiki.md
+wc -l < /tmp/hr-memory-wiki.md                                          # -> 753
 
-# The filed issue
-gh api repos/headroomlabs-ai/headroom/issues/3287 --jq '.html_url, .state'
+# negative half: no registration mechanism documented
+grep -cE "EXTERNAL|entry_point|store_backend_name|ports\.py" /tmp/hr-memory-wiki.md   # -> 0
+
+# positive half: the Protocol layer is documented (so H3 is not "no docs")
+grep -nE "Protocol-Based Design|MemoryStore" /tmp/hr-memory-wiki.md      # -> L518, L529, L555
+
+# The filed issue — stable fields only; star/issue counts drift (§5)
+gh api repos/headroomlabs-ai/headroom/issues/3287 \
+  --jq '"\(.html_url) \(.state) comments=\(.comments) created=\(.created_at)"'
+# -> https://github.com/headroomlabs-ai/headroom/issues/3287 open comments=0 created=2026-08-27T04:20:38Z
+
+# §3.1 — the source-guide quote, verified verbatim rather than paraphrased
+grep -n "mechanizes" \
+  ~/.craft-agent/workspaces/my-workspace/sources/agentic-memory/guide.md   # -> L19, "The backend mechanizes trims 1-2 only."
 ```
 
 Vorno-side sources: [`headroom-memory-surface-audit.md`](./headroom-memory-surface-audit.md)
 (SUV-0029), [`headroom-vetting-report.md`](./headroom-vetting-report.md) (SUV-0014),
 `~/dev/agentic-memory/POLICY.md` §§3–7.
+
+---
+
+## 10. Independent re-verification, 2026-08-27
+
+Every §9 command was re-run against primary sources — the pinned bytes in
+`node_modules/` and the GitHub API — rather than against this document's own
+prose. Results, stated as observed:
+
+### 10.1 Confirmed exactly as written
+
+| Claim | Observed |
+|---|---|
+| Pinned SDK is `headroom-ai@0.36.5`, pinned in `packages/shared/package.json:100` | ✅ |
+| **S1** `CompressionHooks` = `preCompress` / `computeBiases` / `postCompress` | ✅ `types-BTrX7__W.d.ts:35–49` verbatim |
+| **H1** `computeBiases`' return discarded in the bundle | ✅ `chunk-2NXG6XPP.js:1082` is a bare `await`; the next line calls `client.compress(openaiMessages, { model, tokenBudget })` |
+| **H1** holds on upstream `main`, not just the bundle | ✅ `sdk/typescript/src/compress.ts`: `biases` declared L53, assigned L55, **never read**; `client.compress(…, { model, tokenBudget })` L60 |
+| **H2** no pipeline hook | ✅ `pipelineTiming` at `index.d.ts:367` is the *only* `pipeline` hit in either `.d.ts`; `on_pipeline_event` = **0 occurrences package-wide** |
+| Hook call sites within 1076–1103 | ✅ L1077 / L1082 / L1103 |
+| Plugin dirs are convention-only | ✅ `index.js:305–319`; `assertPluginName` + `joinPath(configDir(),"plugins",name)`; no loader, registry or discovery |
+| Memory paths are strings | ✅ `memoryDbPath()` → `<workspace>/memory.db`; `nativeMemoryDir()` → `<workspace>/memories` |
+| Provider subpaths | ✅ `./openai ./anthropic ./gemini ./vercel-ai` |
+| **§1.2** `ports.py` Protocols | ✅ `MemoryStore` L262, `VectorIndex` L459, `TextIndex` L556, `Embedder` L636, `MemoryCache` L685 — all `@runtime_checkable` |
+| **§2.1** the eight `MemoryStore` operations | ✅ all present, signatures as tabled |
+| **§1.2** `EXTERNAL` on all three enums | ✅ `config.py` L25/34/41, each commented with its entry-point group; `*_backend_name` L100/105/118 |
+| **§1.2** entry-point loader | ✅ `factory.py` L28–30 groups, `_load_external_backend` L41, `entry_points` L57; docstring L50 cites `headroom.cache.compression_store` |
+| **§1.2** backends present | ✅ `local.py`, `mem0.py`, `mem0_system_adapter.py`, `direct_mem0.py` |
+| **§2.2** every `Memory` field claimed | ✅ `models.py`: id/content, 4 scope, 3 temporal, importance, 4 lineage, access_count/last_accessed, entity_refs, metadata; `scope_level` is a computed property; `valid_until is None` ⇒ current |
+| **§2.3** `MemoryFilter` algebra | ✅ `scope_levels`, `valid_at`, importance band, `entity_refs` (*"Any of these entities"* — the any-of reading is upstream's own comment), `has_promoted_from`, `metadata_filters`, pagination, ordering |
+| **§3** POLICY §§3–7 exist and say what is quoted | ✅ PRG §3 has exactly 8 numbered steps; §4 defines the JSONL line incl. the optional `files` reinforcement field; §6 makes the cold-storage marker mandatory and says it *"travels with the content everywhere it goes"* — which is precisely gap C |
+| Issue #3287 open, unanswered, ours | ✅ `open`, `comments=0`, `user.login=jhampton`, `created=2026-08-27T04:20:38Z` |
+
+### 10.2 Corrected — five defects, all in this document's own evidence hygiene
+
+None of these changed a design conclusion; all of them would have failed a
+reader trying to reproduce the work, which is the same thing as being wrong.
+
+1. **§9's H3 command was annotated `-> 0` and returns `3`.** `grep -ci` matched
+   the English word "external" in three prose lines. Command replaced with a
+   case-sensitive form that genuinely returns 0. *This was the one defect that
+   could have read as fabrication.*
+2. **H3 was overstated.** `wiki/memory.md` **does** document the Protocol/ports
+   layer (L518, L553–555, L612). Only the third-party *registration* mechanism
+   is absent. H3 and gap E narrowed accordingly.
+3. **§3.1 misquoted the source guide** — *"server"* for **backend**, and
+   *"trims 1–2"* attributed as this interface's ceiling when the guide draws
+   v2's line at 1–2 and this interface reaches 1–3. Corrected with the verbatim
+   quote.
+4. **§5 mischaracterized the duplicate-check hits** as *"bugs in the shipped
+   Mem0 adapters"*; only #2897 is Mem0-specific. Replaced with the three actual
+   titles and states.
+5. **§5 pinned drifting counters** (67,721 stars / 549 open issues) as if they
+   were stable evidence; they moved to 67,730 / 550 between passes. Recorded to
+   order of magnitude with an explicit note.
+
+### 10.3 Unchanged and still true
+
+The four acceptance items hold. The headline stands and is the load-bearing
+finding: **the storage-format seam this SUV set out to propose already exists
+upstream**, so the contribution is four additive gaps plus a docs PR, not a new
+interface. H1 and H2 — the two findings that most constrain PLAN-040 — were the
+most heavily re-checked and both survived, H1 at source level on `main`.

@@ -1,15 +1,14 @@
 ---
 id: SUV-0030
 title: Memory extension interface designed and proposed upstream
-status: planned
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
 created: 2026-08-26
-updated: 2026-08-26
+updated: 2026-08-27
 related: []
-blocked-by:
-  - SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md (the interface extends the memory substrate in actual use)
+blocked-by: []
 ---
 
 # SUV-0030 — Memory extension interface designed and proposed upstream
@@ -105,3 +104,59 @@ contribution.
   out-of-scope diff; SUV-0031 should carry it if it depends on those facts.
   Folder move and frontmatter `status` left to `[skill:roadmap-plan-advance]`, and
   the `blocked-by` edge to the owner.
+
+- `2026-08-27` — moved from planned to in-progress: re-verification pass opened.
+- `2026-08-27` — **independently re-verified, five evidence defects corrected, moved from in-progress to done.**
+
+  Every §9 reproduction command was re-run against **primary sources** — the pinned
+  bytes under `node_modules/headroom-ai/` and the GitHub API — rather than against
+  the doc's own prose. The design conclusions all survived; the doc's evidence
+  hygiene did not. Full record in doc **§10**.
+
+  **Confirmed unchanged (the load-bearing findings):** H1 — `computeBiases`' return
+  value is discarded, in the pinned bundle (`chunk-2NXG6XPP.js:1082`) *and* at source
+  on `main` (`sdk/typescript/src/compress.ts`: `biases` declared L53, assigned L55,
+  never read; `client.compress()` gets only `{ model, tokenBudget }` at L60). H2 —
+  `on_pipeline_event` has **0 occurrences** package-wide; `pipelineTiming`
+  (`index.d.ts:367`) is the only `pipeline` hit and is a stats field. The upstream
+  Python seam is real: `ports.py` Protocols, `EXTERNAL` on all three enums
+  (`config.py` L25/34/41), entry-point loader (`factory.py` L28–30/L41/L57). Issue
+  [#3287](https://github.com/headroomlabs-ai/headroom/issues/3287) is `open`,
+  `comments=0`, author `jhampton`, `created=2026-08-27T04:20:38Z`. Every `Memory` and
+  `MemoryFilter` field §2.2/§2.3 relies on exists as described — including
+  `entity_refs`, whose any-of reading is upstream's own inline comment.
+
+  **Five defects corrected — none changed a conclusion, all would have failed a
+  reader reproducing the work:**
+  1. **§9's H3 command was annotated `-> 0` and actually returned `3`.** `grep -ci`
+     matched the English word "external" in three prose lines about PostgreSQL/Mem0.
+     This was the one defect that could fairly have read as fabrication. Replaced
+     with a case-sensitive form, re-run, and it now genuinely returns 0.
+  2. **H3 was overstated.** `wiki/memory.md` *does* document the Protocol/ports layer
+     (L518 "Protocol-Based Design", L555 `MemoryStore`→`SQLiteMemoryStore`, L612
+     "Protocol-based extensibility ✅"). Only the third-party **registration**
+     mechanism is undocumented. H3 and gap E narrowed — gap E is a smaller, more
+     accurate ask than "the seam is entirely undocumented".
+  3. **§3.1 misquoted the agentic-memory source guide** — "server" for **backend**,
+     and it equated this interface's ceiling with v2's. The guide (L19) draws v2's
+     line at **trims 1–2**; this interface reaches **1–3** (subject trim is
+     expressible via `entity_refs`). Corrected with the verbatim quote.
+  4. **§5 called all three duplicate-check hits "bugs in the shipped Mem0 adapters."**
+     Only #2897 is Mem0-specific; #2898 is MCP stdio lifecycle, #2947 is an
+     `entity_refs` sanitization fix in the shared search path. Replaced with actual
+     titles and states (all closed).
+  5. **§5 pinned drifting counters** (67,721 stars / 549 open issues) as stable
+     evidence; they moved to 67,730 / 550 between passes. Now recorded to order of
+     magnitude with an explicit "expect a different number" note.
+
+  **`blocked-by` cleared** per `[skill:roadmap-plan-advance]` step 4 (non-blocked
+  transitions clear the edge). The prior entry left it to the owner, but a record in
+  `done/` still carrying a live `blocked-by` is read literally by the corpus
+  validator and the console — done-but-blocked is a worse artifact than an edge
+  cleared with its reasoning on the record. The reasoning is the prior entry's and
+  stands: the deliverable is an artifact *about* Headroom's interface plus an
+  outreach act, neither of which needs a Vorno-reachable memory API.
+
+  **Still doc-only — no product code, no test, no `node_modules` or package change.**
+  Diff is confined to `roadmap/`. The tripwire test for H1/H2 remains deliberately
+  unwritten (doc §8) and is SUV-0031's to carry if it depends on those facts.
