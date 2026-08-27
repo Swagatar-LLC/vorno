@@ -18,8 +18,9 @@
  * - **Flat.** Precedence is specified as field-level, and a flat shape makes
  *   "workspace wins where set" unambiguous. Nested objects would raise a
  *   replace-vs-deep-merge question the SUV does not answer.
- * - **Disabled by default, everywhere.** Rollout defaults are set by the
- *   benchmark work (plan I0 / SUV-0025), not here.
+ * - **Disabled by default, everywhere.** Set provisionally by SUV-0016 and
+ *   confirmed by measurement in SUV-0025 — see {@link HEADROOM_CONFIG_DEFAULTS}
+ *   and `roadmap/evidence/PLAN-040/headroom-benchmark-report.md`.
  */
 
 /**
@@ -78,12 +79,35 @@ export interface HeadroomConfig {
 export type HeadroomConfigOverrides = Partial<HeadroomConfig>;
 
 /**
- * The safe default: Headroom off, no engines, neutral verbosity, no stats.
+ * The rollout default: Headroom off, no engines, neutral verbosity, no stats.
  *
  * This is what a fresh install resolves to, and what any layer that fails
  * validation falls back to. Kept as a factory-style frozen literal; callers
  * that mutate must copy (`resolveHeadroomConfig` always returns a fresh
  * object).
+ *
+ * ## These values are measured, not provisional (SUV-0025)
+ *
+ * SUV-0016 left them off pending benchmarks. The benchmarks ran on 2026-08-27
+ * against `headroom-ai@0.36.5` and its proxy —
+ * `roadmap/evidence/PLAN-040/headroom-benchmark-report.md`, 240 compression
+ * calls over four real session transcripts and a real Conductor run — and the
+ * result is that **off is the right default**, for two independent reasons:
+ *
+ * - The pinned proxy issued **zero** retrieval handles across every call. The
+ *   session loop's acceptance rules require exactly one, so session compression
+ *   accepted 0 of 48 tool outputs and is currently inert.
+ * - Conductor dispatch does not require a handle, so all 12 of 12 node outputs
+ *   it accepted were compressed **irreversibly** — up to 58 KB of node output
+ *   unrecoverable in a single 12-node sample.
+ *
+ * So enabling by default would buy no session savings and would pay for its
+ * workflow savings with silent context destruction. `compressionEngines` stays
+ * empty for a separate reason: it reaches no SDK surface today (see
+ * `session-adapter.ts`), so a non-empty default would imply a selection that
+ * does not happen.
+ *
+ * Changing any of these four is a decision that has to argue with that report.
  */
 export const HEADROOM_CONFIG_DEFAULTS: Readonly<HeadroomConfig> = Object.freeze({
   enabled: false,

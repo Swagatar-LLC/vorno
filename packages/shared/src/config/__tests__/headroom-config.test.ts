@@ -62,6 +62,41 @@ describe('headroom config types (SUV-0016)', () => {
   });
 });
 
+describe('instance rollout defaults (SUV-0025)', () => {
+  const REPORT = join(
+    import.meta.dir,
+    '..', '..', '..', '..', '..',
+    'roadmap', 'evidence', 'PLAN-040', 'headroom-benchmark-report.md',
+  );
+
+  it('is off in every field, as the benchmark concluded', () => {
+    // Not a restatement of SUV-0016's provisional default. The benchmark
+    // (2026-08-27, 240 compression calls over real workloads) found the pinned
+    // proxy issues no retrieval handles at all, which makes session compression
+    // inert and Conductor compression irreversible. Flipping any of these four
+    // has to argue with that report — so this test names it.
+    expect(HEADROOM_CONFIG_DEFAULTS).toEqual({
+      enabled: false,
+      compressionEngines: [],
+      verbosity: 'balanced',
+      exposeStats: false,
+    });
+  });
+
+  it('cites a benchmark report that exists and records the decision', () => {
+    // A default whose rationale points at a missing file is a default with no
+    // rationale. The report is the evidence half of this SUV; if it is deleted
+    // or renamed, the claim in `headroom.ts` becomes a dangling reference and
+    // this test is what notices.
+    const report = readFileSync(REPORT, 'utf8');
+    expect(report).toContain('suv: SUV-0025');
+    expect(report).toContain('Headroom stays off by default');
+
+    const source = readFileSync(HEADROOM_SOURCE, 'utf8');
+    expect(source).toContain('headroom-benchmark-report.md');
+  });
+});
+
 describe('resolveHeadroomConfig precedence (SUV-0016)', () => {
   it('resolves to disabled when no config exists at either level', () => {
     expect(resolveHeadroomConfig(undefined, undefined)).toEqual({
