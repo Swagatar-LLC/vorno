@@ -12,8 +12,10 @@ export type {
   WorkspaceSummary,
 } from './types.ts';
 
-// Headroom config resolution (fork: PLAN-040, SUV-0016)
-export { loadEffectiveHeadroomConfig } from './headroom.ts';
+// Headroom config resolution (fork: PLAN-040, SUV-0016) and the editing view
+// the workspace settings UI reads (SUV-0017)
+export { loadEffectiveHeadroomConfig, loadHeadroomConfigView } from './headroom.ts';
+export type { HeadroomConfigView } from './headroom.ts';
 
 // Storage functions
 export {

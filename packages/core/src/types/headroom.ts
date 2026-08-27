@@ -92,6 +92,38 @@ export const HEADROOM_CONFIG_DEFAULTS: Readonly<HeadroomConfig> = Object.freeze(
   exposeStats: false,
 });
 
+/** Every field of {@link HeadroomConfig}, as a value. */
+export type HeadroomConfigField = keyof HeadroomConfig;
+
+/**
+ * The fields an editor iterates over, in display order.
+ *
+ * Kept beside the interface so a new option cannot be added to the shape
+ * without the settings UI noticing it — the UI renders this list rather than
+ * hardcoding its own.
+ */
+export const HEADROOM_CONFIG_FIELDS: readonly HeadroomConfigField[] = [
+  'enabled',
+  'compressionEngines',
+  'verbosity',
+  'exposeStats',
+];
+
+/**
+ * Which layer supplied a field's effective value.
+ *
+ * Three values, not two, because that is what the precedence chain actually
+ * has: a field can come from the workspace override, from the instance base,
+ * or from nowhere at all ({@link HEADROOM_CONFIG_DEFAULTS}). A two-way
+ * "override vs default" label is a *presentation* choice a UI can make by
+ * folding `instance` and `default` together; encoding that fold here would
+ * throw away information the caller cannot recover.
+ */
+export type HeadroomConfigSource = 'workspace' | 'instance' | 'default';
+
+/** Per-field provenance, parallel to {@link HeadroomConfig}. */
+export type HeadroomConfigSources = Record<HeadroomConfigField, HeadroomConfigSource>;
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -189,5 +221,39 @@ export function resolveHeadroomConfig(
     verbosity: over.verbosity ?? base.verbosity ?? HEADROOM_CONFIG_DEFAULTS.verbosity,
     exposeStats:
       over.exposeStats ?? base.exposeStats ?? HEADROOM_CONFIG_DEFAULTS.exposeStats,
+  };
+}
+
+/**
+ * Report, field by field, which layer {@link resolveHeadroomConfig} took the
+ * effective value from.
+ *
+ * Same inputs, same validation, same precedence — this is the resolver's
+ * bookkeeping made visible so a settings surface can say "workspace override"
+ * or "instance default" without re-deriving precedence for itself. A layer
+ * that fails {@link sanitizeHeadroomConfigLayer} is treated as absent here
+ * exactly as it is there, so the reported source always matches the value the
+ * resolver returns for the same arguments.
+ *
+ * Never throws.
+ */
+export function resolveHeadroomConfigSources(
+  instance?: unknown,
+  workspace?: unknown,
+): HeadroomConfigSources {
+  const base = sanitizeHeadroomConfigLayer(instance) ?? {};
+  const over = sanitizeHeadroomConfigLayer(workspace) ?? {};
+
+  const sourceOf = (field: HeadroomConfigField): HeadroomConfigSource => {
+    if (over[field] !== undefined) return 'workspace';
+    if (base[field] !== undefined) return 'instance';
+    return 'default';
+  };
+
+  return {
+    enabled: sourceOf('enabled'),
+    compressionEngines: sourceOf('compressionEngines'),
+    verbosity: sourceOf('verbosity'),
+    exposeStats: sourceOf('exposeStats'),
   };
 }

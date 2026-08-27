@@ -108,7 +108,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     }
 
     // Load workspace config
-    const { loadWorkspaceConfig } = await import('@craft-agent/shared/workspaces')
+    const { loadWorkspaceConfig, loadHeadroomConfigView } = await import('@craft-agent/shared/workspaces')
     const config = loadWorkspaceConfig(workspace.rootPath)
 
     return {
@@ -127,6 +127,12 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       workbenchEnabled: config?.defaults?.workbenchEnabled ?? false,
       artifactsEnabled: config?.defaults?.artifactsEnabled ?? false,
       artifactRoots: config?.defaults?.artifactRoots ?? {},
+      // fork(PLAN-040, SUV-0017): the writable override layer, plus the
+      // derived view (effective config + per-field provenance) the settings
+      // surface renders. Resolved by the SUV-0016 resolver, not here — the two
+      // layers it merges live in different files.
+      headroom: config?.defaults?.headroom,
+      headroomView: loadHeadroomConfigView(workspace.rootPath),
     }
   })
 
@@ -138,7 +144,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'idleAgentTtlMinutes', 'workbenchEnabled', 'artifactsEnabled', 'artifactRoots']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'idleAgentTtlMinutes', 'workbenchEnabled', 'artifactsEnabled', 'artifactRoots', 'headroom']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
     }
@@ -188,6 +194,22 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
         }
         throw new Error(
           `artifactRoots."${rootId}": kind "${kind}" is not supported yet. Object-store roots and their credentials arrive with hosted workspaces (via the vault, never inline).`,
+        )
+      }
+    }
+
+    // Validate the Headroom workspace override layer (PLAN-040, SUV-0017).
+    // The check is the SUV-0016 layer validator itself — the one that decides
+    // what "a usable layer" means — so the write surface and the read-time
+    // resolver can never disagree about a stored value. `null` from it means
+    // the layer is unusable (a known field with the wrong type); unknown keys
+    // pass, deliberately, so a config written by a newer build survives a
+    // round-trip through an older one. `undefined` clears the override.
+    if (key === 'headroom' && normalizedValue !== undefined && normalizedValue !== null) {
+      const { sanitizeHeadroomConfigLayer } = await import('@craft-agent/core/types')
+      if (sanitizeHeadroomConfigLayer(normalizedValue) === null) {
+        throw new Error(
+          'headroom must be an object whose known fields are well-typed: enabled/exposeStats boolean, compressionEngines string[], verbosity one of terse|balanced|verbose',
         )
       }
     }

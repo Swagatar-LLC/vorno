@@ -103,12 +103,17 @@ export type {
   HeadroomVerbosity,
   HeadroomConfig,
   HeadroomConfigOverrides,
+  HeadroomConfigField,
+  HeadroomConfigSource,
+  HeadroomConfigSources,
 } from './headroom.ts';
 export {
   HEADROOM_VERBOSITY_VALUES,
   HEADROOM_CONFIG_DEFAULTS,
+  HEADROOM_CONFIG_FIELDS,
   sanitizeHeadroomConfigLayer,
   resolveHeadroomConfig,
+  resolveHeadroomConfigSources,
 } from './headroom.ts';
 
 // Headroom adapter boundary contract (fork: PLAN-040, SUV-0015)
