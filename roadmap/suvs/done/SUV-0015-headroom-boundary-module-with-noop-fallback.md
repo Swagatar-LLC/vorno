@@ -186,3 +186,81 @@ absent or disabled.
      01:38:12, after this session started, with no edit from here). It is
      SUV-0017 work — a subprocess-based restart-persistence test. Left untouched
      and excluded from this commit, which names its paths explicitly. It passes.
+
+- `2026-08-27` — **independently re-verified a second time; no production code
+  changed.** A prior verification pass was rejected for evidence that did not
+  reproduce, so this entry re-ran everything from scratch on a clean tree. No
+  figure below is carried over from any entry above; each is the tail of a
+  command run in this session. All five acceptance items hold, so nothing was
+  implemented — the honest deliverable here is the evidence, plus two
+  corrections.
+
+  **Acceptance, re-checked by execution**
+
+  | # | Evidence observed now |
+  |---|---|
+  | 1 | `check-headroom-boundary.ts` → `exit 0`, naming `sdk-adapter.ts` as sole importer. Repo-wide grep: the only value-level SDK reference in product code is `await import('headroom-ai')` at `sdk-adapter.ts:122` (plus a type-only `import type` at :63). `HeadroomAdapter` lives in `packages/core/src/types/headroom-adapter.ts`, re-exported from `types/index.ts`. |
+  | 2 | Absent-package path is real, not stubbed: the failure text under mutation reads `Cannot find package 'headroom-ai-not-installed-in-this-repo'` — a genuine module-resolution error. |
+  | 3 | Mutation-proven below. |
+  | 4 | Both arms exercised live, below. Wired as its own `validate-pr.yml` job (`headroom-boundary`, line 217) and as `lint:headroom-boundary`. |
+  | 5 | Payload at `sdk-roundtrip.test.ts:51` carries leading `  \n\t` **and** trailing `\n  \n`, plus non-ASCII, a NUL, and escaped quotes — so a byte assertion can genuinely fail. Mutation-proven below. |
+
+  **Red-then-green, each mutation applied then reverted** (`git status --porcelain`
+  and `git diff --stat` both empty after each):
+
+  | Mutation | Observed |
+  |---|---|
+  | no-op `compress` copies the array + returns `available: true` zeros | adapter-fallback **9 pass / 3 fail** |
+  | factory rethrows instead of returning the no-op | adapter-fallback **8 pass / 4 fail** |
+  | `retrieve` returns `content.trimEnd()` | sdk-roundtrip **7 pass / 3 skip / 1 fail** — and the one failure is exactly `retrieves the original content byte-for-byte`, killed by the trailing `\n  \n` |
+  | gate: add `__violation-probe.ts` importing the SDK | `exit 1`, naming the probe file |
+  | gate: point `BOUNDARY_FILES` at `noop-adapter.ts` | `exit 1` on **both** arms — stale entry *and* the real boundary now unallowlisted |
+  | *(all reverted)* | three suites **31 pass / 3 skip / 0 fail**; gate `exit 0`; tree clean |
+
+  **Suite results observed now** (CI-equivalent, each run from its own package
+  dir — `bunfig.toml` preload is cwd-only, per `packages/shared/CLAUDE.md`):
+
+  - SUV-0015's three suites: **34 tests across 3 files, 31 pass / 3 skip / 0 fail**.
+  - `packages/shared`: **3670 tests across 211 files, 3650 pass / 20 skip / 0 fail** (46.4s).
+  - `packages/server-core`: **362 pass / 0 fail** across 45 files.
+  - `apps/server`: **196 pass / 0 fail** across 18 files.
+  - `bun run typecheck`: **exit 0**.
+  - `lint:headroom-boundary`, `lint:i18n:{sorted,parity,coverage}`, `check-branding.ts`: all **exit 0**.
+
+  **Two corrections to the entry above**, left in place rather than edited:
+
+  1. It reports the shared suite as "3664 tests … 3644 pass". Observed today:
+     **3670 / 3650**. The branch has grown again; the earlier figure is not
+     wrong-for-its-day, it is simply stale, and this is now the *second* time
+     this number has drifted between sessions. Treat any hard-coded suite total
+     in this file as a timestamp, not an invariant.
+  2. It says "the 3 skips are the opt-in `HEADROOM_TEST_BASE_URL` live-proxy
+     block". True as to origin, but misleading as to size: the junit reporter
+     attributes all three skip entries to the *describe* name, and that block
+     contains exactly **one** `it`. There is one live-proxy test, not three.
+     Anyone reading "3 skipped" as three unexercised assertions is over-counting
+     the opt-in coverage threefold.
+
+  **`bun run lint` is still broken, and this run confirmed it independently:**
+  **exit 127** at its *first* sub-gate, `lint:ipc-sends` → `bash:
+  scripts/check-raw-sends.sh: No such file or directory`. `git cat-file -e
+  main:…` confirms both that script and `scripts/check-task-tool-checks.sh` are
+  absent from `main` too. Because the chain is `&&`, the 127 means
+  `lint:headroom-boundary` **never runs** under `bun run lint` — it passes only
+  because CI invokes it as a standalone job. Unrelated to Headroom, broken on
+  `main`, out of this SUV's scope; still worth its own change.
+
+  **Root `bun test` is not a CI gate and should not be read as one.** Run from
+  the repo root it reports failures (**40 fail** on one run, **63** on another —
+  the count is not stable between runs). Cause is documented in
+  `packages/shared/CLAUDE.md`: bun reads `bunfig.toml` from cwd only, so the
+  hermetic `CRAFT_CONFIG_DIR` preload does not apply at root and the
+  `config-dir-guard` tests red by design; the instability on top of that is
+  consistent with the cross-file `globalThis.fetch` leak recorded in the
+  `2026-08-26` entry. **Zero of those failures are in Headroom files** (grep of
+  the fail lines: 0 matches). CI runs `cd packages/shared && bun test`, which is
+  green. Nothing here was fixed — it is recorded so the next reader does not
+  mistake a cwd artifact for a regression.
+
+  **Nothing outside this file changed.** No production or test source was
+  modified; the only diff in this commit is this status-log entry.
