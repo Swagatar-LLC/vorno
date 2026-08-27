@@ -163,3 +163,86 @@ read through the boundary adapter's stats operation.
   file alone, which is the precaution the `bd68bed7` attribution mix-up recorded
   above exists to teach.
 
+- `2026-08-27` — **fourth pass: every acceptance item re-verified by execution,
+  including the three mutations the previous pass could only assert.** The prior
+  verification was rejected for evidence that could not be reproduced. The
+  distinction that matters: the *feature* was never in question — this pass found
+  no defect in it — but a mutation that is described rather than performed is not
+  evidence, and the earlier node had no write access to perform one. Acceptance
+  holds, now on observed output.
+
+  **Red-then-green, performed in this pass.** Each mutation was applied to the
+  working tree, the failure observed, then reverted from a `/tmp` byte-copy and
+  confirmed back to the original SHA (never `git stash`, never
+  `git checkout --` — both have destroyed work in this repo):
+
+  | Mutation | Observed failure | Reverted to SHA |
+  |---|---|---|
+  | `tokensSaved: stats.totalTokensBefore - stats.totalTokensAfter` in `headroom-report.ts` | `Expected: "613" / Received: "750"` — 8 pass / 1 fail | `5b2fb632…` ✓ 9 pass |
+  | `retrievals: stats.retrievals ?? 0` | `toBeNull() / Received: "0"` — 8 pass / 1 fail | `5b2fb632…` ✓ 9 pass |
+  | dropped `read()` from `watchHeadroomReport`'s subscriber | `Expected: "1,500" / Received: "600"` + stale-read + generation-ordering — 2 pass / 3 fail | `5232af72…` ✓ 164 pass |
+
+  The savings fixture disagrees with the derivable figure *by construction*
+  (613 measured vs 750 derivable). That is the property that makes acceptance
+  item 1 checkable at all: a fixture where the two agree cannot detect
+  derivation, and would have passed against code that computed savings in the
+  renderer.
+
+  **Item 3 read rather than mutated**, because it is a branch, not an arithmetic
+  path: the disabled/no-op case asserts `rows === []`, `isHeadroomReportEmpty`
+  true, and three *distinguishable* reason keys — so "off", "absent" and "nothing
+  measured yet" cannot collapse into one message.
+
+  **Item 1's boundary re-checked structurally**, not just by test: the only `+=`
+  arithmetic under `packages/shared/src/headroom/` is inside
+  `scoped-adapter.ts`, and it accumulates the per-call *measured*
+  `stats.value.tokensSaved` rather than deriving it; `report.ts` contains no
+  arithmetic at all. The aggregate sums scope savings — still summing
+  measurements, still inside an adapter.
+
+  **Suites, all observed at `d849dd83` in one uninterrupted run** (HEAD verified
+  unchanged at both ends): `apps/electron/src/renderer/lib` **164 / 0** ·
+  `packages/shared/src/headroom` **87 pass / 3 skip / 0 fail** · `apps/server`
+  **196 / 0** · `bun run test:webui` **0 fail across all four groups**
+  (425 / 24 / 327 / 362) · Headroom boundary gate green. At `24fdc5ca`:
+  `packages/shared` **3653 pass / 20 skip / 0 fail**, typecheck clean on all six
+  CI-covered packages plus `apps/server` (0 errors), all three i18n gates green
+  (parity 6 locales × 1992 keys; coverage 2097 callsites), server build check
+  produced `index.js` 16.36 MB.
+
+  **One flaky failure, reported rather than hidden.** The first `packages/shared`
+  run was 3652 / 1 fail; the identical re-run was 3653 / 0 fail. It is
+  network-dependent (the run logged `OpenAI live /v1/models returned 0 selectable
+  models`) and is not Headroom — the Headroom subset was 0 fail in both runs. A
+  green re-run does not prove a test sound, so it is recorded as flaky, not as
+  passing.
+
+  **Known-red conditions re-measured, and this SUV's share of one of them stated
+  plainly.** `apps/electron` typecheck: **107** errors, **0** Headroom-related
+  (confirms the earlier correction from 108). Its lint: **10 errors / 122
+  warnings**, with no Headroom file appearing anywhere in the output.
+  `ipc-channels.test.ts` is red at `358` expected vs `375` actual — **17** drifted
+  channels, of which **2 are this SUV's** (`vorno:headroom:stats:get`,
+  `:changed`) and 15 pre-date it. Left alone deliberately, and the reasoning is
+  worth keeping: registering only this SUV's 2 would move the count to 360
+  against an actual 375, leaving the test red while *looking* addressed — a
+  half-fix that costs the next reader the signal. The list is hand-maintained and
+  its generator (`scripts/ipc-inventory.ts`) is still absent from the repo; the
+  file is not in the `test:webui` CI gate.
+
+  **Checkout contention, and why no work was forced.** A sibling process held
+  this shared checkout for much of this pass — HEAD was detached to `bd68bed7`
+  mid-suite (which deleted this SUV's files from the working tree and aborted a
+  `packages/shared` run with `ENOENT`), then oscillated between detached and
+  `plan/plan-040` with the dirty count swinging 0 → 75. Nothing was recovered or
+  forced: `plan/plan-040` was confirmed to still point at `d51e40a6` with all 7
+  SUV-0027 files present in the branch tip, and this pass simply waited for the
+  tree to go clean rather than switching branches out from under a process
+  holding uncommitted work. The branch advanced `d51e40a6` → `24fdc5ca` →
+  `d849dd83` underneath, which is why the totals above carry two different SHAs
+  instead of being quietly presented as one measurement.
+
+  **No source file changed in this pass.** All three mutations were reverted and
+  verified by SHA; this entry is the only edit, and the commit is path-scoped to
+  this file.
+
