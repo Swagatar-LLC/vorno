@@ -6,7 +6,7 @@ plan: PLAN-040
 direction: DIR-05
 owner: jh
 created: 2026-08-25
-updated: 2026-08-26
+updated: 2026-08-27
 related: []
 blocked-by:
   - SUV-0015-headroom-boundary-module-with-noop-fallback.md (the boundary factory being driven)
@@ -111,5 +111,50 @@ construction time.
   **Left alone, deliberately**
 
   - No adapter is *called*. Compression at the session loop / Conductor is I1.
-  - `SUV-0015` is still filed under `planned/` despite its code being on this
-    branch. Correcting another SUV's folder is not this SUV's diff.
+  - Other SUVs' status folders are not this SUV's diff.
+
+- `2026-08-27` — re-verified on `plan/plan-040`, no code change. Everything below
+  was observed in this session; nothing is carried over from the entry above.
+
+  **Correction to the entry above.** It claimed "`SUV-0015` is still filed under
+  `planned/`". That is false as of this branch: the record is
+  `roadmap/suvs/done/SUV-0015-headroom-boundary-module-with-noop-fallback.md`
+  with `status: done`. The claim is struck; nothing built on it.
+
+  **Red-then-green, re-established by mutation.** The original entry asserted the
+  tests were written red, but that state is no longer reachable from `HEAD` — a
+  reverse-apply of commit `1291b25c`'s implementation hunks conflicts, because
+  SUV-0023/0024/0027 have since edited the same files
+  (`git show 1291b25c -- <impl paths> | git apply -R --check` → `patch does not
+  apply`). So the tests' ability to fail was re-demonstrated by mutating the
+  wiring in place, running, and restoring from a `/tmp` copy (never `git stash`).
+  Each mutation and its observed result:
+
+  | Mutation | Where | Observed |
+  |---|---|---|
+  | M1 — ignore the workspace's resolved config: `loadEffectiveHeadroomConfig(config.workspace.rootPath)` → `loadEffectiveHeadroomConfig(undefined)` | `agent/base-agent.ts` | `base-agent-headroom.test.ts` **3 pass / 5 fail** — `expect(adapterA.kind).toBe('sdk')` got `"noop"`; degradation `reason` got `"disabled"` instead of `"sdk-unavailable"` |
+  | M2 — suppress the degradation warning: `if (options.enabled && …)` → `if (false && options.enabled && …)` | `headroom/session-adapter.ts` | both files **15 pass / 2 fail** — exactly the two warning assertions (acceptance item 4) |
+  | M3 — rebuild the adapter per call instead of holding the construction-time one | `agent/base-agent.ts:getHeadroomAdapter` | `base-agent-headroom.test.ts` **4 pass / 4 fail** — the stable-instance test and both two-session toggle tests (acceptance item 3) |
+
+  Restored after each; `git status --porcelain` empty, then **17 pass / 0 fail /
+  45 expect() calls** across the two files.
+
+  **Gates, as run today (bun 1.3.8):**
+
+  - `cd packages/shared && bun test` — **3644 pass / 20 skip / 0 fail** (211 files, 46.49s).
+    Higher than the 3548 in the entry above because SUV-0023..0032 landed since.
+  - `cd packages/server-core && bun test` — **362 pass / 0 fail** (45 files)
+  - `cd apps/server && bun test` — **196 pass / 0 fail** (18 files)
+  - `bun run typecheck` — clean (no `error TS` output)
+  - `bun run lint:headroom-boundary` — `✓ … headroom-ai imported only by packages/shared/src/headroom/sdk-adapter.ts`
+  - `bun build apps/server/src/index.ts --target=bun --outdir=/tmp/suv0018-build-check --no-splitting` — `Bundled 3403 modules in 218ms`
+
+  **Scope re-checked.** `git show --stat 1291b25c` touches only
+  `headroom/session-adapter.ts`, `headroom/index.ts`, `agent/base-agent.ts`,
+  `agent/backend/types.ts`, the two test files, and this record's own move — no
+  session-loop, Conductor, stats or memory file. Note for a reviewer diffing the
+  *branch*: SUV-0023/0024/0026/0027/0028/0030/0031 are committed ahead of this
+  one and do touch that territory; SUV-0018's diff is `1291b25c` alone.
+
+  **Left in `in-progress/`** — the folder move is the state change (ADR-0028) and
+  no PR has been cut for this SUV yet.
