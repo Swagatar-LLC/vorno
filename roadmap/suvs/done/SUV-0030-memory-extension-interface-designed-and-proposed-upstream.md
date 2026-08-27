@@ -160,3 +160,72 @@ contribution.
   **Still doc-only — no product code, no test, no `node_modules` or package change.**
   Diff is confined to `roadmap/`. The tripwire test for H1/H2 remains deliberately
   unwritten (doc §8) and is SUV-0031's to carry if it depends on those facts.
+
+- `2026-08-27` — **third verification pass after the second was rejected on
+  adversarial verification; the reproduction failure is root-caused and five
+  further defects corrected. Design conclusions unchanged; SUV stays `done`.**
+  Full record in doc **§11**.
+
+  **Root cause of "evidence does not reproduce": the dependency was not installed.**
+  `node_modules/headroom-ai/` held only `README.md` and `package.json` — **no
+  `dist/`** — so five of the six pinned-SDK commands in §9 failed with *No such
+  file or directory*. The bytes were never wrong; the checkout was incomplete.
+  `bun install --frozen-lockfile` restored `dist/`, after which all six reproduced
+  exactly as recorded. §9 now opens with that precondition and the restoring
+  command. **Standing lesson: "the evidence is unreproducible" and "the package is
+  not installed" are indistinguishable from the outside, and an evidence doc that
+  reads `node_modules/` must state its install precondition or it will be graded
+  as fabrication.**
+
+  **Everything re-derived from primary sources this pass** (not carried over from
+  §10's annotations): S1 `types-BTrX7__W.d.ts:35–49`; H1 bundle L1082 bare `await`,
+  L1085 `client.compress(…, { model, tokenBudget })`; H1 at source on `main`
+  (`compress.ts` `biases` L53/L55, never read, compress L60); H2 one `pipeline`
+  hit (`index.d.ts:367 pipelineTiming`), `on_pipeline_event` 0 package-wide;
+  `ports.py` six `@runtime_checkable` Protocols L262/459/556/636/685/800 and all
+  thirteen `MemoryStore` methods; `MemoryFilter` field-for-field, incl.
+  `entity_refs … # Any of these entities` at `ports.py:42`; `config.py` EXTERNAL
+  L25/34/41 + `*_backend_name` L100/105/118; `factory.py` groups L28–30, loader
+  L41, `entry_points` L57, docstring L50; `wiki/memory.md` 753 lines, case-
+  sensitive registration grep **0** / case-insensitive **3**, Protocol layer at
+  L518/529/555/612; POLICY §3's eight steps L48–55; guide L19 verbatim; issue
+  [#3287](https://github.com/headroomlabs-ai/headroom/issues/3287) `open`,
+  `comments=0`, `user=jhampton`, `created=2026-08-27T04:20:38Z`; #2897/#2898/#2947
+  all closed with the tabled titles.
+
+  **Five defects corrected — none changed a conclusion:**
+  1. **§9 had no install precondition** (above) — the defect that made the SDK
+     evidence read as unreproducible.
+  2. **§3.1 contradicted its own table for two passes.** It capped the interface
+     at "trims 1–3", but §3 row 6 (write-side inheritance, PRG step 6, `POLICY.md`
+     L53) is the *only* row whose *Needs* column is empty. The ceiling is **1–3
+     and 6** — **two** trims above v2's 1–2, not one. Each prior pass checked the
+     prose and the table separately, never against each other.
+  3. **§10.1's H1 row misstated adjacency** ("the next line calls
+     `client.compress`" — the next line is `}`; L1084 constructs the client,
+     L1085 calls compress), on the document's most load-bearing finding.
+  4. **§5's "~550 open issues" had drifted to 564** (stars 67,721 → 67,730 →
+     67,749). The hedge was right and the figure still wrong, so exact counters
+     are now out of the table entirely and kept only as three dated observations.
+  5. **§9's positive-half annotation omitted L612**, cited in §1.2's prose, and
+     its command omitted the pattern that finds it. Command and output now agree.
+
+  **Suites run and reported as observed.** `bun run typecheck` — clean.
+  `packages/shared` headroom + docs + config tests — **358 pass, 3 skip, 0 fail**.
+  `apps/server` — **196 pass, 0 fail**. `lint:headroom-boundary` — pass.
+  **Pre-existing failures, none caused here and none in a file this SUV touched:**
+  `bun run lint` aborts at `lint:ipc-sends` because `scripts/check-raw-sends.sh`
+  **does not exist at HEAD** (same for `lint:tool-name-checks` →
+  `check-task-tool-checks.sh`); `lint:shared` reports 5 `no-inline-source-auth-check`
+  errors in `resources/__tests__/resource-bundle.test.ts`,
+  `sources/__tests__/token-refresh-manager.test.ts` and
+  `sources/token-refresh-manager.ts`; `lint:ui` reports 3 errors. All are in
+  committed files unrelated to this diff.
+
+  **No test written, deliberately** — no acceptance item asks for one and doc §8
+  records the tripwire as an out-of-scope diff; so there is no red-then-green to
+  report. **Still doc-only:** the diff is one file under `roadmap/`. The working
+  tree also carries a pre-existing modification to
+  `packages/shared/src/agent/__tests__/tool-result-context-headroom.test.ts`
+  (SUV-0023 work from another session) which was **left untouched and excluded
+  from the commit by pathspec** — not stashed.

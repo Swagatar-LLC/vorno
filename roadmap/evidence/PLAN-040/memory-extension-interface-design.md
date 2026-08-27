@@ -370,8 +370,9 @@ PRG's own thesis is that *"filtering at storage or query time is not enough; the
 check runs after retrieval, before use"* (POLICY §3). A storage-backend interface
 is, definitionally, a **query-time** seam.
 
-So even with A, B and C granted, this interface tops out at trims 1–3, archive
-exclusion and logging. Trims 4–8 remain host and model discipline.
+So even with A, B and C granted, this interface tops out at trims **1–3 and 6**,
+archive exclusion and logging. Trims 4, 5, 7 and 8 remain host and model
+discipline.
 
 > **Corrected 2026-08-27.** This paragraph previously read *"can only mechanize
 > what the v2 server already mechanizes: trims 1–3"* and quoted the source guide
@@ -383,11 +384,20 @@ exclusion and logging. Trims 4–8 remain host and model discipline.
 > > isolation, write-side inheritance, citation discipline, audience-aware
 > > destination — remain your judgment.
 >
-> The ceiling of *this interface* (1–3) is therefore **one trim above** what v2
-> mechanizes today, not equal to it: subject trim is expressible here because
-> `entity_refs` is an any-of filter (§3, row 3), and v2 leaves it to judgment.
-> The two must not be equated — the original sentence made the interface sound
-> like a re-implementation of the status quo when it is a modest advance on it.
+> The ceiling of *this interface* is therefore **above** what v2 mechanizes
+> today, not equal to it. The two must not be equated — the original sentence
+> made the interface sound like a re-implementation of the status quo when it is
+> a modest advance on it.
+>
+> **Amended 2026-08-27 (third pass).** That amendment first said the ceiling was
+> "1–3" and "one trim above". Both undercounted: §3 row 6 — write-side
+> inheritance — is the **only** row in the table whose *Needs* column is empty,
+> i.e. the one behavior expressible with no upstream gap at all, via
+> `promoted_from` / `promotion_chain` / `has_promoted_from`. It is PRG step **6**
+> (`POLICY.md` L53, *"Write-side check (anti-laundering)"*), and the source guide
+> lists it among the steps v2 leaves to judgment. So the ceiling is **1–3 and
+> 6** — **two** trims above v2's 1–2, not one — and §3.1's headline sentence is
+> corrected to match. The prose contradicted its own table for two passes.
 
 **This is a limit of the seam, not a gap to close upstream, and it should not be
 argued with.** Asking Headroom for a post-retrieval-pre-use gate would be asking
@@ -429,13 +439,17 @@ real seams are §1.1 and §1.2.
 | **Filed** | 2026-08-27, by `jhampton` |
 | **Filed at** | `2026-08-27T04:20:38Z` (from the API, not interpolated) |
 | **State at writing** | open, **0 comments** — no response |
-| **Repo** | `headroomlabs-ai/headroom` — Apache-2.0, ~67.7k stars, ~550 open issues |
+| **Repo** | `headroomlabs-ai/headroom` — Apache-2.0, tens of thousands of stars, several hundred open issues |
 
 > Star and open-issue counts are live counters that drift between any two runs
-> of §9 (67,721 → 67,730 across this document's two verification passes). They
-> are recorded to an order of magnitude deliberately; a reader reproducing §9
-> should expect a different exact number and should **not** read the difference
-> as a discrepancy. `state`, `comments` and `created_at` are the stable fields.
+> of §9. Three observations across this document's three verification passes:
+> **67,721 / 549 → 67,730 / — → 67,749 / 564**. The open-issue count moved ~2.7%
+> between passes two and three, which is why the earlier "~550" is now dropped
+> rather than nudged: any exact figure written here is stale the moment it is
+> written. Only `license` is stable; a reader reproducing §9 should expect
+> different numbers and should **not** read the difference as a discrepancy. For
+> the issue itself, `state`, `comments`, `user.login` and `created_at` are the
+> stable fields and are the ones any claim rests on.
 
 **Why an issue and not a PR.** Plan open question 2 asks *what shape* upstream
 accepts. Gaps A and B widen public dataclasses and a Protocol in a repo of this
@@ -529,8 +543,20 @@ equivalent.
 
 ## 9. Reproduction
 
+> **Precondition, added 2026-08-27 (third pass) — read this first.** Every `S*`
+> and `H1`/`H2` command below reads `node_modules/headroom-ai/dist/`. On a fresh
+> or partially-pruned checkout that directory **does not exist**: the package can
+> be present with only `README.md` and `package.json`, in which case five of the
+> six SDK commands fail with *No such file or directory* and the evidence reads
+> as unreproducible when it is merely uninstalled. This was the actual state of
+> this checkout at the start of the third pass. Run `bun install
+> --frozen-lockfile` first, then confirm with `ls
+> node_modules/headroom-ai/dist/` before concluding anything is missing.
+
 ```bash
 cd /path/to/craft-agents-oss
+bun install --frozen-lockfile          # see precondition above
+ls node_modules/headroom-ai/dist/      # must list index.d.ts, chunk-*.js, adapters/
 
 # --- Pinned TypeScript SDK (headroom-ai@0.36.5) ---
 
@@ -578,7 +604,14 @@ wc -l < /tmp/hr-memory-wiki.md                                          # -> 753
 grep -cE "EXTERNAL|entry_point|store_backend_name|ports\.py" /tmp/hr-memory-wiki.md   # -> 0
 
 # positive half: the Protocol layer is documented (so H3 is not "no docs")
-grep -nE "Protocol-Based Design|MemoryStore" /tmp/hr-memory-wiki.md      # -> L518, L529, L555
+grep -nE "Protocol-Based Design|MemoryStore|Protocol-based extensibility" \
+  /tmp/hr-memory-wiki.md
+# -> 518: ### Protocol-Based Design
+# -> 529: (ASCII diagram box "MemoryStore")
+# -> 555: | **MemoryStore** | `MemoryStore` | `SQLiteMemoryStore` | ...
+# -> 612: | Protocol-based extensibility | ✅ | ❌ | ❌ |
+# (the pre-third-pass annotation read "-> L518, L529, L555" and omitted 612,
+#  which §1.2's prose cites — the command and its output now agree)
 
 # The filed issue — stable fields only; star/issue counts drift (§5)
 gh api repos/headroomlabs-ai/headroom/issues/3287 \
@@ -608,14 +641,14 @@ prose. Results, stated as observed:
 |---|---|
 | Pinned SDK is `headroom-ai@0.36.5`, pinned in `packages/shared/package.json:100` | ✅ |
 | **S1** `CompressionHooks` = `preCompress` / `computeBiases` / `postCompress` | ✅ `types-BTrX7__W.d.ts:35–49` verbatim |
-| **H1** `computeBiases`' return discarded in the bundle | ✅ `chunk-2NXG6XPP.js:1082` is a bare `await`; the next line calls `client.compress(openaiMessages, { model, tokenBudget })` |
+| **H1** `computeBiases`' return discarded in the bundle | ✅ `chunk-2NXG6XPP.js:1082` is a bare `await` (no assignment). L1084 constructs the client, **L1085** calls `client.compress(openaiMessages, { model, tokenBudget })` — `biases` appears nowhere between |
 | **H1** holds on upstream `main`, not just the bundle | ✅ `sdk/typescript/src/compress.ts`: `biases` declared L53, assigned L55, **never read**; `client.compress(…, { model, tokenBudget })` L60 |
 | **H2** no pipeline hook | ✅ `pipelineTiming` at `index.d.ts:367` is the *only* `pipeline` hit in either `.d.ts`; `on_pipeline_event` = **0 occurrences package-wide** |
 | Hook call sites within 1076–1103 | ✅ L1077 / L1082 / L1103 |
 | Plugin dirs are convention-only | ✅ `index.js:305–319`; `assertPluginName` + `joinPath(configDir(),"plugins",name)`; no loader, registry or discovery |
 | Memory paths are strings | ✅ `memoryDbPath()` → `<workspace>/memory.db`; `nativeMemoryDir()` → `<workspace>/memories` |
 | Provider subpaths | ✅ `./openai ./anthropic ./gemini ./vercel-ai` |
-| **§1.2** `ports.py` Protocols | ✅ `MemoryStore` L262, `VectorIndex` L459, `TextIndex` L556, `Embedder` L636, `MemoryCache` L685 — all `@runtime_checkable` |
+| **§1.2** `ports.py` Protocols | ✅ `MemoryStore` L262, `VectorIndex` L459, `TextIndex` L556, `Embedder` L636, `MemoryCache` L685, `GraphStore` L800 — all `@runtime_checkable`. (`GraphStore` was named in §1.2's prose but omitted from this row until the third pass.) |
 | **§2.1** the eight `MemoryStore` operations | ✅ all present, signatures as tabled |
 | **§1.2** `EXTERNAL` on all three enums | ✅ `config.py` L25/34/41, each commented with its entry-point group; `*_backend_name` L100/105/118 |
 | **§1.2** entry-point loader | ✅ `factory.py` L28–30 groups, `_load_external_backend` L41, `entry_points` L57; docstring L50 cites `headroom.cache.compression_store` |
@@ -655,3 +688,85 @@ finding: **the storage-format seam this SUV set out to propose already exists
 upstream**, so the contribution is four additive gaps plus a docs PR, not a new
 interface. H1 and H2 — the two findings that most constrain PLAN-040 — were the
 most heavily re-checked and both survived, H1 at source level on `main`.
+
+---
+
+## 11. Third verification pass, 2026-08-27
+
+The second pass (§10) was rejected on adversarial verification for evidence that
+did not reproduce. This pass re-ran **every** §9 command from a cold checkout
+rather than reading §10's annotations, and treats §10's own claims as unverified
+until re-observed. No design conclusion changed. Five further defects were
+corrected, one of which explains the reproduction failures directly.
+
+### 11.1 The reproduction failure, root-caused
+
+**`node_modules/headroom-ai/` contained only `README.md` and `package.json` — no
+`dist/`.** Five of the six SDK commands in §9 therefore failed outright, and a
+verifier running them would correctly report the SDK evidence as unreproducible.
+The bytes were never wrong; the package was incompletely installed in the
+checkout. `bun install --frozen-lockfile` restored `dist/` (`Resolved,
+downloaded and extracted [85]`, `1 package installed`), after which all six
+commands reproduced exactly as §10 recorded. §9 now opens with this precondition,
+because "the evidence does not reproduce" and "the dependency is not installed"
+are indistinguishable from the outside and the second was the actual cause.
+
+### 11.2 Re-observed and confirmed — nothing restated from §10
+
+Every line below was printed by a command run in this pass.
+
+| Claim | Observed this pass |
+|---|---|
+| Pin is `headroom-ai: "0.36.5"` at `packages/shared/package.json:100` | ✅ verbatim |
+| **S1** `CompressionHooks` = `preCompress` / `computeBiases` / `postCompress` | ✅ `types-BTrX7__W.d.ts:35–49`; `computeBiases` returns `Record<number, number> \| Promise<…>` |
+| **H1** bundle | ✅ L1082 `await hooks.computeBiases(openaiMessages, ctx);` — bare, unassigned; L1084 constructs the client; L1085 `client.compress(openaiMessages, { model, tokenBudget })` |
+| **H1** on `main` | ✅ `sdk/typescript/src/compress.ts`: `let biases` **L53**, `biases = await hooks.computeBiases(…)` **L55**, `client.compress(openaiMessages, { model, tokenBudget })` **L60** — `biases` never read |
+| Hook call sites | ✅ exactly three: L1077 `preCompress`, L1082 `computeBiases`, L1103 `postCompress` |
+| **H2** | ✅ `grep -rniE "pipeline\|on_pipeline"` across both `.d.ts` and `adapters/*.d.ts` → **one** hit, `index.d.ts:367 pipelineTiming: Record<string, {`. `on_pipeline_event` → **0** occurrences package-wide |
+| **S3** plugin dirs | ✅ `index.js:305–319`: `assertPluginName` rejects `/` and `\`; both helpers return `joinPath(…, "plugins", name)`; the module's export list contains no loader or registry |
+| **S4** memory paths | ✅ `memoryDbPath()` → `joinPath(workspaceDir(), "memory.db")` L253–256; `nativeMemoryDir()` → `joinPath(workspaceDir(), "memories")` L257–260 |
+| Plugin helpers' `.d.ts` cite | ✅ `index.d.ts:850–851` are exactly the two declarations |
+| Provider subpaths | ✅ `./anthropic ./gemini ./openai ./vercel-ai`; `dist/adapters/` holds all four |
+| **§1.2** `ports.py` | ✅ `MemoryStore` L262, `VectorIndex` L459, `TextIndex` L556, `Embedder` L636, `MemoryCache` L685, `GraphStore` L800, each preceded by `@runtime_checkable` |
+| **§2.1** operations | ✅ all thirteen methods behind the eight tabled rows: `save` `save_batch` `get` `get_batch` `record_access` `delete` `delete_batch` `query` `count` `supersede` `detach_supersession` `get_history` `clear_scope` |
+| **§2.3** `MemoryFilter` | ✅ every field as tabled — 4 scope + `scope_levels`, `created_after/before`, `valid_at` (*"Point-in-time query"*), `include_superseded`, `min/max_importance`, `entity_refs`, `has_supersedes`, `has_promoted_from`, `limit`/`offset`, `order_by`/`order_desc`, `metadata_filters` |
+| `entity_refs` any-of is upstream's own comment | ✅ `ports.py:42` — `entity_refs: list[str] \| None = None  # Any of these entities` |
+| **§1.2** `EXTERNAL` | ✅ `config.py` L25/34/41, each with its entry-point group inline; `store_/vector_/text_backend_name` L100/105/118 |
+| **§1.2** loader | ✅ `factory.py` L11 imports `entry_points`; groups L28–30; `_load_external_backend` L41; resolution L57; docstring L50 cites `headroom.cache.compression_store` |
+| **H3** negative half | ✅ case-**sensitive** `grep -cE "EXTERNAL\|entry_point\|store_backend_name\|ports\.py"` → **0**; the case-**insensitive** form still returns **3**, confirming the trap §10 documented |
+| **H3** positive half | ✅ `wiki/memory.md` is **753** lines; L518 `### Protocol-Based Design`, L529 diagram, L555 `MemoryStore`→`SQLiteMemoryStore` row, L612 `Protocol-based extensibility ✅` |
+| **§3** POLICY §3 | ✅ exactly **8** numbered steps, `POLICY.md` L48–55; step 6 L53 is *"Write-side check (anti-laundering)"*; §6 archive rules L85–92 incl. *"The uncertainty marker is mandatory"* |
+| Source-guide quote | ✅ `guide.md:19` verbatim: *"The backend mechanizes trims 1–2 only."* |
+| Issue #3287 | ✅ `state=open comments=0 user=jhampton created=2026-08-27T04:20:38Z`, title *"[FEATURE] Memory extension interface: retrieval context, a withheld/refused result envelope, and docs for the EXTERNAL backend entry points"* |
+| Duplicate-check hits | ✅ #2897 closed, #2898 closed, #2947 closed — titles exactly as §5 tables them |
+| **§4** premises still live in PLAN-040 | ✅ salvage-note markdown justification at `PLAN-040-integrate-headroom.md:169`; `on_pipeline_event` at L70; the *capability* bullet was indeed already corrected in place (L59, *"previously claimed"*) — so §4.1's "already corrected" and §4.2/§4.3's "still stands" are both accurate |
+
+### 11.3 Corrected — five defects
+
+1. **§9 had no install precondition** (§11.1). The single defect that made the
+   SDK evidence read as unreproducible. Added, with the restoring command.
+2. **§3.1 contradicted its own table.** It put the interface's ceiling at "trims
+   1–3", but §3 row 6 — write-side inheritance, PRG step 6 — is the *only* row
+   needing no upstream gap. The ceiling is **1–3 and 6**, i.e. **two** trims
+   above v2's 1–2, not one. Both the headline sentence and the second-pass
+   amendment that introduced the error are fixed. This survived two passes
+   because each checked the table and the prose separately, never against each
+   other.
+3. **§10.1's H1 row misstated adjacency** — *"the next line calls
+   `client.compress`"*. The next line is `}`; L1084 constructs the client and
+   L1085 calls `compress`. A reader diffing the row against the file would have
+   hit a mismatch on the one finding the document most depends on.
+4. **§5's "~550 open issues" had drifted to 564** (stars 67,721 → 67,730 →
+   67,749). The hedge was right and the number was still wrong, so the exact
+   figures are now out of the table entirely and only the three observations are
+   kept, as drift evidence rather than as fact.
+5. **§9's positive-half annotation omitted L612**, which §1.2's prose cites, and
+   its command omitted the pattern that finds it. Command and annotated output
+   now match what actually prints.
+
+### 11.4 What did not change
+
+No design conclusion, no gap, no acceptance item. The four gaps (A–E), the
+frontmatter mapping, the eleven-behavior walk and the follow-up dates stand as
+written. H1 and H2 were re-derived from bytes in this pass, not carried over.
+Still doc-only: the diff is confined to `roadmap/`.
