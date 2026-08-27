@@ -39,7 +39,9 @@ import {
   type WorkspaceInfo,
 } from '@craft-agent/shared/config'
 import type { ActiveSessionInfo, SessionProcessingStatus } from '@craft-agent/core/types'
-import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
+import { loadWorkspaceConfig, loadEffectiveHeadroomConfig } from '@craft-agent/shared/workspaces'
+// Headroom retrieval for the session view's "view original" affordance (SUV-0026).
+import { createSessionHeadroomAdapter } from '@craft-agent/shared/headroom'
 import {
   // Session persistence functions
   listSessions as listStoredSessions,
@@ -85,7 +87,7 @@ import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
-import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type AnnotationMutationResult, type TokenUsage } from '@craft-agent/core/types'
+import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type AnnotationMutationResult, type TokenUsage, type HeadroomRetrieveResult } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
@@ -2648,6 +2650,35 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (!managed) return null
     return getSessionStoragePath(managed.workspace.rootPath, sessionId)
+  }
+
+  /**
+   * Redeem a Headroom retrieval handle for the byte-identical original of a
+   * compressed tool output (fork: PLAN-040 / SUV-0026).
+   *
+   * The adapter is built from the session's *workspace* config rather than
+   * taken from `managed.agent`, for two reasons. The agent is lazy and is
+   * evicted when idle (PLAN-038), so reading it would make "view original"
+   * either fail or silently boot a whole session runtime depending on when the
+   * user clicked. And retrieval is a service lookup keyed by handle — it does
+   * not depend on the adapter instance that issued the handle — so a fresh
+   * adapter with the same workspace config answers identically, including
+   * after an app restart.
+   *
+   * Never throws for an unavailable Headroom: the boundary reports that in the
+   * result, and the UI turns it into an explicit error rather than pretending
+   * the compressed text is the original. An unknown session id is a different
+   * thing — a caller bug — and does throw.
+   */
+  async retrieveHeadroomOriginal(sessionId: string, handle: string): Promise<HeadroomRetrieveResult> {
+    const managed = this.sessions.get(sessionId)
+    if (!managed) {
+      throw new Error(`Session not found: ${sessionId}`)
+    }
+    const adapter = await createSessionHeadroomAdapter(
+      loadEffectiveHeadroomConfig(managed.workspace.rootPath),
+    )
+    return adapter.retrieve(handle)
   }
 
   async createSession(
@@ -8184,11 +8215,24 @@ export class SessionManager implements ISessionManager {
         // parentToolUseId comes from CraftAgent (SDK-authoritative) or existing message
         const parentToolUseId = existingToolMsg?.parentToolUseId || event.parentToolUseId
 
+        // Headroom compression marker (fork: PLAN-040 / SUV-0026). Carried onto
+        // the message and the renderer event as one set, and only when the
+        // agent issued a retrieval handle — a size without a redeemable handle
+        // would be a claim the UI could not act on.
+        const headroomMarker = event.headroomHandle === undefined
+          ? {}
+          : {
+              headroomHandle: event.headroomHandle,
+              ...(event.headroomOriginalBytes === undefined ? {} : { headroomOriginalBytes: event.headroomOriginalBytes }),
+              ...(event.headroomCompressedBytes === undefined ? {} : { headroomCompressedBytes: event.headroomCompressedBytes }),
+            }
+
         if (existingToolMsg) {
           // Keep lightweight status text in `content` and store full payload in `toolResult` only.
           existingToolMsg.toolResult = formattedResult
           existingToolMsg.toolStatus = inferredError ? 'error' : 'completed'
           existingToolMsg.isError = inferredError
+          Object.assign(existingToolMsg, headroomMarker)
           // If message doesn't have parent set, use event's parentToolUseId
           if (!existingToolMsg.parentToolUseId && event.parentToolUseId) {
             existingToolMsg.parentToolUseId = event.parentToolUseId
@@ -8215,6 +8259,7 @@ export class SessionManager implements ISessionManager {
             toolDisplayMeta: fallbackToolDisplayMeta,
             parentToolUseId,
             isError: inferredError,
+            ...headroomMarker,
           }
           managed.messages.push(toolMessage)
         }
@@ -8235,6 +8280,7 @@ export class SessionManager implements ISessionManager {
             parentToolUseId,
             isError: inferredError,
             timestamp: toolResultTimestamp,
+            ...headroomMarker,
           }, workspaceId)
         }
 

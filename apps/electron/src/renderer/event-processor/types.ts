@@ -84,6 +84,16 @@ export interface ToolResultEvent {
   parentToolUseId?: string
   /** Timestamp from main process for consistent ordering */
   timestamp?: number
+  /**
+   * Headroom compression marker (fork: PLAN-040 / SUV-0026). Present as a set
+   * only when `result` is genuinely compressed content; the handle redeems the
+   * byte-identical original and the byte counts were measured at compression
+   * time. Absent on every other path, which is what keeps a Headroom-disabled
+   * session rendering exactly as before.
+   */
+  headroomHandle?: string
+  headroomOriginalBytes?: number
+  headroomCompressedBytes?: number
 }
 
 /**

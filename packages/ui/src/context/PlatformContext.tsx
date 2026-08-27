@@ -108,6 +108,19 @@ export interface PlatformActions {
   fileManagerName?: string
 
   /**
+   * Redeem a Headroom retrieval handle for the byte-identical original of a
+   * compressed tool output (fork: PLAN-040 / SUV-0026).
+   *
+   * Electron: `sessions:retrieveHeadroomOriginal` RPC. Web viewer: not
+   * provided — a shared session has no Headroom service behind it, and the UI
+   * says so explicitly rather than offering an action that cannot work.
+   */
+  onRetrieveHeadroomOriginal?: (
+    sessionId: string,
+    handle: string,
+  ) => Promise<import('@craft-agent/core/types').HeadroomRetrieveResult>
+
+  /**
    * Show/hide macOS traffic light buttons (close/minimize/maximize).
    * Used to hide them when fullscreen overlays are open to prevent accidental clicks.
    * No-op on non-macOS platforms or in web viewer.

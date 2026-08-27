@@ -216,7 +216,7 @@ function getToolStatus(message: Message): ActivityStatus {
  * @param message - The message to convert
  * @param existingActivities - Activities already in the turn (for depth lookup)
  */
-function messageToActivity(message: Message, existingActivities: ActivityItem[] = []): ActivityItem {
+export function messageToActivity(message: Message, existingActivities: ActivityItem[] = []): ActivityItem {
   const activity: ActivityItem = {
     id: message.id,
     type: 'tool' as ActivityType,
@@ -239,6 +239,14 @@ function messageToActivity(message: Message, existingActivities: ActivityItem[] 
     shellId: message.shellId,
     elapsedSeconds: message.elapsedSeconds,
     isBackground: message.isBackground,
+    // Headroom compression marker (fork: PLAN-040 / SUV-0026). Spread
+    // conditionally so an uncompressed message produces an activity with no new
+    // keys at all — the Headroom-off path stays byte-identical, not merely
+    // visually identical. Whether the marker amounts to something showable is
+    // decided by `headroomIndicatorFor`, not here.
+    ...(message.headroomHandle === undefined ? {} : { headroomHandle: message.headroomHandle }),
+    ...(message.headroomOriginalBytes === undefined ? {} : { headroomOriginalBytes: message.headroomOriginalBytes }),
+    ...(message.headroomCompressedBytes === undefined ? {} : { headroomCompressedBytes: message.headroomCompressedBytes }),
   }
 
   // Calculate depth incrementally using existing activities

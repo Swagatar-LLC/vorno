@@ -67,6 +67,20 @@ export interface ToolOutputCompression {
    * compression was accepted. `adapter.retrieve(handle)` redeems it.
    */
   readonly handle?: string;
+  /**
+   * UTF-8 size of the pre-compression text, present if and only if
+   * {@link handle} is. (fork: SUV-0026)
+   *
+   * Measured here, from the two strings this function actually holds, rather
+   * than taken from `stats`: the service reports *tokens*, and a token count is
+   * not a size the user can check against anything. Bytes are — and measuring
+   * them locally means the number survives a service that reports no stats at
+   * all, without ever being interpolated. See the plan's "measured or absent,
+   * never interpolated" rule; absent here means the whole set is absent.
+   */
+  readonly originalBytes?: number;
+  /** UTF-8 size of {@link content}. Present exactly when {@link originalBytes} is. */
+  readonly compressedBytes?: number;
   readonly stats: HeadroomMeasurement<HeadroomCompressStats>;
 }
 
@@ -132,5 +146,16 @@ export async function compressToolOutput(
   const handle = result.retrievalHandles[0];
   if (handle === undefined || handle.length === 0) return passThrough(input, result.stats);
 
-  return { content: message.content, handle, stats: result.stats };
+  return {
+    content: message.content,
+    handle,
+    originalBytes: utf8Bytes(input.content),
+    compressedBytes: utf8Bytes(message.content),
+    stats: result.stats,
+  };
+}
+
+/** UTF-8 byte length. The one definition of "size" this integration reports. */
+function utf8Bytes(text: string): number {
+  return Buffer.byteLength(text, 'utf8');
 }

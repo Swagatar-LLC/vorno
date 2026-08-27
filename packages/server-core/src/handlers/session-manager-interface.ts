@@ -6,7 +6,7 @@
  * satisfy it at runtime.
  */
 
-import type { Workspace, WorkspaceInfo, ActiveSessionInfo } from '@craft-agent/core/types'
+import type { Workspace, WorkspaceInfo, ActiveSessionInfo, HeadroomRetrieveResult } from '@craft-agent/core/types'
 import type { StoredAttachment, AnnotationV1, AnnotationMutationResult } from '@craft-agent/core/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/mode-types'
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
@@ -236,6 +236,15 @@ export interface ISessionManager {
   // ---------------------------------------------------------------------------
 
   getSessionPath(sessionId: string): string | null
+  /**
+   * Redeem a Headroom retrieval handle for a compressed tool output's
+   * byte-identical original (fork: PLAN-040 / SUV-0026).
+   *
+   * Resolves rather than rejects for every Headroom-side failure — the boundary
+   * states the reason in the result — so the UI can distinguish "not retrieved,
+   * because X" from "here is the original". Throws only for an unknown session.
+   */
+  retrieveHeadroomOriginal(sessionId: string, handle: string): Promise<HeadroomRetrieveResult>
   refreshTitle(sessionId: string): Promise<{ success: boolean; title?: string; error?: string }>
   refreshBadge(): void
   getUnreadSummary(): UnreadSummary
@@ -260,6 +269,7 @@ export interface ISessionManager {
 
   /** Count of sessions with active backend processes. Pass workspaceId to scope. */
   getActiveSessionCount(workspaceId?: string): number
+
   /** Automation summary for a workspace (count of configured automations + scheduler state). */
   getWorkspaceAutomationSummary(workspaceId: string): { automationCount: number; schedulerRunning: boolean }
   /** Active sessions across all workspaces (sessions with running backend processes). */

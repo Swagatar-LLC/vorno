@@ -289,6 +289,13 @@ export interface Message {
   toolDisplayName?: string;
   /** Tool display metadata with base64 icon - embedded at storage time for viewer */
   toolDisplayMeta?: ToolDisplayMeta;
+  /**
+   * Headroom compression marker (fork: PLAN-040 / SUV-0023, sizes SUV-0026).
+   * All three are present together or not at all — see {@link StoredMessage}.
+   */
+  headroomHandle?: string;
+  headroomOriginalBytes?: number;
+  headroomCompressedBytes?: number;
   // Parent tool ID for nested tool calls (e.g., child tools inside Task subagent)
   parentToolUseId?: string;
   // Background task fields
@@ -382,6 +389,26 @@ export interface StoredMessage {
   toolDisplayName?: string;
   /** Tool display metadata with base64 icon - embedded at storage time for viewer */
   toolDisplayMeta?: ToolDisplayMeta;
+  /**
+   * Headroom compression marker (fork: PLAN-040 / SUV-0023, sizes SUV-0026).
+   *
+   * Present only on a tool result whose `toolResult` is genuinely compressed
+   * content. `headroomHandle` redeems the byte-identical original through
+   * `HeadroomAdapter.retrieve()`; the two byte counts are UTF-8 lengths that
+   * were *measured* at compression time — the pre-compression text and the text
+   * that actually entered model context. They are written as a set: a reader
+   * that sees one sees all three, so the UI never has to invent a number to
+   * fill a gap. Absent — not `undefined` — on every uncompressed path, so a
+   * workspace with Headroom off serializes exactly as it always has.
+   *
+   * `headroomCompressedBytes` measures what entered *context*, which is not
+   * necessarily what is stored here: SessionManager truncates very large
+   * `toolResult` values for storage. The counts describe the compression, not
+   * the transcript.
+   */
+  headroomHandle?: string;
+  headroomOriginalBytes?: number;
+  headroomCompressedBytes?: number;
   // Parent tool ID for nested tool calls (persisted for session restore)
   parentToolUseId?: string;
   // Background task fields (persisted)
@@ -584,8 +611,13 @@ export type AgentEvent =
    * is Headroom-compressed content; it redeems the byte-identical original via
    * `HeadroomAdapter.retrieve()`. Absent — not `undefined` — on every other
    * path, so a session with Headroom off serializes exactly as it always has.
+   *
+   * `headroomOriginalBytes` / `headroomCompressedBytes` (SUV-0026) are the
+   * measured UTF-8 sizes of the pre-compression text and of `result`. They
+   * travel with the handle as one set and exist so the session view can state
+   * what compression actually cost and saved rather than estimate it.
    */
-  | { type: 'tool_result'; toolUseId: string; toolName?: string; result: string; isError: boolean; input?: Record<string, unknown>; turnId?: string; parentToolUseId?: string; headroomHandle?: string }
+  | { type: 'tool_result'; toolUseId: string; toolName?: string; result: string; isError: boolean; input?: Record<string, unknown>; turnId?: string; parentToolUseId?: string; headroomHandle?: string; headroomOriginalBytes?: number; headroomCompressedBytes?: number }
   | {
       type: 'permission_request';
       requestId: string;

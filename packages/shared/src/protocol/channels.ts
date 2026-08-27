@@ -38,6 +38,9 @@ export const RPC_CHANNELS = {
     SET_MODEL: 'session:setModel',
     GET_FILES: 'sessions:getFiles',
     GET_NOTES: 'sessions:getNotes',
+    // fork: PLAN-040 / SUV-0026 — redeem a Headroom handle for a compressed
+    // tool output's byte-identical original.
+    RETRIEVE_HEADROOM_ORIGINAL: 'sessions:retrieveHeadroomOriginal',
     SET_NOTES: 'sessions:setNotes',
     WATCH_FILES: 'sessions:watchFiles',
     UNWATCH_FILES: 'sessions:unwatchFiles',

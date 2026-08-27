@@ -723,6 +723,12 @@ export interface ElectronAPI {
   getSessionFiles(sessionId: string): Promise<SessionFile[]>
   getSessionNotes(sessionId: string): Promise<string>
   setSessionNotes(sessionId: string, content: string): Promise<void>
+  /**
+   * Redeem a Headroom retrieval handle for a compressed tool output's
+   * byte-identical original (fork: PLAN-040 / SUV-0026). The result states a
+   * reason on a miss; it never substitutes the compressed text.
+   */
+  retrieveHeadroomOriginal(sessionId: string, handle: string): Promise<import('@craft-agent/core/types').HeadroomRetrieveResult>
   watchSessionFiles(sessionId: string): Promise<void>
   unwatchSessionFiles(): Promise<void>
   onSessionFilesChanged(callback: (sessionId: string) => void): () => void

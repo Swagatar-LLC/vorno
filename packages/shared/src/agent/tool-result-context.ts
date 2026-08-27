@@ -81,7 +81,16 @@ export async function prepareToolResultForContext(
   });
 
   if (compression.handle !== undefined) {
-    return { ...event, result: compression.content, headroomHandle: compression.handle };
+    // The three Headroom fields travel as one set (SUV-0026): the sizes are
+    // produced by the same branch that produces the handle, so a consumer that
+    // sees a handle can always state what compression cost and saved.
+    return {
+      ...event,
+      result: compression.content,
+      headroomHandle: compression.handle,
+      ...(compression.originalBytes === undefined ? {} : { headroomOriginalBytes: compression.originalBytes }),
+      ...(compression.compressedBytes === undefined ? {} : { headroomCompressedBytes: compression.compressedBytes }),
+    };
   }
 
   // No compression was accepted. The result is the guard's, or the original —
