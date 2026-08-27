@@ -14,7 +14,7 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 - Faster utility-model calls (from upstream v0.12.1): the Pi model runtime is cached across summarization and title-generation requests instead of being rebuilt each time.
 - Settings now show proper provider labels for Minimax, Minimax (CN), and Kimi (Coding) connections instead of a generic backend label (from upstream v0.12.1).
 - Kimi (Coding) connections pre-fill the current model lineup — `k3`, `kimi-for-coding`, `kimi-for-coding-highspeed` (from upstream v0.12.1).
-- Google OAuth setup docs now say to create a **Web application** client with `https://thecraftagents.com/auth/callback` as an authorized redirect URI, matching the relay redirect URI Vorno actually uses (ADR-0025). The old "Desktop app" guidance failed with `redirect_uri_mismatch`.
+- Google OAuth setup docs now say to create a **Web application** client with `https://thecraftagents.com/auth/callback` as an authorized redirect URI, matching the relay redirect URI Vorno actually uses (ADR-0025). The old "Desktop app" guidance failed with `redirect_uri_mismatch` (from upstream v0.12.1).
 
 ## Bug Fixes
 
