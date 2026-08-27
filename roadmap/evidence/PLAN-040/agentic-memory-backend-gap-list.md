@@ -252,43 +252,152 @@ describes is now in that state.
 
 ## 6. Reproduction
 
+Every command below was run on **2026-08-27** and the comment after it is the
+output that was actually observed on that run, not an expected value. Where a
+claim was previously asserted in prose, it has been re-derived here from the
+primary source; §7 records the one figure that did not survive that pass.
+
 ```bash
 cd ~/dev/agentic-memory-template
 
-# The seam is real and installable at the pinned version
-python3 -m venv .venv && ./.venv/bin/pip install -e '.[headroom]'
-./.venv/bin/python -c "from importlib.metadata import entry_points as e; \
-  print([x.name for x in e(group='headroom.memory_store')])"          # ['agentic-memory']
+# --- the seam is real, at the version the TS side is pinned to -------------
+grep -n '"headroom-ai"' ~/dev/craft-agents-oss/packages/shared/package.json
+#   100:    "headroom-ai": "0.36.5",
+curl -s https://pypi.org/pypi/headroom-ai/0.36.5/json | python3 -c \
+  "import json,sys; d=json.load(sys.stdin); print(d['info']['name'], d['info']['version'])"
+#   headroom-ai 0.36.5          <- the Python distribution exists on PyPI at that version
+ls .venv/lib/python3.14/site-packages/headroom/memory/{ports,config,factory}.py
+#   all three present; the dist-info carries no direct_url.json, i.e. index-installed
 
-# Upstream's own factory loads it, and it satisfies the Protocol
+# --- registration ----------------------------------------------------------
+./.venv/bin/python -c "from importlib.metadata import entry_points as e; \
+  print([x.name for x in e(group='headroom.memory_store')], \
+        [x.name for x in e(group='headroom.memory_text')], \
+        [x.name for x in e(group='headroom.memory_vector')])"
+#   ['agentic-memory'] ['agentic-memory'] []
+# The three group names are upstream's own constants — factory.py:28-30.
+
+# --- upstream's factory loads it, and it satisfies the Protocol ------------
 ./.venv/bin/python -c "
 from headroom.memory.config import MemoryConfig, StoreBackend
 from headroom.memory.factory import _create_store
 from headroom.memory.ports import MemoryStore
 s = _create_store(MemoryConfig(store_backend=StoreBackend.EXTERNAL,
                                store_backend_name='agentic-memory'))
-print(type(s).__module__, isinstance(s, MemoryStore))"
+print(type(s).__module__, type(s).__name__, isinstance(s, MemoryStore))"
+#   agentic_memory.headroom_backend AgenticMemoryStore True
 
-# Acceptance 2 — differential parity against the pre-change engine (40 checks)
+# --- acceptance 2: differential parity, and its red case -------------------
 ./.venv/bin/python -m agentic_memory.headroom_backend selftest
+#   SELFTEST PASS (40 checks, 0 failed)      exit 0
 
-# Acceptance 1 + 3 — the host delegates, and the tripwire proves it (53 checks,
-# 50 of them pre-existing behavioural assertions passing unchanged)
+# Sabotage: in headroom_backend.py's single gate call site (the `res = _gate.gate(`
+# line inside the one method that touches the gate), replace
+# `include_archive=include_archive` with `include_archive=True`, then re-run:
+#   FAIL: gated load returns exactly what the gate returns (6 items)
+#   FAIL: withheld counts match the gate's, by reason
+#   FAIL: cold storage is excluded from a routine load
+#   FAIL: the archive trim is counted, not silent
+#   FAIL: the log record is identical to the engine's, field for field
+#   SELFTEST FAIL (40 checks, 5 failed)      exit 1
+# Restore the line; back to 40/0, exit 0. The parity checks are load-bearing.
+
+# --- acceptance 1 + 3: the host delegates ----------------------------------
+grep -nE "^\s*(import|from)\s" server/mcp_server.py
+#   json, os, re, subprocess, sys, and `from agentic_memory import headroom_backend
+#   as backend` — stdlib plus the plugged backend, nothing else.
+
 ./.venv/bin/python server/mcp_server.py selftest
+#   SELFTEST PASS (53 checks, 0 failed)      exit 0
+
+# The tripwire, run against both hosts — this is the red/green for acceptance 3:
+git show 04aba2f:server/mcp_server.py > /tmp/pre_mcp_server.py
+./.venv/bin/python -c "
+import importlib.util as u
+spec = u.spec_from_file_location('m','server/mcp_server.py')
+m = u.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.FORBIDDEN_ENGINE_MODULES)
+print('pre :', m._check_delegation(open('/tmp/pre_mcp_server.py').read()))
+print('post:', m._check_delegation(open('server/mcp_server.py').read()))"
+#   ('gate', 'config', 'preflight')
+#   pre : ['gate', 'config', 'preflight']
+#   post: []
+
+# The 53 checks are the 50 pre-existing ones plus 3, verified by set difference
+# rather than by counting:
+./.venv/bin/python /tmp/pre_mcp_server.py selftest | grep "^  ok:" | sort > /tmp/pre.txt
+./.venv/bin/python server/mcp_server.py       selftest | grep "^  ok:" | sort > /tmp/post.txt
+comm -23 /tmp/pre.txt /tmp/post.txt   # empty — no pre-existing check was dropped or reworded
+comm -13 /tmp/pre.txt /tmp/post.txt   # exactly 3:
+#     ok: and the tripwire that asserts it actually catches a violation
+#     ok: the one engine import is the plugged backend
+#     ok: this server reaches for no engine module directly
 
 # Acceptance 1, as the grep the SUV asks for (exit 1 = no hits)
 grep -nE "^[[:space:]]*(from|import)[[:space:]]+agentic_memory.*\b(gate|config|preflight)\b|\b(gate|config|preflight)\.[a-zA-Z_]" \
   server/mcp_server.py; echo "exit=$?"                                 # exit=1
+git show 04aba2f:server/mcp_server.py | grep -cE "\bgate\.[a-zA-Z_]"   # 15  (the red case)
 
-# ...and the same grep against the pre-change host, which is the red case
-git show 04aba2f:server/mcp_server.py | grep -cE "\bgate\.[a-zA-Z_]"   # 15
+# --- the gate is byte-for-byte untouched -----------------------------------
+git rev-parse 04aba2f:lib/agentic_memory/gate.py 1f51329:lib/agentic_memory/gate.py
+#   0a28daf7a7585470a5e2c8665d32590501fae25a
+#   0a28daf7a7585470a5e2c8665d32590501fae25a      <- identical blob, not merely absent from --stat
 
-# The gate itself is untouched
-git show --stat 1f51329 | grep -c "lib/agentic_memory/gate.py"        # 0
+# --- the rest of the engine still passes -----------------------------------
+for m in archive config control_manifest decay decide digest evals gate \
+         harvest_batches policy_audit preflight retrieval_report; do
+  ./.venv/bin/python -m agentic_memory.$m selftest; done
+#   11 pass (gate 69, decay 54, digest 45, retrieval_report 33, archive 28,
+#   config 22, policy_audit 19, decide 14, preflight 12, control_manifest 7, and
+#   harvest_batches which reports "selftest: 0 failures" in its own format).
+#   `evals` is the twelfth and has no selftest subcommand — rc=2, prints usage.
+#   Pre-existing and untouched by this SUV. See §7.
 
-# Nothing here calls the engine, before or after
+# --- live, against the real vault, through the plugged backend -------------
+LOG=~/dev/agentic-memory/MEMORY/OBSERVABILITY/retrieval-log.jsonl
+wc -l < "$LOG"                                                          # 106
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"status","arguments":{}}}' \
+  | ~/dev/agentic-memory-template/.venv/bin/python3 \
+      ~/dev/agentic-memory-template/server/mcp_server.py \
+      --data-root ~/dev/agentic-memory
+#   exit 0; tools/list -> ['load_context', 'retrieve', 'status'];
+#   status answers with head/branch/tree/scopes/retrieval-log lines.
+wc -l < "$LOG"                                                          # 106 — status logs nothing
+
+# --- nothing in Vorno calls the engine, before or after --------------------
 cd ~/dev/craft-agents-oss && grep -rn "agentic.memory" apps/ packages/ ; echo "exit=$?"  # exit=1
 ```
+
+---
+
+## 7. Corrections from the 2026-08-27 re-verification
+
+Every figure in this document and in SUV-0031's status log was re-derived from
+the primary source on 2026-08-27. All of them held except one, recorded here
+rather than silently edited:
+
+- **"All twelve other engine module selftests still pass"** (SUV-0031 status log,
+  2026-08-27 entry) is self-contradictory, because the same sentence notes that
+  `evals` has no `selftest` subcommand. The measured result: of the twelve engine
+  modules other than `headroom_backend`, **eleven run a selftest and all eleven
+  pass**; `evals` is the twelfth and exits 2 with a usage message. Both facts are
+  pre-existing and neither was touched by `1f51329`. A second, smaller wrinkle in
+  the same row: `harvest_batches` passes but prints `selftest: 0 failures` rather
+  than a `SELFTEST PASS (n checks)` line, so a grep for `SELFTEST PASS` across
+  the engine finds ten, not eleven.
+
+Claims that were re-derived and **held unchanged**: the PyPI availability of
+`headroom-ai==0.36.5` and the `packages/shared/package.json` pin it matches; the
+presence of `ports.py` / `config.py` / `factory.py` in that distribution; the
+three entry-point group names against `factory.py`'s own constants; the factory
+load and `isinstance(s, MemoryStore) is True`; 40 backend checks and the five
+that go red under the archive sabotage; 53 host checks of which exactly 50 are
+the pre-existing labels, unmodified; the tripwire's `['gate','config','preflight']`
+→ `[]`; the 15 `gate.` references in the pre-change host; `gate.py`'s identical
+blob hash; and the empty `grep -rn "agentic.memory" apps/ packages/`.
 
 Related: [`memory-extension-interface-design.md`](./memory-extension-interface-design.md)
 (SUV-0030, the interface), [`headroom-memory-surface-audit.md`](./headroom-memory-surface-audit.md)
