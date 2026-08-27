@@ -68,10 +68,12 @@ describe('headroom:stats:get', () => {
   })
 
   it('passes the session slice through to the session manager', async () => {
-    let seen: [string, string | undefined] | null = null
+    // Written to from inside the handler's closure, so it is declared as the
+    // widened tuple type — TS narrows a `let x = null` to `null` otherwise.
+    const seen: Array<[string, string | undefined]> = []
     const invoke = createHarness({
       async getHeadroomStatsReport(workspaceId: string, sessionId?: string) {
-        seen = [workspaceId, sessionId]
+        seen.push([workspaceId, sessionId])
         return {
           workspace: {
             kind: 'workspace' as const,
@@ -84,7 +86,7 @@ describe('headroom:stats:get', () => {
 
     await invoke('ws-1', 's-9')
 
-    expect(seen).toEqual(['ws-1', 's-9'])
+    expect(seen).toEqual([['ws-1', 's-9']])
   })
 
   it('answers absent — never an empty report of zeros — when the host cannot report', async () => {
