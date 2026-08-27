@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { saveTaskSpec, type TaskSpec } from '@craft-agent/shared/tasks'
@@ -28,16 +28,17 @@ describe('reconcilePublishedTasks', () => {
     let n = 0
     /* eslint-disable @typescript-eslint/no-explicit-any */
     ;(sm as any).createSession = async (workspaceId: string, options: any) => {
-      const session = { id: `orch-${++n}`, ...options }
+      // Mirror the real manager: a created session is registered carrying both its slug
+      // and its workspace — together those are what make a second pass a no-op.
+      const session = { id: `orch-${++n}`, workspace: { id: workspaceId }, ...options }
       created.push({ workspaceId, taskSlug: options.taskSlug, id: session.id })
-      // Mirror the real manager: a created session is registered and carries its slug,
-      // which is what makes a second reconcile pass a no-op.
       ;(sm as any).sessions.set(session.id, session)
       return session
     }
     ;(sm as any).applyTaskLabel = async () => ({ labelId: 'task::1' })
     ;(sm as any).setSessionSources = async () => {}
-    const run = () => (sm as any).reconcilePublishedTasks('ws-1', root) as Promise<void>
+    const run = (workspaceId = 'ws-1', at = root) =>
+      (sm as any).reconcilePublishedTasks(workspaceId, at) as Promise<void>
     /* eslint-enable @typescript-eslint/no-explicit-any */
     return { sm, created, run }
   }
@@ -64,8 +65,50 @@ describe('reconcilePublishedTasks', () => {
     saveTaskSpec(root, spec('already-bound'))
     const { sm, created, run } = harness()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(sm as any).sessions.set('existing', { id: 'existing', taskSlug: 'already-bound' })
+    ;(sm as any).sessions.set('existing', {
+      id: 'existing',
+      taskSlug: 'already-bound',
+      workspace: { id: 'ws-1' },
+    })
 
+    await run()
+
+    expect(created).toHaveLength(0)
+  })
+
+  // `this.sessions` spans every loaded workspace, but a slug is only unique per workspace
+  // root — so an unscoped bound set would let one workspace's card suppress another's forever.
+  it("does not let one workspace's bound slug suppress the same slug in another", async () => {
+    const other = mkdtempSync(join(tmpdir(), 'reconcile-tasks-other-'))
+    try {
+      saveTaskSpec(other, spec('shared-slug'))
+      const { sm, created, run } = harness()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ;(sm as any).sessions.set('ws1-session', {
+        id: 'ws1-session',
+        taskSlug: 'shared-slug',
+        workspace: { id: 'ws-1' },
+      })
+
+      await run('ws-2', other)
+
+      expect(created).toHaveLength(1)
+      expect(created[0]!.workspaceId).toBe('ws-2')
+      expect(created[0]!.taskSlug).toBe('shared-slug')
+    } finally {
+      rmSync(other, { recursive: true, force: true })
+    }
+  })
+
+  // Dedupe keys on the directory but createTaskFromSpec binds `spec.id`. If an external
+  // producer breaks the dir-is-the-slug invariant, adopting would mint a fresh duplicate
+  // on every restart, each bound to an id that resolves to no directory.
+  it('skips a definition whose id does not match its directory, on every pass', async () => {
+    saveTaskSpec(root, spec('real-id'))
+    renameSync(join(root, 'tasks', 'real-id'), join(root, 'tasks', 'wrong-dir'))
+    const { created, run } = harness()
+
+    await run()
     await run()
 
     expect(created).toHaveLength(0)

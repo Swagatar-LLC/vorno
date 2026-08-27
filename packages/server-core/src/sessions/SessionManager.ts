@@ -2034,7 +2034,8 @@ export class SessionManager implements ISessionManager {
    *
    * Reconciliation closes that gap from the app side, so it holds regardless of
    * which producer wrote the file. Idempotent: binding is keyed on
-   * `managed.taskSlug`, so a slug that already has a session is skipped.
+   * `managed.taskSlug` scoped to this workspace, so a slug that already has a
+   * session here is skipped.
    *
    * Fail-soft by design — a single malformed definition may not block workspace
    * load, so every failure is a warning and the loop continues.
@@ -2049,11 +2050,14 @@ export class SessionManager implements ISessionManager {
     }
     if (slugs.length === 0) return
 
-    // Bound slugs across the whole manager: sessions are keyed globally, and a
-    // slug is unique per workspace root, so this is the authoritative set.
+    // Bound slugs for THIS workspace only. `this.sessions` spans every loaded
+    // workspace, but a slug is only unique per workspace root (`uniqueTaskSlug`
+    // checks one root) — so two workspaces may legitimately publish the same
+    // slug. An unscoped set would let the first workspace's session masquerade
+    // as the second's binding and suppress its card forever.
     const bound = new Set<string>()
     for (const managed of this.sessions.values()) {
-      if (managed.taskSlug) bound.add(managed.taskSlug)
+      if (managed.taskSlug && managed.workspace?.id === workspaceId) bound.add(managed.taskSlug)
     }
 
     for (const slug of slugs) {
@@ -2064,6 +2068,19 @@ export class SessionManager implements ISessionManager {
           sessionLog.warn('reconcilePublishedTasks: skipping unparseable definition', {
             slug,
             errors: loaded?.errors?.map(e => e.message),
+          })
+          continue
+        }
+        // The directory name IS the slug: `saveTaskSpec` always writes to
+        // `tasks/<spec.id>/`. An external producer can break that, and the
+        // mismatch is not benign — dedupe here keys on the directory while
+        // `createTaskFromSpec` binds `spec.id`, so adopting one would mint a
+        // fresh duplicate on every restart, each bound to an id that resolves
+        // to no directory. Refuse it the same way as a malformed definition.
+        if (loaded.spec.id !== slug) {
+          sessionLog.warn('reconcilePublishedTasks: skipping definition whose id does not match its directory', {
+            slug,
+            specId: loaded.spec.id,
           })
           continue
         }
