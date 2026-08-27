@@ -5,7 +5,7 @@ status: planned
 direction: DIR-05
 owner: jh
 created: 2026-08-22
-updated: 2026-08-26
+updated: 2026-08-27
 related:
   - PLAN-002-token-usage-display.md (surface that migrates onto Headroom stats)
   - PLAN-003-token-usage-thresholds-workspace-settings.md (surface that migrates onto Headroom stats)
@@ -25,7 +25,8 @@ related-suvs:
   - SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md (I2 — after 0018)
   - SUV-0030-memory-extension-interface-designed-and-proposed-upstream.md (I2 — after 0029)
   - SUV-0031-agentic-memory-v2-as-a-plugged-backend-behind-the-interface.md (I2 — after 0030)
-  - SUV-0032-vorno-plus-headroom-docs-page.md (last — documents shipped surfaces)
+  - SUV-0032-vorno-plus-headroom-docs-page.md (in-app docs — after the surfaces it documents)
+  - SUV-0033-publish-headroom-docs-page-to-vorno-site.md (last — publishes 0032's page to the web; spans vorno-site)
 blocked-by: []
 ---
 
@@ -63,12 +64,33 @@ memory shared across agents — with Vorno's existing memory engine plugged in
   index. Nor is memory reachable from the pinned TypeScript SDK, the proxy's
   HTTP API, or the MCP server: it is exposed only via `headroom wrap --memory`,
   the Python client's `client.memory.*`, and proxy-injected
-  `memory_save`/`memory_search` model tools. The ADR-0027 alignment that
-  motivated adopting this layer therefore does not hold, and the vector index is
-  the "Vector-DB / RAG infrastructure" listed below as a non-goal. Evidence:
+  `memory_save`/`memory_search` model tools.
+  **RESOLVED 2026-08-27 by [ADR-0029](../../decisions/0029-headroom-memory-via-host-invoked-mcp.md),
+  which supersedes this correction's two open consequences.** (i) The
+  ADR-0027 alignment is **relocated, not abandoned**: what Vorno commits to is a
+  memory *interface* whose behaviour is inspectable and tunable in settings; how
+  a given backend stores its bytes is that backend's implementation detail.
+  SQLite + HNSW + FTS5 underneath is accepted on those terms. (ii) The vector
+  index is therefore **not** the "Vector-DB / RAG infrastructure" non-goal below
+  — that non-goal forbids *building* one, and we are adopting one that exists.
+  (iii) A fifth surface, missed by the audit above, is the one chosen: the
+  memory **MCP stdio server** (`headroom.memory.mcp_server`), which ships in the
+  pinned 0.36.5 and is host-invoked from the boundary adapter. Evidence:
   [`roadmap/evidence/PLAN-040/headroom-memory-surface-audit.md`](../../evidence/PLAN-040/headroom-memory-surface-audit.md).
-- **Extension seams:** pipeline lifecycle hooks (`on_pipeline_event`),
-  compression hooks, provider slices, downstream MCP tools.
+- **Extension seams:** compression hooks.
+  **CORRECTED 2026-08-27 by SUV-0030's verification against the pinned package —
+  this bullet previously named four seams: "pipeline lifecycle hooks
+  (`on_pipeline_event`), compression hooks, provider slices, downstream MCP
+  tools". For the TypeScript SDK, exactly one of the four is real.**
+  `on_pipeline_event` does not exist in `headroom-ai@0.36.5` — the only
+  `pipeline` token in the package is `pipelineTiming`, a stats field — and
+  "downstream MCP tools" is not a seam of that package. Compression hooks are
+  genuine; a related upstream bug is reported in the same issue
+  ([#3287](https://github.com/headroomlabs-ai/headroom/issues/3287)):
+  `CompressionHooks.computeBiases` is documented but inert on `main` (`biases`
+  is assigned, never read). The real extension seams live Python-side —
+  `headroom/memory/ports.py`'s Protocols plus `factory.py`'s setuptools
+  entry-point routing — which is what SUV-0030 designed against.
 - **Integration surfaces:** TS/Python libraries, HTTP proxy
   (OpenAI/Anthropic-compatible), MCP server (`headroom_compress`,
   `headroom_retrieve`, `headroom_stats`), framework adapters.
@@ -91,6 +113,13 @@ must degrade gracefully if Headroom is absent.
   codebase; the agent loop and Conductor are ours to instrument); the proxy and
   MCP server remain fallbacks/companions where in-process is wrong. Record the
   choice as a short ADR if it constrains architecture.
+  **Settled 2026-08-27.** Compression rides the TS SDK in-process as biased
+  here. **Memory does not — it has no TypeScript surface to ride** — and is
+  taken through the memory MCP stdio server, host-invoked from the same boundary
+  adapter, per [ADR-0029](../../decisions/0029-headroom-memory-via-host-invoked-mcp.md).
+  Open question 1 is closed; an upstream TypeScript memory path remains the
+  preferred end state and is filed as gap D of
+  [#3287](https://github.com/headroomlabs-ai/headroom/issues/3287).
 - Wire compression into the agent session loop and Conductor node dispatch;
   wire retrieval so reversibility is a user-visible affordance, not just an
   internal cache.
@@ -165,9 +194,14 @@ must degrade gracefully if Headroom is absent.
   ← `vorno-internal:plans/PLAN-008`, `PLAN-009`
 - **Frontmatter is free query surface.** The shipped artifact plane parses
   markdown frontmatter into its index, making existing conventions (roadmap
-  docs, skills, Obsidian properties) queryable without new schema. Headroom's
-  default memory substrate is local markdown; the extension interface's query
-  semantics should assume frontmatter is already structured data.
+  docs, skills, Obsidian properties) queryable without new schema. The
+  extension interface's query semantics should assume structured metadata is
+  already available, and should express it through Headroom's own
+  `metadata_filters` / `entity_refs` rather than inventing a parallel vocabulary.
+  **CORRECTED 2026-08-27: this bullet previously justified itself with
+  "Headroom's default memory substrate is local markdown" — the same false claim
+  struck from the capability list on 2026-08-26. The recommendation survives and
+  is re-grounded above; the stated reason did not.**
   ← `PLAN-025-artifact-plane-v1.md`
 
 ## Acceptance
@@ -178,7 +212,7 @@ must degrade gracefully if Headroom is absent.
 - [ ] Token displays/thresholds (PLAN-002/003 surfaces) read through Headroom stats where they overlap; gaps documented as glue or filed upstream — no new library introduced.
 - [ ] Memory extension interface designed against Headroom's seams; upstream contribution opened (or their decline documented and the patch carried with rationale).
 - [ ] agentic-memory v2 runs as a plugged backend behind that interface; the MCP source is a thin host over it.
-- [ ] Docs: a `vorno.ai/docs` page on Vorno + Headroom — what it does, how to toggle it, what leaves the machine (nothing without opt-in).
+- [ ] Docs: a `vorno.ai/docs` page on Vorno + Headroom — what it does, how to toggle it, and what leaves the machine (nothing without opt-in, save the one-time embedder model fetch on first enable, which is disclosed). **This item is discharged by two SUVs, not one:** SUV-0032 authors the page into the in-app docs tree, and SUV-0033 publishes it to the site. In-app content alone does not discharge it — the acceptance says `vorno.ai/docs`, and a guide written for a filesystem stays valid on disk while breaking on the web.
 
 ## Status log
 
@@ -187,4 +221,5 @@ must degrade gracefully if Headroom is absent.
 - `2026-08-25` — first breakdown round: SUV-0014..0018 cut covering vendoring/long-term support (vet+pin, boundary module) and the settings surfaces (config schema/storage/precedence, workspace UI, config-driven boundary). I1 compression wiring, benchmarks, token-surface migration, and I2 memory remain undecomposed.
 - `2026-08-26` — **I2's premise did not survive integration-time verification, and the "Memory, multi-layer" bullet above is corrected in place.** SUV-0029 audited the pinned SDK against this plan's own instruction ("verify at integration time, not from README claims") and found no memory API in `headroom-ai@0.36.5` at all — no `/v1/memory*` endpoint, no client member, no filesystem access, and no mention of memory in its README. Memory is a proxy/CLI feature reached only through `headroom wrap --memory`, the Python client, or proxy-injected model tools; its substrate is SQLite + HNSW + FTS5, not local markdown. **SUV-0029 is blocked**, and SUV-0030 (the plan's priority build item) and SUV-0031 inherit the premise and need re-grounding. Unblocking requires an architectural decision — which Headroom surface provides memory — that §I1 already contemplated as an ADR; the recommendation is the upstream-contribution route, consistent with this plan's upstream-first posture. Evidence and the four options considered: [`roadmap/evidence/PLAN-040/headroom-memory-surface-audit.md`](../../evidence/PLAN-040/headroom-memory-surface-audit.md).
 - `2026-08-27` — **SUV-0030 delivered, and it inverts I2's premise in the favourable direction: the "priority build item" of this plan largely exists upstream already.** `headroom/memory/ports.py` defines the `MemoryStore` / `VectorIndex` / `TextIndex` / `Embedder` / `MemoryCache` / `GraphStore` Protocols; `config.py` carries `EXTERNAL` on all three storage backend enums; `factory.py` loads third-party backends from setuptools `entry_points`. §I2's build item therefore shrinks from "design a pluggable extension interface" to **four additive gaps** taken upstream as [headroomlabs-ai/headroom#3287](https://github.com/headroomlabs-ai/headroom/issues/3287) (retrieval context, withheld/refused envelope, compression-surviving annotations, a TypeScript path) plus a docs PR. Design, on-paper backend walk, and the dated follow-up plan for open question 2: [`roadmap/evidence/PLAN-040/memory-extension-interface-design.md`](../../evidence/PLAN-040/memory-extension-interface-design.md). **Two corrections owed to this file, deliberately not applied in place pending the owner's read** (doc §4): (a) the *Salvaged from prior plans* frontmatter bullet justifies itself with "Headroom's default memory substrate is local markdown" — the same false claim already struck from the capability list on 2026-08-26; the bullet's *recommendation* is sound and re-grounded on `metadata_filters`/`entity_refs`, its *reason* is not. (b) The **"Extension seams"** bullet above is wrong for the TypeScript SDK: `on_pipeline_event` does not exist in `headroom-ai@0.36.5` (the only `pipeline` token is `pipelineTiming`, a stats field), and "downstream MCP tools" is not a seam of that package. Exactly one of the four named seams — compression hooks — is a real extension point there. Related upstream bug reported in the same issue: `CompressionHooks.computeBiases` is documented but inert on `main` (`biases` assigned, never read).
+- `2026-08-27` — **Open question 1 closed by [ADR-0029](../../decisions/0029-headroom-memory-via-host-invoked-mcp.md); the I2 stall is over.** The memory surface is Headroom's **memory MCP stdio server**, host-invoked from the `HeadroomAdapter` boundary — a fifth option all three SUV-0029 audit passes missed because they reasoned about the npm bundle and upstream's wiki, never the installed Python package. `headroom/memory/mcp_server.py` ships **in the pinned 0.36.5**, exposes `memory_search`/`memory_save`, and launches as `python -m headroom.memory.mcp_server` with **no `headroom wrap` in the path** — which is what makes the F3 posture structural rather than argued. Verified by driving it over real stdio JSON-RPC: `initialize` → `tools/list` → save two facts → search returned both, ranked. **That is this plan's first working memory round-trip.** Three constraints came with it and are carried into the ADR and SUV-0029's re-cut: a third lifecycle state (**installed but unprovisioned** — the ONNX embedder needs an ~86 MB HuggingFace model while the server forces `HF_HUB_OFFLINE=1`, so it advertises both tools while both fail); the surface **collapses four-layer scoping to USER only** (`session_id`/`agent_id`/`turn_id` NULL on disk); and **reads are prose, not structured**. The latter two join the LocalBackend-bypass gap on [#3287](https://github.com/headroomlabs-ai/headroom/issues/3287) at the 9/3 bump. Two corrections owed to this file since 2026-08-27 are now **applied in place** (owner-read condition met): the *Salvaged* frontmatter bullet's false justification struck and its recommendation re-grounded on `metadata_filters`/`entity_refs`, and the *Extension seams* bullet reduced from four named seams to the one that is real. Acceptance item 7 is re-scoped: it takes **two** SUVs, and SUV-0033 is cut to own the site-side publish that no SUV on this branch could.
 - `2026-08-26` — second breakdown round, to completion: SUV-0023..0032 cut covering the full remainder — I1 compression call sites (session loop 0023, Conductor 0024), I0 benchmarks→defaults (0025), user-visible retrieval (0026), the in-app savings/stats report view (0027), token display/threshold migration onto Headroom stats (0028), I2 memory adoption (0029), the extension interface + upstream contribution (0030), agentic-memory v2 as plugged backend (0031), and the docs page (0032). Every plan acceptance item now maps to at least one SUV.

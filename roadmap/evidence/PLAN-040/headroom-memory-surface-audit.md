@@ -236,6 +236,114 @@ substrate that acceptance item 3 forbids. That is PLAN-040 open question 1.
 
 ---
 
+### M7 — A memory MCP stdio server ships in the pinned version, and it works
+
+**This finding supersedes the audit's central negative conclusion, and corrects
+M6 on one point.** Findings M1–M6 are accurate as far as they looked. They did
+not look far enough: every pass reasoned about the **npm bundle**
+(`node_modules/headroom-ai/dist`) and upstream's **wiki**. None opened the
+installed **Python package**. That is where the memory surface was.
+
+`headroom/memory/mcp_server.py` ships **in the pinned 0.36.5** — the same
+version as the npm pin, so this is the matched Python half of the product, not
+version skew. It is a stdio MCP server whose module docstring reads: "A stdio
+MCP server that exposes headroom's memory backend as tools —
+`memory_search` (semantic search across stored memories), `memory_save`
+(persist a new fact/decision/convention)."
+
+It is not an internal detail. Upstream's own `headroom wrap` writes exactly this
+invocation into its generated MCP config
+(`cli/wrap.py:3064-3066`: `args = ["-m", "headroom.memory.mcp_server", "--user", "{user_id}"]`),
+so it is a shipped, exercised entry point — and it is reachable **without**
+`wrap`, which is what makes it viable under F3.
+
+**Driven end-to-end over real stdio JSON-RPC**, not read:
+
+```
+initialize  -> serverInfo {"name":"headroom-memory","version":"1.29.1"}
+tools/list  -> ['memory_search', 'memory_save']
+memory_save -> Saved 2 new, updated 0 existing (2 total)
+memory_search("what version of headroom is pinned?")
+            -> 1. [relevance=0.50] Vorno pins headroom-ai at 0.36.5.
+               2. [relevance=0.16] PLAN-040 chose the memory MCP stdio surface.
+```
+
+**This is PLAN-040's first working memory round-trip.** M1–M6 established what
+does not exist; M7 establishes what does. The surface decision it enabled is
+[ADR-0029](../../decisions/0029-headroom-memory-via-host-invoked-mcp.md).
+
+#### M7a — Correction to M6: FTS5 is real and now reproduced
+
+M6 recorded FTS5 as "documented but unreproduced", because `sqlite_master` on a
+freshly initialised database held only `memories` and its indexes. **That was an
+artifact of inspecting an empty store.** After real writes through the MCP
+server, `sqlite_master` carries `memory_fts`, `memory_fts_data`,
+`memory_fts_idx`, `memory_fts_content`, `memory_fts_docsize`, and
+`memory_fts_config`. The FTS5 index is created lazily on first write. M6's
+caution was correct practice and its conclusion was wrong; recording both.
+
+#### M7b — Three constraints the surface imposes
+
+1. **Installed ≠ working — there is a third state.** The embedder is hardwired
+   (`LocalBackendConfig(db_path=..., embedder_backend="onnx")`,
+   `mcp_server.py:170-171`) and requires `Qdrant/all-MiniLM-L6-v2-onnx`
+   (~86 MB, `adapters/embedders.py:432`) from HuggingFace Hub — while
+   `mcp_server.main()` sets `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` via
+   `setdefault`. On this machine, with the CLI installed and `~/.headroom/`
+   populated, the model was **not** cached, and the result was:
+   **the server handshakes correctly and advertises both tools while both tool
+   calls fail** with `isError: true` — "An error happened while trying to locate
+   the file on the Hub and we cannot find the requested files in the local
+   cache." Re-running with `HF_HUB_OFFLINE=0` fetched the model and every call
+   passed. `setdefault` means the environment can override it. Consumers must
+   therefore distinguish **absent**, **present-but-unprovisioned**, and **ready**.
+2. **Four-layer scoping collapses to USER.** `_handle_save` passes only
+   `content` / `user_id` / `importance` to `backend.save_memory`. Confirmed by
+   querying the rows this test wrote: `session_id`, `agent_id`, and `turn_id`
+   are **NULL**. Upstream advertises USER → SESSION → AGENT → TURN hierarchical
+   scoping as a differentiator against Letta and Mem0; this surface does not
+   expose it.
+3. **Reads are prose, not structured.** `_handle_search` formats results as
+   `"1. [relevance=0.50] <content>"` with an optional `Related:` line. There is
+   no structured `entity_refs` / `metadata` in the response.
+
+Constraints 2 and 3, plus the `LocalBackend` bypass below, are filed as
+additional gaps on
+[#3287](https://github.com/headroomlabs-ai/headroom/issues/3287).
+
+#### M7c — The MCP server bypasses the pluggable-backend factory
+
+`mcp_server.py:170-171` instantiates `LocalBackend(LocalBackendConfig(...))`
+**directly**, bypassing `factory.py`'s setuptools `EXTERNAL` entry-point
+routing — the very seam SUV-0030 designed against and SUV-0031 plugged
+agentic-memory v2 into. So the v2 backend is reachable through the Python
+factory but **not** through the MCP server, until a small upstream fix routes
+the server through the factory. This is the gating dependency for SUV-0031's
+value being realised through the chosen surface.
+
+#### M7 reproduction
+
+Requires the matched CLI (`~/.local/bin/headroom` → 0.36.5). Writes only to the
+throwaway database passed via `--db`.
+
+```bash
+# The server, launchable with no `headroom wrap` in the path:
+python -m headroom.memory.mcp_server --db /tmp/smoke/memory.db --user smoke
+
+# Drive it over stdio with initialize -> notifications/initialized ->
+# tools/list -> tools/call. Unprovisioned machines fail here:
+#   both tools -> isError: true, "cannot find the requested files in the local cache"
+# Provision the embedder once, then both calls succeed:
+HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python -m headroom.memory.mcp_server ...
+
+# Scoping collapse and the lazily-created FTS5 index, after writes:
+sqlite3 /tmp/smoke/memory.db \
+  "select id,user_id,session_id,agent_id,turn_id from memories;"   # -> scopes NULL
+sqlite3 /tmp/smoke/memory.db \
+  "select name from sqlite_master where type='table';"             # -> memory_fts* present
+ls ~/.cache/huggingface/hub | grep -i minilm   # -> models--Qdrant--all-MiniLM-L6-v2-onnx
+```
+
 ## 3. Impact on SUV-0029's acceptance list
 
 | # | Acceptance item | Status |

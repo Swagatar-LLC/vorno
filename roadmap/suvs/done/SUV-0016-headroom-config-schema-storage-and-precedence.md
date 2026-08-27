@@ -1,12 +1,12 @@
 ---
 id: SUV-0016
 title: Headroom config schema, storage, and precedence
-status: in-progress
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
 created: 2026-08-25
-updated: 2026-08-26
+updated: 2026-08-27
 related: []
 blocked-by: []
 ---
@@ -137,3 +137,11 @@ per-workspace overrides, with one resolver that yields the effective config.
   SUV takes no dependency on the pinned SDK — the config module imports
   nothing. Full `packages/shared` suite re-run on the combined state:
   3486 pass / 0 fail.
+
+- `2026-08-27` — **advance pass. `in-progress/` → `done/`, `status: in-progress` → `status: done`.**
+  Acceptance was already green and no open blocker was named; only the folder
+  and frontmatter lagged. Part of a single eight-file pass over PLAN-040's SUVs
+  taken alongside ADR-0029, which closed the plan's last open decision. The
+  general shape being corrected: an unsatisfied *declared* edge halts
+  advancement even when the edge is factually discharged, because folder status
+  is the only thing the edge reads.

@@ -1,7 +1,7 @@
 ---
 id: SUV-0017
 title: Workspace settings UI for Headroom
-status: in-progress
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
@@ -444,3 +444,11 @@ integration options, persisted through the SUV-0016 storage.
   authorise it — an owner's call, not mine. (b) The acceptance boxes were
   already `[x]` before this run; they are left checked because each is tied to a
   named test that ran today.
+
+- `2026-08-27` — **advance pass. `in-progress/` → `done/`, `status: in-progress` → `status: done`.**
+  Acceptance was already green and no open blocker was named; only the folder
+  and frontmatter lagged. Part of a single eight-file pass over PLAN-040's SUVs
+  taken alongside ADR-0029, which closed the plan's last open decision. The
+  general shape being corrected: an unsatisfied *declared* edge halts
+  advancement even when the edge is factually discharged, because folder status
+  is the only thing the edge reads.

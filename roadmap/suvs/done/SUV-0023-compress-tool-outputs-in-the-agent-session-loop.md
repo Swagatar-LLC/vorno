@@ -1,12 +1,12 @@
 ---
 id: SUV-0023
 title: Compress tool outputs in the agent session loop
-status: in-progress
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
 created: 2026-08-26
-updated: 2026-08-26
+updated: 2026-08-27
 related: []
 blocked-by:
   - SUV-0018-resolved-config-drives-the-headroom-boundary.md (sessions must already hold a config-driven adapter)
@@ -334,3 +334,11 @@ originals retrievable through the adapter.
   so the declared blocker is clear and this file is movable — but the move is a
   separate act from the fix this pass was asked for, and the `advance` skill
   owns it.
+
+- `2026-08-27` — **advance pass. `in-progress/` → `done/`, `status: in-progress` → `status: done`.**
+  Acceptance was already green and no open blocker was named; only the folder
+  and frontmatter lagged. Part of a single eight-file pass over PLAN-040's SUVs
+  taken alongside ADR-0029, which closed the plan's last open decision. The
+  general shape being corrected: an unsatisfied *declared* edge halts
+  advancement even when the edge is factually discharged, because folder status
+  is the only thing the edge reads.

@@ -1,7 +1,7 @@
 ---
 id: SUV-0025
 title: Benchmark Headroom on real workloads and set rollout defaults
-status: in-progress
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
@@ -146,3 +146,11 @@ evidence, and use them to set the instance-level rollout defaults.
   appeared modified in this checkout mid-session (a comment-only edit belonging
   to SUV-0028's token surface). It is out of this SUV's scope, so it was neither
   committed nor reverted — reported instead.
+
+- `2026-08-27` — **advance pass. `in-progress/` → `done/`, `status: in-progress` → `status: done`.**
+  Acceptance was already green and no open blocker was named; only the folder
+  and frontmatter lagged. Part of a single eight-file pass over PLAN-040's SUVs
+  taken alongside ADR-0029, which closed the plan's last open decision. The
+  general shape being corrected: an unsatisfied *declared* edge halts
+  advancement even when the edge is factually discharged, because folder status
+  is the only thing the edge reads.

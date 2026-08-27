@@ -1,12 +1,12 @@
 ---
 id: SUV-0014
 title: Vet and pin Headroom for adoption
-status: planned
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
 created: 2026-08-25
-updated: 2026-08-26
+updated: 2026-08-27
 related: []
 blocked-by: []
 ---
@@ -83,3 +83,11 @@ Headroom TypeScript SDK for integration.
   SUV-0015 should delete the import guard, not weaken it.**
   The dependency lands unreferenced — grep confirms the only `headroom-ai`
   mentions in `apps/`/`packages/` are string constants inside that guard test.
+
+- `2026-08-27` — **advance pass. `planned/` → `done/`, `status: planned` → `status: done`.**
+  Acceptance was already green and no open blocker was named; only the folder
+  and frontmatter lagged. Part of a single eight-file pass over PLAN-040's SUVs
+  taken alongside ADR-0029, which closed the plan's last open decision. The
+  general shape being corrected: an unsatisfied *declared* edge halts
+  advancement even when the edge is factually discharged, because folder status
+  is the only thing the edge reads.

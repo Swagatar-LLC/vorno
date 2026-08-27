@@ -1,7 +1,7 @@
 ---
 id: SUV-0032
 title: Vorno + Headroom docs page
-status: in-progress
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
@@ -306,3 +306,11 @@ to toggle it, and what leaves the machine (nothing without opt-in).
   Also unchanged and still open from the prior entry: nothing has been written to
   `apps/electron/resources/release-notes/next.md` despite SUV-0017/0026/0027
   shipping user-visible surface. Out of this SUV's scope; deferred to PR time.
+
+- `2026-08-27` — **advance pass. `in-progress/` → `done/`, `status: in-progress` → `status: done`.**
+  Acceptance was already green and no open blocker was named; only the folder
+  and frontmatter lagged. Part of a single eight-file pass over PLAN-040's SUVs
+  taken alongside ADR-0029, which closed the plan's last open decision. The
+  general shape being corrected: an unsatisfied *declared* edge halts
+  advancement even when the edge is factually discharged, because folder status
+  is the only thing the edge reads.

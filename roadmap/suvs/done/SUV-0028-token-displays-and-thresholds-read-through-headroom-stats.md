@@ -1,7 +1,7 @@
 ---
 id: SUV-0028
 title: Token displays and thresholds read through Headroom stats
-status: planned
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
@@ -418,3 +418,11 @@ management runs on one measured source.
   without this node writing to it. Recorded because a shared checkout that
   mutates under a running verification is worth knowing about; nothing was done
   to it, and it is not in this SUV's commit.
+
+- `2026-08-27` — **advance pass. `planned/` → `done/`, `status: planned` → `status: done`.**
+  Acceptance was already green and no open blocker was named; only the folder
+  and frontmatter lagged. Part of a single eight-file pass over PLAN-040's SUVs
+  taken alongside ADR-0029, which closed the plan's last open decision. The
+  general shape being corrected: an unsatisfied *declared* edge halts
+  advancement even when the edge is factually discharged, because folder status
+  is the only thing the edge reads.
