@@ -10,7 +10,12 @@ updated: 2026-08-26
 related:
   - SUV-0027-in-app-headroom-savings-and-stats-report-view.md (the report view the page documents)
   - SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md (the memory behavior the page documents)
-blocked-by: []
+blocked-by:
+  - SUV-0014-vet-and-pin-headroom-for-adoption.md (the telemetry audit the privacy section must not outrun)
+  - SUV-0017-workspace-settings-ui-for-headroom.md (the enable/disable toggle the page documents)
+  - SUV-0026-user-visible-retrieval-of-compressed-originals.md (the view-original affordance)
+  - SUV-0027-in-app-headroom-savings-and-stats-report-view.md (the report view)
+  - SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md (the memory behavior)
 ---
 
 # SUV-0032 — Vorno + Headroom docs page
@@ -40,3 +45,10 @@ to toggle it, and what leaves the machine (nothing without opt-in).
 ## Status log
 
 - `2026-08-26` — created in `planned/`
+- `2026-08-26` — `blocked-by:` populated. The plan's `related-suvs:` annotated this
+  SUV "last — documents shipped surfaces", but the edge list was empty, so the
+  plan-level task compiled it as a ROOT node that would start in parallel with
+  SUV-0014 and document surfaces that do not exist yet. Edges drawn from this
+  SUV's own acceptance list (toggle, view-original, report view, telemetry
+  audit) plus the memory behavior named in `related:`. Prose annotations are not
+  machine-readable; the frontmatter edge is the one the compiler reads.
