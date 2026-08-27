@@ -152,16 +152,19 @@ why the feature ships off:
 
 - **In agent sessions, compression currently has no effect.** Vorno only accepts a
   compressed tool output if the proxy hands back a retrieval handle for the
-  original. Across every benchmarked session workload the pinned proxy issued no
-  handles, so every tool output passed through uncompressed. You are unlikely to
-  see the compression badge described above until that changes upstream.
+  original. The pinned proxy issued zero handles across all 240 measured
+  compression calls, so **0 of 48** tool outputs were accepted and every one
+  passed through uncompressed. You are unlikely to see the compression badge
+  described above until that changes upstream.
 - **In workflow runs, compression is currently irreversible.** The Conductor path
   accepts compressed node context without requiring a handle, so what it
-  compresses cannot be recovered. Measured whole-corpus saving was around 12.5%,
-  paid for with node output that could not be retrieved back.
+  compresses cannot be recovered. The best measured whole-corpus saving was
+  **10.5%**, paid for with 47,811 bytes of node output that could not be
+  retrieved back.
 
-There is also a latency cost when compression does run: negligible at the median,
-but roughly one call in twenty took 1.3–1.8 seconds against the local proxy.
+There is also a latency cost when compression does run: negligible at the median
+(+4.4 to +13.1 ms per call), but roughly one call in twenty took
+**1.4–2.1 seconds** against the local proxy.
 
 Headroom is safe to leave off, and safe to switch on to try — the failure modes
 above are about how much it helps, not about correctness of your data at rest.
@@ -192,9 +195,9 @@ on a supply-chain and network audit Vorno performed against the exact package
 version it ships:
 
 - **The package contains no vendor endpoint.** Auditing every URL literal in the
-  published package found exactly one distinct address: `http://localhost:8787`.
-  There is no analytics host, no error reporter, and no update check anywhere in
-  it.
+  published package's shipped code found exactly one distinct address:
+  `http://localhost:8787`. There is no analytics host, no error reporter, and no
+  update check anywhere in it.
 - **Every request is relative to one base address**, so the destination of all
   Headroom traffic is whatever that base address is — by default, a process on
   your own machine.

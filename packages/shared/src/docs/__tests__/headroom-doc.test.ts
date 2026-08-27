@@ -39,6 +39,24 @@ const DOC_PATH = join(
 
 const doc = readFileSync(DOC_PATH, 'utf-8');
 
+/**
+ * SUV-0025's benchmark report — the source for every measured figure the page
+ * quotes in §"What to expect today".
+ *
+ * Pinning page→report rather than page→literal is deliberate: a figure typed
+ * into prose from memory is the exact defect this guard was added to catch. The
+ * first version of the page claimed a 12.5% whole-corpus saving and a
+ * 1.3–1.8 s p95, neither of which appears anywhere in the report (the measured
+ * values are 10.5% and 1.4–2.1 s). Asserting the string is present in BOTH
+ * documents means a re-benchmark that moves a number reds the page too.
+ */
+const BENCHMARK_PATH = join(
+  import.meta.dir,
+  '../../../../../roadmap/evidence/PLAN-040/headroom-benchmark-report.md',
+);
+
+const benchmark = readFileSync(BENCHMARK_PATH, 'utf-8');
+
 /** Every leaf string value in the shipped English locale. */
 const localeValues = new Set<string>();
 (function collect(node: unknown): void {
@@ -150,6 +168,32 @@ describe('Headroom docs page (SUV-0032)', () => {
     expect(HEADROOM_CONFIG_DEFAULTS.exposeStats).toBe(false);
     expect(HEADROOM_CONFIG_DEFAULTS.compressionEngines).toEqual([]);
     expect(doc).toMatch(/off by default/i);
+  });
+
+  describe('every measured figure it quotes is in the benchmark report', () => {
+    // Each entry must appear verbatim in BOTH the page and SUV-0025's report.
+    const MEASURED_FIGURES: readonly string[] = [
+      '10.5%', // best measured whole-corpus saving (`balanced`)
+      '1.4–2.1 seconds', // p95 latency, "roughly one call in twenty"
+      '0 of 48', // tool outputs accepted in a live session
+      '240', // compression calls across which zero handles were issued
+    ];
+
+    for (const figure of MEASURED_FIGURES) {
+      test(`"${figure}"`, () => {
+        expect(benchmark).toContain(figure);
+        expect(doc).toContain(figure);
+      });
+    }
+
+    test('quotes no figure the report does not contain', () => {
+      // The two figures the first draft interpolated. Named explicitly so the
+      // regression cannot come back by a different route than the check above.
+      for (const invented of ['12.5%', '1.3–1.8 seconds']) {
+        expect(benchmark).not.toContain(invented);
+        expect(doc).not.toContain(invented);
+      }
+    });
   });
 
   test('claims no memory feature, because the pinned SDK has none', () => {
