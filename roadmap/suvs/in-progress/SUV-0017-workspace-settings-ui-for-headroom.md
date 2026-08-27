@@ -116,7 +116,9 @@ integration options, persisted through the SUV-0016 storage.
   blocks, so only this SUV's hunk was staged.
 
 - `2026-08-27` — re-verified on `plan/plan-040` after the previous run's evidence
-  was rejected as unreproducible, and one acceptance gap closed. The 2026-08-26
+  was rejected as unreproducible, and one acceptance gap closed. **(Superseded in
+  part by the second 2026-08-27 entry below — three of its numbers were wrong.)**
+  The 2026-08-26
   implementation (`44aa3429`) stands; this entry replaces its evidence with
   numbers observed in this run, and corrects three that were wrong.
 
@@ -172,3 +174,114 @@ integration options, persisted through the SUV-0016 storage.
   **Left alone, not mine:** `packages/shared/src/headroom/__tests__/sdk-roundtrip.test.ts`
   was modified in this checkout by a concurrent writer while this run was in
   progress. It is not staged in this commit and was not touched.
+
+- `2026-08-27` (second pass) — re-verified again from a clean tree after the
+  previous run was rejected on verification. **No production code changed today
+  and no test changed today**; `44aa3429` stands and all four acceptance items
+  hold. This entry exists because three figures in the entry above do not
+  reproduce. Every number below was observed in this session, and the tree was
+  clean (`git status --porcelain` empty) before and after each revert/restore.
+
+  **Three evidence defects corrected.**
+
+  | claim above | observed today | command |
+  |---|---|---|
+  | revert `rpc/settings.ts` → "0 pass / **14** fail" | 0 pass / **17** fail | `cd packages/server-core && bun test src/handlers/rpc/settings-headroom.test.ts` |
+  | `test:shared` "**3644** pass / 0 fail (3664 ran, 211 files)" | **3650 pass / 20 skip / 0 fail**, 3670 ran across 211 files | `bun run test:shared` |
+  | "the other 12 `headroom*` keys there are **SUV-0027's**" | they are **SUV-0026's**, all 12 added by `bd68bed7` | `git log -S'"<key>":' -- packages/shared/src/i18n/locales/en.json` |
+
+  The first is an internal contradiction, not drift: the same entry records the
+  suite going 14 → 17, so reverting the handler reds all 17, not 14. The second
+  is drift from sibling SUVs landing on this branch since. The third is a
+  misattribution — `bd68bed7` is titled "user-visible retrieval of compressed
+  originals (SUV-0026)".
+
+  **Per-suite counts, each run on its own** (these four reproduce exactly as the
+  entry above states — 7 + 8 + 17 + 15 = 47):
+
+  | suite | observed |
+  |---|---|
+  | `packages/shared/src/config/__tests__/headroom-sources.test.ts` | 7 pass / 0 fail, 31 expect() |
+  | `packages/shared/src/workspaces/__tests__/view-headroom.test.ts` | 8 pass / 0 fail, 30 expect() |
+  | `packages/server-core/src/handlers/rpc/settings-headroom.test.ts` | 17 pass / 0 fail, 43 expect() |
+  | `apps/electron/src/renderer/lib/__tests__/headroom-settings.test.ts` | 15 pass / 0 fail, 28 expect() |
+
+  **Red-then-green re-reproduced, all four.** Each red was produced with
+  `git show 44aa3429^:<path> > <path>` and undone with `git checkout HEAD -- <path>`
+  (never `git stash`, in this repo or any worktree of it). The two behavioural
+  reds are the load-bearing ones; the two import-level reds only prove a symbol
+  is missing and are labelled as the weaker evidence they are.
+
+  | reverted | suite | red | restored |
+  |---|---|---|---|
+  | `server-core/src/handlers/rpc/settings.ts` | `settings-headroom` | **0 pass / 17 fail**, every one `Invalid workspace setting key: headroom. Valid keys: name, model, …` — behavioural | 17 pass / 0 fail |
+  | same, filtered `-t "survives a process restart"` | the 3 restart tests | **0 pass / 3 fail**, 14 filtered out — behavioural | 3 pass |
+  | `shared/src/workspaces/headroom.ts` + `workspaces/index.ts` | `view-headroom` | **0 pass / 8 fail** — behavioural (each subprocess dies at `loadAndEvaluateModule`) | 8 pass / 0 fail |
+  | `core/src/types/headroom.ts` | `headroom-sources` | 0 pass / 1 fail, 1 error — import-level: `SyntaxError: export 'resolveHeadroomConfigSources' not found in './headroom.ts'` | 7 pass |
+  | `electron/src/renderer/lib/headroom-settings.ts` (absent at `44aa3429^`) | `headroom-settings` | 0 pass / 1 fail, 1 error — import-level: `Cannot find module '../headroom-settings'` | 15 pass |
+
+  **Acceptance, each item tied to a named test that ran today.**
+
+  1. *Section + fields + persistence + restart.* `HeadroomSettingsSection.tsx`
+     renders one `SettingsRow` per `HEADROOM_CONFIG_FIELDS` entry — `enabled`
+     (Switch), `compressionEngines` (Input), `verbosity` (SettingsMenuSelect),
+     `exposeStats` (Switch) — and `WorkspaceSettingsPage.tsx` mounts it and
+     feeds it `settings.headroomView`. The field list was checked against
+     SUV-0016's `HEADROOM_CONFIG_FIELDS`, not against the implementation.
+     Persistence: `round-trips every option field through a fresh handler`.
+     Restart: the three `survives a process restart` cases, which `Bun.spawnSync`
+     a separate process sharing only `CRAFT_CONFIG_DIR`. **Stated precisely: that
+     is a process boundary, not an Electron relaunch** — it is the strongest
+     evidence an automated suite can produce for this claim, and is not offered
+     as more.
+  2. *Provenance + clear reverts.* `attributes each field to its layer…`,
+     `reports what a cleared override would revert to`, and
+     `agrees with the resolver about where every value came from` (the property
+     tying `resolveHeadroomConfigSources()` to `resolveHeadroomConfig()`).
+  3. *Two workspaces independent.* Four cases, and each asserts the second
+     workspace equals the **disabled** config rather than merely differing:
+     `enabling Headroom in one workspace leaves the other disabled` (shared),
+     `enabling Headroom in one workspace leaves the other resolving to disabled`
+     (RPC), `each workspace overrides a shared instance base on its own`, and
+     `two workspaces still resolve independently after the restart`.
+  4. *Fresh install → toggle off.* `renders a usable, disabled view with no
+     config files at all`, `serves a disabled view on the fresh-install path`,
+     `saves from that fresh state and writes a valid config`, and
+     `renders every field, with the enable toggle off and nothing overridden`.
+
+  **Gates, all run today, all exit 0.**
+
+  | gate | observed |
+  |---|---|
+  | `bun run typecheck:ci` | exit 0, no output |
+  | `bun run test:shared` | 3650 pass / 20 skip / 0 fail (3670 across 211 files) |
+  | `bun run test:server` | 196 pass / 0 fail (18 files) |
+  | `bun run test:webui` | four runs, **1138 pass / 0 fail** — 425 electron + 24 webui + 327 ui + 362 server-core |
+  | `bun run lint:i18n:parity` | `i18n parity OK (6 locales, 1992 keys each)` |
+  | `bun run lint:i18n:sorted` | exit 0 |
+  | `bun run lint:i18n:coverage` | `i18n coverage OK (2097 callsites, 1554 distinct keys, 1992 keys in en.json)` |
+  | `bun run lint:branding` | clean (one pre-existing stale-allowlist *warning*, `apps/viewer/vite.config.ts`, unrelated) |
+  | `bun run lint:headroom-boundary` | `headroom-ai imported only by packages/shared/src/headroom/sdk-adapter.ts` |
+  | `bun build apps/server/src/index.ts --target=bun --outdir=/tmp/suv17-recheck --no-splitting` | bundled 3403 modules, 16.36 MB |
+
+  **Locale keys re-checked by key, not by count.** The 16 keys `44aa3429` added
+  to `en.json` were extracted from the diff and each grepped in all 7 locale
+  files: all present in all 7. The file now holds 28 `settings.workspace.headroom*`
+  keys per locale = these 16 + SUV-0026's 12 (see the correction above).
+
+  **Scope re-checked against `44aa3429`, not the working tree.** SUV-0018 has
+  since landed on this branch (`1291b25c`), so a working-tree grep for toggle
+  consumers is a false positive by construction. Against the commit:
+  `git show 44aa3429 | grep setHeadroomInstanceConfig` → no match, so no
+  instance-base editor; and `git grep loadEffectiveHeadroomConfig 44aa3429`
+  outside its own module and tests returns exactly one line, the barrel
+  re-export in `workspaces/index.ts` — no runtime consumer. Both declared
+  exclusions hold.
+
+  **Two things a reviewer should see named rather than buried.** (a) The SUV's
+  scope line says provenance is two-valued ("workspace override vs instance
+  default") while the model is three-valued and the UI folds `instance` and
+  `default` into one label; the fold is reasoned in the code and in the entry
+  above, but the SUV text does not itself authorise it. (b) The acceptance boxes
+  were already `[x]` before this run; they are left checked because each is now
+  tied to a test that ran today, not because they were found checked.
