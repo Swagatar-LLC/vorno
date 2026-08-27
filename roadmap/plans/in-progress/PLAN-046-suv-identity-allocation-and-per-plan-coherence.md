@@ -95,17 +95,22 @@ marker, so the missing reverse edge surfaces instead of being papered over.
 
 ## Acceptance
 
-- [ ] ADR-0030 is accepted and indexed, and ADR-0028 points at it.
-- [ ] No instruction file in this repo publishes a working-tree-only next-id
+- [x] ADR-0030 is accepted and indexed, and ADR-0028 points at it.
+- [x] No instruction file in this repo publishes a working-tree-only next-id
       recipe.
-- [ ] The console allocator's floor accounts for SUVs on `plan/*`, on remote
+- [x] The console allocator's floor accounts for SUVs on `plan/*`, on remote
       refs, and on ad-hoc branches — proven by a test that fails against the
       current implementation.
-- [ ] The console board shows each SUV's per-plan sequence, and an SUV missing
+- [x] The console board shows each SUV's per-plan sequence, and an SUV missing
       its reverse edge shows a marker rather than a number.
-- [ ] Console test suite green; corpus validator reports 0 violations.
-- [ ] `roadmap/suvs/README.md`, `roadmap-suv-create`, and `roadmap-plan-advance`
-      agree with ADR-0030.
+- [x] Console test suite green (231 on SUV-0038, 238 on SUV-0039); corpus
+      validator reports 0 violations.
+- [x] `roadmap/suvs/README.md`, `roadmap-suv-create`, and `roadmap-plan-advance`
+      agree with ADR-0030 — `roadmap-plan-advance` needed no change; verified it
+      never writes ids and never touches `related-suvs:`.
+
+All three SUVs are implemented and in review; the plan closes when the three PRs
+merge.
 
 ## Status log
 
@@ -115,4 +120,8 @@ marker, so the missing reverse edge surfaces instead of being papered over.
   (`SUV-0036`) rather than the worktree glob (`SUV-0022`) — the plan's own rule
   applied to itself. ADR-0030 accepted on the owner's 2026-08-27 approval,
   resolving the open decision PLAN-043's final log entry left to the owner.
-</content>
+- `2026-08-27` — all three SUVs implemented and in review: SUV-0037 in this
+  repo's PR #181, SUV-0038 as console PR #1, SUV-0039 as console PR #2. The
+  console PRs are based on `plan-043-retrospective-fixes`, not console `main` —
+  console `main` is still the initial commit and all 19 PLAN-043 commits are
+  unmerged into it. Console→main remains the owner's call.

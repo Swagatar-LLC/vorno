@@ -43,7 +43,7 @@ trades a cheap need against an expensive guarantee.
 **The global `SUV-NNNN` identifier is permanent and load-bearing. Per-plan
 coherence is delivered as a computed view over the owning plan's
 `related-suvs:` order, never as a stored field, a renumbering, or a file move.
-Allocation counts every id that has ever existed on any ref.**
+Allocation counts every id that has ever existed anywhere a ref can reach.**
 
 Three commitments:
 
@@ -82,8 +82,8 @@ Consequences that follow, and are accepted:
 
 ### 3. Allocation counts every ref, not the working tree
 
-Next-id allocation must consider **every SUV id that has ever appeared in any
-ref's history**, not the files visible in one checkout.
+Next-id allocation must consider **every SUV id that has ever appeared
+anywhere a ref can reach**, not the files visible in one checkout.
 
 The defect, reproduced 2026-08-27: a fresh worktree cut from `origin/main` sees
 a maximum of `SUV-0022`, so a max+1 allocator hands out `SUV-0023` — an id
@@ -211,4 +211,3 @@ a fraction of the cost, as *prevention* rather than *unrepresentability*.
 - `server.py:2872` (`suv_ids_on_candidate_branches`) — the partial fix.
 - `corpus.py:39`, `corpus.py:141`, `corpus.py:271` — the three mechanisms that
   make nesting and renumbering fail silently.
-</content>

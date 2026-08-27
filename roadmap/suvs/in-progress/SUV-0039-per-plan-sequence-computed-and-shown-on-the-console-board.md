@@ -1,7 +1,7 @@
 ---
 id: SUV-0039
 title: Per-plan sequence computed from the plan's related-suvs order and shown on the board
-status: planned
+status: in-progress
 plan: PLAN-046
 direction: DIR-05
 owner: jh
@@ -48,18 +48,27 @@ an identifier, filename, branch name, or lookup key.
 
 ## Acceptance
 
-- [ ] `plan_seq` is derived from the plan's list order; no SUV markdown file is
+- [x] `plan_seq` is derived from the plan's list order; no SUV markdown file is
       modified by this change.
-- [ ] PLAN-040's sixth listed unit (`SUV-0023`) renders `040.06`, and PLAN-043's
+- [x] PLAN-040's sixth listed unit (`SUV-0023`) renders `040.06`, and PLAN-043's
       first (`SUV-0001`) renders `043.01`.
-- [ ] Reordering a plan's `related-suvs:` changes the labels on the next index
+- [x] Reordering a plan's `related-suvs:` changes the labels on the next index
       with no other edit.
-- [ ] An SUV carrying `plan:` that its plan does not list renders the marker,
+- [x] An SUV carrying `plan:` that its plan does not list renders the marker,
       not a fabricated number.
-- [ ] The global `SUV-NNNN` id remains present on every surface that had it.
-- [ ] Console suite green, including a test for the annotated-filename parse.
+- [x] The global `SUV-NNNN` id remains present on every surface that had it.
+- [x] Console suite green, including a test for the annotated-filename parse.
 
 ## Status log
 
 - `2026-08-27` — created in `planned/`
-</content>
+- `2026-08-27` — moved from `planned` to `in-progress`: implemented as console
+  PR #2 (`suv-0039-plan-seq`). Computed in `Corpus.scan`'s derived-edge pass and
+  threaded through all three whitelists; rendered at the three emission points
+  through one `planSeqHtml` helper. Verified live read-only against the real
+  corpus: `SUV-0023` → `040.06`, PLAN-043 → `043.01`…, zero owned-but-unlabelled
+  SUVs. A test asserts three scans plus `api_doc`/`api_index` leave every file's
+  bytes and mtime identical. Two calls worth knowing: an entry that resolves to
+  nothing still holds its slot (skipping it would renumber everything below the
+  moment a placeholder was fixed), and `rec["suvs"]` stays id-sorted — reordering
+  it is a separate visible change. Tests 187 + 51 = 238 (226 before, 12 new).

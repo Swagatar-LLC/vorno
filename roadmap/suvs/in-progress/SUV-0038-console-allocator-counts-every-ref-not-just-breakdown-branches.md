@@ -1,7 +1,7 @@
 ---
 id: SUV-0038
 title: Console allocator counts every ref, not just breakdown and feedback branches
-status: planned
+status: in-progress
 plan: PLAN-046
 direction: DIR-05
 owner: jh
@@ -37,15 +37,24 @@ the current allocator; the true all-refs maximum is `SUV-0036` while a fresh
 
 ## Acceptance
 
-- [ ] The floor is computed over history across all refs, not over an
+- [x] The floor is computed over history across all refs, not over an
       enumerated list of branch-name prefixes.
-- [ ] An id claimed only on a `plan/*` branch is refused for reuse.
-- [ ] An id claimed only on a remote-tracking ref is refused for reuse.
-- [ ] An id that existed and was renumbered away is still refused for reuse.
-- [ ] A test reproduces the miss against the pre-change implementation and
+- [x] An id claimed only on a `plan/*` branch is refused for reuse.
+- [x] An id claimed only on a remote-tracking ref is refused for reuse.
+- [x] An id that existed and was renumbered away is still refused for reuse.
+- [x] A test reproduces the miss against the pre-change implementation and
       passes after; the full console suite stays green.
 
 ## Status log
 
 - `2026-08-27` — created in `planned/`
-</content>
+- `2026-08-27` — moved from `planned` to `in-progress`: implemented as console
+  PR #1 (`suv-0038-allocator-all-refs`). `suv_ids_on_candidate_branches` became
+  `suv_ids_claimed_anywhere` — the old name described the reach that was the
+  bug. One `git log --all --source` over `roadmap/suvs`; 237 refs in 82 ms,
+  measured because it runs on every `/api/index`. Writing the tests found a
+  second defect: git reports a renumber as a **rename**, so `--diff-filter=A`
+  misses every id that entered by being renamed into — how SUV-0033 came to
+  exist. The filter is gone, and the same correction was pushed back to
+  SUV-0037's recipe. Tests 180 + 51 = 231 (226 before, 5 new), all five failing
+  against the previous implementation.
