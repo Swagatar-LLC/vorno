@@ -197,3 +197,140 @@ originals retrievable through the adapter.
   out, but this SUV is `blocked-by` SUV-0018, which is still in
   `roadmap/suvs/in-progress/`. Moving this file to `done/` while its declared
   blocker is unfinished is a state change I am not making unilaterally.
+
+- `2026-08-27` — **acceptance item 5 was checked but not actually demonstrated.
+  Closed with new tests; every gate re-run.** The previous pass was rejected on
+  this item specifically, and the rejection was right.
+
+  **What was wrong**
+
+  Item 5 reads "existing session persistence/replay tests pass unchanged **with
+  compression active**". The prior evidence ran `src/sessions/__tests__/`
+  (27 tests) and stopped there. That set is neither the whole of what this repo
+  calls persistence/replay, nor is compression active anywhere in it — those
+  tests never construct a Headroom adapter, so they demonstrated the suite is
+  green, not that persistence survives a compressed tool result. The box was
+  checked on the wrong evidence.
+
+  Item 3 was *not* wrong: `preSuvBehaviour` (test file, "Headroom disabled
+  leaves session context byte-identical") is a genuine differential comparison
+  against a real reference implementation of the pre-SUV inline block, not
+  merely a pass-through assertion. It is now also asserted at the persistence
+  layer — see below.
+
+  **What landed (tests only; no production file changed in this pass)**
+
+  Three tests appended to
+  `packages/shared/src/agent/__tests__/tool-result-context-headroom.test.ts`,
+  driving the **real** durability path — `messageToStored` →
+  `writeSessionJsonl` → `readSessionMessages` → `storedToMessage`, the same
+  write and parse a live session reload performs:
+
+  1. *replays a compressed tool result whose handle still redeems the original* —
+     with an enabled adapter, the persisted transcript carries the compressed
+     text (not the original), the handle survives write/read intact, and
+     `adapter.retrieve()` on the **replayed** handle still returns the
+     byte-identical original. A handle that did not survive persistence would
+     leave a reloaded transcript permanently smaller than the truth with no way
+     back.
+  2. *writes the compression marker into the JSONL line itself* — asserted
+     against the parsed line rather than the mapper's return value, so it fails
+     if the field is dropped at serialization rather than at mapping.
+  3. *leaves the persisted transcript byte-identical when Headroom is off* —
+     the serialized JSONL line with the change equals the pre-SUV line
+     byte-for-byte, and does not contain `headroomHandle`.
+
+  The message shape is rebuilt locally rather than imported: `packages/shared`
+  sits below `packages/server-core`, so importing `SessionManager` would invert
+  the dependency. It mirrors `SessionManager.ts:8252-8325` — result to
+  `toolResult`, the three Headroom fields copied as one all-or-nothing set keyed
+  off `headroomHandle` — and that citation is what makes it checkable.
+
+  **Red-then-green, reproducible**
+
+  Back up `packages/shared/src/agent/tool-result-context.ts`, replace its body
+  with the guard-only pre-SUV stand-in (`guardLargeResult`, then
+  `return guarded === null ? null : { ...event, result: guarded }`), run the
+  file, restore by `cp` from the backup:
+
+  - guard-only stand-in → **11 pass / 7 fail** (26 expect() calls)
+  - real implementation → **18 pass / 0 fail** (42 expect() calls)
+
+  The seven reds are the five from the previous pass plus new tests 1 and 2.
+  **New test 3 passes in both states, and that is stated rather than counted as
+  proof:** it asserts the disabled path is unchanged, and unchanged *is*
+  pre-SUV behaviour. It guards against regression; it is not evidence this SUV
+  changed anything.
+
+  Restore verified: `shasum -a 256` of the restored file is
+  `adb2e48a2bb584e9f9acc8e97778cf1ae305dbf8da219b4f7e872a6c849ab02a`, identical
+  to the pre-edit hash. `git checkout --` was not used (LEARNING-066).
+
+  **Acceptance 5, enumerated instead of asserted.** "Session persistence/replay
+  tests" is not a path, so the set was enumerated by sweep and every member run:
+
+  | Set | Result |
+  |---|---|
+  | `packages/shared` `src/sessions/__tests__/` | 27 pass / 0 fail, 5 files |
+  | `packages/shared` `tests/persistence-queue.test.ts` | 3 pass / 0 fail |
+  | `packages/server-core` `src/sessions/` (cold-load, durability, midstream queue recovery) | 179 pass / 0 fail, 24 files |
+  | `packages/server-core` `src/transport/__tests__/webui-resume-resync.test.ts` | 17 pass / 0 fail |
+  | `apps/electron` message/turn-grouping/event parity, session-persistence, session-watcher, reconnect-recovery | 49 pass / 0 fail, 6 files |
+
+  The "unchanged" half: `git show --name-only 9bcff769` lists exactly four
+  source files plus this SUV's own new test file and roadmap pages. None of the
+  five sets above appears in it, and this pass touched only this SUV's own test
+  file.
+
+  **One real coverage gap, reported rather than fixed.**
+  `apps/electron/src/main/__tests__/session-message-parity.test.ts:115-130`
+  keeps a hand-maintained `expectedKeys` allow-list of every `StoredMessage`
+  key, and it does **not** list `headroomHandle` /`headroomOriginalBytes` /
+  `headroomCompressedBytes`. It passes today only because its fixture never sets
+  them — so the repo's own alarm for "a persisted field nobody covered" is
+  silently not covering the Headroom marker, and will red the moment someone
+  adds them to the fixture. Not fixed here for two reasons: those three fields
+  are `Message`/`StoredMessage` surface added by **SUV-0026**, not by this SUV
+  (`9bcff769` touched only `AgentEvent.headroomHandle`); and editing that file
+  is precisely what acceptance item 5's word "unchanged" forbids. It belongs to
+  SUV-0026. The round trip itself is not unverified — new tests 1 and 2 above
+  assert it directly.
+
+  **Gates — all ten CI gates from `validate-pr.yml`, run in this pass**
+
+  - `cd packages/shared && bun test src/agent/__tests__/tool-result-context-headroom.test.ts` — **18 pass / 0 fail**, 42 expect() calls
+  - `cd packages/shared && bun test` — **3653 pass / 20 skip / 0 fail**, 211 files
+  - `cd apps/server && bun test` — **196 pass / 0 fail**, 18 files
+  - `cd packages/server-core && bun test` — **362 pass / 0 fail**, 45 files
+  - `bun run test:webui` — exit 0; four segments: **425**, **24**, **327**, **362** pass, 0 fail each
+  - `cd apps/viewer && bun test worker/` — **23 pass / 0 fail**
+  - `bun run typecheck` — exit 0, no `error TS` lines
+  - `bun run test:doc-tools` — **19 tests, OK**
+  - `bun run lint:i18n:sorted` / `:parity` / `:coverage` — clean (6 locales, 1992 keys each; 2097 callsites)
+  - `bun run lint:branding` — clean (one stale allowlist entry warned, `apps/viewer/vite.config.ts`, pre-existing and unrelated)
+  - `bun run lint:headroom-boundary` — `✓ headroom-ai imported only by packages/shared/src/headroom/sdk-adapter.ts`
+  - `bun build apps/server/src/index.ts --target=bun --outdir=/tmp/suv0023-build-3 --no-splitting` — **3403 modules**
+
+  **Not run, and why.** `cd apps/electron && bun test` (the full app suite) was
+  not run; the six electron persistence/replay files named above were run
+  directly instead. The earlier entry's "19 pre-existing failures" figure is
+  still not restated as verified. `bun run lint` is still red at
+  `lint:ipc-sends` / `lint:tool-name-checks` — `ls` reports
+  `scripts/check-raw-sends.sh` and `scripts/check-task-tool-checks.sh` as "No
+  such file or directory". Pre-existing; `lint` is not one of the ten gates.
+
+  **Foreign staged change in this checkout, left untouched.** `git status`
+  shows a staged rename `roadmap/suvs/in-progress/SUV-0024-…md →
+  roadmap/suvs/done/SUV-0024-…md` that this pass did not make and that was not
+  present at session start. It is another SUV's status move from a concurrent
+  worker in this checkout. It was **not** committed here — this commit names its
+  paths explicitly — and it was not reverted, moved, or stashed. By the time
+  this commit landed, that worker had committed the rename itself and the tree
+  was clean again, so `git status` no longer shows it; recorded here because a
+  verifier reading this entry would otherwise find the observation
+  unreproducible.
+
+  **Status folder still left alone.** SUV-0018 is now in `roadmap/suvs/done/`,
+  so the declared blocker is clear and this file is movable — but the move is a
+  separate act from the fix this pass was asked for, and the `advance` skill
+  owns it.

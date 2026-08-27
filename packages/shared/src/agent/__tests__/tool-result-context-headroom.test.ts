@@ -16,12 +16,15 @@
  */
 
 import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { AgentEvent, HeadroomAdapter } from '@craft-agent/core/types';
+import type { AgentEvent, HeadroomAdapter, Message } from '@craft-agent/core/types';
+import { messageToStored, storedToMessage } from '@craft-agent/core/types';
 import { createHeadroomAdapter } from '../../headroom/index.ts';
+import { readSessionMessages, writeSessionJsonl } from '../../sessions/jsonl.ts';
+import type { StoredSession } from '../../sessions/types.ts';
 import type {
   HeadroomSdkClient,
   HeadroomSdkModule,
@@ -405,6 +408,153 @@ describe('SUV-0023: Headroom disabled leaves session context byte-identical', ()
 // ============================================================
 // The guard still runs first, and compression sees its output
 // ============================================================
+
+// ============================================================
+// Acceptance 5 — persistence and replay, with compression active
+// ============================================================
+
+/**
+ * The message SessionManager builds from a `tool_result` event, reproduced
+ * here at the shape it persists. See
+ * `packages/server-core/src/sessions/SessionManager.ts:8252-8325`: the result
+ * goes to `toolResult`, and the three Headroom fields are copied on as one
+ * all-or-nothing set keyed off `headroomHandle`.
+ *
+ * Rebuilt rather than imported because `packages/shared` sits below
+ * `packages/server-core`; importing SessionManager here would invert the
+ * dependency. What matters for persistence is the message shape, and that is
+ * what this reproduces.
+ */
+function toolMessageFrom(event: ToolResultEvent): Message {
+  return {
+    id: 'msg_suv0023',
+    role: 'tool',
+    content: `Ran ${event.toolName}`,
+    timestamp: 1_756_000_000_000,
+    toolName: event.toolName as string,
+    toolUseId: event.toolUseId,
+    toolResult: event.result,
+    toolStatus: 'completed',
+    isError: event.isError,
+    ...(event.headroomHandle === undefined
+      ? {}
+      : {
+          headroomHandle: event.headroomHandle,
+          ...(event.headroomOriginalBytes === undefined
+            ? {}
+            : { headroomOriginalBytes: event.headroomOriginalBytes }),
+          ...(event.headroomCompressedBytes === undefined
+            ? {}
+            : { headroomCompressedBytes: event.headroomCompressedBytes }),
+        }),
+  } as Message;
+}
+
+/**
+ * Persist one message through the real durability path and read it back the way
+ * a session reload does: `messageToStored` → `writeSessionJsonl` →
+ * `readSessionMessages` → `storedToMessage`. No stand-ins — this is the same
+ * write and the same parse a live session performs.
+ *
+ * @returns the replayed message and the raw JSONL line that held it.
+ */
+function persistAndReplay(message: Message): { replayed: Message; line: string } {
+  const dir = sessionDir();
+  const file = join(dir, 'session.jsonl');
+  const session = {
+    id: '260827-suv0023',
+    workspaceRootPath: '/tmp/ws',
+    createdAt: 1_756_000_000_000,
+    lastUsedAt: 1_756_000_000_001,
+    name: 'SUV-0023 persistence',
+    messages: [messageToStored(message)],
+    tokenUsage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      contextTokens: 0,
+      costUsd: 0,
+    },
+  } as unknown as StoredSession;
+
+  writeSessionJsonl(file, session);
+
+  const lines = readFileSync(file, 'utf8').split('\n').filter(Boolean);
+  const stored = readSessionMessages(file);
+  expect(stored).toHaveLength(1);
+
+  return {
+    replayed: storedToMessage(stored[0] as never),
+    // Line 1 is the header; line 2 is the message.
+    line: lines[1] as string,
+  };
+}
+
+describe('SUV-0023: persistence and replay hold with compression active', () => {
+  it('replays a compressed tool result whose handle still redeems the original', async () => {
+    const service = compressingService();
+    const adapter = await enabledAdapter(service);
+    const output = representativeToolOutput();
+
+    const prepared = await prepareToolResultForContext(toolResultEvent(output), {
+      sessionPath: sessionDir(),
+      headroom: async () => adapter,
+    });
+    expect(prepared).not.toBeNull();
+
+    const { replayed } = persistAndReplay(toolMessageFrom(prepared as ToolResultEvent));
+
+    // The transcript carries the compressed text — what the model actually read —
+    // not the original, and not a truncation of it.
+    expect(replayed.toolResult).toBe(`[compressed: ${output.length} bytes]`);
+    expect(replayed.toolResult).toBe(prepared?.result);
+
+    // And the handle survives the round trip intact, so a reloaded session can
+    // still redeem the byte-identical original. A handle that did not survive
+    // would leave a transcript permanently smaller than the truth.
+    expect(replayed.headroomHandle).toBe(prepared?.headroomHandle as string);
+    const retrieved = await adapter.retrieve(replayed.headroomHandle as string);
+    expect(retrieved.retrieved === true ? retrieved.content : null).toBe(output);
+  });
+
+  it('writes the compression marker into the JSONL line itself', async () => {
+    const service = compressingService();
+    const adapter = await enabledAdapter(service);
+
+    const prepared = await prepareToolResultForContext(
+      toolResultEvent(representativeToolOutput()),
+      { sessionPath: sessionDir(), headroom: async () => adapter },
+    );
+
+    const { line } = persistAndReplay(toolMessageFrom(prepared as ToolResultEvent));
+    const parsed = JSON.parse(line) as Record<string, unknown>;
+
+    // Asserted against the parsed line rather than the mapper's return value so
+    // this fails if the field is ever dropped at serialization rather than at
+    // mapping.
+    expect(parsed.headroomHandle).toBe(prepared?.headroomHandle as string);
+  });
+
+  it('leaves the persisted transcript byte-identical when Headroom is off', async () => {
+    const disabled = await createHeadroomAdapter({ enabled: false });
+    const event = toolResultEvent(representativeToolOutput());
+
+    // Pre-SUV: the guard declined, so the original event is what was persisted.
+    const before = persistAndReplay(toolMessageFrom(event));
+
+    const after = await prepareToolResultForContext(event, {
+      sessionPath: sessionDir(),
+      headroom: async () => disabled,
+    });
+    const withChange = persistAndReplay(toolMessageFrom((after ?? event) as ToolResultEvent));
+
+    // Byte-for-byte on the serialized line, not just structurally equal: key
+    // order and the absence of the marker key both matter to "identical".
+    expect(withChange.line).toBe(before.line);
+    expect(withChange.line).not.toContain('headroomHandle');
+    expect(withChange.replayed).toEqual(before.replayed);
+  });
+});
 
 describe('SUV-0023: compression applies to what actually enters context', () => {
   it('compresses the guard’s replacement, not the raw oversized result', async () => {
