@@ -302,6 +302,15 @@ print(type(s).__module__, type(s).__name__, isinstance(s, MemoryStore))"
 #   SELFTEST FAIL (40 checks, 5 failed)      exit 1
 # Restore the line; back to 40/0, exit 0. The parity checks are load-bearing.
 
+# While that sabotage is still applied, run the HOST suite as well. This is a
+# delegation proof the tripwire cannot give: a fault injected in the backend
+# surfaces in the host's own behavioural checks, which is only possible if the
+# host genuinely reads its answers from the backend rather than keeping a
+# second path to the gate. Added by the 2026-08-27 third pass (§7).
+./.venv/bin/python server/mcp_server.py selftest
+#   SELFTEST FAIL (53 checks, 2 failed)      exit 1
+# Restore the line; back to 53/0, exit 0.
+
 # --- acceptance 1 + 3: the host delegates ----------------------------------
 grep -nE "^\s*(import|from)\s" server/mcp_server.py
 #   json, os, re, subprocess, sys, and `from agentic_memory import headroom_backend
@@ -398,6 +407,47 @@ that go red under the archive sabotage; 53 host checks of which exactly 50 are
 the pre-existing labels, unmodified; the tripwire's `['gate','config','preflight']`
 → `[]`; the 15 `gate.` references in the pre-change host; `gate.py`'s identical
 blob hash; and the empty `grep -rn "agentic.memory" apps/ packages/`.
+
+---
+
+## 8. Third pass, 2026-08-27 — independent re-derivation
+
+A third verification pass re-ran §6 from scratch against the working tree,
+deriving every figure by execution rather than by reading §6 or §7. **No figure
+in either was found to be wrong.** The pass is recorded because reproducibility
+that has only been asserted once is not yet reproducibility.
+
+Re-derived and identical: backend selftest `SELFTEST PASS (40 checks, 0 failed)`
+exit 0; the archive sabotage producing `SELFTEST FAIL (40 checks, 5 failed)`
+exit 1 with the same five named checks; restore returning 40/0 exit 0 with
+`git status --porcelain` empty; host selftest `SELFTEST PASS (53 checks, 0 failed)`
+exit 0; the pre-change host at `04aba2f` passing `SELFTEST PASS (50 checks, 0 failed)`;
+`comm -23` empty and `comm -13` naming exactly the same three new labels; the
+tripwire's `['gate','config','preflight']` → `[]`; group names against
+`factory.py:28-30`; `_create_store`/`_create_text_index` on an `EXTERNAL` config
+returning `AgenticMemoryStore` / `AgenticMemoryTextIndex` with both `isinstance`
+checks `True` and `entry_points(group="headroom.memory_vector")` empty;
+`gate.py`'s blob `0a28daf7a7585470a5e2c8665d32590501fae25a` at both commits;
+eleven engine modules passing with `evals` at rc=2; the host's import list;
+the live vault answering over stdio at exit 0 with the retrieval log unmoved at
+**106 lines**; and the empty product-side grep.
+
+**One item added, not corrected.** §6 proved delegation by static tripwire only.
+The third pass added a dynamic proof: with the archive sabotage still applied to
+the *backend*, the *host* suite also goes red — `SELFTEST FAIL (53 checks, 2
+failed)`, exit 1. A fault injected in the backend cannot reach the host's
+behavioural checks unless the host is genuinely reading its answers from the
+backend, so this closes the gap the tripwire leaves open (the tripwire proves
+the host does not *import* the engine; this proves it does *use* the backend).
+Folded into §6 above.
+
+**One number moved for a benign reason.** SUV-0031's 2026-08-27 entry records
+`packages/shared` at 3650 pass / 20 skip; the third pass measured **3653 pass /
+20 skip / 0 fail**. The delta is commit `3619730f` (SUV-0023), which landed after
+that measurement and added exactly three cases to
+`packages/shared/src/agent/__tests__/tool-result-context-headroom.test.ts`
+(10 → 13 `it(`/`test(` declarations). The earlier figure was correct when taken;
+neither figure indicates a defect.
 
 Related: [`memory-extension-interface-design.md`](./memory-extension-interface-design.md)
 (SUV-0030, the interface), [`headroom-memory-surface-audit.md`](./headroom-memory-surface-audit.md)

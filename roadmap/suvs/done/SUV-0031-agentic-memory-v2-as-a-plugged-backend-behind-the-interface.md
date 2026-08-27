@@ -171,3 +171,107 @@ over it.
   `~/dev/agentic-memory-template/.venv/bin/python3` with the prior config
   preserved at `config.json.bak-suv0031-20260827`. Neither is an acceptance
   item, which is why this moves to `done` with both named rather than waiting.
+
+- `2026-08-27` — **third verification pass: every acceptance item re-derived by
+  execution; all four hold; no prior figure found wrong.** This pass deliberately
+  did not read the previous write-ups for its numbers — it re-ran the commands
+  and compared afterwards. Full transcript is §6 of the gap list; what this pass
+  added and reconciled is §8. Engine tree clean throughout, `git stash` never
+  used (the sabotage was reverted from a `/tmp` copy).
+
+  **Acceptance 1 — reachable only as a registered backend.** Upstream's *own*
+  loader does the loading: `factory._create_store` / `_create_text_index` on a
+  `MemoryConfig(store_backend=EXTERNAL, store_backend_name="agentic-memory")`
+  return `agentic_memory.headroom_backend.AgenticMemoryStore` and
+  `…AgenticMemoryTextIndex`, both `isinstance` of the Protocols → `True`. The
+  two registered group names are upstream's constants verbatim
+  (`factory.py:28` `headroom.memory_store`, `factory.py:30` `headroom.memory_text`);
+  `entry_points(group="headroom.memory_vector")` is `[]` — the slot is declined,
+  not faked. Product-side, `grep -rn "agentic.memory" apps/ packages/` returns
+  nothing. **That grep is weak evidence and is named as such** — it returned
+  nothing before this SUV too, so the load-bearing proof for item 1 is the
+  factory load above plus the host tripwire below, not the grep.
+
+  **Acceptance 2 — parity, red then green, observed.** `headroom_backend
+  selftest` → `SELFTEST PASS (40 checks, 0 failed)`, exit 0. Forcing
+  `include_archive=True` at the single gate call site
+  (`headroom_backend.py:339`, the only `_gate.gate(` in the module) →
+  `SELFTEST FAIL (40 checks, 5 failed)`, exit 1, naming *gated load returns
+  exactly what the gate returns*, *withheld counts match the gate's, by reason*,
+  *cold storage is excluded from a routine load*, *the archive trim is counted,
+  not silent*, and *the log record is identical to the engine's, field for
+  field*. Restoring → 40/0, exit 0, `git status --porcelain` empty. The suite is
+  differential — each result computed through the Protocol and through `gate` on
+  the same fixture, then compared — so these five are parity failures, not
+  assertion drift.
+
+  **Acceptance 3 — the host hosts, and nothing else. One proof added.** The
+  static tripwire holds: `_check_delegation()` returns
+  `['gate', 'config', 'preflight']` against `04aba2f`'s host and `[]` against
+  `1f51329`'s. The host's entire import list is `json, os, re, subprocess, sys`,
+  `tempfile`, and one engine import — `headroom_backend`. Set difference on the
+  emitted labels (not a count): the pre-change host passes `SELFTEST PASS (50
+  checks, 0 failed)`, `comm -23` is **empty** — no pre-existing check dropped or
+  reworded — and `comm -13` is exactly three new delegation checks, giving 53.
+  **New in this pass:** the tripwire only proves the host does not *import* the
+  engine, which would still permit a host that ignores the backend. So the
+  archive sabotage was left applied to the *backend* and the *host* suite re-run:
+  it goes red too — `SELFTEST FAIL (53 checks, 2 failed)`, exit 1. A backend
+  fault reaching the host's behavioural checks is only possible if the host
+  genuinely sources its answers from the backend. Static and dynamic proof now
+  both stand.
+
+  **Acceptance 4 — the gap list answers plan open question 3.** Gap list §3 lists
+  four behaviors that could not express, each naming its unblocking ask in
+  headroomlabs-ai/headroom#3287 (3.1 retrieval context → **A**; 3.2
+  withheld-vs-refused → **B**; 3.3 gated by-id `get()` → **A**, with the noted
+  need to extend #3287, which proposes the context on the filter dataclasses only
+  and so does not reach `get()`; 3.4 cold-storage marker through compression →
+  **C**). §4 records three further contract frictions #3287 does not cover
+  (no settings channel for an EXTERNAL backend; identity must be derivable, so
+  path-is-id; read-only is not expressible), offered as additions rather than new
+  asks. Plan open question 3 asks exactly *"how much … expresses cleanly as a
+  backend vs. needing interface support upstream"* — §§3–4 are that answer.
+
+  **Untouched engine, re-confirmed.** `gate.py`'s blob is
+  `0a28daf7a7585470a5e2c8665d32590501fae25a` at **both** `04aba2f` and `1f51329`
+  — identical content, which is stronger than its absence from `--stat`. Eleven
+  of the twelve other engine modules run a selftest and all eleven pass (`gate`
+  69, `decay` 54, `digest` 45, `retrieval_report` 33, `archive` 28, `config` 22,
+  `policy_audit` 19, `decide` 14, `preflight` 12, `control_manifest` 7,
+  `harvest_batches` `selftest: 0 failures`); `evals` is the twelfth and exits 2
+  with a usage message — pre-existing, untouched. **This confirms rather than
+  re-corrects the §7 correction from the second pass.**
+
+  **Live, against the real vault.** `initialize` / `tools/list` / `tools/call
+  status` over real stdio through the plugged backend: exit 0, tools
+  `['load_context', 'retrieve', 'status']`, `isError: false`, status reporting
+  head `613cffa` / branch `main` / clean tree / 12 scopes — and the retrieval log
+  stayed at **106 lines**, i.e. `status` retrieves nothing and so logs nothing.
+
+  **All ten CI gates re-run and green** (the repo-side diff remains documentation
+  only): `packages/core|shared|server-core|ui` `tsc --noEmit` → exit 0 each;
+  `packages/shared` `bun test` → **3653 pass / 20 skip / 0 fail** (3673 across
+  211 files); `apps/server` `bun test` → 196 pass / 0 fail; `bun run test:webui`
+  → 362 pass / 0 fail; `bun run test:doc-tools` → 19 tests, OK;
+  `lint:i18n:parity` / `:sorted` / `:coverage` → exit 0 each; `check-branding.ts`
+  → exit 0, clean (one pre-existing non-failing stale-allowlist warning for
+  `apps/viewer/vite.config.ts`); `check-headroom-boundary.ts` → exit 0,
+  `headroom-ai` imported only by `packages/shared/src/headroom/sdk-adapter.ts`.
+
+  **One figure moved, benignly.** The entry above records `packages/shared` at
+  3650 pass; this pass measured 3653. The delta is commit `3619730f` (SUV-0023),
+  which landed after that measurement and added exactly three cases to
+  `tool-result-context-headroom.test.ts` (10 → 13 declarations). The earlier
+  figure was correct when taken. Traced rather than assumed, and recorded in
+  gap list §8.
+
+  **The two owner gates are still open and unchanged**, as stated above: engine
+  commit `1f51329` is committed but **not pushed**, and the live source config
+  points at `~/dev/agentic-memory-template/.venv/bin/python3` with the prior
+  config preserved at `config.json.bak-suv0031-20260827` (both re-confirmed by
+  inspection this pass). Neither is an acceptance item. Also unchanged and worth
+  restating for a reader: **gap D remains open for Vorno's TypeScript session
+  loop (SUV-0029)** — this SUV's two ends are both Python, so nothing in the
+  Electron/TS product consumes the plugged backend yet. That is a PLAN-040-level
+  boundary, not an SUV-0031 acceptance item.
