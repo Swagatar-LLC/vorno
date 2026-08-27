@@ -216,3 +216,93 @@ to toggle it, and what leaves the machine (nothing without opt-in).
   Diff is two files — the page and its guard. No app code, no locale keys, no
   other SUV's surface; the out-of-scope developer/extension-interface docs remain
   SUV-0030's.
+
+- `2026-08-27` — fifth pass: **acceptance re-proved by execution, and one real
+  hole in the guard closed.** The prior entry asserted its evidence; this pass
+  re-derived all of it, and the page itself was **not** edited (`headroom.md` is
+  byte-identical to the previous commit). Diff is **one file, two lines**.
+
+  **The hole.** The anti-interpolation guard pinned four measured figures but the
+  page quotes **six**: `47,811 bytes` (the unrecoverable node output paid for the
+  10.5% saving) and `+4.4 to +13.1 ms` (the p50 latency cost) were quoted in prose
+  and asserted nowhere. Both are in fact correct — verbatim in the benchmark
+  report at `:47`/`:359` and `:48` — but "correct today, unguarded tomorrow" is
+  precisely the defect this test exists to prevent, and the page's two known
+  historical defects were both interpolated figures. Added to `MEASURED_FIGURES`;
+  the guard now covers every measured figure the page quotes. (`20.0 KB → 1.0 KB`
+  is deliberately left unpinned — the page introduces it with "like", as an
+  illustration of badge *format*, not a measurement.)
+
+  **Red-then-green, all four demonstrations run this session**, restoring by
+  file-copy from `/tmp` — no `git stash`, ever, in this repo:
+  1. Renaming a page-quoted error string (`The Headroom service did not answer…`)
+     → **37 pass / 1 fail**.
+  2. Interpolating `10.5%` → `12.5%` → **36 pass / 2 fail** (fires on both the
+     figure check *and* the named-regression check).
+  3. Renaming the shipped label in `en.json` (`Original, before compression` →
+     `Original content`), page untouched → **37 pass / 1 fail**. This is the one
+     that proves the guard is *behavioural* rather than tautological: it asserts
+     against the shipped locale, not against itself.
+  4. Perturbing the two newly-pinned figures → **38 pass / 2 fail**.
+  Restored: **40 pass / 0 fail / 87 expects**.
+
+  **A negative result worth recording.** A fifth mutation — renaming one of the
+  three occurrences of `Expose statistics` — did **not** red the suite, because
+  the assertion is `doc.toContain(value)` over the whole page and the string
+  survives elsewhere (defaults table, empty-state message). The guard therefore
+  catches *"this string vanished from the page entirely"*, not *"this particular
+  mention drifted"*. That is an honest limit of a substring check, recorded rather
+  than papered over; tightening it would mean anchoring each quote to its section.
+
+  **Acceptance, re-derived rather than restated:**
+  - A1 — page present; auto-discovery **verified in code**, not assumed:
+    `docs/index.ts:57-63` `readdirSync`s the assets dir with no hardcoded list
+    ("any file dropped into resources/docs/ is synced automatically").
+  - A2 — every privacy bullet re-traced. Package-side claims land on vetting
+    report §3.1 (`:153`, the **12 non-sourcemap `.js`/`.cjs` files in `dist/`** —
+    the page says "the published package's shipped code", which is exactly that
+    set per `:110`, and does *not* claim the 38-file tarball was audited), §3.2
+    (`:171-185` relative paths + the `/v1/telemetry*` blockquote at `:187-192`),
+    §3.3 (`:197`), §3.4 (`:205-217`), §3.5 (`:221-224`), §3.6 (`:228-237`), F3
+    (`:244-250`). The three **Vorno-side** claims the report cannot support were
+    checked against code instead: `baseUrl` always passed explicitly
+    (`sdk-adapter.ts:360`), only compress/retrieve/getStats called
+    (`:272`/`:312`/`:340`), and `HeadroomConfig` (`core/types/headroom.ts:49-72`)
+    carries exactly four fields with **no** `baseUrl` — so "no Settings field for
+    the address" is verified, not asserted. `check-headroom-boundary.ts` ✓.
+  - A3 — 26 quoted strings asserted against shipped `en.json`; demonstration 3
+    proves the assertion is live.
+
+  **Gates — every one run this session, output as observed:** `typecheck:ci`
+  clean; `test:shared` **3655 pass / 20 skip / 0 fail** (3675 across 211 files);
+  `test:server` **196/0**; `test:webui` **362/0**; `apps/viewer` share Worker
+  **23/0**; `test:doc-tools` **19 OK**; `lint:i18n:parity` (6 locales, 1992 keys),
+  `lint:i18n:sorted`, `lint:i18n:coverage` (2097 callsites) OK; `check-branding.ts`
+  ✓ (pre-existing stale-allowlist warning for `apps/viewer/vite.config.ts`,
+  unrelated to this diff); `check-headroom-boundary.ts` ✓; server build bundled
+  **3403 modules**. Twelve for twelve.
+
+  **A third correction to a carried-forward number.** The prior entry reported
+  `test:shared` as **3650**. That is not reproducible: `test:shared` is
+  deterministic here (3655 twice), and checking out HEAD's version of the guard
+  and re-running gives a baseline of **3653**, so my two added assertions account
+  for the delta exactly. 3650 was never observed on this tree. This is the third
+  successive entry to correct its predecessor's test count, which is itself the
+  finding: **a count restated from a previous entry rather than from a run is
+  wrong more often than it is right.**
+
+  **Two residuals I am not silently resolving** (neither is in this SUV's
+  acceptance; both need an owner decision):
+  - `blocked-by:` still lists SUV-0029, which sits in `blocked/` on a premise
+    failure — `headroom-ai@0.36.5` has no memory API. The page discharges it by
+    documenting the absence (§Memory). Whether that closes the edge or the edge
+    should be dropped is editorial, so the frontmatter is **unchanged**.
+  - PLAN-040's acceptance says "a `vorno.ai/docs` page". This lands the content in
+    `apps/electron/resources/docs/`; the Astro site builds from a git tag in the
+    separate `vorno-site` repo, out of reach of the one-branch rule. **SUV-0032
+    can be complete while PLAN-040's item remains only partly discharged** — the
+    publish step is real and unowned.
+
+  Also unchanged and still open from the prior entry: nothing has been written to
+  `apps/electron/resources/release-notes/next.md` despite SUV-0017/0026/0027
+  shipping user-visible surface. Out of this SUV's scope; deferred to PR time.

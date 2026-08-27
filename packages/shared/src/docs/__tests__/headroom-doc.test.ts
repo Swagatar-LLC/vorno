@@ -177,6 +177,8 @@ describe('Headroom docs page (SUV-0032)', () => {
       '1.4–2.1 seconds', // p95 latency, "roughly one call in twenty"
       '0 of 48', // tool outputs accepted in a live session
       '240', // compression calls across which zero handles were issued
+      '47,811 bytes', // unrecoverable node output paid for that 10.5%
+      '+4.4 to +13.1 ms', // p50 latency cost over the no-op baseline
     ];
 
     for (const figure of MEASURED_FIGURES) {
