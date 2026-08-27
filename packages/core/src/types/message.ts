@@ -579,7 +579,13 @@ export type AgentEvent =
   | { type: 'text_complete'; text: string; isIntermediate?: boolean; turnId?: string; parentToolUseId?: string; sdkMessageId?: string }
   | { type: 'pi_turn_anchor'; sdkMessageId: string; sdkTurnAnchor: string }
   | { type: 'tool_start'; toolName: string; toolUseId: string; input: Record<string, unknown>; intent?: string; displayName?: string; turnId?: string; parentToolUseId?: string; toolDisplayMeta?: ToolDisplayMeta }
-  | { type: 'tool_result'; toolUseId: string; toolName?: string; result: string; isError: boolean; input?: Record<string, unknown>; turnId?: string; parentToolUseId?: string }
+  /**
+   * `headroomHandle` (fork: PLAN-040 / SUV-0023) is present only when `result`
+   * is Headroom-compressed content; it redeems the byte-identical original via
+   * `HeadroomAdapter.retrieve()`. Absent — not `undefined` — on every other
+   * path, so a session with Headroom off serializes exactly as it always has.
+   */
+  | { type: 'tool_result'; toolUseId: string; toolName?: string; result: string; isError: boolean; input?: Record<string, unknown>; turnId?: string; parentToolUseId?: string; headroomHandle?: string }
   | {
       type: 'permission_request';
       requestId: string;
