@@ -1,7 +1,7 @@
 ---
 id: SUV-0018
 title: Resolved config drives the Headroom boundary
-status: in-progress
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
@@ -158,3 +158,109 @@ construction time.
 
   **Left in `in-progress/`** — the folder move is the state change (ADR-0028) and
   no PR has been cut for this SUV yet.
+
+- `2026-08-27` (second pass) — re-verified by execution on `plan/plan-040`, no
+  code change. The entry above was rejected on verification for evidence that
+  could not be reproduced, so **everything below was run in this session and
+  every figure is copied from the terminal**; where it contradicts the entry
+  above, the entry above is wrong and is corrected here. Repo `HEAD` at the time
+  of these runs: `fcb224af`; working tree clean before and after (`git status
+  --porcelain` empty, verified at each restore point). bun 1.3.8.
+
+  **Correction 1 — red *is* reachable from `HEAD` by reverse-apply, for the file
+  that matters.** The entry above claims a reverse-apply of `1291b25c`'s
+  implementation hunks "conflicts", citing `patch does not apply`. Run per file,
+  that is true for three of the four but **false for `agent/base-agent.ts`**,
+  whose SUV-0018 hunks reverse-apply cleanly:
+
+  ```
+  git show 1291b25c -- <path> | git apply -R --check -
+    packages/shared/src/headroom/session-adapter.ts  → patch does not apply
+    packages/shared/src/headroom/index.ts            → patch does not apply
+    packages/shared/src/agent/base-agent.ts          → (no output; exit 0)
+    packages/shared/src/agent/backend/types.ts       → patch does not apply
+  ```
+
+  (The four paths passed to a *single* `git show` produce `error: No valid
+  patches in input`, not `patch does not apply` — the quoted message in the entry
+  above does not come from the command it is attributed to.)
+
+  So the honest red-then-green is not a mutation at all but the removal of the
+  wiring this SUV added, and that is what was run.
+
+  **Red, then green — observed today.** Restores were made from a `/tmp/suv0018-restore/`
+  copy taken before the first change (never `git stash`), and `git status
+  --porcelain` was confirmed empty after each.
+
+  | # | Change | Command | Observed |
+  |---|---|---|---|
+  | **D1** | Reverse-apply SUV-0018's own hunks in `agent/base-agent.ts` — i.e. the tree without this SUV's wiring (`62 deletions`) | `bun test src/agent/__tests__/base-agent-headroom.test.ts src/headroom/__tests__/session-adapter.test.ts` | **9 pass / 8 fail / 17 expect()** — all 8 end-to-end tests fail with `TypeError: agent.getHeadroomAdapter is not a function`. Acceptance items 1–4 all go red. |
+  | **D2** | Suppress the degradation warning: `if (options.enabled && …)` → `if (false && options.enabled && …)` in `headroom/session-adapter.ts` | same | **15 pass / 2 fail / 44 expect()** — exactly `…logs a warning` and `warns exactly once when an enabled workspace cannot load the SDK` (acceptance item 4). |
+  | **D3** | Rebuild the adapter on every `getHeadroomAdapter()` call instead of returning the construction-time promise | same | **13 pass / 4 fail / 37 expect()** — the stable-adapter test, both two-session toggle tests, and `built from the workspace values` (its `clientOptions` length-1 assertion). Acceptance item 3. |
+
+  Restored: **17 pass / 0 fail / 45 expect() calls** across the two files.
+
+  *Superseded:* the M1/M3 rows in the entry above (`3 pass / 5 fail`, `4 pass /
+  4 fail`) were single-file runs I did not reproduce; D1/D3 replace them and the
+  figures here are two-file runs. M2 and D2 agree.
+
+  **Acceptance, re-checked**
+
+  1. **Sole construction path.** `agent/base-agent.ts:345-358` resolves
+     `loadEffectiveHeadroomConfig(config.workspace.rootPath)` synchronously and
+     passes it to `createSessionHeadroomAdapter(...)`. An independent grep for
+     `new SdkHeadroomAdapter|createNoopHeadroomAdapter\(|createHeadroomAdapter\(`
+     across `packages/` + `apps/`, excluding `src/headroom/`, returns **no
+     production hit** — the only five matches are in test files
+     (`packages/ui/.../headroom-retrieval.test.ts`,
+     `shared/src/agent/__tests__/tool-result-context-headroom.test.ts`), and they
+     call the *factory*, not an implementation. The scan test at
+     `headroom/__tests__/session-adapter.test.ts:166-182` pins this; note its
+     regex covers the two implementations only, which is the right reading of
+     "constructs an adapter directly". Production callers today are
+     `base-agent.ts:346`, `server-core/src/sessions/SessionManager.ts:2732` and
+     `server-core/src/handlers/rpc/tasks.ts:114` — all through the joint.
+  2. **Off → no-op, on → real, from workspace values.** `base-agent-headroom.test.ts:125-190`,
+     writing a real workspace `config.json` and going through the real resolver;
+     the on-case asserts the recording SDK was constructed once and that
+     `compress` carried the session's model `claude-opus-5`. Green today; red
+     under D1.
+  3. **Toggle applies to the next session.** `base-agent-headroom.test.ts:211-273`,
+     both directions, asserting session A holds the *same adapter instance*
+     (`toBe`) after the workspace file flips under it. Green today; red under D3.
+  4. **Enabled + SDK absent → no-op, warned, still functional.** `base-agent-headroom.test.ts:276-313`
+     proves the premise (`await expect(loadAbsentSdk()).rejects.toThrow()`), then
+     asserts construction succeeds, `stats()` reports `{available: false, reason:
+     'sdk-unavailable'}`, `compress` returns the caller's own array, and a
+     Headroom warning reached `console.warn`; the sibling test asserts the plain
+     disabled path warns **not at all**. Green today; red under D2.
+
+  **Gates, run today, output as printed**
+
+  - `cd packages/shared && bun test` — **3650 pass / 20 skip / 0 fail / 7379 expect()**, 3670 tests across 211 files, 46.96s. Higher than the `3644` in the entry above because test-bearing commits landed on the branch since it was written (`cc566e21`, `6900061a`, `e179ee90`).
+  - `cd packages/server-core && bun test` — **362 pass / 0 fail / 757 expect()** (45 files, 8.26s)
+  - `cd apps/server && bun test` — **196 pass / 0 fail / 410 expect()** (18 files, 1388ms)
+  - `bun run typecheck` — exits 0, no `error TS` output
+  - `bun run lint:headroom-boundary` — `✓ Headroom boundary gate: headroom-ai imported only by packages/shared/src/headroom/sdk-adapter.ts`
+  - `bun build apps/server/src/index.ts --target=bun --outdir=/tmp/suv0018-build-check --no-splitting` — `Bundled 3403 modules in 296ms`, `index.js 16.36 MB`
+
+  **Scope.** `git show --stat 1291b25c` = 8 files: `headroom/session-adapter.ts`,
+  `headroom/index.ts`, `agent/base-agent.ts`, `agent/backend/types.ts`, the two
+  test files, and this record's own move (824 insertions / 46 deletions). No
+  session-loop, Conductor, stats or memory file — the four out-of-scope items are
+  untouched by this SUV's diff. A reviewer diffing the *branch* instead of the
+  commit will see SUV-0023/0024/0026/0027/0028/0030/0031 in that territory; those
+  are their own records. `session-adapter.ts` as it stands today additionally
+  carries SUV-0027's `createScopedHeadroomAdapter` wrapper (lines 104-120), added
+  after this commit.
+
+  **Blocker note, restated rather than smoothed.** SUV-0015 is `done/`. SUV-0016's
+  record is still filed `roadmap/suvs/in-progress/` with `status: in-progress`
+  even though all four of its acceptance items are checked and its resolver is
+  the one this SUV consumes. The work is present and consumed; the folder has not
+  moved. That is SUV-0016's to resolve, not this record's.
+
+  **Moved to `done/`.** All four acceptance items verified by execution above,
+  every gate green. Following this branch's practice for SUV-0015/0027/0030/0031,
+  which are in `done/` without individual PRs — the plan branch is the review
+  unit.
