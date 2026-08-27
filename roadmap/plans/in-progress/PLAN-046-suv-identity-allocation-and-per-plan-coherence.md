@@ -67,11 +67,11 @@ the `breakdown/*` / `feedback/*` convention — and `plan/*`, the convention
 
 ### The rule
 
-An id that has ever appeared on any ref is permanently claimed. Never reuse one,
-including an id renumbered away. Gaps are normal.
+An id that has ever existed anywhere a ref can reach is claimed. Never reuse
+one, including an id renumbered away. Gaps are normal.
 
 ```bash
-git log --all --pretty=format: --name-only --diff-filter=A -- 'roadmap/suvs/*/SUV-*.md' \
+git log --all --pretty=format: --name-only -- roadmap/suvs \
   | grep -o 'SUV-[0-9]\{4\}' | sort -u | tail -1
 ```
 

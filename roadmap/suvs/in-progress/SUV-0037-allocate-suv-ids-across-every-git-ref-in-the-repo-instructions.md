@@ -35,8 +35,9 @@ console repo.
 
 ## Acceptance
 
-- [x] Both recipes read the floor from `git log --all … --diff-filter=A` over
-      `roadmap/suvs/*/SUV-*.md`, not from a working-tree glob.
+- [x] Both recipes read the floor from `git log --all` over `roadmap/suvs`,
+      not from a working-tree glob, and carry no `--diff-filter=A` (git reports
+      a renumber as a rename, so an add-filter misses it).
 - [x] Both state that an id which has ever existed is permanently claimed and
       never reused, and that gaps are expected.
 - [x] The documented command returns `SUV-0036` where the old glob recipe

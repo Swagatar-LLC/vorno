@@ -100,16 +100,27 @@ force at the time. It therefore misses:
 - every remote ref, including `origin/plan/plan-039`;
 - ad-hoc branches (`roadmap/*`, `jh/*`) where SUVs are cut by hand.
 
-The rule adopted: **an id that has ever existed anywhere is permanently
-claimed.** Never reuse an id, including one renumbered away — PLAN-039's
+The rule adopted: **an id that has ever existed anywhere a ref can reach is
+claimed.** Never reuse one, including an id renumbered away — PLAN-039's
 SUV-0014 became SUV-0033, and reusing 0014 would make history ambiguous at
-precisely the point someone is reading it to understand a collision. This is
-monotonic, needs no reservation state or lockfile, and is one command:
+precisely the point someone is reading it to understand a collision. This needs
+no reservation state or lockfile, and is one command:
 
 ```
-git log --all --pretty=format: --name-only --diff-filter=A -- 'roadmap/suvs/*/SUV-*.md' \
+git log --all --pretty=format: --name-only -- roadmap/suvs \
   | grep -o 'SUV-[0-9]\{4\}' | sort -u | tail -1
 ```
+
+Two properties of that command are deliberate:
+
+- **No `--diff-filter=A`.** Git reports a renumber as a *rename*, not an add,
+  so filtering on adds misses every id that entered the corpus by being renamed
+  into — which is exactly how SUV-0033 came to exist. Caught by a test written
+  against the narrower filter, which failed.
+- **Reachability, not permanence.** Delete a branch outright and its commits
+  become unreachable, so its claim lapses on its own. That is SUV-0020's
+  deliberate design — a claim costs nothing to release and needs no cleanup —
+  and it is preserved. "Permanent" means *while the work exists*, not forever.
 
 Gaps in the sequence are the expected, harmless cost.
 

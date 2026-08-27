@@ -46,7 +46,7 @@ Ask for or infer:
 3. **Find the next ID — across every ref, not the working tree.** Run:
 
    ```bash
-   git log --all --pretty=format: --name-only --diff-filter=A -- 'roadmap/suvs/*/SUV-*.md' \
+   git log --all --pretty=format: --name-only -- roadmap/suvs \
      | grep -o 'SUV-[0-9]\{4\}' | sort -u | tail -1
    ```
 
@@ -60,8 +60,12 @@ Ask for or infer:
    `SUV-0023` would have collided with a unit already shipped on
    `plan/plan-040`. This is the mechanism that minted two `SUV-0014`s.
 
-   **An ID that has ever existed on any ref is claimed permanently**, including
-   one later renumbered away. Never reuse one. Gaps are expected and fine — see
+   **An ID that has ever existed anywhere a ref can reach is claimed**,
+   including one later renumbered away. Never reuse one. Gaps are expected and
+   fine. Note there is no `--diff-filter=A` in that command on purpose: git
+   reports a renumber as a *rename*, so filtering on adds misses every id that
+   entered the corpus by being renamed into — which is how SUV-0033 came to
+   exist. See
    [ADR-0030](../../../roadmap/decisions/0030-suv-identity-is-global-per-plan-coherence-is-derived.md).
 4. **Read the template** at `roadmap/suvs/_template.md`.
 5. **Fill the frontmatter** — exactly these keys, in this order:

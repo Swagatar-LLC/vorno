@@ -62,7 +62,7 @@ kebab-case slug.
 Find the next ID — **across every ref, never from the working tree**:
 
 ```bash
-git log --all --pretty=format: --name-only --diff-filter=A -- 'roadmap/suvs/*/SUV-*.md' \
+git log --all --pretty=format: --name-only -- roadmap/suvs \
   | grep -o 'SUV-[0-9]\{4\}' | sort -u | tail -1
 ```
 
@@ -72,10 +72,14 @@ of `SUV-0022` while the real maximum was `SUV-0036` — `SUV-0034`–`0036` were
 sitting on `plan/plan-039`, and `SUV-0023` had already shipped on
 `plan/plan-040`. That is how two breakdowns both minted `SUV-0014`.
 
-**An ID that has ever existed on any ref is claimed permanently** — including
+**An ID that has ever existed anywhere a ref can reach is claimed** — including
 one that was later renumbered away, because reusing it makes git history
 ambiguous exactly when someone is reading it to untangle a collision. Gaps in
-the sequence are normal and expected. See
+the sequence are normal and expected.
+
+There is no `--diff-filter=A` in that command on purpose: git reports a renumber
+as a *rename*, so filtering on adds misses every id that entered the corpus by
+being renamed into — which is exactly how SUV-0033 came to exist. See
 [ADR-0030](../decisions/0030-suv-identity-is-global-per-plan-coherence-is-derived.md).
 
 ## Frontmatter
