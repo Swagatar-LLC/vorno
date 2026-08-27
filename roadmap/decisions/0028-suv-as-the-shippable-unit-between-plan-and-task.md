@@ -108,6 +108,11 @@ requirements probe that plan needs.
 
 ## References
 
+- [ADR-0030](0030-suv-identity-is-global-per-plan-coherence-is-derived.md) —
+  **amends this ADR** (2026-08-27). The identity, location, and ownership rules
+  above stand unchanged; ADR-0030 adds the allocation rule (an id that has ever
+  existed on any ref is permanently claimed) and settles per-plan coherence as a
+  computed view rather than a renumbering or a file move.
 - DIR-05 (`../directions/05-workflows-and-headroom.md`) — the workflow direction
 - PLAN-039 — workflow definitions; this ADR's definition/instance split is its probe
 - PLAN-043 — the roadmap console work that applies this ADR first

@@ -59,11 +59,24 @@ The skill performs `git mv` between folders and rewrites the frontmatter
 three; the widths differ on purpose so an ID is unambiguous on sight), then a
 kebab-case slug.
 
-Find the next ID:
+Find the next ID — **across every ref, never from the working tree**:
 
 ```bash
-ls roadmap/suvs/*/SUV-*.md 2>/dev/null | grep -oE 'SUV-[0-9]+' | sort -u | tail -1
+git log --all --pretty=format: --name-only --diff-filter=A -- 'roadmap/suvs/*/SUV-*.md' \
+  | grep -o 'SUV-[0-9]\{4\}' | sort -u | tail -1
 ```
+
+A glob over `roadmap/suvs/` sees only what is committed on the branch you happen
+to be standing on. On 2026-08-27 a worktree cut from `origin/main` saw a maximum
+of `SUV-0022` while the real maximum was `SUV-0036` — `SUV-0034`–`0036` were
+sitting on `plan/plan-039`, and `SUV-0023` had already shipped on
+`plan/plan-040`. That is how two breakdowns both minted `SUV-0014`.
+
+**An ID that has ever existed on any ref is claimed permanently** — including
+one that was later renumbered away, because reusing it makes git history
+ambiguous exactly when someone is reading it to untangle a collision. Gaps in
+the sequence are normal and expected. See
+[ADR-0030](../decisions/0030-suv-identity-is-global-per-plan-coherence-is-derived.md).
 
 ## Frontmatter
 

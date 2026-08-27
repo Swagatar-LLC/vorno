@@ -43,9 +43,26 @@ Ask for or infer:
    found, error — an SUV cannot exist without a plan.
 2. **Read the plan.** Take `direction` and `owner` from its frontmatter. Read
    enough of the body to keep the SUV's scope inside the plan's.
-3. **Find the next ID.** Search all `roadmap/suvs/*/SUV-*.md`, parse `SUV-NNNN`,
-   take max + 1. Format as zero-padded **four** digits (`SUV-0001`, `SUV-0042`).
+3. **Find the next ID — across every ref, not the working tree.** Run:
+
+   ```bash
+   git log --all --pretty=format: --name-only --diff-filter=A -- 'roadmap/suvs/*/SUV-*.md' \
+     | grep -o 'SUV-[0-9]\{4\}' | sort -u | tail -1
+   ```
+
+   Take max + 1. Format as zero-padded **four** digits (`SUV-0001`, `SUV-0042`).
    Plans are three digits, SUVs are four — do not carry the plan width over.
+
+   **Do not glob `roadmap/suvs/` for this.** A glob sees only what is committed
+   on the branch you are standing on, and SUVs are routinely cut on unmerged
+   `plan/*` branches. On 2026-08-27 a worktree cut from `origin/main` globbed a
+   maximum of `SUV-0022` while the true maximum was `SUV-0036` — allocating
+   `SUV-0023` would have collided with a unit already shipped on
+   `plan/plan-040`. This is the mechanism that minted two `SUV-0014`s.
+
+   **An ID that has ever existed on any ref is claimed permanently**, including
+   one later renumbered away. Never reuse one. Gaps are expected and fine — see
+   [ADR-0030](../../../roadmap/decisions/0030-suv-identity-is-global-per-plan-coherence-is-derived.md).
 4. **Read the template** at `roadmap/suvs/_template.md`.
 5. **Fill the frontmatter** — exactly these keys, in this order:
    - `id`: the new ID
@@ -90,7 +107,8 @@ Ask for or infer:
 
 When cutting several SUVs from one plan in a single pass:
 
-- Allocate IDs in one sweep so they don't collide.
+- Allocate IDs in one sweep so they don't collide, starting from the all-refs
+  floor in step 3 — not from a glob, and not re-derived per SUV.
 - Order them so each is independently shippable — an SUV that only makes sense
   after another still ships on its own; record the ordering in `related:` or
   `blocked-by:`, not by merging them.
@@ -98,7 +116,9 @@ When cutting several SUVs from one plan in a single pass:
 
 ## Tools you'll typically use
 
-- `Glob` (`roadmap/plans/*/PLAN-NNN-*.md`, `roadmap/suvs/*/SUV-*.md`)
+- `Glob` (`roadmap/plans/*/PLAN-NNN-*.md`) to locate the owning plan
+- `Bash` (`git log --all …`) for the next ID — **not** `Glob`, which cannot see
+  ids claimed on other branches
 - `Read` for the plan and `roadmap/suvs/_template.md`
 - `Write` to create each SUV
 - `Edit` to update the plan's `related-suvs:` list
@@ -110,7 +130,7 @@ User: *"Break PLAN-043's first phase down."*
 You:
 
 1. Glob → `roadmap/plans/in-progress/PLAN-043-...md`. Read it: `direction: DIR-05`, `owner: jh`.
-2. Glob `roadmap/suvs/*/SUV-*.md` → none. Next: `SUV-0001`.
+2. `git log --all …` for claimed ids → none anywhere. Next: `SUV-0001`.
 3. Phase P1 is one shippable change: give the console a git repo.
 4. Write `roadmap/suvs/planned/SUV-0001-put-the-roadmap-console-under-version-control.md`
    with `plan: PLAN-043`, `direction: DIR-05`.
