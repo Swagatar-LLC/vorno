@@ -285,3 +285,162 @@ integration options, persisted through the SUV-0016 storage.
   above, but the SUV text does not itself authorise it. (b) The acceptance boxes
   were already `[x]` before this run; they are left checked because each is now
   tied to a test that ran today, not because they were found checked.
+
+- `2026-08-27` (third pass) — re-verified by execution after the previous run was
+  rejected on verification. **No production code and no test changed today**;
+  `44aa3429` stands and all four acceptance items hold. This entry corrects
+  **three** defects in the entries above — one of which is a *correction that was
+  itself wrong* — and records the figures observed in this session.
+
+  **Three evidence defects corrected.**
+
+  | claim above | observed today | command |
+  |---|---|---|
+  | the other 12 `headroom*` locale keys "are **SUV-0026's**, all 12 added by `bd68bed7`" | they are **SUV-0027's**, all 12 added by **`161c6523`** — and `bd68bed7` **is not on this branch at all** | `git merge-base --is-ancestor bd68bed7 plan/plan-040` → not an ancestor; `git log plan/plan-040 -S'"<key>":' -- …/en.json` → `161c6523 feat(headroom): in-app savings and stats report view (SUV-0027)` |
+  | `test:shared` "**3650** pass / 20 skip / 0 fail, 3670 ran" | **3655 pass / 20 skip / 0 fail**, 3675 ran across 211 files | `bun run test:shared` |
+  | `HeadroomSettingsSection.tsx` "renders one `SettingsRow` per `HEADROOM_CONFIG_FIELDS` entry" | it renders **four `SettingsRow`s addressed by name** (`byField.enabled`, `.compressionEngines`, `.verbosity`, `.exposeStats`); only `buildHeadroomRows()` iterates the list | read `HeadroomSettingsSection.tsx:182-261` |
+
+  The first is the significant one. The second-pass entry "corrected" the
+  first-pass attribution from SUV-0027 to SUV-0026 and cited `bd68bed7` —
+  a commit reachable from no branch here (it appears in this checkout's reflog
+  only as a detached visit). **The first-pass attribution was right and the
+  correction introduced the error.** On `plan/plan-040` the 12 keys are the
+  `settings.workspace.headroomReport*` set, every one introduced by `161c6523`
+  (SUV-0027); `bd68bed7`'s own diff adds them too, which is what made the
+  off-branch commit look plausible, but it is not in this history. 16 + 12 = 28
+  per locale, as stated.
+
+  The third does **not** unmet any acceptance item — `HEADROOM_CONFIG_FIELDS` is
+  exactly `enabled`, `compressionEngines`, `verbosity`, `exposeStats`
+  (`packages/core/src/types/headroom.ts:130-135`, read from SUV-0016's own
+  definition, not from the UI), and the section has a control for each of the
+  four. What is false is the *durability* claim: a fifth field added to
+  `HEADROOM_CONFIG_FIELDS` would appear in `buildHeadroomRows()` and be silently
+  dropped by the JSX, and no test guards that. The doc comment at
+  `headroom.ts:126-129` ("the UI renders this list rather than hardcoding its
+  own") overstates in the same way. **Named, not fixed** — closing it means
+  either a rendered-per-field refactor or a new guard test, and neither could be
+  run to green in this session (see the blocker below), so nothing unverifiable
+  was written.
+
+  **Per-suite counts, each run on its own** (7 + 8 + 17 + 15 = 47 — these
+  reproduce exactly as the entries above state):
+
+  | suite | observed |
+  |---|---|
+  | `packages/shared/src/config/__tests__/headroom-sources.test.ts` | 7 pass / 0 fail, 31 expect() |
+  | `packages/shared/src/workspaces/__tests__/view-headroom.test.ts` | 8 pass / 0 fail, 30 expect() |
+  | `packages/server-core/src/handlers/rpc/settings-headroom.test.ts` | 17 pass / 0 fail, 43 expect() |
+  | `apps/electron/src/renderer/lib/__tests__/headroom-settings.test.ts` | 15 pass / 0 fail, 28 expect() |
+
+  **Red-then-green re-reproduced, all four.** Each red was produced with
+  `git show 44aa3429^:<path> > <path>` and undone by writing the committed
+  content back (`git show HEAD:<path> > <path>`) — never `git stash`, in this
+  repo or any worktree of it. The tree was confirmed byte-identical to `HEAD`
+  afterwards (`git diff --stat` empty). The two behavioural reds are the
+  load-bearing evidence; the two import-level reds only prove a symbol is
+  missing and are labelled as the weaker evidence they are.
+
+  | reverted | suite | red | restored |
+  |---|---|---|---|
+  | `server-core/src/handlers/rpc/settings.ts` | `settings-headroom` | **0 pass / 17 fail**, each `Invalid workspace setting key: headroom` — behavioural | 17 pass / 0 fail |
+  | same, filtered `-t "survives a process restart"` | the 3 restart cases | **0 pass / 3 fail**, 14 filtered out — behavioural | 3 pass |
+  | `shared/src/workspaces/headroom.ts` + `workspaces/index.ts` | `view-headroom` | **0 pass / 8 fail** — behavioural | 8 pass / 0 fail |
+  | `core/src/types/headroom.ts` | `headroom-sources` | 0 pass / 1 fail, 1 error — import-level: `SyntaxError: export 'resolveHeadroomConfigSources' not found in './headroom.ts'` | 7 pass |
+  | `electron/src/renderer/lib/headroom-settings.ts` (absent at `44aa3429^`, confirmed by `git cat-file -e`) | `headroom-settings` | 0 pass / 1 fail, 1 error — `Cannot find module '../headroom-settings'` | 15 pass |
+
+  **The restart claim, checked at the source rather than taken on trust.**
+  `-t "survives a process restart"` is not a test name — it matches the describe
+  block `workspace settings: headroom survives a process restart (SUV-0017)`
+  (`settings-headroom.test.ts:260`), which holds the three cases. Those cases
+  call `readViewInFreshProcess()`, which `Bun.spawnSync`s `process.execPath`
+  with `--eval`, importing `loadHeadroomConfigView` and passing only
+  `CRAFT_CONFIG_DIR` in the env, and **throws** on a non-zero exit — so it
+  cannot pass vacuously. **Stated precisely, as before: that is a process
+  boundary, not an Electron relaunch.**
+
+  **Acceptance, each item tied to a test that ran today.**
+
+  1. *Section + fields + persistence + restart.* The four
+     `HEADROOM_CONFIG_FIELDS` each have a control — `enabled` (Switch),
+     `compressionEngines` (Input), `verbosity` (SettingsMenuSelect),
+     `exposeStats` (Switch) — and `WorkspaceSettingsPage.tsx:746` mounts the
+     section with `settings.headroomView`. Persistence:
+     `round-trips every option field through a fresh handler`. Restart: the
+     three subprocess cases above. (See the third correction for the limit of
+     the "renders per field" claim.)
+  2. *Provenance + clear reverts.* `attributes each field to its layer and
+     exposes the raw override`, `reports what a cleared override would revert
+     to`, and `agrees with the resolver about where every value came from` —
+     the property tying `resolveHeadroomConfigSources()` to
+     `resolveHeadroomConfig()`, not a fixture.
+  3. *Two workspaces independent.* Verified each asserts the second workspace
+     equals the **disabled** config rather than merely differing —
+     `expect(readViewInFreshProcess(ROOT_B).effective).toEqual(DISABLED)`
+     (`settings-headroom.test.ts:297`), plus `enabling Headroom in one
+     workspace leaves the other disabled` (shared), `…leaves the other
+     resolving to disabled` (RPC), `each workspace overrides a shared instance
+     base on its own`, and `a shared instance base is inherited independently by
+     each workspace` — i.e. with and without a shared instance base, and across
+     the process boundary.
+  4. *Fresh install → toggle off.* `renders a usable, disabled view with no
+     config files at all`, `serves a disabled view on the fresh-install path`,
+     `saves from that fresh state and writes a valid config`, and `renders every
+     field, with the enable toggle off and nothing overridden`.
+
+  **Gates, all run today, all exit 0.**
+
+  | gate | observed |
+  |---|---|
+  | `bun run typecheck:ci` | exit 0 |
+  | `bun run test:shared` | **3655 pass / 20 skip / 0 fail** (3675 across 211 files) |
+  | `bun run test:server` | 196 pass / 0 fail, 410 expect() (18 files) |
+  | `bun run test:webui` | four runs, **1138 pass / 0 fail** — 425 electron + 24 webui + 327 ui + 362 server-core |
+  | `bun run lint:i18n:parity` | `i18n parity OK (6 locales, 1992 keys each)` |
+  | `bun run lint:i18n:sorted` | exit 0 |
+  | `bun run lint:i18n:coverage` | `i18n coverage OK (2097 callsites, 1554 distinct keys, 1992 keys in en.json)` |
+  | `bun run lint:branding` | clean (one pre-existing stale-allowlist *warning*, `apps/viewer/vite.config.ts`, unrelated) |
+  | `bun run lint:headroom-boundary` | `headroom-ai imported only by packages/shared/src/headroom/sdk-adapter.ts` |
+  | `bun build apps/server/src/index.ts --target=bun --outdir=/tmp/suv17-pass3 --no-splitting` | bundled 3403 modules, 16.36 MB |
+
+  **Locale keys re-checked key by key.** The 16 keys `44aa3429` added to
+  `en.json` were extracted from the diff and each grepped in all 7 locale files:
+  all 16 present in all 7. Totals read from the branch blob, not the working
+  tree: 28 `settings.workspace.headroom*` keys per locale = these 16 +
+  SUV-0027's 12 (see the correction above).
+
+  **Scope re-checked against `44aa3429`, not the working tree** — SUV-0018 has
+  since landed (`1291b25c`), so a working-tree grep for toggle consumers is a
+  false positive by construction. Against the commit:
+  `git show 44aa3429 | grep -c setHeadroomInstanceConfig` → **0**, so no
+  instance-base editor; and `git grep loadEffectiveHeadroomConfig 44aa3429`
+  outside its own module, its tests and roadmap prose returns exactly one line —
+  the barrel re-export in `workspaces/index.ts` — so no runtime consumer. At
+  `HEAD` that same grep returns `tasks.ts`, `SessionManager.ts` and
+  `base-agent.ts`, which is SUV-0018's work and correctly outside this SUV.
+  Both declared exclusions hold.
+
+  **Blocker encountered, reported rather than worked around.** Mid-session a
+  concurrent process moved this shared checkout `plan/plan-040` → `main` →
+  `jh/2026-08-27_Upstream_Merge` and left an **unresolved upstream merge** in
+  it (`git status`: "merge in progress. unresolved conflicts"; `UU` on
+  `package.json`, `bun.lock`, `README.md` and ~10 more; `package.json` carries
+  literal conflict markers). An earlier symptom was a
+  `.git/index.lock` failure during a restore, which is why that one restore was
+  completed by writing the committed content back instead of `git checkout --`.
+  Every test and gate figure above was observed **before** the switch, on
+  `plan/plan-040` with a clean tree; the branch tip is untouched at `210a75f8`
+  and every revert had been restored to `HEAD`-identical beforehand, so nothing
+  from this run leaked into the merge branch. **Their merge was not resolved,
+  not aborted, and no branch was switched.** This entry was committed onto
+  `plan/plan-040` through a temporary index (`GIT_INDEX_FILE` + `commit-tree` +
+  `update-ref`), which touches neither the conflicted index nor the working
+  tree.
+
+  **Two things a reviewer should still see named.** (a) The SUV's scope line
+  says provenance is two-valued ("workspace override vs instance default") while
+  the model is three-valued and the UI folds `instance` and `default` into one
+  label; the fold is reasoned in the code, but the SUV text does not itself
+  authorise it — an owner's call, not mine. (b) The acceptance boxes were
+  already `[x]` before this run; they are left checked because each is tied to a
+  named test that ran today.
