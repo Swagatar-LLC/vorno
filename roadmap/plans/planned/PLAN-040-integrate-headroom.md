@@ -54,8 +54,19 @@ memory shared across agents — with Vorno's existing memory engine plugged in
 - **Token measurement:** savings/perf analytics (`headroom stats`, dashboard).
 - **Memory, multi-layer:** cross-agent shared store (Claude/Codex/Gemini/Grok,
   auto-dedup, provenance) + `headroom learn` (mines failed sessions, writes
-  corrections to agent context files). Default substrate: local markdown —
-  philosophically aligned with our file-first, human-readable bias (ADR-0027).
+  corrections to agent context files).
+  **CORRECTED 2026-08-26 by integration-time verification (SUV-0029) — this
+  bullet previously claimed "Default substrate: local markdown — philosophically
+  aligned with our file-first, human-readable bias (ADR-0027)". That is not what
+  Headroom does.** The substrate is a project-scoped **SQLite** database
+  (`.headroom/memory.db`) carrying an HNSW vector index and an FTS5 full-text
+  index. Nor is memory reachable from the pinned TypeScript SDK, the proxy's
+  HTTP API, or the MCP server: it is exposed only via `headroom wrap --memory`,
+  the Python client's `client.memory.*`, and proxy-injected
+  `memory_save`/`memory_search` model tools. The ADR-0027 alignment that
+  motivated adopting this layer therefore does not hold, and the vector index is
+  the "Vector-DB / RAG infrastructure" listed below as a non-goal. Evidence:
+  [`roadmap/evidence/PLAN-040/headroom-memory-surface-audit.md`](../../evidence/PLAN-040/headroom-memory-surface-audit.md).
 - **Extension seams:** pipeline lifecycle hooks (`on_pipeline_event`),
   compression hooks, provider slices, downstream MCP tools.
 - **Integration surfaces:** TS/Python libraries, HTTP proxy
@@ -174,4 +185,5 @@ must degrade gracefully if Headroom is absent.
 - `2026-08-22` — created in `planned/` as the second half of the DIR-05 milestone (top roadmap priority).
 - `2026-08-22` — reframed once (adoption vs. name-collision misread), then **corrected to final form on product-owner direction: pure integration.** Headroom provides compression, token management, and multi-layer memory; Vorno builds only integration glue plus the pluggable memory-extension interface (formats + querying), interface-first, upstream-first. No library of ours, full stop.
 - `2026-08-25` — first breakdown round: SUV-0014..0018 cut covering vendoring/long-term support (vet+pin, boundary module) and the settings surfaces (config schema/storage/precedence, workspace UI, config-driven boundary). I1 compression wiring, benchmarks, token-surface migration, and I2 memory remain undecomposed.
+- `2026-08-26` — **I2's premise did not survive integration-time verification, and the "Memory, multi-layer" bullet above is corrected in place.** SUV-0029 audited the pinned SDK against this plan's own instruction ("verify at integration time, not from README claims") and found no memory API in `headroom-ai@0.36.5` at all — no `/v1/memory*` endpoint, no client member, no filesystem access, and no mention of memory in its README. Memory is a proxy/CLI feature reached only through `headroom wrap --memory`, the Python client, or proxy-injected model tools; its substrate is SQLite + HNSW + FTS5, not local markdown. **SUV-0029 is blocked**, and SUV-0030 (the plan's priority build item) and SUV-0031 inherit the premise and need re-grounding. Unblocking requires an architectural decision — which Headroom surface provides memory — that §I1 already contemplated as an ADR; the recommendation is the upstream-contribution route, consistent with this plan's upstream-first posture. Evidence and the four options considered: [`roadmap/evidence/PLAN-040/headroom-memory-surface-audit.md`](../../evidence/PLAN-040/headroom-memory-surface-audit.md).
 - `2026-08-26` — second breakdown round, to completion: SUV-0023..0032 cut covering the full remainder — I1 compression call sites (session loop 0023, Conductor 0024), I0 benchmarks→defaults (0025), user-visible retrieval (0026), the in-app savings/stats report view (0027), token display/threshold migration onto Headroom stats (0028), I2 memory adoption (0029), the extension interface + upstream contribution (0030), agentic-memory v2 as plugged backend (0031), and the docs page (0032). Every plan acceptance item now maps to at least one SUV.
