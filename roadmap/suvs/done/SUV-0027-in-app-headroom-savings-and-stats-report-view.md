@@ -113,3 +113,53 @@ read through the boundary adapter's stats operation.
   attribution is wrong. The remainder (adapters, report builder, view model, live
   controller, React surface, tests) is in this SUV's own commit.
 
+- `2026-08-27` — **re-verified against the working tree; three figures in the
+  entry above corrected.** Every claim was re-run rather than re-read, at
+  `53e9dfc3` on `plan/plan-040`. The acceptance holds; the arithmetic that was
+  wrong was in the *evidence*, not in the feature.
+
+  **Corrections.** Suite totals in the previous entry were true when written and
+  are no longer, because the branch advanced under them: `packages/shared` is
+  **3644 pass / 20 skip / 0 fail** (was recorded 3609), `bun run test:webui` is
+  **362 pass / 0 fail** (was recorded 355). `apps/server` is unchanged at 196 / 0.
+  `apps/electron` typecheck is **107** errors, not 108. A count copied from an
+  earlier run reads as a measurement of the current tree and is not one — suite
+  totals are only meaningful with the commit they were observed at, so they now
+  carry one.
+
+  **Red-then-green, re-observed rather than asserted.** Two mutations, each
+  reverted from a `/tmp` byte-copy and confirmed back to green by SHA (never
+  `git checkout --`, which has destroyed uncommitted work in this repo):
+  deriving `tokensSaved` from `totalTokensBefore - totalTokensAfter` and
+  defaulting `retrievals` to `0` in `headroom-report.ts` produced exactly two
+  failures — `Expected: "613" / Received: "750"` and `toBeNull() / Received: "0"`
+  (7 pass, 2 fail). The savings fixture is built so the adapter's figure and the
+  derivable one disagree; without that the test could not detect derivation at
+  all, which is the property that makes acceptance item 1 checkable. Dropping the
+  `read()` from `watchHeadroomReport`'s subscriber produced 2 pass / 3 fail
+  (`Expected: "1,500" / Received: "600"`, plus the stale-read and
+  generation-ordering cases). Restored: 164 pass / 0 fail across
+  `src/renderer/lib`.
+
+  **Claims that survived checking.** 12 i18n keys × 7 locale files carrying
+  `headroomReport*` (the parity gate's "6 locales" is the 6 non-base locales
+  compared against `en.json`). The `ipc-channels` drift is exactly as described:
+  17 total, of which **2** are this SUV's (`vorno:headroom:stats:get`,
+  `:changed`) and **15** pre-date it (`vorno:artifacts:*`,
+  `vorno:workbench:review:*`, `craft-fork:webui:setPassword`) — and that file is
+  **not** in the `test:webui` CI gate, which covers only `src/main/webui`,
+  `src/renderer/components/app-shell` and `src/renderer/lib`. Zero of the 107
+  electron typecheck errors and zero of its 10 lint errors are in Headroom files.
+  Left alone deliberately: registering this SUV's 2 channels would not turn that
+  suite green (15 would remain) and the hand-maintained list belongs to whoever
+  restores its missing generator.
+
+  **No source file changed in this pass** — the two mutations were reverted to
+  their original SHAs (`34f4fb11`, `089d1c5e`) and verified. This entry is the
+  only edit.
+
+  **Concurrency note.** Another process committed `53e9dfc3` (SUV-0030) into this
+  same checkout mid-verification. This commit is therefore path-scoped to this
+  file alone, which is the precaution the `bd68bed7` attribution mix-up recorded
+  above exists to teach.
+
