@@ -1,7 +1,7 @@
 ---
 id: SUV-0026
 title: User-visible retrieval of compressed originals
-status: in-progress
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
@@ -207,3 +207,99 @@ user-visible affordance, not just an internal cache.
   | `cd apps/electron && bun test src/shared/__tests__/ipc-channels.test.ts` | **3 pass / 2 fail** — the pre-existing inventory drift in item 3; not in `validate-pr.yml` |
 
   The four acceptance items hold as written. The defect is the commit's shape, not its behaviour.
+
+- `2026-08-27` — **the scope defect in item 1 above is repaired**, and all four acceptance items were
+  re-proved by execution rather than restated. The entry above stands as history; its item 1 is now
+  closed, and its table of foreign symbols was *incomplete* — see "two more foreign sites" below.
+
+  **The repair.** `bd68bed7` was rewritten as **`b9de9040`**, carrying SUV-0026 only; every SUV-0027
+  hunk moved forward into SUV-0027's own commit, now **`161c6523`**. Safe to do because
+  `git branch -r --contains bd68bed7` was **empty** — none of the 28 local commits had been published
+  (`origin/plan/plan-040` = `443e3d6a`, an ancestor of HEAD), the tree was clean, and
+  `git worktree list` showed no second worktree on `plan/plan-040`. No stash was used at any point;
+  sabotage restores were `cp` from `/tmp` copies (LEARNING-066).
+
+  Done as an explicit detached replay, not `rebase -i`: with a todo of all `pick`s the merge backend
+  **fast-forwards** instead of replaying, so `GIT_SEQUENCE_EDITOR` edits are worth verifying took
+  effect — the first attempt reported "Successfully rebased" while leaving `HEAD` at the same hash
+  (`d51e40a6`), i.e. it did nothing. Sequence: `git checkout --detach bd68bed7` → strip the hunks →
+  `--amend` → `git cherry-pick 706db0d5` → `git read-tree -u --reset 706db0d5` → `--amend` →
+  `git cherry-pick 706db0d5..d51e40a6` → `git branch -f plan/plan-040 HEAD`. The `read-tree --reset`
+  is what makes this safe: it restores SUV-0027's commit to its *exact original tree*
+  (`d86d81d8…`, compared and equal), so all 26 commits above replayed with **zero conflicts**.
+
+  **The repair is provably content-neutral at the tip.** Tree of the old `d51e40a6` and of the new
+  `24fdc5ca` are both `0dcd8a2766d3a070e71c2e070888c2932299e8d1`; `git diff d51e40a6 HEAD` is empty.
+  Only the commit boundary moved.
+
+  **Two more foreign sites the table above missed.** The prior entry named five files. There were
+  seven:
+
+  | File | SUV-0027 content, not previously listed |
+  |---|---|
+  | `apps/electron/src/shared/types.ts` | `getHeadroomStats` / `onHeadroomStatsChanged` on `ElectronAPI`, and the `HeadroomStatsReport` import that types them |
+  | `packages/shared/src/i18n/locales/*.json` (×7) | 12 `settings.workspace.headroomReport*` keys per locale — **84 lines**, consumed only by SUV-0027's `HeadroomReportSection.tsx` |
+
+  The `types.ts` one is why "check the five named files" was not a sufficient test. What is
+  sufficient is grepping the commit's **code diff** for the other SUV's vocabulary:
+  `git show b9de9040 --format= -- . ':!roadmap' | grep -E 'SUV-0027|HeadroomStatsReport|headroomReport|stats:get|stats:changed'`
+  → **no output**. (Six matches remain in the commit *message* and the SUV file's own Scope/status
+  prose, which is where the words belong.)
+
+  **Red-then-green on the atomicity claim, observed:**
+
+  | Commit | `bun run typecheck:ci` |
+  |---|---|
+  | `bd68bed7` (before) | **exit 2** — `TS2305` no exported member `HeadroomStatsReport` (×2), `TS2305` no exported member `buildHeadroomStatsReport`, `TS2339` `getHeadroomAdapter` does not exist on `AgentBackend` |
+  | `b9de9040` (after) | **exit 0**, no diagnostics |
+
+  At `b9de9040` in isolation: all three i18n gates green (parity 6 locales × **1980** keys — 1992
+  minus SUV-0027's 12, which is the arithmetic that shows the keys really moved), and
+  `packages/ui` `headroom-retrieval.test.ts` **17 pass / 0 fail / 59 expect()**. The commit now
+  stands alone, which is what "one SUV, one PR" requires of it.
+
+  **Acceptance re-proved by execution — two sabotages, applied and reverted by me this run:**
+
+  | Sabotage | Observed |
+  |---|---|
+  | drop `originalBytes`/`compressedBytes` from `compressToolOutput`'s return **and** the three `...(message.headroom* === undefined ? {} : …)` spreads from `messageToActivity` | **14 pass / 3 fail** — `reads a complete marker off the activity`, `redeems the handle the compression issued and returns the exact input bytes`, `reports the measured sizes of that same round trip` (`Expected: 166, Received: undefined`) |
+  | drop the `typeof result.content !== 'string'` guard in `resolveHeadroomOriginal` **and** make `SdkHeadroomAdapter.retrieve` return `content.trimEnd()` | **15 pass / 2 fail** — `refuses a malformed success answer…`, and the round trip, whose diff was exactly the payload's tail (`- mix` / trailing newline). That single-character failure is the proof the byte-identity assertion is genuinely byte-sensitive and not trivially true. |
+
+  Restored from `/tmp` copies after each; `git status --porcelain` empty; **17 pass / 0 fail** again.
+
+  **Acceptance 4 remains a data-level proof, as the entry above correctly conceded** — `pdfjs-dist`
+  in `TurnCard.tsx`'s import chain still blocks a DOM render test under `bun test`. Nothing here
+  upgrades that claim.
+
+  **Gates, this run, actual output:**
+
+  | Command | Result |
+  |---|---|
+  | `bun run typecheck:ci` | exit 0 |
+  | `bun run test:shared` | 3653 pass / 20 skip / 0 fail (211 files) |
+  | `bun run test:server` | 196 pass / 0 fail |
+  | `bun run test:webui` | exit 0 — composite: electron subset 425, `apps/webui` 24, `packages/ui` 327, `server-core` 362; all 0 fail |
+  | `bun run test:doc-tools` | 19 tests, OK |
+  | `bun run lint:i18n:parity` | OK (6 locales, 1992 keys each) |
+  | `bun run lint:i18n:sorted` | exit 0, clean |
+  | `bun run lint:i18n:coverage` | OK (2097 callsites, 1554 distinct keys, 1992 keys in en.json) |
+  | `bun run scripts/check-branding.ts` | clean (warns one stale allowlist entry, `apps/viewer/vite.config.ts`) |
+  | `bun run scripts/check-headroom-boundary.ts` | `headroom-ai` imported only by `packages/shared/src/headroom/sdk-adapter.ts` |
+  | `bun build apps/server/src/index.ts --target=bun --outdir=/tmp/build-check --no-splitting` | 3403 modules, 16.36 MB |
+  | `cd apps/viewer && bun test worker/` | 23 pass / 0 fail |
+
+  That is all ten `validate-pr.yml` gates, green.
+
+  **`ipc-channels.test.ts` — 3 pass / 2 fail, verified pre-existing and left alone.** The drift is
+  **17** channels, and I checked the two things the prior entry asserted:
+  `grep -c sessions:retrieveHeadroomOriginal apps/electron/src/shared/__tests__/ipc-channels.test.ts`
+  → **1**, so this SUV's channel *is* in the inventory and is not among the 17. For the 15
+  non-Headroom ones, each is present in `origin/main`'s `channels.ts` and absent from `origin/main`'s
+  test inventory (checked for `vorno:artifacts:index`, `vorno:workbench:review:threads:list`,
+  `craft-fork:webui:setPassword`) — pre-existing on `main`, unrelated to PLAN-040. The remaining 2
+  are SUV-0027's `vorno:headroom:stats:*`, which after this repair no longer appear until
+  `161c6523`. `grep -c ipc-channels .github/workflows/validate-pr.yml` → **0**: the gate does not run
+  in CI. Fixing it is neither this SUV's scope nor this plan's.
+
+  **Moved to `done/`.** All four acceptance items hold and are now backed by executed evidence, and
+  the one recorded blocker — the non-atomic commit — is closed.
