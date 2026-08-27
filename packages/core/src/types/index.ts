@@ -97,3 +97,16 @@ export type {
   ArtifactRelationKind,
   ArtifactRelation,
 } from './artifacts.ts';
+
+// Headroom integration config (fork: PLAN-040, SUV-0016)
+export type {
+  HeadroomVerbosity,
+  HeadroomConfig,
+  HeadroomConfigOverrides,
+} from './headroom.ts';
+export {
+  HEADROOM_VERBOSITY_VALUES,
+  HEADROOM_CONFIG_DEFAULTS,
+  sanitizeHeadroomConfigLayer,
+  resolveHeadroomConfig,
+} from './headroom.ts';

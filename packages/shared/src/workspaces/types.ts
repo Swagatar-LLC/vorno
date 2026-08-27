@@ -13,7 +13,7 @@
 
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
-import type { RootBindingConfig } from '@craft-agent/core/types';
+import type { RootBindingConfig, HeadroomConfigOverrides } from '@craft-agent/core/types';
 
 /**
  * Local MCP server configuration
@@ -100,6 +100,17 @@ export interface WorkspaceConfig {
      * string-map configs parse unchanged.
      */
     artifactRoots?: Record<string, string | RootBindingConfig>;
+
+    /**
+     * Per-workspace Headroom overrides (fork: PLAN-040, SUV-0016).
+     *
+     * Same shape as the instance-level base config in the config-root
+     * `config.json`, and every field is optional: a field set here wins, a
+     * field left unset inherits the instance base, and a field set nowhere
+     * takes the disabled default. Merge only via `resolveHeadroomConfig()`
+     * from `@craft-agent/core/types` — never read this raw.
+     */
+    headroom?: HeadroomConfigOverrides;
   };
 
   /**

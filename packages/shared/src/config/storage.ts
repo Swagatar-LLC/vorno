@@ -40,6 +40,7 @@ export type {
 
 // Import for local use
 import type { Workspace, AuthType } from '@craft-agent/core/types';
+import type { HeadroomConfigOverrides } from '@craft-agent/core/types';
 
 // Import LLM connection types and constants
 import type { LlmConnection } from './llm-connections.ts';
@@ -97,6 +98,11 @@ export interface StoredConfig {
   setupDeferred?: boolean;
   // Server mode — embedded remote server settings
   serverConfig?: import('./server-config.ts').ServerConfig;
+  // Headroom context-management integration (fork: PLAN-040, SUV-0016).
+  // Instance-level base config; per-workspace overrides live in the
+  // workspace's own config.json under `defaults.headroom` and win field-by-
+  // field. Absent here means "disabled" — see resolveHeadroomConfig().
+  headroom?: HeadroomConfigOverrides;
   // One-shot migration markers. Used by migrations that should run at most
   // once per user (e.g. restoring a previously-removed model to connection
   // lists without re-adding it if the user later removes it deliberately).
@@ -454,6 +460,38 @@ export function setKeepAwakeWhileRunning(enabled: boolean): void {
   const config = loadStoredConfig();
   if (!config) return;
   config.keepAwakeWhileRunning = enabled;
+  saveConfig(config);
+}
+
+/**
+ * Get the instance-level Headroom base config (fork: PLAN-040, SUV-0016).
+ *
+ * Returns the stored layer *unresolved and unvalidated* — callers merge it
+ * with the workspace layer via `resolveHeadroomConfig()`, which is where
+ * validation and the disabled default live. Returns `undefined` when the
+ * config file is missing or has no `headroom` key, which resolves to disabled.
+ */
+export function getHeadroomInstanceConfig(): HeadroomConfigOverrides | undefined {
+  const config = loadStoredConfig();
+  return config?.headroom;
+}
+
+/**
+ * Set the instance-level Headroom base config.
+ *
+ * Pass `undefined` to clear the key entirely (back to "unset", not "disabled"
+ * — the distinction matters once a workspace layer is in play).
+ */
+export function setHeadroomInstanceConfig(
+  headroom: HeadroomConfigOverrides | undefined,
+): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  if (headroom === undefined) {
+    delete config.headroom;
+  } else {
+    config.headroom = headroom;
+  }
   saveConfig(config);
 }
 
