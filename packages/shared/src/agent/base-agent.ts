@@ -27,6 +27,9 @@ import type { LoadedSource } from '../sources/types.ts';
 import { buildCallLlmRequest, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { getLlmConnections, getDefaultLlmConnection } from '../config/storage.ts';
 import { loadAllSources } from '../sources/storage.ts';
+import { loadEffectiveHeadroomConfig } from '../workspaces/headroom.ts';
+import { createSessionHeadroomAdapter } from '../headroom/session-adapter.ts';
+import type { HeadroomAdapter, HeadroomConfig } from '@craft-agent/core/types';
 import type { ApiServerConfig } from '../mcp/mcp-pool.ts';
 
 import type {
@@ -199,6 +202,18 @@ export abstract class BaseAgent implements AgentBackend {
   protected automationSystem?: AutomationSystem;
 
   // ============================================================
+  // Headroom (fork: PLAN-040 / SUV-0018)
+  //
+  // Both are captured in the constructor and never reassigned. That is the
+  // whole of the "config is read at session start" rule: a workspace toggle
+  // flipped mid-turn changes what the *next* session resolves and leaves this
+  // one on the adapter it started with, with no mid-flight swap to reason
+  // about. Nothing calls the adapter yet — compression call sites are I1.
+  // ============================================================
+  private readonly _headroomConfig: HeadroomConfig;
+  private readonly _headroomAdapter: Promise<HeadroomAdapter>;
+
+  // ============================================================
   // Additional State (protected for subclass access)
   // ============================================================
   protected temporaryClarifications: string | null = null;
@@ -321,6 +336,53 @@ export abstract class BaseAgent implements AgentBackend {
 
     // AutomationSystem: workspace-level automations from automations.json
     this.automationSystem = config.automationSystem;
+
+    // Headroom: resolve the workspace's effective config *synchronously*, here,
+    // so the snapshot this session runs on is fixed before any await point.
+    // Building the adapter is async (the SDK is a dynamic import), so it is
+    // started now and awaited by whoever needs it; the factory never rejects,
+    // so this promise cannot become an unhandled rejection.
+    this._headroomConfig = loadEffectiveHeadroomConfig(config.workspace.rootPath);
+    this._headroomAdapter = createSessionHeadroomAdapter(
+      this._headroomConfig,
+      {
+        model: this._model,
+        onWarn: (message) => {
+          // console.warn, not debug(): onDebug is wired by the facade *after*
+          // construction, so a debug-only warning at this point goes nowhere.
+          console.warn(message);
+          this.debug(message);
+        },
+      },
+      config.headroom,
+    );
+  }
+
+  // ============================================================
+  // Headroom accessors (fork: PLAN-040 / SUV-0018)
+  // ============================================================
+
+  /**
+   * The adapter this session was constructed with.
+   *
+   * Always the same instance for the life of the session — the promise is
+   * resolved once, at construction. Callers need no branch on `kind` and no
+   * try/catch: an unavailable Headroom is an ordinary state the adapter reports.
+   */
+  getHeadroomAdapter(): Promise<HeadroomAdapter> {
+    return this._headroomAdapter;
+  }
+
+  /**
+   * The effective Headroom config read at session start.
+   *
+   * Returned as a copy so a caller cannot mutate the session's snapshot. Fields
+   * beyond `enabled` (`compressionEngines`, `verbosity`, `exposeStats`) are
+   * resolved and readable here but not yet consumed — they steer calls (I1) and
+   * stat surfaces (SUV-0028).
+   */
+  getHeadroomConfig(): HeadroomConfig {
+    return { ...this._headroomConfig, compressionEngines: [...this._headroomConfig.compressionEngines] };
   }
 
   // ============================================================

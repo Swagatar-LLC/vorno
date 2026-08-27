@@ -22,6 +22,7 @@ import type { McpClientPool } from '../../mcp/mcp-pool.ts';
 import type { Workspace } from '../../config/storage.ts';
 import type { SessionConfig as Session } from '../../sessions/storage.ts';
 import type { SourceManager } from '../core/source-manager.ts';
+import type { HeadroomAdapterDeps } from '../../headroom/index.ts';
 
 // Import AbortReason and RecoveryMessage from core module (single source of truth)
 import { AbortReason, type RecoveryMessage } from '../core/index.ts';
@@ -694,4 +695,14 @@ export interface BackendConfig extends CoreBackendConfig {
    * This keeps provider-specific runtime details out of the public config surface.
    */
   runtime?: Record<string, unknown>;
+
+  /**
+   * Headroom boundary seam (fork: PLAN-040 / SUV-0018). Tests only — production
+   * callers pass nothing and the boundary loads the real SDK.
+   *
+   * Present here rather than on a module-level override because a session's
+   * adapter is decided in its constructor, and per-test isolation of that
+   * decision is only possible if the seam travels with the config.
+   */
+  headroom?: HeadroomAdapterDeps;
 }

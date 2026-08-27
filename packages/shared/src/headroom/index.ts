@@ -5,8 +5,9 @@
  * to obtain a {@link HeadroomAdapter}; it decides between the SDK-backed
  * implementation and the no-op, and it cannot fail.
  *
- * Nothing in the product calls it yet — wiring resolved configuration into it is
- * SUV-0018, session-loop and Conductor call sites are I1.
+ * Resolved configuration is wired into it by `session-adapter.ts` (SUV-0018),
+ * which is what every session goes through; session-loop and Conductor call
+ * sites are I1.
  */
 
 import type { HeadroomAdapter, HeadroomAdapterOptions } from '@craft-agent/core/types';
@@ -30,6 +31,13 @@ export type {
   HeadroomSdkClientOptions,
   HeadroomSdkModule,
 } from './sdk-adapter.ts';
+// The session-level joint (SUV-0018). Re-exported after the factory it wraps;
+// both are function declarations, so the module cycle resolves before any call.
+export {
+  createSessionHeadroomAdapter,
+  headroomAdapterOptionsFor,
+  type SessionHeadroomInput,
+} from './session-adapter.ts';
 
 /**
  * Seams for tests. Production callers pass nothing.
