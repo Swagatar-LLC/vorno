@@ -1,12 +1,12 @@
 ---
 id: SUV-0015
 title: Headroom boundary module with no-op fallback
-status: planned
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
 created: 2026-08-25
-updated: 2026-08-26
+updated: 2026-08-27
 related: []
 blocked-by:
   - SUV-0014-vet-and-pin-headroom-for-adoption.md (the pinned SDK this boundary wraps)
@@ -121,3 +121,68 @@ absent or disabled.
   its own preconditions with `Bun.fetch` (native, unreachable by whoever
   reassigned the global) and restores the previous value; the leak itself belongs
   in its own fix, and merits a `LEARNING-NNN` in `vorno-internal`.
+
+- `2026-08-27` — **re-verified by execution and closed.** The implementation
+  landed in `bc684751`; this entry records verifying it rather than trusting the
+  entry above. Every number below came from a command run in this session.
+
+  **One real gap found and fixed.** Acceptance item 5 claims byte-identical
+  round-trip. It did not hold: mutating the boundary's `retrieve` to
+  `content.trimEnd()` left `sdk-roundtrip.test.ts` fully green (8 pass / 3 skip /
+  0 fail), because `TOOL_OUTPUT` was bare `JSON.stringify` output — it begins
+  `{` and ends `}`, so trimming its edges is a no-op and the assertion could not
+  fail for the reason it claimed to test. Real tool output is not so tidy: a
+  shell capture keeps its trailing newline, and that newline is content. The
+  payload is now wrapped in leading and trailing whitespace. Same mutation
+  against the new payload: **1 fail** (`retrieves the original content
+  byte-for-byte`); restored: **8 pass / 3 skip / 0 fail**. That is the only
+  production-affecting behaviour change in this entry — the adapter itself is
+  untouched.
+
+  **Red-then-green on the other load-bearing lines**, by mutating the source and
+  observing the suite that guards it (each mutation reverted from a `/tmp` copy,
+  `git diff --stat` empty afterwards):
+
+  | Mutation | Suite result |
+  |---|---|
+  | no-op `compress` copies messages + returns `{tokensBefore: 0, …}` | 9 pass / **3 fail** |
+  | factory rethrows instead of returning the no-op | 8 pass / **4 fail** |
+  | `retrieve` trims content (new payload) | 7 pass / 3 skip / **1 fail** |
+  | *(all restored)* | 12 pass / 0 fail · 8 pass / 3 skip / 0 fail |
+
+  **The gate was exercised in both directions live**, not just asserted about:
+  adding `packages/shared/src/headroom/__violation-probe.ts` with a real SDK
+  import → `exit 1`, naming the file; pointing `BOUNDARY_FILES` at
+  `noop-adapter.ts` → `exit 1` on *both* arms (stale allowlist **and** the real
+  boundary now unallowlisted). Probe file deleted, script restored.
+
+  **Observed suite results** (not carried over from the entry above):
+
+  - SUV-0015's three suites: **34 tests, 31 pass / 3 skip / 0 fail**. The 3 skips
+    are the opt-in `HEADROOM_TEST_BASE_URL` live-proxy block, correctly skipped.
+  - `packages/shared` full suite: **3664 tests across 211 files, 3644 pass / 20
+    skip / 0 fail** (45.6s).
+  - `packages/server-core`: **362 pass / 0 fail**.
+  - `bun run typecheck`: clean.
+  - `lint:headroom-boundary`, `check-branding.ts`, `lint:i18n:{sorted,parity,coverage}`: pass.
+
+  **Corrections to the `2026-08-26` entry above**, left in place rather than
+  edited: it claims "37 tests across three suites" (observed: **34**) and "Shared
+  suite 3523 pass" (observed: **3644** — the branch has grown since). Neither
+  number reproduces today; the observed ones are above.
+
+  **Two pre-existing defects, deliberately not fixed here** (both out of this
+  SUV's scope):
+
+  1. `bun run lint` cannot complete on this branch **or on `main`**:
+     `lint:ipc-sends` and `lint:tool-name-checks` invoke
+     `scripts/check-raw-sends.sh` and `scripts/check-task-tool-checks.sh`, and
+     neither file exists in either ref (`git cat-file -e main:… ` → missing).
+     Exit 127, so every lint sub-gate after them is skipped by the `&&` chain.
+     They are not among the ten `validate-pr.yml` jobs, so CI is unaffected — but
+     `bun run lint` locally is a no-op that looks like a pass.
+  2. `packages/server-core/src/handlers/rpc/settings-headroom.test.ts` was
+     modified **by another process while this session ran** (mtime moved to
+     01:38:12, after this session started, with no edit from here). It is
+     SUV-0017 work — a subprocess-based restart-persistence test. Left untouched
+     and excluded from this commit, which names its paths explicitly. It passes.

@@ -35,7 +35,20 @@ import { createHeadroomAdapter } from '../index.ts';
 // Payload — a realistic bulky tool result, the case Headroom exists for
 // ---------------------------------------------------------------------------
 
-const TOOL_OUTPUT = JSON.stringify(
+/**
+ * The payload's edges carry significant whitespace deliberately.
+ *
+ * `JSON.stringify` alone produces a string that begins with `{` and ends with
+ * `}`, so a boundary that quietly normalised its edges — `content.trim()`,
+ * `trimEnd()`, a template literal that re-indents — would round-trip it
+ * unchanged and the byte-identical assertion would pass anyway. Real tool output
+ * is not so tidy: shell captures keep their trailing newline, and that newline is
+ * content. Wrapping the JSON in leading and trailing whitespace makes the
+ * assertion able to fail for the reason it claims to test. Verified by mutation:
+ * `trimEnd()` on the adapter's retrieve path passes against the bare JSON and
+ * fails against this.
+ */
+const TOOL_OUTPUT = `  \n\t${JSON.stringify(
   {
     matches: Array.from({ length: 60 }, (_, i) => ({
       file: `packages/shared/src/sources/handlers/handler-${i}.ts`,
@@ -50,7 +63,7 @@ const TOOL_OUTPUT = JSON.stringify(
   },
   null,
   2,
-);
+)}\n  \n`;
 
 const MESSAGES: readonly HeadroomMessage[] = Object.freeze([
   { role: 'system', content: 'You are Vorno.' },
