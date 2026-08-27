@@ -6,7 +6,7 @@ plan: PLAN-040
 direction: DIR-05
 owner: jh
 created: 2026-08-26
-updated: 2026-08-26
+updated: 2026-08-27
 related: []
 blocked-by:
   - SUV-0018-resolved-config-drives-the-headroom-boundary.md (memory rides the same config-driven adapter — satisfied, landed as 1291b25c)
@@ -86,3 +86,57 @@ adapter.
     "Default substrate: local markdown" as fact — plus a plan status-log entry.
     **SUV-0030 (the plan's priority build item) and SUV-0031 inherit this premise
     and need re-grounding before they are executable.**
+
+- `2026-08-27` — **Second execution attempt. Blocker independently re-verified
+  against the installed package; stays `blocked/`; still no implementation.**
+
+  Re-derived from scratch rather than trusting the 08-26 log. `headroom-ai` is
+  still pinned at `0.36.5` (`packages/shared/package.json:100`), and its shipped
+  `dist/index.d.ts` export list contains exactly three memory-named symbols:
+  `MemoryUsage` / `memoryUsage()` (the proxy process's RSS — unrelated), and the
+  path helpers `memoryDbPath()` / `nativeMemoryDir()`. There is no `memory`
+  member on `HeadroomClient` (`"memory" in client === false` at runtime), and
+  the one `retrieve()` method is CCR block-retrieval by content hash, not memory.
+
+  One route the prior audit named but did not close out loud, closed here:
+  `nativeMemoryDir()` resolves to `<workspaceDir>/memories` — a *directory*, and
+  therefore the last plausible candidate for this SUV's "local markdown"
+  substrate. It is a dead path string. Both helpers are pure `joinPath` calls
+  (`dist/index.js:253-260`), the identifier appears three times in the whole
+  bundle (declaration, export, nothing else), and the package performs no
+  filesystem access at all. Neither `~/.headroom/` nor `~/.headroom/memories`
+  exists on this machine after the SDK has been exercised. The sibling helper
+  names the real substrate: `memory.db`.
+
+  So acceptance item 3's premise is falsified twice over, and the escape hatch —
+  writing markdown ourselves — is PLAN-040's first non-goal ("Building our own
+  compression, token, or memory library"). Items 1 and 2 remain unimplementable
+  for want of an API to import and cross-process persistence to build on. Item 4
+  alone is reachable, still only degenerately.
+
+  Also confirmed the 08-26 tripwire is not merely green but *able to go red*:
+  each of its five assertion shapes was fed the mutation it exists to catch
+  (a `/v1/memory/search` literal, a `readonly memory:` client member,
+  `memorySave`/`MemoryStore` after the `MemoryUsage` scrub, a `node:fs` write,
+  and a `persistPath` on `SharedContextOptions`) and every one fired. A vacuous
+  tripwire would have made "still blocked" unfalsifiable; it isn't.
+
+  Deliberately **not** worked around a second time. Shipping just the adapter
+  surface plus "unavailable" would mean designing `MemoryEntry`, provenance, and
+  query semantics against an unmade decision — the four routes (proxy-injected
+  model tools, Python client, direct `.headroom/memory.db` reads, upstream TS
+  contribution) produce four different shapes. That is PLAN-040 open question 1,
+  reserved to the owner.
+
+  What SUV-0030's delivery changed: the recommended upstream route is now
+  better-grounded, not unblocked. `headroom/memory/ports.py` already defines the
+  `MemoryStore` / `VectorIndex` / `TextIndex` Protocols and `factory.py` loads
+  backends from setuptools entry points — Python-side seams, with the TypeScript
+  gap filed upstream as headroomlabs-ai/headroom#3287.
+
+  **Unblocking act is an ADR choosing the memory surface. After that this SUV
+  needs re-cutting, not executing: acceptance item 3's markdown requirement has
+  to go, and items 1–2 re-grounded on whichever surface the ADR picks.**
+
+  Landed on `plan/plan-040`: this status-log entry only. No source file was
+  created, edited, moved, or deleted.
