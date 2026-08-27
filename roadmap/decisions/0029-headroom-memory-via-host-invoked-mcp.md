@@ -70,7 +70,9 @@ strictly better than the first three.
   level that matters: what Vorno commits to is a *memory interface* whose
   behaviour is inspectable and tunable in settings. How a given backend stores
   and retrieves bytes underneath is an implementation detail of that backend.
-  SQLite + HNSW + FTS5 under the hood is therefore **not** a violation, and the
+  A SQLite store with vector and full-text indexes underneath is therefore
+  **not** a violation (SQLite and FTS5 observed; HNSW documented but unverified,
+  since `vector_backend` defaults to `AUTO` — audit M7e), and the
   vector index is not the "Vector-DB / RAG infrastructure" PLAN-040 rules out as
   a *build* non-goal — we are adopting one that exists, not building one.
 
@@ -97,12 +99,21 @@ The interface shape lands narrow and widens later via small additive upstream
 PRs. This is a deliberate scoping call, not a gap we failed to notice.
 
 **3. Pluggable backends are the planned extension, not the first step.**
-`mcp_server.py:170-171` instantiates `LocalBackend(LocalBackendConfig(...))`
-directly, **bypassing `factory.py`'s `EXTERNAL` entry-point routing**. Until a
-small upstream fix routes the MCP server through the factory, agentic-memory v2
-**cannot** plug in behind this surface. Appended as an additional gap to
+agentic-memory v2 **cannot** plug in behind this surface yet — but the reason is
+narrower than it first appeared, and the precise version matters because it
+determines the upstream ask. The MCP server does **not** bypass `factory.py`:
+`core.py:124` calls `create_memory_system(config)` and the factory is reached.
+The problem is that `LocalBackendConfig` (`backends/local.py:37-66`) has **no
+`store_backend` field**, so the `MemoryConfig` built at `backends/local.py:186-195`
+leaves it at the `StoreBackend.SQLITE` default (`config.py:99`) and
+`factory.py:128` always takes the SQLite branch. The `EXTERNAL` entry-point
+branch is live and correct; it is merely unreachable from this path.
+
+**The ask upstream is therefore "let `LocalBackendConfig` and the memory MCP
+server name a store backend", not "route the MCP server through the factory"** —
+the latter would be rejected as already done. Appended as an additional gap to
 [headroomlabs-ai/headroom#3287](https://github.com/headroomlabs-ai/headroom/issues/3287)
-at the 2026-09-03 bump.
+at the 2026-09-03 bump. See audit finding M7c for the full trace.
 
 **4. Options 1 and 3 are ruled out on posture, not effort.** See *Alternatives*.
 Relatedly, `headroom wrap`-dependent features — `headroom learn`, cross-agent
@@ -205,7 +216,11 @@ otherwise.
   "absent".
 - **agentic-memory v2 cannot plug in yet** (commitment 3). SUV-0031's plugged
   backend is real against `factory.py` but unreachable *through this surface*
-  until the upstream bypass fix lands.
+  until `LocalBackendConfig` can carry a store-backend choice.
+- **The boundary gate does not yet cover this seam.** `check-headroom-boundary.ts`
+  matches package *imports*, so it cannot see a subprocess launched as
+  `python -m headroom.memory.mcp_server`. The gate needs a second pattern before
+  SUV-0029 lands, or the boundary becomes enforceable in one direction only.
 - **Multi-layer memory is not actually multi-layer through this surface** (C2),
   so §I2's "memory shared across agents" is delivered only at USER granularity
   for now.

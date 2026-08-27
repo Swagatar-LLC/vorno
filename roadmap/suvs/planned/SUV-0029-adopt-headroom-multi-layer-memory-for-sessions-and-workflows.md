@@ -40,12 +40,17 @@ adapter.
   later layered choice); update/delete/supersession/history verbs (ADR-0029
   commitment 2); the pluggable extension interface (SUV-0030); the
   agentic-memory v2 backend (SUV-0031, unreachable through this surface until
-  the upstream LocalBackend bypass is fixed); and `headroom learn` mining
-  (`wrap`-dependent, out on F3 grounds).
+  `LocalBackendConfig` can carry a store-backend choice — audit M7c); and
+  `headroom learn` mining (`wrap`-dependent, out on F3 grounds).
+- **In scope, and easy to miss:** extend `scripts/check-headroom-boundary.ts` to
+  cover the subprocess seam. It matches package *imports*, so it cannot see
+  `python -m headroom.memory.mcp_server` being spawned outside the boundary
+  module. Without a second pattern the gate enforces the boundary in one
+  direction only, and this SUV is precisely the one that introduces the other.
 
 ## Acceptance
 
-- [ ] The boundary adapter exposes `memorySearch` / `memorySave`, and the only production import of Headroom's memory surface remains inside the boundary module (SUV-0015 guard still passes).
+- [ ] The boundary adapter exposes `memorySearch` / `memorySave`, and the only production reference to Headroom's memory surface remains inside the boundary module — with `check-headroom-boundary.ts` extended to catch the **subprocess** seam (`headroom.memory.mcp_server`) as well as package imports, and proven able to go red on a mutation.
 - [ ] In an enabled workspace, a memory written during one session is retrievable in a later session and in a workflow run, asserted by an integration test against a real `memory.db`.
 - [ ] Memory is host-invoked: an integration test asserts `memory_search` fires at session context load without the model having requested it.
 - [ ] Nothing is sent off-machine at steady state, verified against the SUV-0014 telemetry audit's opt-in findings. The one-time embedder model fetch on first enable is the sole documented exception and is named in the docs page (SUV-0032).
@@ -275,3 +280,35 @@ adapter.
   Landed on `plan/plan-040`: this entry, the frontmatter and scope/acceptance
   re-cut, the folder move, and audit finding **M7**. No implementation yet —
   that is this SUV's next execution, now genuinely executable.
+
+- `2026-08-27` — **Follow-up pass: two errors in the entry above corrected, both
+  found by an independent read of the same code.**
+
+  **(a) "Bypasses `factory.py`" was wrong, and the wrong version implies the
+  wrong upstream ask.** The MCP server does not bypass the factory —
+  `core.py:124` calls `create_memory_system(config)`. The real constraint is that
+  `LocalBackendConfig` has **no `store_backend` field**, so the `MemoryConfig`
+  built at `backends/local.py:186-195` keeps the `StoreBackend.SQLITE` default
+  and `factory.py:128` always takes the SQLite branch. The `EXTERNAL` branch is
+  live and unreachable, not absent. Filing "route it through the factory" would
+  have been rejected as already done; the correct ask is "let
+  `LocalBackendConfig` and the MCP server name a store backend". Caught **before**
+  it reached #3287. Full trace in audit **M7c**.
+
+  **(b) Audit §M2 carried a false claim that helped keep this SUV blocked for
+  three passes.** It stated "there is **no MCP memory tool** — Headroom's MCP
+  server offers `headroom_compress`, `headroom_retrieve`, `headroom_stats` only."
+  That is true of the *compression* MCP server and was generalised to "the MCP
+  server" as though there were only one. Since M2 was the finding that ruled MCP
+  out as a surface, the error was load-bearing: the answer sat inside the pinned
+  package the whole time. Repaired in the audit with the original text preserved.
+
+  Also recorded: audit **M7d** (four sharp edges — `memory_save` declares
+  `"required": []`, an undeclared `content` compat path, a `superseded` counter
+  that is structurally always zero so dedup is the host's problem, and `category`
+  written as `''`), and **M7e** (HNSW stays *documented*, not reproduced —
+  M7a closed only the FTS5 half of M6's caveat).
+
+  Scope and acceptance amended: extending `check-headroom-boundary.ts` to the
+  subprocess seam is now explicit, because the gate matches package imports and
+  this SUV is the one that introduces a non-import path to Headroom.

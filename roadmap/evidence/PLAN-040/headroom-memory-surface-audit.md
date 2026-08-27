@@ -94,10 +94,19 @@ describes three access paths, none of them this package:
    provider tools (Anthropic `tool_use`, OpenAI functions) into the completion
    request.
 
-Memory is **not exposed over HTTP** on the proxy, and there is **no MCP memory
-tool** — Headroom's MCP server offers `headroom_compress`, `headroom_retrieve`,
-`headroom_stats` only. So neither of PLAN-040's two named fallback surfaces
-(proxy, MCP) carries memory either.
+Memory is **not exposed over HTTP** on the proxy.
+
+> **CORRECTED 2026-08-27 — see [M7](#m7--a-memory-mcp-stdio-server-ships-in-the-pinned-version-and-it-works).**
+> This paragraph originally continued: "and there is **no MCP memory tool** —
+> Headroom's MCP server offers `headroom_compress`, `headroom_retrieve`,
+> `headroom_stats` only. So neither of PLAN-040's two named fallback surfaces
+> (proxy, MCP) carries memory either." **That is false.** It is true of the
+> *compression* MCP server and was generalised to "the MCP server" as though
+> there were only one. There is a second: `headroom.memory.mcp_server`, shipping
+> in this same pinned version, exposing `memory_search` and `memory_save`. The
+> proxy half of the claim stands; the MCP half was the error that kept SUV-0029
+> blocked across three passes, and it propagated into PLAN-040's corrected
+> capability bullet and SUV-0029's `blocked-by` line — both repaired.
 
 This is a sharper form of SUV-0014's **F4** ("this SDK is a proxy client, not an
 in-process library"). F4 established that adopting the SDK entails running the
@@ -311,15 +320,69 @@ Constraints 2 and 3, plus the `LocalBackend` bypass below, are filed as
 additional gaps on
 [#3287](https://github.com/headroomlabs-ai/headroom/issues/3287).
 
-#### M7c — The MCP server bypasses the pluggable-backend factory
+#### M7c — The MCP server cannot reach a pluggable backend, but not because it bypasses the factory
 
-`mcp_server.py:170-171` instantiates `LocalBackend(LocalBackendConfig(...))`
-**directly**, bypassing `factory.py`'s setuptools `EXTERNAL` entry-point
-routing — the very seam SUV-0030 designed against and SUV-0031 plugged
-agentic-memory v2 into. So the v2 backend is reachable through the Python
-factory but **not** through the MCP server, until a small upstream fix routes
-the server through the factory. This is the gating dependency for SUV-0031's
-value being realised through the chosen surface.
+**This finding was stated imprecisely on first writing and is corrected here
+before it reached upstream**, because the imprecise version implies the wrong
+fix. The original text said the MCP server "bypasses `factory.py`'s setuptools
+`EXTERNAL` entry-point routing". It does not bypass the factory at all.
+
+The actual chain, traced end to end:
+
+1. `mcp_server.py:170-171` → `LocalBackend(LocalBackendConfig(db_path=..., embedder_backend="onnx"))`
+2. `backends/local.py:186-195` builds a `MemoryConfig` passing `db_path`,
+   `embedder_*`, `vector_dimension`, and `cache_*` — and **never
+   `store_backend`**, because `LocalBackendConfig` (`backends/local.py:37-66`)
+   **has no such field**.
+3. `MemoryConfig.store_backend` therefore keeps its default,
+   `StoreBackend.SQLITE` (`config.py:99`).
+4. `core.py:124` calls `create_memory_system(config)` — **the factory is
+   reached** — and `factory.py:128` takes the `SQLITE` branch every time. The
+   `EXTERNAL` branch at `factory.py:133` is live and correct; it is simply
+   unreachable from this path.
+
+So the seam SUV-0030 designed against and SUV-0031 plugged agentic-memory v2
+into is intact. What is missing is any way to *express* a non-SQLite choice
+through the local backend: `LocalBackendConfig` needs `store_backend` /
+`store_backend_name` fields to pass through, and `mcp_server.py`'s argparse
+needs flags to set them.
+
+**The upstream ask is therefore "let `LocalBackendConfig` and the memory MCP
+server name a store backend", not "route the MCP server through the factory".**
+Filing the latter would have been rejected as already done, and would have read
+as not having looked. This remains the gating dependency for SUV-0031's value
+being realised through the chosen surface.
+
+#### M7d — Four further sharp edges in the MCP surface
+
+Found while tracing M7c; none blocking, all worth knowing before writing against
+this surface:
+
+- **`memory_save` declares `"required": []`.** A no-argument call is
+  schema-valid. The handler returns "Error: facts array is required" as ordinary
+  non-error text, so a host that only checks `isError` will read a silent no-op
+  as success.
+- **An undeclared `content: string` compat path** exists
+  (`mcp_server.py:338-342`): if `facts` is absent, a bare `content` string is
+  accepted. Not in the advertised schema.
+- **The `superseded` counter is structurally always zero.** It is initialised to
+  0 and never incremented (`:348-368`), so "Saved N new, updated M existing"
+  always reports `M = 0`. Deduplication is entirely the host's problem — which
+  matches the tool description's own warning that supersession requires an
+  explicit update path with a memory ID, a path this surface does not expose.
+- **`category` is written as `''`, not NULL** (the column is `NOT NULL`) — a
+  fifth field the MCP surface cannot populate, alongside the three scope columns
+  in M7b.
+
+#### M7e — HNSW remains documented, not reproduced
+
+M7a closed M6's FTS5 caveat. **It does not close the HNSW half, and that half
+should not be quietly restated as fact.** After real writes, no HNSW structure
+appears; `config.py:104` defaults `vector_backend` to `VectorBackend.AUTO`,
+documented as "SQLITE_VEC if available, else HNSW", so which index is actually
+in play is environment-dependent and was not determined here. Everywhere this
+corpus says "SQLite + HNSW + FTS5", read it as: SQLite observed, FTS5 observed,
+HNSW documented and unverified.
 
 #### M7 reproduction
 
