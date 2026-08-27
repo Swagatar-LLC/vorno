@@ -8,9 +8,13 @@
  *
  *   1. A write lands in the workspace's own `config.json` under
  *      `defaults.headroom` and is still there when a *fresh* handler instance
- *      reads it — the closest a unit test gets to "survives an app restart",
- *      since nothing about the value is held in memory between calls.
- *   2. Two workspaces resolve independently.
+ *      reads it, since nothing about the value is held in memory between calls.
+ *   2. The same value survives a real process boundary: written here, read back
+ *      by a subprocess that shares nothing but the config dir on disk. A fresh
+ *      handler registration only proves this module caches nothing; it cannot
+ *      rule out state held elsewhere in the process. Restarting the process is
+ *      what "survives an app restart" actually claims, so it is tested as such.
+ *   3. Two workspaces resolve independently.
  *
  * Runs against real workspaces inside the throwaway config dir provided by the
  * bunfig test preload (../../../shared/tests/setup/config-fixture.ts —
@@ -19,6 +23,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import type { HandlerFn, RequestContext, RpcServer } from '../../transport/types'
@@ -96,6 +101,33 @@ async function readWritableLayer(workspaceId: string): Promise<unknown> {
   const { get } = createHarness()
   const settings = await get(ctx(workspaceId), workspaceId) as { headroom?: unknown }
   return settings.headroom
+}
+
+/** The SUV-0016 storage module, resolved for a subprocess `--eval` import. */
+const HEADROOM_MODULE = pathToFileURL(
+  join(import.meta.dir, '..', '..', '..', '..', 'shared', 'src', 'workspaces', 'headroom.ts'),
+).href
+
+/**
+ * Read the view for a workspace root in a **separate process**, sharing only
+ * `CRAFT_CONFIG_DIR`. Nothing this process holds in memory can be reached from
+ * there, so a value that comes back came off disk.
+ */
+function readViewInFreshProcess(workspaceRoot: string): HeadroomView {
+  const run = Bun.spawnSync(
+    [
+      process.execPath,
+      '--eval',
+      `import { loadHeadroomConfigView } from '${HEADROOM_MODULE}';` +
+        `console.log(JSON.stringify(loadHeadroomConfigView(${JSON.stringify(workspaceRoot)})))`,
+    ],
+    { env: { ...process.env, CRAFT_CONFIG_DIR: CONFIG_DIR }, stdout: 'pipe', stderr: 'pipe' },
+  )
+
+  if (run.exitCode !== 0) {
+    throw new Error(`subprocess failed (exit ${run.exitCode})\nstderr:\n${run.stderr.toString()}`)
+  }
+  return JSON.parse(run.stdout.toString().trim()) as HeadroomView
 }
 
 async function write(workspaceId: string, value: unknown): Promise<void> {
@@ -222,6 +254,47 @@ describe('workspace settings: headroom persistence (SUV-0017)', () => {
     const view = await readView(WS_A)
     expect(view.overrides).toEqual({ enabled: true, futureKnob: 'x' })
     expect(view.effective.enabled).toBe(true)
+  })
+})
+
+describe('workspace settings: headroom survives a process restart (SUV-0017)', () => {
+  it('a write here is read back by a process that shares only the config dir', async () => {
+    await write(WS_A, {
+      enabled: true,
+      compressionEngines: ['summarize'],
+      verbosity: 'terse',
+      exposeStats: true,
+    })
+
+    const view = readViewInFreshProcess(ROOT_A)
+
+    expect(view.effective).toEqual({
+      enabled: true,
+      compressionEngines: ['summarize'],
+      verbosity: 'terse',
+      exposeStats: true,
+    })
+    expect(view.sources.enabled).toBe('workspace')
+  })
+
+  it('a cleared override is still cleared after the restart', async () => {
+    writeRootConfig({ verbosity: 'verbose' })
+    await write(WS_A, { enabled: true, verbosity: 'terse' })
+    // The UI clears one field by writing the layer without it.
+    await write(WS_A, { enabled: true })
+
+    const view = readViewInFreshProcess(ROOT_A)
+
+    expect(view.effective.verbosity).toBe('verbose')
+    expect(view.sources.verbosity).toBe('instance')
+    expect(view.sources.enabled).toBe('workspace')
+  })
+
+  it('two workspaces still resolve independently after the restart', async () => {
+    await write(WS_A, { enabled: true })
+
+    expect(readViewInFreshProcess(ROOT_A).effective.enabled).toBe(true)
+    expect(readViewInFreshProcess(ROOT_B).effective).toEqual(DISABLED)
   })
 })
 
