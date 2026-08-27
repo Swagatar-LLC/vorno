@@ -98,7 +98,14 @@ function ThresholdPreview({ thresholds }: { thresholds: UsageThresholds }) {
           key={i}
           className="relative h-1.5 w-10 rounded-full bg-foreground/10 overflow-hidden"
           aria-hidden="true"
-          title={`${Math.round(u.fraction * 100)}% → ${u.level}`}
+          // The preview always passes a known window (100), so this is the
+          // known arm in practice; the branch is what makes that safe rather
+          // than assumed (fork: PLAN-040 / SUV-0028).
+          title={
+            u.denominatorKnown
+              ? `${Math.round(u.fraction * 100)}% → ${u.level}`
+              : `unknown → ${u.level}`
+          }
         >
           <div
             className="absolute inset-y-0 left-0"

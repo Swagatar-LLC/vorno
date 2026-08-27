@@ -1,11 +1,15 @@
 import * as React from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@craft-agent/ui'
-import { computeContextUsage, formatTokensCompact, type UsageThresholds } from './context-usage'
+import { computeContextUsage, describeContextUsage, type UsageThresholds } from './context-usage'
 
 interface ContextUsageIndicatorProps {
   /** Tokens used (input tokens for the next prompt). May be undefined before any usage event arrives. */
   used: number | null | undefined
-  /** Model context window in tokens. May be undefined for compat providers. */
+  /**
+   * Model context window in tokens. May be undefined for compat providers —
+   * in which case the indicator says so rather than assuming one
+   * (fork: PLAN-040 / SUV-0028).
+   */
   limit: number | null | undefined
   /**
    * Workspace-resolved color thresholds (PLAN-003). When omitted or invalid,
@@ -28,16 +32,12 @@ interface ContextUsageIndicatorProps {
  */
 export function ContextUsageIndicator({ used, limit, thresholds, className }: ContextUsageIndicatorProps) {
   const usage = computeContextUsage(used, limit, thresholds)
-  const hasUsage = (used ?? 0) > 0
 
-  // Before any usage event arrives the indicator shows the limit but a "—" used
-  // value so it's obviously waiting for data rather than reporting a real zero.
-  const usedLabel = hasUsage ? formatTokensCompact(usage.used) : '—'
-  const limitLabel = formatTokensCompact(usage.limit)
-
-  const tooltipText = hasUsage
-    ? `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} tokens (${Math.round(usage.fraction * 100)}%)`
-    : `Context window: ${usage.limit.toLocaleString()} tokens — usage will appear after the first response`
+  // Before any usage event arrives the indicator shows a "—" used value so it's
+  // obviously waiting for data rather than reporting a real zero. When the
+  // context window itself is unresolvable the limit renders as "?" and no
+  // percentage is shown at all — see `describeContextUsage`.
+  const { usedLabel, limitLabel, tooltip: tooltipText } = describeContextUsage(usage)
 
   return (
     <Tooltip>

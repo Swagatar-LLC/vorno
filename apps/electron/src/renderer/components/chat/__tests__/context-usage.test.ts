@@ -5,7 +5,6 @@ import {
   resolveThresholds,
   isValidThresholds,
   USAGE_THRESHOLDS,
-  DEFAULT_CONTEXT_WINDOW,
   USAGE_COLORS,
 } from '../context-usage'
 
@@ -45,11 +44,18 @@ describe('computeContextUsage', () => {
     expect(r.level).toBe('danger')
   })
 
-  it('falls back to the default context window when limit missing/zero/negative', () => {
-    expect(computeContextUsage(50_000, undefined).limit).toBe(DEFAULT_CONTEXT_WINDOW)
-    expect(computeContextUsage(50_000, null).limit).toBe(DEFAULT_CONTEXT_WINDOW)
-    expect(computeContextUsage(50_000, 0).limit).toBe(DEFAULT_CONTEXT_WINDOW)
-    expect(computeContextUsage(50_000, -1).limit).toBe(DEFAULT_CONTEXT_WINDOW)
+  // fork(PLAN-040 / SUV-0028): this case used to assert the opposite — that a
+  // missing limit fell back to a hardcoded 200_000 window. That fallback was
+  // the bug: it made the indicator render a percentage against a denominator
+  // nobody measured. The unknown arm is now the contract; the full behaviour is
+  // pinned in `context-usage-denominator.test.ts`.
+  it('reports an unknown denominator when limit missing/zero/negative', () => {
+    for (const limit of [undefined, null, 0, -1]) {
+      const usage = computeContextUsage(50_000, limit)
+      expect(usage.denominatorKnown).toBe(false)
+      expect(usage.limit).toBeNull()
+      expect(usage.level).toBe('unknown')
+    }
   })
 
   it('treats missing/invalid used as 0', () => {
