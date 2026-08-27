@@ -97,9 +97,10 @@ export type HeadroomConfigOverrides = Partial<HeadroomConfig>;
  * - The pinned proxy issued **zero** retrieval handles across every call. The
  *   session loop's acceptance rules require exactly one, so session compression
  *   accepted 0 of 48 tool outputs and is currently inert.
- * - Conductor dispatch does not require a handle, so all 12 of 12 node outputs
- *   it accepted were compressed **irreversibly** — up to 58 KB of node output
- *   unrecoverable in a single 12-node sample.
+ * - Conductor dispatch does not require a handle, so it accepted all 12 of 12
+ *   node outputs, and every one it actually rewrote was rewritten
+ *   **irreversibly** — 47,811 bytes unrecoverable across a single 12-node
+ *   sample under the best-saving profile.
  *
  * So enabling by default would buy no session savings and would pay for its
  * workflow savings with silent context destruction. `compressionEngines` stays

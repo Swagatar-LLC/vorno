@@ -186,6 +186,31 @@ describe('parseWorkflowRun', () => {
     // (TaskRunner.compressOutput), so there is no history to carry.
     expect(w.history).toHaveLength(0);
   });
+
+  it('preserves the caller\'s node order rather than ranking by size', () => {
+    // The harness samples with `payloads.slice(0, --max-payloads)`, so whatever
+    // order this function returns *is* the sampling rule. The caller hands nodes
+    // over in filename order; if this ever sorted by size instead, the benchmark
+    // would silently measure the biggest nodes while the report described a
+    // filename-ordered prefix. The first published report claimed exactly that
+    // ("the 12 largest were sampled") and was wrong — this test is what makes
+    // the claim checkable instead of a matter of belief.
+    const w = parseWorkflowRun(
+      'run-1',
+      '/tmp/run',
+      [
+        { id: 'a-small', text: 'x'.repeat(2100) },
+        { id: 'b-huge', text: 'y'.repeat(90000) },
+        { id: 'c-medium', text: 'z'.repeat(5000) },
+      ],
+      { minPayloadBytes: 2048 },
+    );
+
+    expect(w.payloads.map((p) => p.id)).toEqual(['a-small', 'b-huge', 'c-medium']);
+    // Stated the other way round, so a size-ranking implementation cannot pass
+    // by coincidence of the fixture's ordering.
+    expect(w.payloads[0]!.id).not.toBe('b-huge');
+  });
 });
 
 // ---------------------------------------------------------------------------
