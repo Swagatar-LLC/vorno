@@ -172,6 +172,68 @@ Independently confirming M1/M3/M4, and re-confirming SUV-0014 §3.4: there are
 `memoryDbPath()` and `nativeMemoryDir()` compute **path strings** for the Python
 side's benefit. Nothing in the package reads or writes them.
 
+### M6 — The memory store is real and present on this machine; observed directly, and it is SQLite
+
+*Added 2026-08-27, third execution attempt. M1–M5 were derived from the shipped
+bundle and from upstream's documentation. M6 is the same conclusion reached from
+the running artefact instead, which makes M2/M3 first-hand rather than cited —
+and corrects a factual error the previous attempt put in SUV-0029's status log.*
+
+A Headroom **CLI is installed on this machine** at `~/.local/bin/headroom`,
+reporting `headroom, version 0.36.5` — the same version as the pinned
+`headroom-ai` npm package, so the two surfaces are a matched pair, not a
+version-skew artefact. Its top-level help advertises memory as a headline
+feature ("Manage memories, run the optimization proxy, and analyze metrics"),
+and `headroom memory --help` lists thirteen subcommands.
+
+**Correction.** The 2026-08-27 status-log entry on SUV-0029 stated: *"Neither
+`~/.headroom/` nor `~/.headroom/memories` exists on this machine after the SDK
+has been exercised."* The first half of that is **wrong**. `~/.headroom/`
+exists and is populated (`config/`, `logs/`, `ccr_store.db`,
+`savings_events.jsonl`, `subscription_state.json`, …). Only
+`~/.headroom/memories` — the `nativeMemoryDir()` path — is absent, which is the
+part that actually carried the argument. The conclusion survives the
+correction; the stated evidence for it did not, and is repaired here.
+
+What the live store shows:
+
+- `headroom memory stats` renders a table over **four scopes — USER, SESSION,
+  AGENT, TURN**. That hierarchy is the "multi-layer" in this SUV's title, and it
+  is real, not a README claim.
+- Running any memory command **initialises `~/.headroom/memory.db`** (56 KB,
+  zero rows here). `sqlite3 ~/.headroom/memory.db ".tables"` → `memories`. The
+  substrate is **SQLite**, observed, not inferred — **M3 confirmed from the
+  artefact**, and acceptance item 3's "local markdown" is false a third
+  independent way.
+- The `memories` schema carries the provenance and lineage columns this SUV's
+  scope line asks for (`user_id` / `session_id` / `agent_id` / `turn_id`,
+  `created_at` / `valid_from` / `valid_until`, `supersedes` / `superseded_by` /
+  `promoted_from` / `promotion_chain`, `access_count`, `entity_refs`,
+  `metadata`) plus an **`embedding BLOB`** column and twelve indexes.
+- **Precision note against M3:** in a freshly-initialised database
+  `sqlite_master` holds exactly one table (`memories`) and its indexes — **no
+  FTS5 virtual table and no HNSW index table are present yet**. M3 sourced both
+  from upstream's wiki. The `embedding BLOB` column is direct evidence that
+  vector search is the design; the two index structures are not observable until
+  the store has been written to, so treat "HNSW + FTS5" as documented-but-not-yet-
+  reproduced rather than as observed fact.
+
+**The finding that matters for the ADR:** `headroom memory` has `list`, `show`,
+`stats`, `edit`, `delete`, `prune`, `purge`, `reindex`, `export`, `import`,
+`repair-supersession` — and **no `add` and no `search`**. The CLI is an
+*administration* surface over the store, not the write/query surface an
+integration needs. Reads are available (`list` / `show` / `export`); the only
+CLI write path is `import` of a whole JSON file. Ordinary memory creation
+happens where M2 said it does — the proxy injecting `memory_save` into the
+model's tool list, or the Python client's `client.memory.add()`.
+
+So this does not unblock the SUV; it sharpens the decision. A Vorno-side
+integration over this surface would mean shelling out to a Python CLI per
+operation, with writes going through whole-file `import`, or standing up the
+proxy and depending on model-side tool calls. Both are architectural
+commitments well above SUV granularity, and both still land on the SQLite
+substrate that acceptance item 3 forbids. That is PLAN-040 open question 1.
+
 ---
 
 ## 3. Impact on SUV-0029's acceptance list
@@ -259,6 +321,22 @@ grep -n "function memoryDbPath" -A3 node_modules/headroom-ai/dist/index.js
 
 # All of the above, as an executable tripwire
 cd packages/shared && bun test src/headroom/__tests__/sdk-memory-surface.test.ts
+```
+
+M6 is reproduced against the machine rather than the repo, so it needs the CLI
+installed (`which headroom` → `~/.local/bin/headroom`). These commands write to
+`~/.headroom/memory.db`: `stats` creates the file if absent, and `list` is a
+read. Neither adds a row — the store showed `Total Memories: 0` before and after.
+
+```bash
+headroom --version                    # -> headroom, version 0.36.5 (matches the npm pin)
+headroom memory --help                # -> 13 subcommands; no `add`, no `search`
+headroom memory stats                 # -> USER / SESSION / AGENT / TURN scopes, 0 rows
+sqlite3 ~/.headroom/memory.db ".tables"        # -> memories
+sqlite3 ~/.headroom/memory.db ".schema memories"
+sqlite3 ~/.headroom/memory.db "select name,type from sqlite_master;"  # -> no FTS5 vtable
+ls ~/.headroom                        # -> exists and is populated (corrects the 08-27 log)
+ls ~/.headroom/memories               # -> No such file or directory
 ```
 
 Upstream sources consulted:

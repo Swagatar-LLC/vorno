@@ -140,3 +140,65 @@ adapter.
 
   Landed on `plan/plan-040`: this status-log entry only. No source file was
   created, edited, moved, or deleted.
+
+- `2026-08-27` — **Third execution attempt. Blocker re-derived from the *running*
+  Headroom, not the npm bundle; stays `blocked/`; still no implementation. One
+  factual error in the entry above is corrected.**
+
+  The two prior attempts both reasoned from `node_modules/headroom-ai/dist` and
+  from upstream's wiki. This one went to the artefact. Re-confirmed the bundle
+  facts first-hand — `dist/index.d.ts`'s export list carries exactly
+  `MemoryUsage` / `memoryUsage()` (proxy RSS) and the path helpers
+  `memoryDbPath()` / `nativeMemoryDir()`; the sixteen `/v1/*` literals in
+  `dist/chunk-2NXG6XPP.js` are chat/compress/feedback/messages/retrieve/telemetry/
+  toin, with **no `/v1/memory*`**; `grep -ci memory README.md` → `0` — and then
+  found what neither prior pass looked for.
+
+  **A Headroom CLI is installed on this machine**, `~/.local/bin/headroom`,
+  version **0.36.5** — the same version as the npm pin, so this is the matched
+  Python half of the product, not version skew. `headroom memory` is real, and
+  running it initialises `~/.headroom/memory.db`. `sqlite3 … ".tables"` → a
+  single `memories` table whose columns are precisely the multi-layer scoping
+  (`user_id`/`session_id`/`agent_id`/`turn_id`), temporal validity, supersession
+  lineage and `entity_refs`/`metadata` provenance this SUV's scope line asks
+  for — alongside an `embedding BLOB`. `headroom memory stats` reports over
+  **USER / SESSION / AGENT / TURN**. The feature exists; it is just not
+  addressable from our TypeScript.
+
+  **Correction to the 08-27 entry above.** It asserted "Neither `~/.headroom/`
+  nor `~/.headroom/memories` exists on this machine." The first half is **wrong**
+  — `~/.headroom/` exists and is populated (`config/`, `logs/`, `ccr_store.db`,
+  `savings_events.jsonl`, `subscription_state.json`). Only
+  `~/.headroom/memories` is absent, and that was always the load-bearing half, so
+  the conclusion stands while its stated evidence did not. Repaired in the audit
+  as **M6**, which also flags that the audit's "HNSW + FTS5" came from upstream's
+  wiki and is *not* observable in a fresh database — `sqlite_master` holds only
+  `memories` and its twelve indexes, no FTS5 virtual table. Recorded as
+  documented-but-unreproduced rather than quietly restated as fact.
+
+  **Why this sharpens the decision instead of unblocking it.** `headroom memory`
+  exposes `list`/`show`/`stats`/`edit`/`delete`/`prune`/`purge`/`reindex`/
+  `export`/`import`/`repair-supersession` — and **no `add`, no `search`**. It is
+  an administration surface over the store, not the write/query surface an
+  integration needs; the only CLI write is whole-file `import`. Real memory
+  creation still happens exactly where the audit's M2 said: proxy-injected
+  `memory_save` in the model's own tool list, or the Python client. So the routes
+  forward are unchanged in number and now better evidenced — and every one of
+  them lands on **SQLite**, observed directly this time, which is what acceptance
+  item 3 forbids. Items 1–2 remain unimplementable for want of a TypeScript API
+  to import and cross-process persistence to build on; item 4 alone is reachable,
+  still only degenerately.
+
+  Not worked around a third time, for the same reason and now with a third
+  independent falsification of item 3's premise. Building the markdown substrate
+  ourselves is PLAN-040's first non-goal; choosing among the routes is PLAN-040
+  open question 1, reserved to the owner.
+
+  **Unblocking act is unchanged: an ADR choosing the memory surface. After it,
+  this SUV needs re-cutting rather than executing — item 3's markdown requirement
+  has to go, and items 1–2 be re-grounded on whichever surface the ADR picks.**
+
+  Landed on `plan/plan-040`: audit finding **M6** plus its reproduction block in
+  `roadmap/evidence/PLAN-040/headroom-memory-surface-audit.md`, and this entry.
+  No source file was created, edited, moved, or deleted; the four acceptance
+  boxes remain unchecked because none of them is met.
