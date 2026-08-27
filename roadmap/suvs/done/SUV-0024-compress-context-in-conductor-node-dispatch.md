@@ -1,7 +1,7 @@
 ---
 id: SUV-0024
 title: Compress context in Conductor node dispatch
-status: in-progress
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
@@ -162,3 +162,101 @@ Wire the `HeadroomAdapter` into Conductor node dispatch so workflow runs
   **Not claimed:** this SUV does not close PLAN-040's retrieval acceptance item. It delivers recorded
   handles plus a programmatic `adapter.retrieve()`; the *user-visible* affordance the plan asks for
   is SUV-0026's, and I did not touch UI or retrieval surfacing.
+
+- `2026-08-27` — **third pass: every figure below re-measured by execution at branch HEAD `c0bcbbaa`.
+  No source file changed in this pass either** — the implementation is still exactly `2c03b035`, and
+  `git status --porcelain` was empty at the start of this pass and is empty at the end of it. Nothing
+  here is carried forward from an earlier entry; each number is one I watched a command print.
+
+  **One figure in the entry above is now stale, and — importantly — it was not wrong when written.**
+  That entry corrected `test:shared` to **3644**; at HEAD it is **3650 pass / 20 skip / 0 fail across
+  211 files** (3670 ran), stable across two consecutive runs. I checked whether 3644 had been
+  invented, because unreproducible figures are why the previous round was rejected: a detached
+  worktree at `864912ae` (that entry's own commit) prints **exactly 3644 pass / 20 skip / 0 fail**.
+  So the figure was reproducible at its measurement point and the branch moved underneath it. The
+  +6 is sibling re-verification work landing after `864912ae` — `git diff --numstat 864912ae..HEAD`
+  shows `+44` lines in `packages/shared/src/docs/__tests__/headroom-doc.test.ts` (a per-figure
+  dynamic `test()` loop plus one static case) and `+25` in
+  `packages/shared/src/headroom/__tests__/benchmark.test.ts` (one `it()`); those two files together
+  now run **61 tests**. `test:webui` (**362**), `test:server` (**196**) and `src/tasks/` (**40**)
+  re-measured to exactly what the entry above states.
+
+  **Standing caveat, restated:** these are branch-HEAD totals, not SUV-0024 in isolation.
+  `plan/plan-040` carries SUV-0025 through SUV-0032 on top of `2c03b035`.
+
+  **Acceptance 1 — red-then-green, reproduced again in this session.** In `buildPrompt`
+  (`TaskRunner.ts:433`) replace `const nodeOutputs = await this.contextOutputsFor(node);` with the
+  pre-SUV `const nodeOutputs = this.outputs;`, nothing else, then run
+  `cd packages/server-core && bun test src/tasks/TaskRunner.headroom.test.ts`:
+
+  - pre-SUV line → **3 pass / 3 fail**, 11 expect() calls
+  - restored → **6 pass / 0 fail**, 23 expect() calls
+
+  The three that go red, named from the runner's own `(fail)` lines: *passes a node output through
+  adapter.compress() before it enters downstream context*, *records retrieval handles in the run log,
+  and retrieve() returns byte-identical originals*, and *compresses each distinct output once, not
+  once per consumer*. Restored via `Edit` reversing that one line; `git status --porcelain` and
+  `git diff --stat` both empty afterwards, so the tree is byte-identical to `2c03b035`'s content.
+
+  **Bounding what that red proves.** The other three tests pass in *both* states, and two of them
+  pass vacuously in the red state (nothing compresses, so "didn't compress" is trivially true). They
+  guard acceptance 3 against future regression; they are not evidence this SUV changed anything.
+
+  **Acceptance 2 — the byte-identity assertion demonstrably has teeth.** Mutating the fake adapter's
+  store to `m.content.replace(/\r\n/g, '\n')` — deleting one `\r` from `AUDIT_TEXT` — turns that test
+  red: **5 pass / 1 fail**, 22 expect() calls, failing at
+  `TaskRunner.headroom.test.ts:211` on `expect(content).toBe(AUDIT_TEXT)`, which bun renders as
+  `- Expected - 0 / + Received + 0` because the difference is invisible whitespace. That is precisely
+  the case a length check or a normalizing comparison would have waved through. Mutation reverted;
+  suite back to 6 pass / 0 fail.
+
+  **Acceptance 4 — checked by absence, and it holds more strongly than the criterion asks.**
+  `git show --stat --format="" 2c03b035` lists no `TaskRunner.test.ts`. Stronger:
+  `git log --oneline main..HEAD -- packages/server-core/src/tasks/TaskRunner.test.ts` is **empty** —
+  the persistence suite has not been edited anywhere on this branch, not merely in this commit. It
+  passes inside the 40-test `src/tasks/` run with compression wired.
+
+  **The commit typechecks and tests on its own** (the failure mode that sank SUV-0026 a round ago).
+  `git worktree add --detach /tmp/suv24-check 2c03b035`, root `node_modules` symlinked, then
+  `bun run typecheck:ci` → **exit 0** and `cd packages/server-core && bun test src/tasks/` →
+  **40 pass / 0 fail** at that commit alone. Worktree removed (`git worktree remove --force`);
+  `git branch --list | wc -l` is **147** before and after and HEAD is still `plan/plan-040`, so the
+  detached checkouts created no second branch and moved no work between checkouts.
+
+  **Gates, all re-run this pass under `set -o pipefail`, exit codes captured**
+
+  - `bun run typecheck:ci` — exit 0
+  - `bun run test:shared` — exit 0, **3650 pass / 20 skip / 0 fail**, 211 files, 7401 expect() calls
+  - `bun run test:server` — exit 0, **196 pass / 0 fail**, 18 files, 410 expect() calls
+  - `bun run test:webui` — exit 0, **362 pass / 0 fail**, 45 files, 757 expect() calls
+  - `cd packages/server-core && bun test src/tasks/` — **40 pass / 0 fail**, 3 files, 138 expect() calls
+  - `bun run scripts/check-headroom-boundary.ts` — exit 0, `✓ headroom-ai imported only by
+    packages/shared/src/headroom/sdk-adapter.ts`
+  - `bun run scripts/check-branding.ts` — exit 0, `✓ Branding gate clean`. It also prints
+    `⚠ Stale allowlist entries … apps/viewer/vite.config.ts [upstream-domain]` — a warning, not a
+    failure, and unrelated to this SUV.
+  - `bun run lint:i18n:parity` / `:sorted` / `:coverage` — exit 0 each
+  - `bun build apps/server/src/index.ts --target=bun --outdir=/tmp/build-check-suv0024
+    --no-splitting` — exit 0, 3403 modules, `index.js 16.36 MB`
+
+  **A concurrent sibling session's uncommitted work appeared mid-pass; disclosed, and ruled out as a
+  contaminant.** After my gates finished, `git status --porcelain` showed
+  `packages/shared/src/agent/__tests__/tool-result-context-headroom.test.ts` modified (+152/−2) —
+  SUV-0023's file, in-flight from another session on this shared branch. I did not commit, revert or
+  stash it (this repo's stash is a known landmine; `stash@{0}` is still someone else's recovered
+  work). Because that file is in the shared suite, it could have inflated my `test:shared` figure, so
+  I re-measured on a detached worktree at the committed `c0bcbbaa`, where a working-tree edit cannot
+  reach: **3650 pass / 20 skip / 0 fail**, identical to the two in-place runs. The arithmetic agrees
+  independently — 3644 at `864912ae` plus the +6 committed additions is 3650 — so the edit landed
+  after my runs and none of the figures above include it. Worktree removed; branch count **147**
+  unchanged. My commit below uses an explicit pathspec so that file stays untouched and unstaged.
+
+  **Moved to `done/` this pass.** The entry above declined the move because SUV-0024 is `blocked-by`
+  SUV-0018 and that SUV was still in `in-progress/`. That reason no longer holds:
+  `SUV-0018-resolved-config-drives-the-headroom-boundary.md` is now in `roadmap/suvs/done/`. With the
+  blocker closed and all four acceptance items verified by execution above, the folder move is the
+  state change the corpus expects.
+
+  **Still not claimed:** PLAN-040's retrieval acceptance item stays open after this SUV. It asks for
+  a *user-visible* affordance; this SUV delivers recorded handles plus a programmatic
+  `adapter.retrieve()`. The user-facing half is SUV-0026, currently in `roadmap/suvs/in-progress/`.
