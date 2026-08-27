@@ -123,3 +123,77 @@ originals retrievable through the adapter.
     would be a second, independent call site.
   - The `headroomHandle` field is carried on the event; nothing yet *reads* it.
     That reader is SUV-0026.
+
+- `2026-08-27` — **re-verified from scratch on `plan/plan-040`; the entry above
+  is corrected in two places.** The previous verification was rejected for
+  evidence that could not be reproduced. No source file changed in this pass —
+  the implementation is unchanged at `9bcff769` — but every number below was
+  re-measured rather than carried forward, and two prior claims did not survive.
+
+  **Corrections to the entry above**
+
+  1. **The claimed shared-suite failure no longer exists, and its stated cause is
+     not checkable.** The entry above reports `bun test` in `packages/shared` as
+     3568 pass / **1 fail**, blaming an untracked
+     `packages/server-core/src/tasks/TaskRunner.headroom.test.ts` left by "a
+     concurrent worker in this checkout". `git status --porcelain` returns empty
+     in this checkout, so that file is not present and the claim cannot be
+     reproduced either way. Re-run now: **3644 pass / 20 skip / 0 fail**. The
+     honest statement is that the shared suite is green, not that a known-benign
+     failure was explained away.
+  2. **The suite counts differ from the entry above because the tree is at branch
+     HEAD, not at this SUV's commit.** `plan/plan-040` now carries SUV-0024
+     through SUV-0032 on top of `9bcff769`, so these totals measure the branch,
+     not this SUV in isolation. Stated explicitly because the earlier numbers
+     read as if they were SUV-0023's alone.
+
+  **Red-then-green, made reproducible**
+
+  The earlier "10 pass / 5 fail" was asserted without a repeatable way to get
+  back to red. It is now exact. Replace `prepareToolResultForContext` with a
+  guard-only stand-in — the same function with the compression step deleted and
+  nothing else, i.e. the pre-SUV inline block — then run the test file:
+
+  - guard-only stand-in → **10 pass / 5 fail** (20 expect() calls)
+  - real implementation → **15 pass / 0 fail** (29 expect() calls)
+
+  The five that go red are exactly the five that assert the new behaviour:
+  compressed content reaching context, the session model reaching the service,
+  the handle existing, the byte-identical round trip, and compression seeing the
+  guard's replacement. The file was restored by copy from a `/tmp` backup, not
+  by `git checkout --`, and `shasum -a 256` matches the pre-edit file
+  (`adb2e48a…`) with `git status --porcelain` empty afterwards.
+
+  **Stated plainly, because it limits what the red proof shows:** the other ten
+  tests — the five refusal cases, the retrieval-miss case, and the four
+  disabled-path cases — pass in *both* states. That is correct rather than
+  weak: they assert pass-through, and pass-through *is* pre-SUV behaviour. They
+  guard against regression; they are not evidence that this SUV changed
+  anything. Only the five above are.
+
+  **Gates, all re-run in this pass**
+
+  - `cd packages/shared && bun test src/agent/__tests__/tool-result-context-headroom.test.ts` — 15 pass / 0 fail
+  - `bun test` (repo root, shared) — **3644 pass / 20 skip / 0 fail**, 211 files
+  - `cd packages/server-core && bun test` — **362 pass / 0 fail**, 45 files
+  - `cd apps/server && bun test` — **196 pass / 0 fail**, 18 files
+  - `cd packages/shared && bun test src/sessions/__tests__/` — **27 pass / 0 fail**
+    (acceptance 5: `git show --name-only 9bcff769` confirms this SUV edited no
+    test outside its own new file, so these pass *unchanged* with compression active)
+  - `bun run typecheck` — clean, exit 0, no `error TS` lines
+  - `bun run lint:headroom-boundary` — `✓ headroom-ai imported only by packages/shared/src/headroom/sdk-adapter.ts`
+  - `bun run lint:branding` — clean (one stale allowlist entry warned, `apps/viewer/vite.config.ts`, unrelated)
+  - `bun build apps/server/src/index.ts --target=bun --outdir=/tmp/suv0023-build-recheck --no-splitting` — 3403 modules
+
+  **Not re-run, and why:** `bun run lint` still fails at `lint:ipc-sends` /
+  `lint:tool-name-checks`. I confirmed the cause directly — `ls` reports both
+  `scripts/check-raw-sends.sh` and `scripts/check-task-tool-checks.sh` as "No
+  such file or directory". Pre-existing, unrelated to this SUV, and `lint` is
+  not one of the ten CI gates. `cd apps/electron && bun test` was not re-run in
+  this pass; the entry above reports 19 pre-existing failures there and I am not
+  restating that number as verified.
+
+  **Status folder left alone, deliberately.** All five acceptance items check
+  out, but this SUV is `blocked-by` SUV-0018, which is still in
+  `roadmap/suvs/in-progress/`. Moving this file to `done/` while its declared
+  blocker is unfinished is a state change I am not making unilaterally.
