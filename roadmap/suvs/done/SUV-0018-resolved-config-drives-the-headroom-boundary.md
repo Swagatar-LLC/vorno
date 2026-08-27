@@ -264,3 +264,143 @@ construction time.
   every gate green. Following this branch's practice for SUV-0015/0027/0030/0031,
   which are in `done/` without individual PRs — the plan branch is the review
   unit.
+
+- `2026-08-27` (third pass) — re-verified by execution, **no code change**. The
+  second-pass entry was rejected on verification, so every figure below was read
+  off this session's terminal and the entries above are corrected where they
+  disagree with what actually ran. Repo `HEAD` for these runs: `9f2fac5a`;
+  working tree clean before and after every step (`git status --porcelain` = 0
+  lines, checked at each restore point). bun 1.3.8, macOS.
+
+  **Correction 1 — the sole-construction-path grep returns SIX matches, not
+  five.** The second-pass entry says "the only five matches are in test files".
+  Run today (`grep -rnE "new SdkHeadroomAdapter|createNoopHeadroomAdapter\(|createHeadroomAdapter\("
+  --include="*.ts" --include="*.tsx" packages apps | grep -v node_modules | grep
+  -v "src/headroom/"`) it returns **six**: five in
+  `packages/shared/src/agent/__tests__/tool-result-context-headroom.test.ts`
+  (lines 160, 363, 378, 393, 539) and one in
+  `packages/ui/src/components/chat/__tests__/headroom-retrieval.test.ts:111`. The
+  conclusion is unchanged — all six are tests and all six call the *factory*, not
+  an implementation — but the count in that entry was not read off the command it
+  is attributed to.
+
+  **Correction 2 — the suites are NOT 0-fail on this machine today.** The
+  second-pass entry reports `3650 pass / 0 fail` for `packages/shared` and
+  `362 pass / 0 fail` for `packages/server-core`. Neither reproduced. What ran:
+
+  | Suite | Run | Result |
+  |---|---|---|
+  | `packages/shared` | 1 | 3651 pass / 20 skip / **4 fail** / 7389 expect (211 files, 288.99s) |
+  | `packages/shared` | 3 | 3653 pass / 20 skip / **2 fail** / 7390 expect (211 files, 271.82s) |
+  | `packages/server-core` | 1 | 359 pass / **3 fail** / 756 expect (45 files, 54.25s) |
+  | `packages/server-core` | 2 | 361 pass / **1 fail** / 757 expect (45 files, 42.18s) |
+  | `apps/server` | 1 | **196 pass / 0 fail** / 410 expect (18 files, 5.81s) |
+
+  The failing set **changes between runs of the same tree**, and every failure is
+  a 5-second-timeout expiry in a test that spawns subprocesses:
+  `default thinking level storage > supports every thinking level` (10 `runEval`
+  subprocess round-trips against bun's default 5s timeout; file untouched since
+  `6194bf5d`), `validateStdioMcpConnection > returns success and tool list for a
+  spec-compliant stdio server` (spawns a `node` fixture MCP server), and three
+  `startWebuiHttpServer` / chunked-transfer cases in server-core. None of them
+  import anything under `headroom/`. Cause is machine load, not this SUV: during
+  these runs `uptime` reported **load averages 121.55 / 150.74** with five
+  concurrent `bun test` processes from other sessions at 50-65% CPU each.
+  Evidence it is load and not breakage: `bun test src/mcp/__tests__/validation.test.ts`
+  alone → **6 pass / 0 fail**. The honest statement is "2-4 environment-flaky
+  failures unrelated to Headroom", not "0 fail".
+
+  **Headroom-touching suites, which did pass cleanly every time**
+
+  - `cd packages/shared && bun test src/agent/__tests__/base-agent-headroom.test.ts src/headroom/__tests__/session-adapter.test.ts`
+    → **17 pass / 0 fail / 45 expect()** across 2 files.
+  - `cd packages/server-core && bun test src/tasks/TaskRunner.headroom.test.ts`
+    → **6 pass / 0 fail / 23 expect()**.
+
+  **Red, then green — reproduced independently today.** Backups taken to
+  `/tmp/suv0018-restore-b/` before the first change and restored by `cp` (never
+  `git stash`); `git status --porcelain` confirmed empty after each restore. All
+  three runs are the same two-file command as above.
+
+  | # | Change | Observed |
+  |---|---|---|
+  | D1 | `git show 1291b25c -- packages/shared/src/agent/base-agent.ts \| git apply -R -` (removes this SUV's wiring, `62 deletions`) | **9 pass / 8 fail / 17 expect()** — all 8 end-to-end tests die on `TypeError: agent.getHeadroomAdapter is not a function`. Acceptance 1-4 all red. |
+  | D2 | `if (options.enabled && …)` → `if (false && options.enabled && …)` in `headroom/session-adapter.ts:96` | **15 pass / 2 fail / 44 expect()** — exactly `constructs the session anyway … and logs a warning` and `warns exactly once when an enabled workspace cannot load the SDK`. Acceptance 4. |
+  | D3 | `getHeadroomAdapter()` rebuilds per call, re-reading the workspace file, instead of returning the construction-time promise | **13 pass / 4 fail / 37 expect()** — `built from the workspace values`, `reads the config once … stable adapter`, and both two-session toggle tests. Acceptance 2-3. |
+
+  Restored → **17 pass / 0 fail / 45 expect()**. The D1/D2/D3 figures match the
+  second-pass entry's; that entry's numbers are hereby corroborated, its suite
+  totals are not.
+
+  **Per-file reverse-apply, re-run today** (confirms which files still carry a
+  reversible SUV-0018 hunk):
+
+  ```
+  git show 1291b25c -- <path> | git apply -R --check -
+    packages/shared/src/headroom/session-adapter.ts  → patch does not apply
+    packages/shared/src/headroom/index.ts            → patch does not apply
+    packages/shared/src/agent/base-agent.ts          → (no output; applies)
+    packages/shared/src/agent/backend/types.ts       → patch does not apply
+  ```
+
+  **Acceptance, with line anchors verified by `grep -n` rather than recalled**
+
+  1. **Sole construction path.** `packages/shared/src/agent/base-agent.ts:345`
+     resolves `loadEffectiveHeadroomConfig(config.workspace.rootPath)`
+     synchronously; `:346-358` passes that snapshot to
+     `createSessionHeadroomAdapter(...)`. The three production callers of the
+     joint are `base-agent.ts:346`,
+     `packages/server-core/src/sessions/SessionManager.ts:2732` and
+     `packages/server-core/src/handlers/rpc/tasks.ts:114`; no production file
+     constructs an implementation. The repo-scan test is
+     `packages/shared/src/headroom/__tests__/session-adapter.test.ts:166-183`
+     (the second-pass entry cited `:166-182`; the file is 183 lines). Its regex
+     covers the two implementations only — the narrow reading of "constructs an
+     adapter directly", stated so it stays a decision.
+  2. **Off → no-op, on → real, from the workspace's resolved values.**
+     `base-agent-headroom.test.ts:125` (off → `noop`, `stats()` =
+     `{available:false, reason:'disabled'}`, SDK never loaded),
+     `:143` (no `headroom` key at all → off), `:154` (on → `sdk`, recording SDK
+     constructed exactly once with `fallback:false`, `compress` carries the
+     session model `claude-opus-5`, and `getHeadroomConfig()` equals the whole
+     workspace layer). **Stated precisely, because the wording invites an
+     overclaim:** two values reach the *adapter* — `enabled` from the workspace
+     and `model` from the session. The workspace's other resolved fields
+     (`compressionEngines`, `verbosity`, `exposeStats`) reach the *session* and
+     are asserted there; `HeadroomAdapterOptions` has no field to receive them,
+     and inventing one is I1/SUV-0028's business, not this SUV's. Red under D1
+     and D3.
+  3. **Toggle applies to the next session only.** `base-agent-headroom.test.ts:212`
+     (off→on) and `:248` (on→off), each flipping the real `config.json` under a
+     live session A and asserting `toBe` identity on A's adapter while a freshly
+     constructed session B gets the flipped one. Red under D3.
+  4. **Enabled + SDK absent → still starts, no-op, warned.**
+     `base-agent-headroom.test.ts:277` proves the premise
+     (`await expect(loadAbsentSdk()).rejects.toThrow()`), then asserts
+     construction succeeds, `stats()` = `{available:false,
+     reason:'sdk-unavailable'}` (no fabricated zeros), `compress` hands back the
+     caller's own array by identity, and a Headroom line reached `console.warn`;
+     `:315` asserts the plain disabled path warns not at all. Red under D2.
+
+  **Remaining gates, as printed**
+
+  - `bun run typecheck` — **exit 0**, no `error TS` lines (took ~30 min under the
+    load described above; the only `error TS` string in the log is inside the
+    echoed script line of `typecheck:server`, not a diagnostic).
+  - `bun run lint:headroom-boundary` — `✓ Headroom boundary gate: headroom-ai
+    imported only by packages/shared/src/headroom/sdk-adapter.ts`
+  - `bun build apps/server/src/index.ts --target=bun --outdir=/tmp/suv0018-build-check --no-splitting`
+    — `Bundled 3403 modules in 36852ms`, `index.js 16.36 MB`
+
+  **Scope, re-confirmed.** `git show --stat 1291b25c` = 8 files
+  (`headroom/session-adapter.ts`, `headroom/index.ts`, `agent/base-agent.ts`,
+  `agent/backend/types.ts`, the two test files, and this record's move). Nothing
+  in the session loop, Conductor dispatch, stats surfaces or memory — the four
+  declared out-of-scope areas. This third pass adds no code and no test; its only
+  diff is this status-log entry. A branch-level diff still shows
+  SUV-0023/0024/0026/0027/0028/0030/0031 in that territory, and
+  `session-adapter.ts` still carries SUV-0027's `createScopedHeadroomAdapter`
+  wrapper at lines 104-120, added after this commit.
+
+  **Stays in `done/`.** Nothing changed the SUV's state; the record's evidence is
+  what changed.
