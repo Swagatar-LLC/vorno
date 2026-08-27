@@ -97,3 +97,86 @@ management runs on one measured source.
   removed fallback.
 
   Gates: all ten `validate-pr.yml` jobs run locally and green.
+
+- `2026-08-27` — re-verified against primary sources; **two evidence defects in
+  the entry above corrected**, code behaviour unchanged.
+
+  The implementation was re-checked rather than re-done. What it does is right;
+  what it *claimed* was partly unreproducible, which is what this entry fixes.
+
+  **Defect 1 — the SDK enumeration was incomplete.** The entry above lists four
+  stats types (`SessionStats`, `ProxyStats`, `MetricsSummary`, `TOINStats`).
+  `headroom-ai@0.36.5` declares **seven**: those four plus `CCRStats`,
+  `TelemetryStats` and `SharedContextStats`. Reproduce with
+  `grep -n 'interface .*Stats' node_modules/headroom-ai/dist/index.d.ts`
+  (hits at lines 302, 321, 340, 416, 433, 463, 753). All seven were read in
+  full; none carries a context-window or live-occupancy field. The conclusion
+  survives — but it was previously asserted over 4/7 of the surface.
+
+  **Defect 2 — "carries no notion of a context window at all" was false as
+  written.** The SDK *does* model context windows, just never as a measurement
+  it returns:
+  - `HeadroomConfig.modelContextLimits?: Record<string, number>` — `index.d.ts:196`
+  - `CompressOptions.tokenBudget?: number` — `types-BTrX7__W.d.ts:116`
+
+  Both are caller-supplied *inputs*. Sourcing `limit` from them would be Vorno
+  reading back its own configuration, which is not a migration onto a measured
+  source. That is the accurate reason the overlap is empty, and it is now stated
+  that way in `context-usage.ts`'s module docstring (the only code change in
+  this entry). Reproduce the exhaustive search with:
+  `grep -nEi 'contextwindow|max_?tokens|window|budget|capacity|contextlimit' node_modules/headroom-ai/dist/*.d.ts`
+  — every hit is config input, a summary/anchor knob, or `budgetMb` (disk).
+
+  `CompressResult` returns `tokensBefore/After/Saved/compressionRatio`: a delta
+  for one compression call, not window occupancy. Confirms the `used` row too.
+
+  **Red-then-green, observed rather than asserted.** Reverting only
+  `context-usage.ts` to `d000ed17^` and calling the old function directly:
+
+  ```
+  computeContextUsage(50_000, undefined)
+    = {"used":50000,"limit":200000,"fraction":0.25,"barFraction":0.25,
+       "level":"ok","color":"#16a34a"}
+  ```
+
+  A model whose window Vorno cannot resolve rendered a confident **green 25%**
+  of a 200k window nobody measured. Against that build the new suite's
+  assertions fail on `denominatorKnown` (`undefined`), `limit` (`200000`),
+  `fraction` (`0.25`) and `level` (`'ok'`). Restored → 44 pass / 0 fail across
+  both chat test files.
+
+  **`resolveThresholds()` byte-unchanged — now actually proven.** The first
+  attempt at this check used a `sed '/^}/'` range that terminated on
+  `}): UsageThresholds {` and silently compared only the signature. Brace-aware
+  extraction of `isValidThresholds` + `resolveThresholds` from both revisions
+  gives 29 lines each, md5 `20f42d7e1ca543c8033d5fc6ea56ad4d` on both. Its
+  precedence tests (`context-usage.test.ts:147-211`) are untouched: the commit's
+  only two hunks in that file are at line 5 (dropping the
+  `DEFAULT_CONTEXT_WINDOW` import) and lines 45-58 (the one fallback case,
+  reversed). Note the entry above says "four reversed assertions" — it is one
+  `it()` block whose four assertions became a loop.
+
+  **Acceptance #5 is structural, not tested, and is recorded as such.** All
+  three touched files import zero Headroom symbols (`context-usage.ts` has no
+  imports at all), so no call path exists for the flag to affect. That is a
+  vacuous pass, not a fallback that was exercised.
+
+  **Typecheck baseline is unchanged, measured both ways.** `apps/electron`
+  reports 107 `error TS` lines at `d000ed17^` and 107 with this SUV applied;
+  none reference a SUV-0028 file. CI's typecheck job does not cover
+  `apps/electron` at all — worth knowing, since it means this surface's types
+  are unguarded in CI.
+
+  **Blocker disposition.** `blocked-by: SUV-0023` is still in `in-progress/`.
+  Its rationale — "Headroom-sourced numbers must exist before surfaces migrate
+  onto them" — is moot here: no amount of SUV-0023 progress can add a
+  context-window field to the SDK's stats types, so the empty overlap is not
+  contingent on it. Left in `planned/` rather than moved to `done/`, because
+  moving an SUV past an unsatisfied declared blocker is an owner call on the
+  board, not mine.
+
+  Gates re-run on this tree (commands in the PR body): 7/7 typecheck steps PASS;
+  shared 3645 pass / 0 fail (threshold 3300); apps/server 196/0; webui 362/0;
+  doc-tools 19 OK; share Worker 23/0; i18n parity + sorted + coverage OK;
+  branding gate clean; Headroom boundary gate clean; build check bundled 3403
+  modules. eslint clean (exit 0) on all three touched files.

@@ -19,10 +19,21 @@
  *   window. The provider's count is already post-compression and is the only
  *   authority on live occupancy.
  * - `limit` — the model's context window. Sourced from the session-reported
- *   window, falling back to the model registry. The SDK's entire stats surface
- *   (`SessionStats`, `ProxyStats`, `MetricsSummary`, `TOINStats`) carries no
- *   notion of a context window at all; `tokenBudget` is a compression *input*
- *   the caller supplies, not a measurement Headroom reports back.
+ *   window, falling back to the model registry. All seven stats types the SDK
+ *   declares (`SessionStats`, `MetricsSummary`, `ProxyStats`, `CCRStats`,
+ *   `TelemetryStats`, `TOINStats`, `SharedContextStats`) measure compression
+ *   throughput only — requests, tokens before/after/saved, ratios, cache hits,
+ *   retrieval rates. Not one carries a context window or a live-occupancy
+ *   figure.
+ *
+ *   Stated precisely, because the weaker claim is easy to overstate: the SDK
+ *   *does* know about context windows, but only as caller-supplied
+ *   configuration — `HeadroomConfig.modelContextLimits?: Record<string, number>`
+ *   and `CompressOptions.tokenBudget?: number` are values Vorno would hand
+ *   *to* Headroom, never measurements Headroom hands back. Reading `limit`
+ *   from them would be Vorno reading its own input, which is not a migration
+ *   onto a measured source. Verified against `headroom-ai@0.36.5`'s
+ *   `dist/index.d.ts` and `dist/types-BTrX7__W.d.ts`.
  *
  * What did change is the denominator rule. This module used to substitute a
  * hardcoded `DEFAULT_CONTEXT_WINDOW = 200_000` whenever `limit` was missing and
