@@ -46,7 +46,9 @@ answerable at a glance — without changing what an SUV id *is*.
 - **An authored `plan-seq:` frontmatter field.** Rejected in ADR-0030 — a second
   ordering source of truth that nothing recomputes.
 - **A reservation file, id lockfile, or allocator daemon.** Git history is the
-  claim ledger.
+  claim ledger, and a claim is published as a *ref* (`refs/suv-ids/SUV-NNNN`),
+  not as a tracked file — nothing to merge, nothing to desync, nothing to clean
+  up. See ADR-0030 point 4.
 - **Reopening PLAN-043.** Its four retrospective units (SUV-0019..0022) landed.
   This plan closes the gap they left, it does not revisit them.
 - **`roadmap/suvs/<PLAN-NNN>/<status>/` per-plan storage.** Still open as a
@@ -79,6 +81,22 @@ Monotonic, no state file, no cleanup when a branch is abandoned, and defined
 over history rather than over branch names — so no future naming convention can
 silently invalidate it, which is the failure this plan exists to fix.
 
+That command is a **read**, and a read cannot allocate. Two breakdowns that both
+run it before either commits still mint the same id — the original SUV-0014
+mechanism, narrowed by the wider read but not closed by it. So the id is claimed
+on the remote, the one serialization point the workflows share, before any file
+is written:
+
+```bash
+git push --atomic origin "${claim}:refs/suv-ids/${id}"
+```
+
+Creating an existing ref is a non-fast-forward, so the second claimant is
+rejected and retries with the next id. N ids go in one `--atomic` push. The
+floor above is then read as the union of history and `refs/suv-ids/*`. This
+closes the race between any two workflows that follow the recipe; it does not
+constrain one that hand-authors an id without reserving. ADR-0030 point 4.
+
 ### The view
 
 ```mermaid
@@ -98,6 +116,9 @@ marker, so the missing reverse edge surfaces instead of being papered over.
 - [x] ADR-0030 is accepted and indexed, and ADR-0028 points at it.
 - [x] No instruction file in this repo publishes a working-tree-only next-id
       recipe.
+- [x] No instruction file in this repo publishes a read-only next-id recipe:
+      both reserve on the remote before writing, and a second claim of a
+      reserved id is demonstrably rejected.
 - [x] The console allocator's floor accounts for SUVs on `plan/*`, on remote
       refs, and on ad-hoc branches — proven by a test that fails against the
       current implementation.

@@ -49,6 +49,13 @@ console repo.
       starts from the all-refs floor.
 - [x] The skill's tools list and worked example no longer tell the agent to
       `Glob` for the id.
+- [x] Both recipes reserve the id on the remote (`refs/suv-ids/SUV-NNNN`, via
+      `git push --atomic`) **before** any file is written, and the floor is read
+      as the union of history and that namespace.
+- [x] A second claim of an already-reserved id is rejected — demonstrated
+      against `origin`, not asserted.
+- [x] The batch note reserves all N in a single `--atomic` push, so a partially
+      contended block claims nothing.
 
 ## Status log
 
@@ -59,3 +66,12 @@ console repo.
   returned `SUV-0036` — a 14-id gap that would have allocated `SUV-0023`, an id
   already shipped on `plan/plan-040` (PR #180). `roadmap-plan-advance` needed no
   change: it never writes ids and never touches `related-suvs:`.
+- `2026-08-28` — review (PR #181) correctly held that the wider read fixes
+  *visibility*, not *atomicity*: two workflows that both read before either
+  writes still collide. Added remote reservation refs (`refs/suv-ids/SUV-NNNN`)
+  as a compare-and-swap ahead of the write, and ADR-0030 gains point 4. Verified
+  against `origin`: first claim `* [new reference]`, second claim of the same id
+  `! [rejected] … (non-fast-forward)` exit 1; a two-id `--atomic` sweep
+  containing one taken id created neither ref. Test refs deleted. The race is
+  closed for workflows that reserve; a workflow that hand-authors an id without
+  reserving is still caught only by the validator.

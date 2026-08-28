@@ -59,11 +59,15 @@ The skill performs `git mv` between folders and rewrites the frontmatter
 three; the widths differ on purpose so an ID is unambiguous on sight), then a
 kebab-case slug.
 
-Find the next ID — **across every ref, never from the working tree**:
+Find the floor — **across every ref and every reservation, never from the
+working tree**:
 
 ```bash
-git log --all --pretty=format: --name-only -- roadmap/suvs \
-  | grep -o 'SUV-[0-9]\{4\}' | sort -u | tail -1
+git fetch origin --prune --quiet
+{ git log --all --pretty=format: --name-only -- roadmap/suvs \
+    | grep -o 'SUV-[0-9]\{4\}'
+  git ls-remote origin 'refs/suv-ids/*' | grep -o 'SUV-[0-9]\{4\}'
+} | sort -u | tail -1
 ```
 
 A glob over `roadmap/suvs/` sees only what is committed on the branch you happen
@@ -81,6 +85,31 @@ There is no `--diff-filter=A` in that command on purpose: git reports a renumber
 as a *rename*, so filtering on adds misses every id that entered the corpus by
 being renamed into — which is exactly how SUV-0033 came to exist. See
 [ADR-0030](../decisions/0030-suv-identity-is-global-per-plan-coherence-is-derived.md).
+
+**Reading the floor is not allocating.** Two breakdowns that both read before
+either writes still mint the same id — that is what produced the two
+`SUV-0014`s, and a wider read does not fix it. Before writing the file, publish
+the claim on the remote, which is the only serialization point concurrent
+workflows share:
+
+```bash
+id=SUV-0040
+tree=$(git hash-object -t tree -w /dev/null)
+claim=$(printf 'reserve %s nonce=%s\n' "$id" "$(uuidgen)" | git commit-tree "$tree")
+git push --atomic origin "${claim}:refs/suv-ids/${id}"
+```
+
+Creating a ref that already exists is a non-fast-forward, so the second claimant
+is **rejected** rather than silently duplicated. On rejection, re-derive the
+floor and claim the next id — never force. Claim commits are parentless and
+carry a random nonce so two agents can never produce the same object (an
+identical object would push as `Everything up-to-date`, exit `0`, and let both
+believe they won). Reserving several ids at once? One `git push --atomic` with
+every refspec, so the block is claimed whole or not at all.
+
+Reservation refs are never deleted and need no cleanup — an abandoned claim is
+just a gap, and gaps are already normal. Full procedure in
+[`roadmap-suv-create`](../../.agents/skills/roadmap-suv-create/SKILL.md).
 
 ## Frontmatter
 

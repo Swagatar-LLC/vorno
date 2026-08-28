@@ -43,9 +43,10 @@ trades a cheap need against an expensive guarantee.
 **The global `SUV-NNNN` identifier is permanent and load-bearing. Per-plan
 coherence is delivered as a computed view over the owning plan's
 `related-suvs:` order, never as a stored field, a renumbering, or a file move.
-Allocation counts every id that has ever existed anywhere a ref can reach.**
+Allocation counts every id that has ever existed anywhere a ref can reach, and
+publishes its claim to the remote before doing any work.**
 
-Three commitments:
+Four commitments:
 
 ### 1. Global four-digit ids stay
 
@@ -103,8 +104,8 @@ force at the time. It therefore misses:
 The rule adopted: **an id that has ever existed anywhere a ref can reach is
 claimed.** Never reuse one, including an id renumbered away — PLAN-039's
 SUV-0014 became SUV-0033, and reusing 0014 would make history ambiguous at
-precisely the point someone is reading it to understand a collision. This needs
-no reservation state or lockfile, and is one command:
+precisely the point someone is reading it to understand a collision. Discovery
+is one command:
 
 ```
 git log --all --pretty=format: --name-only -- roadmap/suvs \
@@ -123,6 +124,64 @@ Two properties of that command are deliberate:
   and it is preserved. "Permanent" means *while the work exists*, not forever.
 
 Gaps in the sequence are the expected, harmless cost.
+
+### 4. A claim is published to the remote before the work begins
+
+Point 3 is a **read**. It settles which ids are taken; it does not settle who
+gets the next one. Two workflows that both run it before either commits see the
+same history and mint the same id — which is precisely the mechanism that
+produced the two `SUV-0014`s. Widening what the read can see narrowed that
+window; it did not close it. Nothing defined purely over already-written history
+can, because the collision happens in the interval before anything is written.
+
+The only serialization point concurrent workflows share is the **git remote**.
+So allocation publishes its claim there, first, as a ref under `refs/suv-ids/`:
+
+```
+id=SUV-0040
+tree=$(git hash-object -t tree -w /dev/null)
+claim=$(printf 'reserve %s nonce=%s\n' "$id" "$(uuidgen)" | git commit-tree "$tree")
+git push --atomic origin "${claim}:refs/suv-ids/${id}"
+```
+
+This is a compare-and-swap, not a convention. `receive-pack` applies each ref
+update under a per-ref lock against an expected old value; creating a ref that
+already exists is a non-fast-forward, and a parentless nonce-bearing claim
+commit can never fast-forward anything. The loser gets
+`! [rejected] … (non-fast-forward)` and a nonzero exit, re-derives the floor,
+and claims the next id. Reserving N ids uses one `--atomic` push carrying N
+refspecs, so a block is claimed whole or not at all.
+
+The nonce is required, not ornamental: two agents that produced a byte-identical
+claim object would both see `Everything up-to-date` and exit `0`, and both would
+believe they won. A uuid makes that object collision impossible.
+
+Discovery (point 3) must therefore read the **union** of history and the
+reservation namespace — `git log --all` does not traverse `refs/suv-ids/*`, and
+an id claimed before this namespace existed appears only in history.
+
+**What this does and does not guarantee.** Any two workflows that both run the
+reservation before writing cannot both get the same id — that race is closed,
+and it is closed by the remote, not by cooperation between the agents. It does
+**not** protect a workflow that skips the reservation, works against a different
+remote, or hand-authors an id: two such workflows can still collide with each
+other, exactly as before. The guarantee is over participants in the protocol,
+not over the filesystem. Non-participants are caught late, by the corpus
+validator, not early.
+
+### Why this is not the reservation file rejected below
+
+A `refs/suv-ids/` claim is not a lockfile and not a tracked artifact. It is not
+a file in the corpus, so it is never edited, reviewed, or merged, and it cannot
+desync from git because it *is* git. It needs no cleanup: an abandoned claim
+leaves a gap, and this ADR already declares gaps normal and permanent. Cost is
+one empty commit and one ref per id.
+
+The one property of point 3 it modifies is the "reachability, not permanence"
+note above: a reservation ref is not deleted when its branch is, so an id
+claimed by an abandoned breakdown stays claimed. That is the intended trade —
+under the permanent-claim rule an un-lapsing claim is strictly safer than a
+lapsing one, and a gap costs nothing.
 
 ## Why nesting and per-plan ids were rejected
 
@@ -151,8 +210,10 @@ The proposal was: nest SUVs under their plan and renumber to `SUV-043-01`.
    plus `related-suvs:` lists that store **filenames**, and branch names, PR
    titles, and git history, which cannot be rewritten at all.
 
-The benefit sought — collision impossibility — is delivered by point 3 above at
-a fraction of the cost, as *prevention* rather than *unrepresentability*.
+The benefit sought — collision impossibility — is delivered by points 3 and 4
+above at a fraction of the cost, as *prevention* rather than
+*unrepresentability*. Point 3 alone would not have delivered it; see the
+guarantee stated there.
 
 ## Consequences
 
@@ -176,6 +237,13 @@ a fraction of the cost, as *prevention* rather than *unrepresentability*.
   ADR accepts that permanently.
 - `git log --all` costs more than a glob. Immaterial at this corpus size;
   revisit if allocation ever lands in a hot path.
+- Allocation now requires network access and push permission to `origin`. An
+  agent working fully offline cannot reserve, and must not allocate.
+- The atomicity guarantee covers participants only. An id hand-authored without
+  a reservation is still discoverable by point 3, but two such workflows can
+  still collide with each other. This is a protocol, not an enforcement.
+- `refs/suv-ids/*` accumulates one ref per id ever allocated, and is never
+  pruned. At the observed rate this is tens of refs a year.
 
 ### Neutral
 
@@ -195,6 +263,16 @@ a fraction of the cost, as *prevention* rather than *unrepresentability*.
 - **A reservation file or id lockfile** — rejected: introduces state that can
   desync from git, needs cleanup when a branch is abandoned, and must itself be
   merged. Git history already *is* the durable claim ledger.
+- **A reservation *ref* (`refs/suv-ids/SUV-NNNN`)** — **adopted**, point 4. It
+  has none of the three properties that sank the lockfile: it cannot desync from
+  git, it is never merged, and an abandoned claim needs no cleanup. It is the
+  only option evaluated that is atomic, because it is the only one whose write
+  goes through the remote's per-ref compare-and-swap rather than through a
+  working tree.
+- **History-only allocation (points 1–3 without point 4)** — rejected as
+  incomplete. It fixes visibility, which is real; it leaves the read-then-write
+  interval open, which is the original defect. Recorded because the first draft
+  of this ADR stopped here and claimed the collision closed.
 - **Status quo (Option 1 of the 2026-08-25 evaluation)** — accepted for
   storage and identity, rejected as complete: it left the reading problem
   unaddressed and the allocator's ref coverage partial.
