@@ -9,13 +9,13 @@ created: 2026-08-26
 updated: 2026-08-27
 related:
   - SUV-0027-in-app-headroom-savings-and-stats-report-view.md (the report view the page documents)
-  - SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md (the memory behavior the page documents)
+  - SUV-0029-memory-provider-seam-with-headroom-and-builtin-markdown-providers.md (the memory behavior the page documents)
 blocked-by:
   - SUV-0014-vet-and-pin-headroom-for-adoption.md (the telemetry audit the privacy section must not outrun)
   - SUV-0017-workspace-settings-ui-for-headroom.md (the enable/disable toggle the page documents)
   - SUV-0026-user-visible-retrieval-of-compressed-originals.md (the view-original affordance)
   - SUV-0027-in-app-headroom-savings-and-stats-report-view.md (the report view)
-  - SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md (the memory behavior)
+  - SUV-0029-memory-provider-seam-with-headroom-and-builtin-markdown-providers.md (the memory behavior)
 ---
 
 # SUV-0032 — Vorno + Headroom docs page

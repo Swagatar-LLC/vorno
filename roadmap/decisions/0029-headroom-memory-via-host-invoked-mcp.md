@@ -265,10 +265,11 @@ otherwise.
 ## References
 
 - [PLAN-040 — Integrate Headroom](../plans/planned/PLAN-040-integrate-headroom.md) (§I1 surface choice, §I2 memory, open question 1)
-- [SUV-0029 — Adopt Headroom multi-layer memory](../suvs/planned/SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md) (unblocked and re-cut by this ADR)
+- [SUV-0029 — Memory provider seam with Headroom MCP and built-in markdown providers](../suvs/planned/SUV-0029-memory-provider-seam-with-headroom-and-builtin-markdown-providers.md) (unblocked and re-cut by this ADR; re-cut again 2026-08-28 under ADR-0031)
 - [SUV-0030 — Memory extension interface designed and proposed upstream](../suvs/done/SUV-0030-memory-extension-interface-designed-and-proposed-upstream.md)
 - [SUV-0031 — agentic-memory v2 as a plugged backend](../suvs/done/SUV-0031-agentic-memory-v2-as-a-plugged-backend-behind-the-interface.md)
 - [Headroom memory surface audit](../evidence/PLAN-040/headroom-memory-surface-audit.md) (M1–M7)
 - [Memory extension interface design](../evidence/PLAN-040/memory-extension-interface-design.md)
 - [ADR-0027 — Lean on the OS for lifecycle chores](0027-lean-on-the-os-for-lifecycle-chores.md) (alignment relocated to the interface)
 - [headroomlabs-ai/headroom#3287](https://github.com/headroomlabs-ai/headroom/issues/3287) — the additive gaps, incl. the LocalBackend bypass, scope parameters, and structured results
+- [ADR-0031 — Memory behind a vendor-neutral, host-invoked MemoryProvider seam](0031-vendor-neutral-memory-provider-seam.md) (generalizes the layer above this surface: Headroom becomes one provider behind the vendor-neutral MemoryProvider seam)

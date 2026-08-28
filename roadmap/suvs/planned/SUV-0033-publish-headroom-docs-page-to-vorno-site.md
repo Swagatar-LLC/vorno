@@ -9,7 +9,7 @@ created: 2026-08-27
 updated: 2026-08-27
 related:
   - SUV-0032-vorno-plus-headroom-docs-page.md (authors the page this SUV publishes)
-  - SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md (the memory behaviour and the embedder-fetch disclosure the page must carry)
+  - SUV-0029-memory-provider-seam-with-headroom-and-builtin-markdown-providers.md (the memory behaviour and the embedder-fetch disclosure the page must carry)
 blocked-by:
   - SUV-0032-vorno-plus-headroom-docs-page.md (the page must exist in the in-app docs tree before it can be published)
 ---

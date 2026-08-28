@@ -3,7 +3,7 @@
 # supplied at publish time. Derived from the SUV's own Goal/Scope/Acceptance —
 # if this file and the SUV disagree, the SUV is right and this is stale.
 id: suv-0029-adopt-headroom-multi-layer-memory-for-sessio
-title: SUV-0029 - Adopt Headroom multi-layer memory for sessions and workflows
+title: SUV-0029 - Memory provider seam with Headroom MCP and built-in markdown providers
 goal: |
   Make Headroom's multi-layer memory the flag-gated memory substrate for agent
   sessions and workflow runs, exposed through memory operations on the boundary
@@ -59,7 +59,7 @@ nodes:
   - id: implement
     title: Implement SUV-0029
     prompt: |
-      Implement SUV-0029 — Adopt Headroom multi-layer memory for sessions and workflows.
+      Implement SUV-0029 — Memory provider seam with Headroom MCP and built-in markdown providers.
 
       Your working directory is a checkout of the Vorno repository on PLAN-040's branch.
       Commit your work there. Do not create a second branch for this SUV, do not merge, do
