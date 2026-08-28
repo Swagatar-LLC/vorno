@@ -87,7 +87,7 @@ what the SUV level is for. See [ADR-0028](roadmap/decisions/0028-suv-as-the-ship
 
 ## CI
 
-- `.github/workflows/validate-pr.yml` — typecheck, shared tests (threshold-based), server tests (strict), webui tests (strict), share Worker tests (strict), doc tools, i18n gates, branding gate, build check. **All nine must pass.**
+- `.github/workflows/validate-pr.yml` — typecheck, shared tests (threshold-based), server tests (strict), webui tests (strict), share Worker tests (strict), doc tools, i18n gates, branding gate, Headroom boundary gate, build check. **All ten must pass.**
 - `.github/workflows/validate.yml` — disabled (`workflow_dispatch` only). Was upstream's broken Validate.
 
 ## Quick commands

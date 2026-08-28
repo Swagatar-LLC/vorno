@@ -56,4 +56,5 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0026](0026-session-query-as-a-composable-predicate-surface.md) | Session query as a composable predicate surface with allowlisted projection | proposed |
 | [0027](0027-lean-on-the-os-for-lifecycle-chores.md) | Lean on filesystem and OS primitives for lifecycle chores | proposed |
 | [0028](0028-suv-as-the-shippable-unit-between-plan-and-task.md) | SUV as the shippable unit between a plan and an executable task | accepted |
+| [0029](0029-headroom-memory-via-host-invoked-mcp.md) | Headroom memory through the memory MCP stdio server, host-invoked from the boundary adapter | accepted |
 | [0030](0030-suv-identity-is-global-per-plan-coherence-is-derived.md) | SUV identity stays global; per-plan coherence is a derived view | accepted |

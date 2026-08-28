@@ -723,9 +723,30 @@ export interface ElectronAPI {
   getSessionFiles(sessionId: string): Promise<SessionFile[]>
   getSessionNotes(sessionId: string): Promise<string>
   setSessionNotes(sessionId: string, content: string): Promise<void>
+  /**
+   * Redeem a Headroom retrieval handle for a compressed tool output's
+   * byte-identical original (fork: PLAN-040 / SUV-0026). The result states a
+   * reason on a miss; it never substitutes the compressed text.
+   */
+  retrieveHeadroomOriginal(sessionId: string, handle: string): Promise<import('@craft-agent/core/types').HeadroomRetrieveResult>
   watchSessionFiles(sessionId: string): Promise<void>
   unwatchSessionFiles(): Promise<void>
   onSessionFilesChanged(callback: (sessionId: string) => void): () => void
+
+  // Headroom savings report (fork: PLAN-040 / SUV-0027)
+  /**
+   * Measured compression stats for a workspace, and optionally for one session.
+   * Every figure comes from a `HeadroomAdapter.stats()` call; a scope that
+   * measured nothing answers absent, with a reason, and no numeric fields.
+   */
+  getHeadroomStats(
+    workspaceId: string,
+    sessionId?: string,
+  ): Promise<import('@craft-agent/core/types').HeadroomStatsReport>
+  /** "The measurements moved — ask again." Carries ids only, never numbers. */
+  onHeadroomStatsChanged(
+    callback: (payload: { workspaceId: string; sessionId?: string }) => void,
+  ): () => void
 
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>

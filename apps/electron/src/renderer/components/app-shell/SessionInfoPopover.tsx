@@ -6,6 +6,8 @@ import { Input } from '@/components/ui/input'
 import { useAppShellContext, useSession } from '@/context/AppShellContext'
 import { cn } from '@/lib/utils'
 import { SessionFilesSection } from '../right-sidebar/SessionFilesSection'
+// fork(PLAN-040, SUV-0027): the session-scoped entry point to the savings report
+import { HeadroomReportSection } from '@/pages/settings/HeadroomReportSection'
 
 interface SessionInfoPopoverProps {
   sessionId: string
@@ -101,7 +103,7 @@ export function SessionInfoPopover({
 function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId: string; sessionFolderPath?: string }) {
   const { t } = useTranslation()
   const session = useSession(sessionId)
-  const { onRenameSession } = useAppShellContext()
+  const { onRenameSession, activeWorkspaceId } = useAppShellContext()
   const [name, setName] = React.useState('')
   const renameTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -147,6 +149,19 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
             className="h-9 py-2 text-sm border-0 shadow-none bg-transparent focus-visible:ring-0"
           />
         </div>
+      </div>
+      {/*
+        fork(PLAN-040, SUV-0027): this session's own Headroom measurements, plus
+        the workspace aggregate. Renders one explanatory line — not a row of
+        zeros — whenever there is nothing measured, so it costs no space on a
+        workspace that has Headroom off.
+      */}
+      <div className="shrink-0 border-b border-border/50">
+        <HeadroomReportSection
+          workspaceId={activeWorkspaceId}
+          sessionId={sessionId}
+          compact
+        />
       </div>
       <div className="flex-1 min-h-0 overflow-hidden">
         <SessionFilesSection

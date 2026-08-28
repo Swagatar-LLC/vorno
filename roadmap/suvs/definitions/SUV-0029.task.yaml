@@ -1,0 +1,200 @@
+# Task definition for SUV-0029 — the executable DAG behind that SUV (ADR-0028).
+# Machine-neutral on purpose: no cwd, no project id, no model route. Those are
+# supplied at publish time. Derived from the SUV's own Goal/Scope/Acceptance —
+# if this file and the SUV disagree, the SUV is right and this is stale.
+id: suv-0029-adopt-headroom-multi-layer-memory-for-sessio
+title: SUV-0029 - Adopt Headroom multi-layer memory for sessions and workflows
+goal: |
+  Make Headroom's multi-layer memory the flag-gated memory substrate for agent
+  sessions and workflow runs, exposed through memory operations on the boundary
+  adapter.
+acceptance_criteria: |
+  Grade in this order.
+
+  1. The `adversarial-verify` node's output is the primary signal. Read its final
+     `VERDICT:` line. If it says FAIL, this run FAILS: reply
+     `VERDICT: FAIL - nodes=<the node(s) it blamed> - <its reason>`.
+     Do not overrule it, do not soften it, and do not substitute your own judgement.
+  2. The run also FAILS if `verify` marks any acceptance item NOT VERIFIED, or if its
+     verified count disagrees with its own itemised list.
+  3. The run also FAILS if the change touched anything this SUV declares out of scope,
+     or if a second branch was created for it — PLAN-040 has exactly one branch.
+  4. The run also FAILS if any node reported a test, typecheck or lint suite as passing
+     when its own quoted output shows otherwise.
+
+  Reply `VERDICT: PASS` only if `adversarial-verify` said PASS and none of 2, 3 or 4 holds.
+
+  This SUV's acceptance list, for reference:
+  - [ ] The boundary adapter exposes memory operations, and the only production import of Headroom's memory APIs remains inside the boundary module (SUV-0015 guard still passes).
+  - [ ] In an enabled workspace, a memory written during one session is retrievable in a later session and in a workflow run, asserted by an integration test.
+  - [ ] The memory substrate on disk is local markdown, human-readable, and nothing is sent off-machine — verified against the SUV-0014 telemetry audit's opt-in findings.
+  - [ ] With Headroom disabled or absent, sessions and workflows run unchanged and memory operations report unavailable rather than throwing.
+nodes:
+  - id: orient
+    title: Orient in PLAN-040 and SUV-0029
+    prompt: |
+      READ-ONLY NODE. Do not create, edit, move or delete any file, and do not run any git
+      command that writes. Your entire deliverable is the text of your final message.
+
+      Your working directory is a checkout of the Vorno repository on the branch that owns
+      PLAN-040. One plan, one branch: all work for this SUV lands on that branch and nowhere
+      else. Confirm which branch you are on and state it.
+
+      Read, in this order, and quote the lines you rely on:
+        1. The owning plan: roadmap/plans/*/PLAN-040-integrate-headroom.md
+        2. This SUV: roadmap/suvs/*/SUV-0029-*.md
+
+
+
+      Then report:
+        - The branch you are on.
+        - This SUV's goal, in one sentence, in your own words.
+        - Every item this SUV declares OUT of scope, quoted. You will be graded on staying
+          inside the boundary, so name it before you cross it.
+        - The acceptance items you will have to satisfy, restated as checks you can run.
+        - Anything in the plan or the SUV that is ambiguous enough to change what you build.
+          Say so now rather than resolving it silently later.
+
+      Assert nothing you did not read. If a file named above does not exist, say so plainly.
+  - id: implement
+    title: Implement SUV-0029
+    prompt: |
+      Implement SUV-0029 — Adopt Headroom multi-layer memory for sessions and workflows.
+
+      Your working directory is a checkout of the Vorno repository on PLAN-040's branch.
+      Commit your work there. Do not create a second branch for this SUV, do not merge, do
+      not push, and do not move work between checkouts. One plan, one branch.
+
+      Never use `git stash` in this repository, even transiently — the stash is a single
+      repo-global stack shared by every worktree and process pointing at it, and using it
+      here has twice dragged an unrelated session's work into a tree that never asked for it.
+      If a dirty tree blocks you, report the paths in the way instead.
+
+      ORIENTATION (from the previous node — treat as context, verify anything you rely on):
+      --- begin orientation ---
+      ${nodes.orient.output}
+      --- end orientation ---
+
+      GOAL
+      Make Headroom's multi-layer memory the flag-gated memory substrate for agent
+      sessions and workflow runs, exposed through memory operations on the boundary
+      adapter.
+
+      SCOPE — including what is deliberately OUT
+      - Extend the `HeadroomAdapter` boundary (SUV-0015) with the memory operations
+        the plan needs — write, query, and provenance-carrying reads — backed by
+        Headroom's memory layers with its default local-markdown substrate; the
+        no-op adapter reports memory as unavailable.
+      - Wire session and Conductor workflow construction so agents read and write
+        through that memory when the workspace flag enables it.
+      - Deliberately out: the pluggable extension interface (SUV-0030), the
+        agentic-memory v2 backend (SUV-0031), and `headroom learn` mining.
+
+      ACCEPTANCE — every item must be true when you are done
+      - [ ] The boundary adapter exposes memory operations, and the only production import of Headroom's memory APIs remains inside the boundary module (SUV-0015 guard still passes).
+      - [ ] In an enabled workspace, a memory written during one session is retrievable in a later session and in a workflow run, asserted by an integration test.
+      - [ ] The memory substrate on disk is local markdown, human-readable, and nothing is sent off-machine — verified against the SUV-0014 telemetry audit's opt-in findings.
+      - [ ] With Headroom disabled or absent, sessions and workflows run unchanged and memory operations report unavailable rather than throwing.
+
+      Rules that decide whether this run is graded a pass:
+        - Stay inside the scope boundary. Work the SUV declares out of scope is a defect,
+          not a bonus — an out-of-scope diff is the specific failure the SUV level exists
+          to prevent.
+        - Where the acceptance item asks for a test, write a test that genuinely fails
+          without your change. Verify that it does, and report the observed red-then-green.
+        - Run the repository's test, typecheck and lint suites before you finish, and report
+          their actual output. If something fails, say so with the output — do not describe
+          a failing suite as passing.
+        - Append a status-log entry to the SUV file recording what landed.
+        - Report the exact commands you ran, so the verifier can repeat them.
+    depends_on:
+      - orient
+  - id: verify
+    title: Independent verification against acceptance
+    prompt: |
+      READ-ONLY NODE. Do not create, edit, move or delete any file, and do not run any git
+      command that writes. Your entire deliverable is the text of your final message.
+
+      You are the independent verifier for SUV-0029. You did not do the work and you do not
+      trust the account of it. Check the repository itself.
+
+      THE IMPLEMENTER'S ACCOUNT:
+      --- begin account ---
+      ${nodes.implement.output}
+      --- end account ---
+
+      THE ACCEPTANCE LIST THIS IS GRADED AGAINST:
+      - [ ] The boundary adapter exposes memory operations, and the only production import of Headroom's memory APIs remains inside the boundary module (SUV-0015 guard still passes).
+      - [ ] In an enabled workspace, a memory written during one session is retrievable in a later session and in a workflow run, asserted by an integration test.
+      - [ ] The memory substrate on disk is local markdown, human-readable, and nothing is sent off-machine — verified against the SUV-0014 telemetry audit's opt-in findings.
+      - [ ] With Headroom disabled or absent, sessions and workflows run unchanged and memory operations report unavailable rather than throwing.
+
+      Do all of the following yourself:
+        1. Read the actual diff on the branch (`git diff` against the branch point, and
+           `git log`). Judge the change from the diff, not from the account.
+        2. For each acceptance item, state VERIFIED or NOT VERIFIED and cite the file and
+           line, or the command and its output, that settles it. An item you cannot check
+           is NOT VERIFIED — never assume one true because the account asserts it.
+        3. Run the test, typecheck and lint suites yourself and report their real output.
+        4. Check the diff against the SUV's out-of-scope list and name anything that
+           crossed the boundary.
+        5. Confirm the work is on PLAN-040's branch and that no second branch was created.
+
+      Finish with a section headed VERIFICATION SUMMARY listing each acceptance item and its
+      verdict, then the count verified out of the total.
+    depends_on:
+      - implement
+  - id: adversarial-verify
+    title: Adversarial verification
+    prompt: |
+      READ-ONLY NODE. Do not create, edit, move or delete any file, and do not run any git
+      command that writes. Your entire deliverable is the text of your final message.
+
+      You are an ADVERSARIAL VERIFIER. Your job is to FAIL this run. Treat everything below as
+      wrong until you have proved otherwise with work you did yourself. Agreeing is the
+      expensive option: conclude PASS only if you genuinely could not find fault after doing
+      every independent check yourself.
+
+      THE VERIFIER'S REPORT UNDER TEST:
+      --- begin report ---
+      ${nodes.verify.output}
+      --- end report ---
+
+      Attack it in these specific ways, all of them, from scratch:
+
+        1. RE-DERIVE. Read the diff yourself and re-check every acceptance item yourself.
+           Do not reuse the report's citations — find your own or fail the item.
+        2. TESTS THAT CANNOT FAIL. For each test the run claims as evidence, ask whether it
+           would still pass if the implementation were reverted or stubbed. A test asserting
+           something already true before the change is not evidence. Name any you find.
+        3. SCOPE. Diff against the SUV's out-of-scope list. Any file touched outside the
+           stated boundary is a finding, however small and however tidy.
+        4. UNSUPPORTED CLAIMS. Find every statement in the report that neither the diff nor a
+           command output supports. Fabricated or interpolated numbers are an automatic FAIL —
+           this plan's standing rule is measured or absent, never estimated.
+        5. BRANCH DISCIPLINE. Confirm the work is on PLAN-040's branch, that no second branch
+           was cut for this SUV, and that nothing was merged or pushed.
+        6. SUITE HONESTY. Run the test, typecheck and lint suites yourself. If the run
+           reported them green and they are not, that alone is a FAIL.
+
+      Then write these sections, each introduced by the literal heading line shown (do NOT use
+      a markdown heading marker):
+
+      SECTION 1 - INDEPENDENT CHECK
+      What YOU found, with the exact commands you ran.
+
+      SECTION 2 - DISCREPANCIES
+      Every mismatch, quoting the claim and your finding side by side. Write "none found" only
+      if there are genuinely none.
+
+      SECTION 3 - REASONING
+      Why the discrepancies do, or do not, invalidate the run.
+
+      Finish with a verdict line, alone on the last line, in exactly one of these forms:
+        VERDICT: FAIL - <one-line reason>
+        VERDICT: PASS
+
+      Say FAIL if anything is inconsistent, fabricated, unsupported, out of scope, or
+      untested — however small. Say PASS only if you could not find fault.
+    depends_on:
+      - verify

@@ -51,6 +51,12 @@ import {
   SettingsMenuSelectRow,
   SettingsNumberInput,
 } from '@/components/settings'
+// fork(PLAN-040, SUV-0017): Headroom integration settings
+import { HeadroomSettingsSection } from './HeadroomSettingsSection'
+// fork(PLAN-040, SUV-0027): the measured-savings report, workspace scope
+import { HeadroomReportSection } from './HeadroomReportSection'
+import type { HeadroomConfigOverrides } from '@craft-agent/core'
+import type { HeadroomConfigViewDto } from '@craft-agent/shared/protocol'
 
 export const meta: DetailsPageMeta = {
   navigator: 'settings',
@@ -88,6 +94,9 @@ export default function WorkspaceSettingsPage() {
   // fork(PLAN-029): per-root kind/capabilities/health from `roots:list` (no
   // absolute paths on the wire), keyed by rootId. Lazily (re)loaded.
   const [rootDescriptors, setRootDescriptors] = useState<Record<string, RootDescriptor>>({})
+  // fork(PLAN-040 SUV-0017): Headroom view — effective config + per-field
+  // provenance, resolved server-side. undefined = no config anywhere yet.
+  const [headroomView, setHeadroomView] = useState<HeadroomConfigViewDto | undefined>(undefined)
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true)
 
   // Default sources state
@@ -119,6 +128,7 @@ export default function WorkspaceSettingsPage() {
           setWorkbenchEnabled(settings.workbenchEnabled ?? false)
           setArtifactsEnabled(settings.artifactsEnabled ?? false)
           setArtifactRoots(settings.artifactRoots ?? {})
+          setHeadroomView(settings.headroomView)
           if (settings.artifactsEnabled) void refreshRootDescriptors()
           // Load cyclable permission modes from workspace settings
           if (settings.cyclablePermissionModes && settings.cyclablePermissionModes.length >= 2) {
@@ -379,6 +389,24 @@ export default function WorkspaceSettingsPage() {
       }
     },
     [updateWorkspaceSetting, refreshRootDescriptors]
+  )
+
+  // fork(PLAN-040, SUV-0017): persist the Headroom workspace override layer and
+  // then re-read the resolved view. Re-reading rather than patching local state
+  // is the point: effective values and provenance are the resolver's answer,
+  // and clearing a field can only reveal what the instance base says by asking.
+  const saveHeadroomOverrides = useCallback(
+    async (next: HeadroomConfigOverrides | undefined) => {
+      const saved = await updateWorkspaceSetting('headroom', next)
+      if (!saved || !window.electronAPI || !activeWorkspaceId) return
+      try {
+        const settings = await window.electronAPI.getWorkspaceSettings(activeWorkspaceId)
+        setHeadroomView(settings?.headroomView)
+      } catch (error) {
+        console.error('Failed to reload Headroom settings:', error)
+      }
+    },
+    [updateWorkspaceSetting, activeWorkspaceId]
   )
 
   // Route directory-picker selections: a rootId re-picks that row's path; null
@@ -713,6 +741,12 @@ export default function WorkspaceSettingsPage() {
                 </div>
               )}
             </SettingsSection>
+
+            {/* fork(PLAN-040, SUV-0017): Headroom integration */}
+            <HeadroomSettingsSection view={headroomView} onSaveOverrides={saveHeadroomOverrides} />
+
+            {/* fork(PLAN-040, SUV-0027): what Headroom measured across this workspace */}
+            <HeadroomReportSection workspaceId={activeWorkspaceId} />
 
           </div>
         </div>

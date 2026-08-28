@@ -40,6 +40,13 @@ export type RunLogEntry =
   | { t: string; kind: 'node-retry'; nodeId: string; attempt: number; reason: string }
   | { t: string; kind: 'run-paused' | 'run-resumed' | 'run-stopped' | 'run-completed' | 'run-failed' | 'run-verifying' }
   | { t: string; kind: 'verdict'; result: 'pass' | 'fail' | 'unparsed'; reason?: string; nodes?: string[] }
+  // fork: PLAN-040 / SUV-0024. Emitted only when the Headroom boundary actually compressed a node's
+  // output on its way into a downstream node's context. `handles` are the opaque retrieval handles
+  // the boundary issued for the content it extracted — redeemable via `HeadroomAdapter.retrieve` —
+  // and recording them here is what makes the compression reversible after the run. Purely additive:
+  // the node output on disk is still the uncompressed original, so a reader that ignores this entry
+  // sees exactly what it saw before.
+  | { t: string; kind: 'node-compressed'; nodeId: string; handles: string[]; tokensSaved?: number }
   | { t: string; kind: 'budget-breach'; metric: 'tokens' | 'parallel' | 'iterations'; value: number; limit: number };
 
 // ---------------------------------------------------------------------------

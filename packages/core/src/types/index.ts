@@ -97,3 +97,50 @@ export type {
   ArtifactRelationKind,
   ArtifactRelation,
 } from './artifacts.ts';
+
+// Headroom integration config (fork: PLAN-040, SUV-0016)
+export type {
+  HeadroomVerbosity,
+  HeadroomConfig,
+  HeadroomConfigOverrides,
+  HeadroomConfigField,
+  HeadroomConfigSource,
+  HeadroomConfigSources,
+} from './headroom.ts';
+export {
+  HEADROOM_VERBOSITY_VALUES,
+  HEADROOM_CONFIG_DEFAULTS,
+  HEADROOM_CONFIG_FIELDS,
+  sanitizeHeadroomConfigLayer,
+  resolveHeadroomConfig,
+  resolveHeadroomConfigSources,
+} from './headroom.ts';
+
+// Headroom adapter boundary contract (fork: PLAN-040, SUV-0015)
+export type {
+  HeadroomMessageRole,
+  HeadroomMessage,
+  HeadroomUnavailableReason,
+  HeadroomMeasurement,
+  HeadroomCompressStats,
+  HeadroomUsageStats,
+  HeadroomCompressRequest,
+  HeadroomCompressResult,
+  HeadroomRetrieveMiss,
+  HeadroomRetrieveResult,
+  HeadroomAdapterKind,
+  HeadroomAdapter,
+  HeadroomAdapterOptions,
+} from './headroom-adapter.ts';
+export {
+  HEADROOM_MESSAGE_ROLES,
+  headroomUnavailable,
+  headroomMeasured,
+} from './headroom-adapter.ts';
+
+// Headroom savings/stats report (fork: PLAN-040, SUV-0027)
+export type {
+  HeadroomStatsScopeKind,
+  HeadroomStatsScope,
+  HeadroomStatsReport,
+} from './headroom-report.ts';

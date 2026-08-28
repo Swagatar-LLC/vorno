@@ -48,6 +48,8 @@
     "./sources/types": "./src/sources/types.ts",
     "./skills": "./src/skills/index.ts",
     "./workspaces": "./src/workspaces/index.ts",
+    "./headroom": "./src/headroom/index.ts",
+    "./headroom/tool-output": "./src/headroom/tool-output.ts",
     "./utils": "./src/utils/index.ts",
     "./utils/toolNames": "./src/utils/toolNames.ts",
     "./utils/logo": "./src/utils/logo.ts",
@@ -95,6 +97,7 @@
     "incr-regex-package": "^1.0.4",
     "shell-quote": "^1.8.3",
     "yaml": "^2.8.2",
+    "headroom-ai": "0.36.5",
     "@earendil-works/pi-agent-core": "0.81.1",
     "@earendil-works/pi-ai": "0.81.1",
     "@earendil-works/pi-coding-agent": "0.81.1"

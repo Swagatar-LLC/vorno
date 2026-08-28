@@ -26,6 +26,8 @@ import type {
   TaskResultNodeDto,
 } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
+import { loadEffectiveHeadroomConfig } from '@craft-agent/shared/workspaces'
+import { createSessionHeadroomAdapter } from '@craft-agent/shared/headroom'
 import {
   parseTaskYaml,
   saveTaskSpec,
@@ -104,7 +106,13 @@ export function registerTasksHandlers(server: RpcServer, deps: HandlerDeps): voi
     let runner = runners.get(workspaceId)
     if (!runner) {
       const ws = workspaceOrThrow(workspaceId)
-      runner = new TaskRunner({ host: deps.sessionManager, workspaceId: ws.id, workspaceRoot: ws.rootPath })
+      // Headroom (fork: PLAN-040 / SUV-0024). Config is resolved once, here, so every run this
+      // runner executes shares one snapshot and one adapter — the same "captured at start" property
+      // a session has (SUV-0018). The factory never rejects, so this promise cannot become an
+      // unhandled rejection while the runner sits idle, and a disabled workspace simply gets the
+      // no-op adapter rather than a special case in the Conductor.
+      const headroom = createSessionHeadroomAdapter(loadEffectiveHeadroomConfig(ws.rootPath))
+      runner = new TaskRunner({ host: deps.sessionManager, workspaceId: ws.id, workspaceRoot: ws.rootPath, headroom })
       runners.set(workspaceId, runner)
     }
     return runner

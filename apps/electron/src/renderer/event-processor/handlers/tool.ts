@@ -67,6 +67,22 @@ export function handleToolStart(
 }
 
 /**
+ * The Headroom compression marker as message fields (fork: PLAN-040 / SUV-0026).
+ *
+ * Returns an empty object — not a record of `undefined`s — when the result was
+ * not compressed, so an uncompressed message gains no keys at all and a
+ * Headroom-disabled session's message objects are what they always were.
+ */
+function headroomFields(event: ToolResultEvent): Partial<Message> {
+  if (event.headroomHandle === undefined) return {}
+  return {
+    headroomHandle: event.headroomHandle,
+    ...(event.headroomOriginalBytes === undefined ? {} : { headroomOriginalBytes: event.headroomOriginalBytes }),
+    ...(event.headroomCompressedBytes === undefined ? {} : { headroomCompressedBytes: event.headroomCompressedBytes }),
+  }
+}
+
+/**
  * Handle tool_result - complete tool execution
  *
  * Updates the tool message with result. If tool not found (out-of-order),
@@ -103,6 +119,7 @@ export function handleToolResult(
       toolStatus: newToolStatus,
       isError: effectiveIsError,
       errorCode: isPersistedOutput ? 'response_too_large' : undefined,
+      ...headroomFields(event),
     })
 
     // Safety net: when a parent Task completes, auto-complete any still-pending child tools.
@@ -158,6 +175,7 @@ export function handleToolResult(
     errorCode: isPersistedOutput ? 'response_too_large' : undefined,
     turnId: event.turnId,
     parentToolUseId: event.parentToolUseId,
+    ...headroomFields(event),
   }
 
   return {

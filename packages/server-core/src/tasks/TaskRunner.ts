@@ -20,6 +20,7 @@
  */
 import type { CreateSessionOptions } from '@craft-agent/shared/protocol';
 import { type BuiltInStatusId, type StatusChangeOrigin, hostOrigin } from '@craft-agent/shared/statuses';
+import type { HeadroomAdapter } from '@craft-agent/core/types';
 import type { SessionCompletionEvent } from '../sessions/SessionManager';
 import {
   type TaskSpec,
@@ -28,6 +29,7 @@ import {
   type RunLogEntry,
   type NodeRunState,
   nodeTitle,
+  extractRefs,
   interpolateRefs,
   materializeDeps,
   appendRunLog,
@@ -72,6 +74,16 @@ export interface TaskRunnerDeps {
   workspaceRoot: string;
   /** Optional output summarizer (call_llm/Haiku). When absent, summarize-flagged inputs pass through. */
   summarize?: (text: string) => Promise<string>;
+  /**
+   * Headroom boundary for inter-node context (fork: PLAN-040 / SUV-0024).
+   *
+   * A promise is accepted because building the adapter is a dynamic import that the caller starts
+   * once, at runner construction, and never has to await before handing it over — the same shape
+   * `BaseAgent` holds for a session (SUV-0018). Absent means no compression at all, which is the
+   * pre-SUV behaviour; a *disabled* workspace supplies the no-op adapter and gets the same result
+   * through the boundary rather than around it.
+   */
+  headroom?: HeadroomAdapter | Promise<HeadroomAdapter>;
   /** Default `max_parallel` when the spec omits it. */
   defaultMaxParallel?: number;
   /** Injectable clock (run-log timestamps) + run-id generator, for determinism in tests. */
@@ -158,6 +170,15 @@ class ActiveRun {
   private readonly state = new Map<string, NodeStateEntry>();
   private readonly sessionToNode = new Map<string, string>();
   private readonly outputs: Record<string, NodeOutput> = {};
+  /**
+   * Compressed form of a node output, memoized against the exact text it was produced from
+   * (fork: PLAN-040 / SUV-0024). Never read as the node's output — only as downstream context.
+   *
+   * The *promise* is memoized, not the resolved text: two dependants of the same node are dispatched
+   * in one `scheduleReady` pass, so caching only on completion would let both miss and compress the
+   * same output twice — duplicate service calls and two sets of retrieval handles for one output.
+   */
+  private readonly compressedOutputs = new Map<string, { source: string; text: Promise<string> }>();
   private readonly edges: Map<string, Set<string>>;
   private readonly maxParallel: number;
   private inFlight = 0;
@@ -406,15 +427,19 @@ class ActiveRun {
 
   /** Resolve a node's prompt: declared inputs (+ optional summarize) then ${…} interpolation. */
   private async buildPrompt(node: TaskNode): Promise<string> {
+    // The one place an upstream node's output becomes a downstream node's context — so it is the
+    // one place Headroom compresses (SUV-0024). `this.outputs` keeps the originals: persistence,
+    // the run snapshot and the orchestrator's verification all read them unchanged.
+    const nodeOutputs = await this.contextOutputsFor(node);
     const inputValues: Record<string, unknown> = {};
     for (const [name, ref] of Object.entries(node.inputs ?? {})) {
       const fromExpr = typeof ref === 'string' ? ref : ref.from;
       const summarize = typeof ref === 'string' ? false : !!ref.summarize;
-      let resolved = interpolateRefs(fromExpr, { nodeOutputs: this.outputs, params: this.opts.params });
+      let resolved = interpolateRefs(fromExpr, { nodeOutputs, params: this.opts.params });
       if (summarize && this.deps.summarize) resolved = await this.deps.summarize(resolved);
       inputValues[name] = resolved;
     }
-    let text = interpolateRefs(node.prompt ?? '', { nodeOutputs: this.outputs, params: this.opts.params });
+    let text = interpolateRefs(node.prompt ?? '', { nodeOutputs, params: this.opts.params });
     text = text.replace(INPUTS_REF_RE, (raw, name: string) => (name in inputValues ? String(inputValues[name]) : raw));
 
     // Failure-aware retry: prepend the prior failure so a retried session knows what went wrong
@@ -423,6 +448,102 @@ class ActiveRun {
     if (st.attempt > 1 && st.lastFailure) {
       text = `${st.lastFailure}\n\n${text}`;
     }
+    return text;
+  }
+
+  // --- inter-node context compression (fork: PLAN-040 / SUV-0024) ---
+
+  /**
+   * The node-output map this node's prompt interpolates against: `this.outputs`, with every output
+   * the node actually references replaced by its compressed form.
+   *
+   * Only referenced outputs are compressed. `this.outputs` accumulates every finished node in the
+   * run, and compressing all of them would send content to the service that no prompt was ever
+   * going to contain — cost and exposure for nothing.
+   *
+   * Returns `this.outputs` itself when there is nothing to do, so the disabled/absent path hands
+   * the interpolator the identical object it received before this SUV.
+   */
+  private async contextOutputsFor(node: TaskNode): Promise<Record<string, NodeOutput>> {
+    if (!this.deps.headroom) return this.outputs;
+    const referenced = this.referencedOutputIds(node);
+    if (referenced.size === 0) return this.outputs;
+
+    const adapter = await this.deps.headroom;
+    const view: Record<string, NodeOutput> = { ...this.outputs };
+    for (const id of referenced) {
+      const original = this.outputs[id];
+      if (!original || original.text === '') continue;
+      const text = await this.compressOutput(adapter, id, original.text, node);
+      if (text !== original.text) view[id] = { ...original, text };
+    }
+    return view;
+  }
+
+  /**
+   * Ids of the node outputs this node's prompt and declared inputs will interpolate.
+   *
+   * Field references (`${nodes.x.output.field}`) are excluded: they resolve against the output's
+   * typed `params`, not its text, so compressing the text would change nothing they read.
+   */
+  private referencedOutputIds(node: TaskNode): Set<string> {
+    const sources = [node.prompt ?? ''];
+    for (const ref of Object.values(node.inputs ?? {})) {
+      sources.push(typeof ref === 'string' ? ref : ref.from);
+    }
+    const ids = new Set<string>();
+    for (const source of sources) {
+      for (const ref of extractRefs(source)) {
+        if (ref.kind === 'node' && !ref.field && this.outputs[ref.nodeId]) ids.add(ref.nodeId);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * Compress one node output for downstream context, memoized per node while its text is unchanged.
+   *
+   * The memo is keyed on the source text, not just the node id, so a repair pass that re-runs a node
+   * and produces different output compresses again instead of serving the previous run's context.
+   *
+   * The handles issued for the extracted content go into the run log, which is what makes the
+   * compression reversible: the original is recoverable through `adapter.retrieve(handle)` after the
+   * run, and separately still sits on disk as the node's recorded output.
+   */
+  private async compressOutput(
+    adapter: HeadroomAdapter,
+    nodeId: string,
+    source: string,
+    consumer: TaskNode,
+  ): Promise<string> {
+    const cached = this.compressedOutputs.get(nodeId);
+    if (cached && cached.source === source) return cached.text;
+
+    const model = consumer.model ?? this.spec.defaults?.model;
+    const text = (async () => {
+      try {
+        const result = await adapter.compress({
+          // One assistant message: a node's output *is* the upstream agent's final answer, and the
+          // boundary's message shape is how it expects context.
+          messages: [{ role: 'assistant', content: source }],
+          ...(model === undefined ? {} : { model }),
+        });
+        if (!result.compressed) return source;
+        this.log({
+          kind: 'node-compressed',
+          nodeId,
+          handles: [...result.retrievalHandles],
+          ...(result.stats.available ? { tokensSaved: result.stats.value.tokensSaved } : {}),
+        });
+        return result.messages.map((m) => m.content).join('\n');
+      } catch {
+        // The adapter contract forbids throwing. If an implementation ever does, the run must not
+        // die over it — uncompressed context is always correct, merely larger.
+        return source;
+      }
+    })();
+
+    this.compressedOutputs.set(nodeId, { source, text });
     return text;
   }
 

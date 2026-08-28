@@ -1,0 +1,314 @@
+---
+id: SUV-0029
+title: Adopt Headroom multi-layer memory for sessions and workflows
+status: planned
+plan: PLAN-040
+direction: DIR-05
+owner: jh
+created: 2026-08-26
+updated: 2026-08-27
+related:
+  - ADR-0029 (the surface decision that unblocked and re-cut this SUV)
+blocked-by: []
+---
+
+# SUV-0029 — Adopt Headroom multi-layer memory for sessions and workflows
+
+## Goal
+
+Make Headroom's multi-layer memory the flag-gated memory substrate for agent
+sessions and workflow runs, exposed through memory operations on the boundary
+adapter.
+
+## Scope
+
+- Extend the `HeadroomAdapter` boundary (SUV-0015) with the memory operations
+  the plan needs — write and query — implemented as **host-invoked MCP calls**
+  to Headroom's memory MCP stdio server per [ADR-0029](../../decisions/0029-headroom-memory-via-host-invoked-mcp.md);
+  the no-op adapter reports memory as unavailable.
+- Supervise the server as a stdio MCP subprocess
+  (`python -m headroom.memory.mcp_server --db <workspace memory.db> --user <id>`),
+  reusing Vorno's existing stdio MCP machinery rather than inventing a sidecar
+  lifecycle.
+- Wire session and Conductor workflow construction so the **host** calls
+  `memory_search` at context load and `memory_save` at save points and splices
+  results into prompts — deterministically, not contingent on the model electing
+  to call a tool.
+- Detect and represent **three** Headroom states, not two: absent, present but
+  unprovisioned (embedder model not cached), and ready.
+- Deliberately out: exposing the same tools to the model as callable tools (a
+  later layered choice); update/delete/supersession/history verbs (ADR-0029
+  commitment 2); the pluggable extension interface (SUV-0030); the
+  agentic-memory v2 backend (SUV-0031, unreachable through this surface until
+  `LocalBackendConfig` can carry a store-backend choice — audit M7c); and
+  `headroom learn` mining (`wrap`-dependent, out on F3 grounds).
+- **In scope, and easy to miss:** extend `scripts/check-headroom-boundary.ts` to
+  cover the subprocess seam. It matches package *imports*, so it cannot see
+  `python -m headroom.memory.mcp_server` being spawned outside the boundary
+  module. Without a second pattern the gate enforces the boundary in one
+  direction only, and this SUV is precisely the one that introduces the other.
+
+## Acceptance
+
+- [ ] The boundary adapter exposes `memorySearch` / `memorySave`, and the only production reference to Headroom's memory surface remains inside the boundary module — with `check-headroom-boundary.ts` extended to catch the **subprocess** seam (`headroom.memory.mcp_server`) as well as package imports, and proven able to go red on a mutation.
+- [ ] In an enabled workspace, a memory written during one session is retrievable in a later session and in a workflow run, asserted by an integration test against a real `memory.db`.
+- [ ] Memory is host-invoked: an integration test asserts `memory_search` fires at session context load without the model having requested it.
+- [ ] Nothing is sent off-machine at steady state, verified against the SUV-0014 telemetry audit's opt-in findings. The one-time embedder model fetch on first enable is the sole documented exception and is named in the docs page (SUV-0032).
+- [ ] Degrade matrix covered by tests: with Headroom **absent**, **present but unprovisioned**, or **disabled**, sessions and workflows run unchanged and memory operations report unavailable rather than throwing — and "unprovisioned" is reported distinctly from "absent", because the server handshakes and advertises both tools in that state.
+
+## Status log
+
+- `2026-08-26` — created in `planned/`
+- `2026-08-26` — **`planned/` → `blocked/`. Execution attempted; the SUV's premise
+  does not hold, and no implementation was written.**
+
+  PLAN-040 prefixes its capability list with "verify at integration time, not
+  from README claims". Doing that first, before shaping any adapter surface,
+  established that `headroom-ai@0.36.5` has **no memory API of any kind**: no
+  `/v1/memory*` endpoint among the 19 the bundle calls, no `memory` member on
+  `HeadroomClient`, no filesystem access at all, and not one occurrence of
+  "memory" in its README. Upstream confirms memory is a proxy/CLI feature
+  reachable only through `headroom wrap --memory`, the Python client's
+  `client.memory.*`, or `memory_save`/`memory_search` tools the proxy injects
+  into the model's own tool list. Its substrate is a project-scoped **SQLite**
+  database (`.headroom/memory.db`, HNSW + FTS5) — **not** the local markdown this
+  SUV's acceptance item 3 requires, and its vector index is a PLAN-040 non-goal.
+  `SharedContext`, the one memory-shaped export, is an in-process `Map` with a
+  one-hour TTL that dies with the session and fabricates token counts when the
+  proxy is unreachable.
+
+  Consequently: acceptance item 1 presupposes memory APIs that do not exist to
+  import; item 2 (cross-session, cross-run retrieval) is unachievable without
+  building persistence ourselves, PLAN-040's first non-goal; item 3 rests on a
+  false premise about Headroom. Only item 4 is satisfiable, and only degenerately
+  — "unavailable" would be every path's outcome.
+
+  Deliberately **not** worked around. All four routes forward (adopt the proxy's
+  injected model tools; adopt the Python client; read `.headroom/memory.db`
+  directly; contribute memory to the TS SDK upstream) are architectural decisions
+  above SUV granularity — PLAN-040 open question 1, which §I1 already says to
+  record as an ADR. Recommendation is the upstream route, matching the plan's
+  upstream-first posture and pairing naturally with SUV-0030. **The owner's call,
+  not this SUV's.**
+
+  Landed on `plan/plan-040`, no implementation:
+  - `roadmap/evidence/PLAN-040/headroom-memory-surface-audit.md` — findings M1–M5,
+    acceptance-by-acceptance impact, the four options, full reproduction steps.
+  - `packages/shared/src/headroom/__tests__/sdk-memory-surface.test.ts` — the audit
+    as an executable tripwire (6 tests). Reads the package off disk rather than
+    importing it, because the boundary gate exempts no file, tests included. On
+    the SUV-0014 monthly bump cadence it turns "upstream added memory" from
+    something nobody would notice into a red build that says re-open this SUV.
+  - PLAN-040's "Memory, multi-layer" bullet corrected in place — it asserted
+    "Default substrate: local markdown" as fact — plus a plan status-log entry.
+    **SUV-0030 (the plan's priority build item) and SUV-0031 inherit this premise
+    and need re-grounding before they are executable.**
+
+- `2026-08-27` — **Second execution attempt. Blocker independently re-verified
+  against the installed package; stays `blocked/`; still no implementation.**
+
+  Re-derived from scratch rather than trusting the 08-26 log. `headroom-ai` is
+  still pinned at `0.36.5` (`packages/shared/package.json:100`), and its shipped
+  `dist/index.d.ts` export list contains exactly three memory-named symbols:
+  `MemoryUsage` / `memoryUsage()` (the proxy process's RSS — unrelated), and the
+  path helpers `memoryDbPath()` / `nativeMemoryDir()`. There is no `memory`
+  member on `HeadroomClient` (`"memory" in client === false` at runtime), and
+  the one `retrieve()` method is CCR block-retrieval by content hash, not memory.
+
+  One route the prior audit named but did not close out loud, closed here:
+  `nativeMemoryDir()` resolves to `<workspaceDir>/memories` — a *directory*, and
+  therefore the last plausible candidate for this SUV's "local markdown"
+  substrate. It is a dead path string. Both helpers are pure `joinPath` calls
+  (`dist/index.js:253-260`), the identifier appears three times in the whole
+  bundle (declaration, export, nothing else), and the package performs no
+  filesystem access at all. Neither `~/.headroom/` nor `~/.headroom/memories`
+  exists on this machine after the SDK has been exercised. The sibling helper
+  names the real substrate: `memory.db`.
+
+  So acceptance item 3's premise is falsified twice over, and the escape hatch —
+  writing markdown ourselves — is PLAN-040's first non-goal ("Building our own
+  compression, token, or memory library"). Items 1 and 2 remain unimplementable
+  for want of an API to import and cross-process persistence to build on. Item 4
+  alone is reachable, still only degenerately.
+
+  Also confirmed the 08-26 tripwire is not merely green but *able to go red*:
+  each of its five assertion shapes was fed the mutation it exists to catch
+  (a `/v1/memory/search` literal, a `readonly memory:` client member,
+  `memorySave`/`MemoryStore` after the `MemoryUsage` scrub, a `node:fs` write,
+  and a `persistPath` on `SharedContextOptions`) and every one fired. A vacuous
+  tripwire would have made "still blocked" unfalsifiable; it isn't.
+
+  Deliberately **not** worked around a second time. Shipping just the adapter
+  surface plus "unavailable" would mean designing `MemoryEntry`, provenance, and
+  query semantics against an unmade decision — the four routes (proxy-injected
+  model tools, Python client, direct `.headroom/memory.db` reads, upstream TS
+  contribution) produce four different shapes. That is PLAN-040 open question 1,
+  reserved to the owner.
+
+  What SUV-0030's delivery changed: the recommended upstream route is now
+  better-grounded, not unblocked. `headroom/memory/ports.py` already defines the
+  `MemoryStore` / `VectorIndex` / `TextIndex` Protocols and `factory.py` loads
+  backends from setuptools entry points — Python-side seams, with the TypeScript
+  gap filed upstream as headroomlabs-ai/headroom#3287.
+
+  **Unblocking act is an ADR choosing the memory surface. After that this SUV
+  needs re-cutting, not executing: acceptance item 3's markdown requirement has
+  to go, and items 1–2 re-grounded on whichever surface the ADR picks.**
+
+  Landed on `plan/plan-040`: this status-log entry only. No source file was
+  created, edited, moved, or deleted.
+
+- `2026-08-27` — **Third execution attempt. Blocker re-derived from the *running*
+  Headroom, not the npm bundle; stays `blocked/`; still no implementation. One
+  factual error in the entry above is corrected.**
+
+  The two prior attempts both reasoned from `node_modules/headroom-ai/dist` and
+  from upstream's wiki. This one went to the artefact. Re-confirmed the bundle
+  facts first-hand — `dist/index.d.ts`'s export list carries exactly
+  `MemoryUsage` / `memoryUsage()` (proxy RSS) and the path helpers
+  `memoryDbPath()` / `nativeMemoryDir()`; the sixteen `/v1/*` literals in
+  `dist/chunk-2NXG6XPP.js` are chat/compress/feedback/messages/retrieve/telemetry/
+  toin, with **no `/v1/memory*`**; `grep -ci memory README.md` → `0` — and then
+  found what neither prior pass looked for.
+
+  **A Headroom CLI is installed on this machine**, `~/.local/bin/headroom`,
+  version **0.36.5** — the same version as the npm pin, so this is the matched
+  Python half of the product, not version skew. `headroom memory` is real, and
+  running it initialises `~/.headroom/memory.db`. `sqlite3 … ".tables"` → a
+  single `memories` table whose columns are precisely the multi-layer scoping
+  (`user_id`/`session_id`/`agent_id`/`turn_id`), temporal validity, supersession
+  lineage and `entity_refs`/`metadata` provenance this SUV's scope line asks
+  for — alongside an `embedding BLOB`. `headroom memory stats` reports over
+  **USER / SESSION / AGENT / TURN**. The feature exists; it is just not
+  addressable from our TypeScript.
+
+  **Correction to the 08-27 entry above.** It asserted "Neither `~/.headroom/`
+  nor `~/.headroom/memories` exists on this machine." The first half is **wrong**
+  — `~/.headroom/` exists and is populated (`config/`, `logs/`, `ccr_store.db`,
+  `savings_events.jsonl`, `subscription_state.json`). Only
+  `~/.headroom/memories` is absent, and that was always the load-bearing half, so
+  the conclusion stands while its stated evidence did not. Repaired in the audit
+  as **M6**, which also flags that the audit's "HNSW + FTS5" came from upstream's
+  wiki and is *not* observable in a fresh database — `sqlite_master` holds only
+  `memories` and its twelve indexes, no FTS5 virtual table. Recorded as
+  documented-but-unreproduced rather than quietly restated as fact.
+
+  **Why this sharpens the decision instead of unblocking it.** `headroom memory`
+  exposes `list`/`show`/`stats`/`edit`/`delete`/`prune`/`purge`/`reindex`/
+  `export`/`import`/`repair-supersession` — and **no `add`, no `search`**. It is
+  an administration surface over the store, not the write/query surface an
+  integration needs; the only CLI write is whole-file `import`. Real memory
+  creation still happens exactly where the audit's M2 said: proxy-injected
+  `memory_save` in the model's own tool list, or the Python client. So the routes
+  forward are unchanged in number and now better evidenced — and every one of
+  them lands on **SQLite**, observed directly this time, which is what acceptance
+  item 3 forbids. Items 1–2 remain unimplementable for want of a TypeScript API
+  to import and cross-process persistence to build on; item 4 alone is reachable,
+  still only degenerately.
+
+  Not worked around a third time, for the same reason and now with a third
+  independent falsification of item 3's premise. Building the markdown substrate
+  ourselves is PLAN-040's first non-goal; choosing among the routes is PLAN-040
+  open question 1, reserved to the owner.
+
+  **Unblocking act is unchanged: an ADR choosing the memory surface. After it,
+  this SUV needs re-cutting rather than executing — item 3's markdown requirement
+  has to go, and items 1–2 be re-grounded on whichever surface the ADR picks.**
+
+  Landed on `plan/plan-040`: audit finding **M6** plus its reproduction block in
+  `roadmap/evidence/PLAN-040/headroom-memory-surface-audit.md`, and this entry.
+  No source file was created, edited, moved, or deleted; the four acceptance
+  boxes remain unchecked because none of them is met.
+
+- `2026-08-27` — **UNBLOCKED and re-cut. `blocked/` → `planned/`.** The
+  unblocking act named by all three prior entries has happened:
+  [ADR-0029](../../decisions/0029-headroom-memory-via-host-invoked-mcp.md)
+  chooses the memory surface.
+
+  **The chosen surface is a fifth option none of the three audit passes found**,
+  and the reason they missed it is worth recording, because it is a repeatable
+  research failure: every pass reasoned about the **npm bundle** and upstream's
+  **wiki**. None opened the installed **Python package**.
+  `headroom/memory/mcp_server.py` ships in the pinned 0.36.5 — a stdio MCP
+  server exposing `memory_search` and `memory_save` — and upstream's own
+  `headroom wrap` writes exactly its invocation into generated MCP config
+  (`cli/wrap.py:3064-3066`), so it is a shipped, exercised entry point.
+
+  Verified by driving it over real stdio JSON-RPC rather than reading it:
+  `initialize` → `serverInfo {"name":"headroom-memory","version":"1.29.1"}` →
+  `tools/list` → `['memory_search','memory_save']` → saved two facts → searched
+  and got both back ranked (`relevance=0.50`, `0.16`). **PLAN-040's first
+  working memory round-trip.** It launches as
+  `python -m headroom.memory.mcp_server`, with **no `headroom wrap` in the
+  path** — which is what makes the F3 posture structural rather than argued.
+
+  **Acceptance rewritten, not merely unblocked.** Old item 3's "local markdown"
+  requirement is **struck** — the substrate is SQLite, and ADR-0029 accepts that
+  by relocating the ADR-0027 alignment to the *interface* (behaviour tunable in
+  settings) rather than the storage engine. Items 1–2 are re-grounded on the MCP
+  surface. Old item 4's degrade arm was degenerate ("unavailable" was every
+  path's outcome); it is now non-degenerate and, per the finding below, has
+  **three** states to cover rather than two.
+
+  **Three constraints this surface imposes, all discovered during the same
+  verification and all now load-bearing on the acceptance list:**
+  - **Installed ≠ working.** The embedder is hardwired to ONNX and needs
+    `Qdrant/all-MiniLM-L6-v2-onnx` (~86 MB) from HuggingFace, while
+    `mcp_server.main()` sets `HF_HUB_OFFLINE=1` via `setdefault`. On this
+    machine — CLI installed, `~/.headroom/` populated — the model was **not**
+    cached, and both tools returned `isError: true` while the server handshook
+    correctly and advertised both. Re-running with `HF_HUB_OFFLINE=0` fetched it
+    and everything passed. Hence the third state in scope and acceptance.
+  - **Four-layer scoping collapses to USER.** `_handle_save` passes only
+    `content`/`user_id`/`importance`; `session_id`, `agent_id`, `turn_id` are
+    **NULL** on disk, confirmed by querying the rows this test wrote. Upstream
+    advertises USER → SESSION → AGENT → TURN as a differentiator; this surface
+    does not expose it.
+  - **Reads are prose.** `memory_search` returns
+    `"1. [relevance=0.50] <content>"`, not structured JSON — so the original
+    scope line's "provenance-carrying reads" degrades to a formatted string.
+
+  The latter two are filed as additional gaps on
+  [#3287](https://github.com/headroomlabs-ai/headroom/issues/3287) alongside the
+  LocalBackend-bypass gap, for the 2026-09-03 bump.
+
+  **The SUV-0014 tripwire keeps its teeth and changes meaning.** A memory API
+  appearing in the TS SDK still turns the monthly bump red — but it is now an
+  *upgrade* signal (migrate off MCP toward ADR-0029's preferred end state)
+  rather than an *unblock* signal.
+
+  Landed on `plan/plan-040`: this entry, the frontmatter and scope/acceptance
+  re-cut, the folder move, and audit finding **M7**. No implementation yet —
+  that is this SUV's next execution, now genuinely executable.
+
+- `2026-08-27` — **Follow-up pass: two errors in the entry above corrected, both
+  found by an independent read of the same code.**
+
+  **(a) "Bypasses `factory.py`" was wrong, and the wrong version implies the
+  wrong upstream ask.** The MCP server does not bypass the factory —
+  `core.py:124` calls `create_memory_system(config)`. The real constraint is that
+  `LocalBackendConfig` has **no `store_backend` field**, so the `MemoryConfig`
+  built at `backends/local.py:186-195` keeps the `StoreBackend.SQLITE` default
+  and `factory.py:128` always takes the SQLite branch. The `EXTERNAL` branch is
+  live and unreachable, not absent. Filing "route it through the factory" would
+  have been rejected as already done; the correct ask is "let
+  `LocalBackendConfig` and the MCP server name a store backend". Caught **before**
+  it reached #3287. Full trace in audit **M7c**.
+
+  **(b) Audit §M2 carried a false claim that helped keep this SUV blocked for
+  three passes.** It stated "there is **no MCP memory tool** — Headroom's MCP
+  server offers `headroom_compress`, `headroom_retrieve`, `headroom_stats` only."
+  That is true of the *compression* MCP server and was generalised to "the MCP
+  server" as though there were only one. Since M2 was the finding that ruled MCP
+  out as a surface, the error was load-bearing: the answer sat inside the pinned
+  package the whole time. Repaired in the audit with the original text preserved.
+
+  Also recorded: audit **M7d** (four sharp edges — `memory_save` declares
+  `"required": []`, an undeclared `content` compat path, a `superseded` counter
+  that is structurally always zero so dedup is the host's problem, and `category`
+  written as `''`), and **M7e** (HNSW stays *documented*, not reproduced —
+  M7a closed only the FTS5 half of M6's caveat).
+
+  Scope and acceptance amended: extending `check-headroom-boundary.ts` to the
+  subprocess seam is now explicit, because the gate matches package imports and
+  this SUV is the one that introduces a non-import path to Headroom.

@@ -526,6 +526,14 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
     }
   })
 
+  // Redeem a Headroom retrieval handle for a compressed tool output's original
+  // (fork: PLAN-040 / SUV-0026). Returns the boundary's own result shape, so a
+  // miss reaches the renderer as a stated reason rather than as an empty string
+  // that could be mistaken for content.
+  server.handle(RPC_CHANNELS.sessions.RETRIEVE_HEADROOM_ORIGINAL, async (_ctx, sessionId: string, handle: string) => {
+    return sessionManager.retrieveHeadroomOriginal(sessionId, handle)
+  })
+
   // Set session notes (writes to notes.md in session directory)
   server.handle(RPC_CHANNELS.sessions.SET_NOTES, async (_ctx, sessionId: string, content: string) => {
     const sessionPath = sessionManager.getSessionPath(sessionId)

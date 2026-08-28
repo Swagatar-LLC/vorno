@@ -6,6 +6,9 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 - **Moonshot AI (Kimi K3) support** (from upstream v0.12.1) — connection presets for Moonshot AI (global and CN endpoints) with the full Kimi model family. Kimi K3 brings a 1M-token context window, always-on reasoning, and image input; Kimi K2.6 serves as the fast summarization model. The existing Kimi (Coding) preset gains `k3` as well.
 - **Pi SDK updated to 0.81.1** (from upstream v0.12.1) — refreshed model catalogs across all Pi-backed providers, including Kimi K3 thinking-format and reasoning-effort fixes.
+- **Headroom context management, per workspace.** Workspace settings gain a Headroom section with a master switch, compression engine preferences, verbosity steering, and a statistics toggle. Settings inherit from instance defaults unless the workspace overrides them, and each value shows which of the two it came from. Off by default.
+- **View the original behind any compressed tool output.** Compressed turns carry a badge showing what was saved; clicking it retrieves and displays the original content. When retrieval is not possible, the reason is stated plainly — Headroom off, service unreachable, or the content no longer held — rather than failing silently.
+- **A Headroom savings report.** A new report shows tokens before and after, tokens saved, items compressed, and originals retrieved, scoped to either the current session or the whole workspace. Every figure is measured and read from Headroom itself; anything Headroom does not report is shown as unknown rather than estimated or interpolated.
 
 ## Improvements
 

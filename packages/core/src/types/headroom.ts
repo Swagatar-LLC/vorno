@@ -1,0 +1,284 @@
+/**
+ * Headroom integration configuration (fork: PLAN-040 / SUV-0016).
+ *
+ * Headroom (https://github.com/headroomlabs-ai/headroom) is an external,
+ * Apache-2.0 context-management library we *integrate*; we do not fork it and
+ * we do not build a competing one. This module defines the configuration data
+ * model only — nothing here consumes it yet. The boundary adapter that accepts
+ * these options arrives in SUV-0015/SUV-0018; any UI arrives in SUV-0017.
+ *
+ * Deliberate constraints (SUV-0016 scope):
+ *
+ * - **Plain serializable data.** No classes, no functions, no `undefined`-only
+ *   sentinels, no `Date`. A fully-populated `HeadroomConfig` survives
+ *   `JSON.parse(JSON.stringify(...))` unchanged, so a future server-hosted
+ *   instance can supply the identical shape over the wire.
+ * - **No I/O.** This file imports nothing — not Electron, not `node:fs`, not
+ *   `node:path`. Storage lives in `@craft-agent/shared`; resolution is pure.
+ * - **Flat.** Precedence is specified as field-level, and a flat shape makes
+ *   "workspace wins where set" unambiguous. Nested objects would raise a
+ *   replace-vs-deep-merge question the SUV does not answer.
+ * - **Disabled by default, everywhere.** Set provisionally by SUV-0016 and
+ *   confirmed by measurement in SUV-0025 — see {@link HEADROOM_CONFIG_DEFAULTS}
+ *   and `roadmap/evidence/PLAN-040/headroom-benchmark-report.md`.
+ */
+
+/**
+ * Verbosity steering hint handed to Headroom.
+ *
+ * PROVISIONAL: the concrete vocabulary the adapter accepts is fixed once the
+ * SDK is vetted and pinned (SUV-0014) and the boundary module lands
+ * (SUV-0015). These three coarse levels are deliberately engine-agnostic —
+ * the plan is explicit that adapter surface is verified at integration time,
+ * not from README claims, so this models intent rather than a vendor enum.
+ */
+export type HeadroomVerbosity = 'terse' | 'balanced' | 'verbose';
+
+export const HEADROOM_VERBOSITY_VALUES: readonly HeadroomVerbosity[] = [
+  'terse',
+  'balanced',
+  'verbose',
+];
+
+/**
+ * Effective Headroom configuration — every field resolved, nothing optional.
+ *
+ * The same shape is used at instance level and at workspace level (as a
+ * `HeadroomConfigOverrides` partial), so one editor/serializer serves both.
+ */
+export interface HeadroomConfig {
+  /** Master switch. Nothing else in this object has any effect while false. */
+  enabled: boolean;
+
+  /**
+   * Ordered ids of the compression engines the adapter should enable, most
+   * preferred first. Empty means "no compression" even when `enabled` is true.
+   *
+   * PROVISIONAL: engine ids are opaque strings here on purpose — the real
+   * catalogue is whatever the pinned SDK exposes (SUV-0014). Modelling them as
+   * an enum now would be inventing a contract we cannot check.
+   */
+  compressionEngines: string[];
+
+  /** Verbosity steering level passed to the adapter. */
+  verbosity: HeadroomVerbosity;
+
+  /**
+   * Whether Headroom's context/token statistics are exposed to the rest of the
+   * app (token surfaces read them in SUV-0028). Off keeps the integration
+   * invisible.
+   */
+  exposeStats: boolean;
+}
+
+/**
+ * A partial layer as stored on disk: instance base config, or per-workspace
+ * overrides. Every field is optional; an absent field falls through to the
+ * next layer down, ending at {@link HEADROOM_CONFIG_DEFAULTS}.
+ */
+export type HeadroomConfigOverrides = Partial<HeadroomConfig>;
+
+/**
+ * The rollout default: Headroom off, no engines, neutral verbosity, no stats.
+ *
+ * This is what a fresh install resolves to, and what any layer that fails
+ * validation falls back to. Kept as a factory-style frozen literal; callers
+ * that mutate must copy (`resolveHeadroomConfig` always returns a fresh
+ * object).
+ *
+ * ## These values are measured, not provisional (SUV-0025)
+ *
+ * SUV-0016 left them off pending benchmarks. The benchmarks ran on 2026-08-27
+ * against `headroom-ai@0.36.5` and its proxy —
+ * `roadmap/evidence/PLAN-040/headroom-benchmark-report.md`, 240 compression
+ * calls over four real session transcripts and a real Conductor run — and the
+ * result is that **off is the right default**, for two independent reasons:
+ *
+ * - The pinned proxy issued **zero** retrieval handles across every call. The
+ *   session loop's acceptance rules require exactly one, so session compression
+ *   accepted 0 of 48 tool outputs and is currently inert.
+ * - Conductor dispatch does not require a handle, so it accepted all 12 of 12
+ *   node outputs, and every one it actually rewrote was rewritten
+ *   **irreversibly** — 47,811 bytes unrecoverable across a single 12-node
+ *   sample under the best-saving profile.
+ *
+ * So enabling by default would buy no session savings and would pay for its
+ * workflow savings with silent context destruction. `compressionEngines` stays
+ * empty for a separate reason: it reaches no SDK surface today (see
+ * `session-adapter.ts`), so a non-empty default would imply a selection that
+ * does not happen.
+ *
+ * Changing any of these four is a decision that has to argue with that report.
+ */
+export const HEADROOM_CONFIG_DEFAULTS: Readonly<HeadroomConfig> = Object.freeze({
+  enabled: false,
+  compressionEngines: [] as string[],
+  verbosity: 'balanced' as HeadroomVerbosity,
+  exposeStats: false,
+});
+
+/** Every field of {@link HeadroomConfig}, as a value. */
+export type HeadroomConfigField = keyof HeadroomConfig;
+
+/**
+ * The fields an editor iterates over, in display order.
+ *
+ * Kept beside the interface so a new option cannot be added to the shape
+ * without the settings UI noticing it — the UI renders this list rather than
+ * hardcoding its own.
+ */
+export const HEADROOM_CONFIG_FIELDS: readonly HeadroomConfigField[] = [
+  'enabled',
+  'compressionEngines',
+  'verbosity',
+  'exposeStats',
+];
+
+/**
+ * Which layer supplied a field's effective value.
+ *
+ * Three values, not two, because that is what the precedence chain actually
+ * has: a field can come from the workspace override, from the instance base,
+ * or from nowhere at all ({@link HEADROOM_CONFIG_DEFAULTS}). A two-way
+ * "override vs default" label is a *presentation* choice a UI can make by
+ * folding `instance` and `default` together; encoding that fold here would
+ * throw away information the caller cannot recover.
+ */
+export type HeadroomConfigSource = 'workspace' | 'instance' | 'default';
+
+/** Per-field provenance, parallel to {@link HeadroomConfig}. */
+export type HeadroomConfigSources = Record<HeadroomConfigField, HeadroomConfigSource>;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Validate one stored layer.
+ *
+ * Returns the layer's recognised fields, or `null` if the layer is unusable.
+ *
+ * The fail-safe rule, stated explicitly because "malformed resolves to
+ * disabled" and "partial configs merge" pull in opposite directions:
+ *
+ * - **Absent / not an object** → `null` (layer ignored).
+ * - **A known field with the wrong type** → the whole layer is rejected
+ *   (`null`). Half-trusting a file we know is corrupt is the subtler bug, and
+ *   "disabled" is the declared safe state.
+ * - **An unknown key** → ignored, layer still usable. A key written by a newer
+ *   build must not disable the feature on an older one. Note the difference
+ *   from Zod's non-strict `.strip()`: unknown keys are dropped *knowingly*
+ *   here, not silently as a side effect of parsing.
+ * - **A known field explicitly set to `null`/`undefined`** → treated as unset,
+ *   falling through to the layer below. This is what makes a workspace layer
+ *   able to override some fields and inherit the rest.
+ *
+ * Never throws.
+ */
+export function sanitizeHeadroomConfigLayer(
+  value: unknown,
+): HeadroomConfigOverrides | null {
+  if (!isPlainObject(value)) return null;
+
+  const out: HeadroomConfigOverrides = {};
+
+  if (value.enabled !== undefined && value.enabled !== null) {
+    if (typeof value.enabled !== 'boolean') return null;
+    out.enabled = value.enabled;
+  }
+
+  if (value.compressionEngines !== undefined && value.compressionEngines !== null) {
+    if (!Array.isArray(value.compressionEngines)) return null;
+    if (!value.compressionEngines.every((e) => typeof e === 'string')) return null;
+    out.compressionEngines = [...(value.compressionEngines as string[])];
+  }
+
+  if (value.verbosity !== undefined && value.verbosity !== null) {
+    if (typeof value.verbosity !== 'string') return null;
+    if (!HEADROOM_VERBOSITY_VALUES.includes(value.verbosity as HeadroomVerbosity)) {
+      return null;
+    }
+    out.verbosity = value.verbosity as HeadroomVerbosity;
+  }
+
+  if (value.exposeStats !== undefined && value.exposeStats !== null) {
+    if (typeof value.exposeStats !== 'boolean') return null;
+    out.exposeStats = value.exposeStats;
+  }
+
+  return out;
+}
+
+/**
+ * Resolve the effective Headroom configuration.
+ *
+ * Precedence, applied field by field:
+ *
+ *     workspace override → instance base → HEADROOM_CONFIG_DEFAULTS (disabled)
+ *
+ * A field the workspace layer leaves unset inherits the instance base; a field
+ * neither layer sets takes the disabled default. This mirrors the shape of the
+ * existing `resolveThresholds()` precedence (per-model → per-provider →
+ * default) rather than reusing its machinery — the tiers are different.
+ *
+ * Both arguments are `unknown` because both come off disk. A layer that fails
+ * {@link sanitizeHeadroomConfigLayer} is treated as absent; this function never
+ * throws.
+ *
+ * @param instance Instance-level base config (config-root `config.json`).
+ * @param workspace Per-workspace overrides (workspace `config.json`).
+ * @returns A fresh, fully-populated, plain-serializable config.
+ */
+export function resolveHeadroomConfig(
+  instance?: unknown,
+  workspace?: unknown,
+): HeadroomConfig {
+  const base = sanitizeHeadroomConfigLayer(instance) ?? {};
+  const over = sanitizeHeadroomConfigLayer(workspace) ?? {};
+
+  return {
+    enabled: over.enabled ?? base.enabled ?? HEADROOM_CONFIG_DEFAULTS.enabled,
+    compressionEngines: [
+      ...(over.compressionEngines ??
+        base.compressionEngines ??
+        HEADROOM_CONFIG_DEFAULTS.compressionEngines),
+    ],
+    verbosity: over.verbosity ?? base.verbosity ?? HEADROOM_CONFIG_DEFAULTS.verbosity,
+    exposeStats:
+      over.exposeStats ?? base.exposeStats ?? HEADROOM_CONFIG_DEFAULTS.exposeStats,
+  };
+}
+
+/**
+ * Report, field by field, which layer {@link resolveHeadroomConfig} took the
+ * effective value from.
+ *
+ * Same inputs, same validation, same precedence — this is the resolver's
+ * bookkeeping made visible so a settings surface can say "workspace override"
+ * or "instance default" without re-deriving precedence for itself. A layer
+ * that fails {@link sanitizeHeadroomConfigLayer} is treated as absent here
+ * exactly as it is there, so the reported source always matches the value the
+ * resolver returns for the same arguments.
+ *
+ * Never throws.
+ */
+export function resolveHeadroomConfigSources(
+  instance?: unknown,
+  workspace?: unknown,
+): HeadroomConfigSources {
+  const base = sanitizeHeadroomConfigLayer(instance) ?? {};
+  const over = sanitizeHeadroomConfigLayer(workspace) ?? {};
+
+  const sourceOf = (field: HeadroomConfigField): HeadroomConfigSource => {
+    if (over[field] !== undefined) return 'workspace';
+    if (base[field] !== undefined) return 'instance';
+    return 'default';
+  };
+
+  return {
+    enabled: sourceOf('enabled'),
+    compressionEngines: sourceOf('compressionEngines'),
+    verbosity: sourceOf('verbosity'),
+    exposeStats: sourceOf('exposeStats'),
+  };
+}

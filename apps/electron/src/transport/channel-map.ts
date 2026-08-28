@@ -213,9 +213,17 @@ export const CHANNEL_MAP = {
   getSessionFiles: invoke(RPC_CHANNELS.sessions.GET_FILES),
   getSessionNotes: invoke(RPC_CHANNELS.sessions.GET_NOTES),
   setSessionNotes: invoke(RPC_CHANNELS.sessions.SET_NOTES),
+  // fork: PLAN-040 / SUV-0026
+  retrieveHeadroomOriginal: invoke(RPC_CHANNELS.sessions.RETRIEVE_HEADROOM_ORIGINAL),
   watchSessionFiles: invoke(RPC_CHANNELS.sessions.WATCH_FILES),
   unwatchSessionFiles: invoke(RPC_CHANNELS.sessions.UNWATCH_FILES),
   onSessionFilesChanged: listener(RPC_CHANNELS.sessions.FILES_CHANGED),
+
+  // Headroom savings report (fork: PLAN-040 / SUV-0027). The listener carries no
+  // numbers — it is a "refetch now" signal, so the report re-reads through the
+  // same gate every time instead of trusting a pushed snapshot.
+  getHeadroomStats: invoke(RPC_CHANNELS.headroom.STATS_GET),
+  onHeadroomStatsChanged: listener(RPC_CHANNELS.headroom.STATS_CHANGED),
 
   // Sources
   getSources: invoke(RPC_CHANNELS.sources.GET),

@@ -22,6 +22,8 @@ import type { McpClientPool } from '../../mcp/mcp-pool.ts';
 import type { Workspace } from '../../config/storage.ts';
 import type { SessionConfig as Session } from '../../sessions/storage.ts';
 import type { SourceManager } from '../core/source-manager.ts';
+import type { HeadroomAdapterDeps } from '../../headroom/index.ts';
+import type { HeadroomAdapter } from '@craft-agent/core/types';
 
 // Import AbortReason and RecoveryMessage from core module (single source of truth)
 import { AbortReason, type RecoveryMessage } from '../core/index.ts';
@@ -611,6 +613,22 @@ export interface AgentBackend {
   respondToPermission(requestId: string, allowed: boolean, alwaysAllow?: boolean): void;
 
   // ============================================================
+  // Headroom (fork: PLAN-040 / SUV-0027)
+  // ============================================================
+
+  /**
+   * This session's Headroom adapter — the scope-counting one built in
+   * `createSessionHeadroomAdapter`, so its `stats()` answers for this session
+   * rather than for the shared compression service.
+   *
+   * Optional because it is a fork-side addition to a contract upstream also
+   * implements: a backend that predates PLAN-040 simply has no adapter, and the
+   * report treats a session with no adapter as "no measurement" rather than as
+   * zero. `BaseAgent` provides it for every backend built on it.
+   */
+  getHeadroomAdapter?(): Promise<HeadroomAdapter>;
+
+  // ============================================================
   // Callbacks (set by facade after construction)
   // ============================================================
 
@@ -694,4 +712,14 @@ export interface BackendConfig extends CoreBackendConfig {
    * This keeps provider-specific runtime details out of the public config surface.
    */
   runtime?: Record<string, unknown>;
+
+  /**
+   * Headroom boundary seam (fork: PLAN-040 / SUV-0018). Tests only — production
+   * callers pass nothing and the boundary loads the real SDK.
+   *
+   * Present here rather than on a module-level override because a session's
+   * adapter is decided in its constructor, and per-test isolation of that
+   * decision is only possible if the seam travels with the config.
+   */
+  headroom?: HeadroomAdapterDeps;
 }

@@ -23,8 +23,18 @@ import {
   Pencil,
   FilePenLine,
   GitBranch,
+  FileArchive,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { usePlatform } from '../../context/PlatformContext'
+import {
+  formatByteSize,
+  headroomErrorMessageKey,
+  headroomIndicatorFor,
+  resolveHeadroomOriginal,
+  type HeadroomIndicator,
+  type HeadroomOriginalState,
+} from './headroom-retrieval'
 import { Markdown } from '../markdown'
 import { Spinner } from '../ui/LoadingIndicator'
 import { type IslandTransitionConfig } from '../ui'
@@ -262,6 +272,15 @@ export interface ActivityItem {
   shellId?: string        // For background Bash shells
   elapsedSeconds?: number // Live progress updates
   isBackground?: boolean  // Flag for UI differentiation
+  /**
+   * Headroom compression marker (fork: PLAN-040 / SUV-0026), carried through
+   * from the backing message. Present as a set only when `content` is genuinely
+   * compressed; `headroomIndicatorFor` is the single reader and refuses a
+   * partial set, so no surface can show a size it did not receive.
+   */
+  headroomHandle?: string
+  headroomOriginalBytes?: number
+  headroomCompressedBytes?: number
 }
 
 export interface ResponseContent {
@@ -869,6 +888,93 @@ export function ActivityStatusIcon({
   )
 }
 
+/**
+ * Compression indicator + "view original" affordance (fork: PLAN-040 / SUV-0026).
+ *
+ * Renders nothing at all unless the activity carries a complete compression
+ * marker, which is what makes a Headroom-disabled session identical to what it
+ * was before this SUV: there is no dormant element to hide.
+ *
+ * The badge states both measured sizes. The panel it opens shows either the
+ * retrieved original or an explicit error — never the compressed body under the
+ * word "original". That guarantee is enforced by `HeadroomOriginalState`, whose
+ * only content-carrying arm is `retrieved`.
+ */
+function HeadroomCompressionBadge({
+  indicator,
+  state,
+  onToggle,
+}: {
+  indicator: HeadroomIndicator
+  state: HeadroomOriginalState
+  onToggle: () => void
+}) {
+  const isOpen = state.status !== 'idle'
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggle()
+          }}
+          className={cn(
+            "flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] text-[10px] shrink-0",
+            "bg-background shadow-minimal text-foreground/70",
+            "hover:bg-muted/80 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            isOpen && "bg-muted/80"
+          )}
+          aria-expanded={isOpen}
+        >
+          <FileArchive className="size-3 shrink-0" />
+          <span>
+            {formatByteSize(indicator.originalBytes)}
+            <span className="opacity-60"> → </span>
+            {formatByteSize(indicator.compressedBytes)}
+          </span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[360px]">
+        {i18n.t('turnCard.headroom.badgeTooltip', {
+          original: formatByteSize(indicator.originalBytes),
+          compressed: formatByteSize(indicator.compressedBytes),
+          saved: formatByteSize(indicator.savedBytes),
+        })}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** The panel the badge opens: the retrieved original, or why it is not here. */
+function HeadroomOriginalPanel({ state }: { state: HeadroomOriginalState }) {
+  if (state.status === 'idle') return null
+
+  return (
+    <div className="ml-6 mt-0.5 mb-1 rounded-[6px] border border-border/60 bg-muted/30 px-2 py-1.5">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+        {i18n.t('turnCard.headroom.originalHeading')}
+      </div>
+      {state.status === 'loading' && (
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          <Spinner className={SIZE_CONFIG.spinnerSizeSmall} />
+          <span>{i18n.t('turnCard.headroom.loading')}</span>
+        </div>
+      )}
+      {state.status === 'error' && (
+        <div className="text-[11px] text-destructive">
+          {i18n.t(headroomErrorMessageKey(state.reason))}
+        </div>
+      )}
+      {state.status === 'retrieved' && (
+        <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80 m-0">
+          {state.content}
+        </pre>
+      )}
+    </div>
+  )
+}
+
 interface ActivityRowProps {
   activity: ActivityItem
   /** Callback to open activity details in Monaco */
@@ -879,6 +985,8 @@ interface ActivityRowProps {
   sessionFolderPath?: string
   /** Display mode: 'detailed' shows all info, 'informative' hides MCP/API names and params */
   displayMode?: 'informative' | 'detailed'
+  /** Session this row belongs to — needed to redeem a Headroom handle (SUV-0026) */
+  sessionId?: string
 }
 
 /**
@@ -900,8 +1008,37 @@ function TreeViewConnector({ depth }: { depth: number; isLastChild?: boolean }) 
 }
 
 /** Single activity row in expanded view */
-function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, displayMode = 'detailed' }: ActivityRowProps) {
+function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, displayMode = 'detailed', sessionId }: ActivityRowProps) {
   const depth = activity.depth || 0
+
+  // Headroom compression (fork: PLAN-040 / SUV-0026). `headroomIndicatorFor` is
+  // the only reader of the marker and returns null for everything that was not
+  // genuinely compressed, so this whole block collapses to nothing on the
+  // Headroom-off path. The hook runs unconditionally, as hooks must.
+  const { onRetrieveHeadroomOriginal } = usePlatform()
+  const [headroomState, setHeadroomState] = useState<HeadroomOriginalState>({ status: 'idle' })
+  const headroom = headroomIndicatorFor(activity)
+
+  const toggleHeadroomOriginal = useCallback(() => {
+    if (!headroom) return
+    if (headroomState.status !== 'idle') {
+      setHeadroomState({ status: 'idle' })
+      return
+    }
+    setHeadroomState({ status: 'loading' })
+    void (async () => {
+      const next = await resolveHeadroomOriginal(
+        headroom.handle,
+        sessionId === undefined || onRetrieveHeadroomOriginal === undefined
+          ? undefined
+          : (handle: string) => onRetrieveHeadroomOriginal(sessionId, handle),
+      )
+      // Only land on a state we are still waiting for: the user may have closed
+      // the panel while the lookup was in flight, and reopening it then would
+      // be the app deciding, not them.
+      setHeadroomState(current => (current.status === 'loading' ? next : current))
+    })()
+  }, [headroom, headroomState.status, onRetrieveHeadroomOriginal, sessionId])
 
   // Intermediate messages (LLM commentary) - render with dashed circle icon
   // Show "Thinking" while streaming, stripped markdown content when complete
@@ -1023,7 +1160,7 @@ function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, 
         : null
     : null
 
-  return (
+  const row = (
     <div className="flex items-stretch">
       <TreeViewConnector depth={depth} isLastChild={isLastChild} />
       <div
@@ -1177,6 +1314,14 @@ function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, 
             <span className="truncate min-w-0 max-w-[300px] text-accent">{backgroundInfo}</span>
           </>
         )}
+        {/* Headroom compression indicator (fork: PLAN-040 / SUV-0026) */}
+        {headroom && (
+          <HeadroomCompressionBadge
+            indicator={headroom}
+            state={headroomState}
+            onToggle={toggleHeadroomOriginal}
+          />
+        )}
         {/* No spacer needed - both MCP/API and native tools now have flex-1 on their compound spans */}
         {/* Open details button */}
         {onOpenDetails && isComplete && (
@@ -1204,6 +1349,18 @@ function ActivityRow({ activity, onOpenDetails, isLastChild, sessionFolderPath, 
       </div>
     </div>
   )
+
+  // No marker, no wrapper: an uncompressed row's DOM is exactly what it was
+  // before this SUV, which is the "renders identically to today" guarantee in
+  // its literal form.
+  if (!headroom) return row
+
+  return (
+    <div className="flex flex-col">
+      {row}
+      <HeadroomOriginalPanel state={headroomState} />
+    </div>
+  )
 }
 
 // ============================================================================
@@ -1224,13 +1381,15 @@ interface ActivityGroupRowProps {
   sessionFolderPath?: string
   /** Display mode: 'detailed' shows all info, 'informative' hides MCP/API names and params */
   displayMode?: 'informative' | 'detailed'
+  /** Session this group belongs to — forwarded to child rows for SUV-0026 */
+  sessionId?: string
 }
 
 /**
  * Renders a Task subagent with its child activities grouped together.
  * Provides visual containment and collapsible children.
  */
-function ActivityGroupRow({ group, expandedGroups: externalExpandedGroups, onExpandedGroupsChange, onOpenActivityDetails, animationIndex = 0, sessionFolderPath, displayMode = 'detailed' }: ActivityGroupRowProps) {
+function ActivityGroupRow({ group, expandedGroups: externalExpandedGroups, onExpandedGroupsChange, onOpenActivityDetails, animationIndex = 0, sessionFolderPath, displayMode = 'detailed', sessionId }: ActivityGroupRowProps) {
   // Use local state if no controlled state provided
   const [localExpandedGroups, setLocalExpandedGroups] = useState<Set<string>>(new Set())
   const expandedGroups = externalExpandedGroups ?? localExpandedGroups
@@ -1370,6 +1529,7 @@ function ActivityGroupRow({ group, expandedGroups: externalExpandedGroups, onExp
                     isLastChild={idx === group.children.length - 1}
                     sessionFolderPath={sessionFolderPath}
                     displayMode={displayMode}
+                    sessionId={sessionId}
                   />
                 </motion.div>
               ))}
@@ -3055,6 +3215,7 @@ export const TurnCard = React.memo(function TurnCard({
                           animationIndex={index}
                           sessionFolderPath={sessionFolderPath}
                           displayMode={displayMode}
+                          sessionId={sessionId}
                         />
                       ) : (
                         <motion.div
@@ -3072,6 +3233,7 @@ export const TurnCard = React.memo(function TurnCard({
                             onOpenDetails={onOpenActivityDetails ? () => onOpenActivityDetails(item) : undefined}
                             sessionFolderPath={sessionFolderPath}
                             displayMode={displayMode}
+                            sessionId={sessionId}
                           />
                         </motion.div>
                       )
@@ -3096,6 +3258,7 @@ export const TurnCard = React.memo(function TurnCard({
                           isLastChild={lastChildSet.has(activity.id)}
                           sessionFolderPath={sessionFolderPath}
                           displayMode={displayMode}
+                          sessionId={sessionId}
                         />
                       </motion.div>
                     ))

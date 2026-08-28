@@ -71,6 +71,13 @@ export interface BroadcastEventMap {
   [RPC_CHANNELS.menu.TOGGLE_FOCUS_MODE]: []
   [RPC_CHANNELS.menu.TOGGLE_SIDEBAR]: []
 
+  /**
+   * Headroom measurements moved (fork: PLAN-040 / SUV-0027). Ids only — a
+   * client that cares refetches through `headroom:stats:get`, so the workspace's
+   * `exposeStats` decision is honoured on every read rather than once at mount.
+   */
+  [RPC_CHANNELS.headroom.STATS_CHANGED]: [payload: { workspaceId: string; sessionId?: string }]
+
   // Messaging gateway broadcasts
   [RPC_CHANNELS.messaging.BINDING_CHANGED]: [workspaceId: string]
   [RPC_CHANNELS.messaging.PLATFORM_STATUS]: [workspaceId: string, platform: string, connected: boolean]

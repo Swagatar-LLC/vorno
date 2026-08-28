@@ -32,7 +32,7 @@ import type { FileAttachment } from '../utils/files.ts';
 import type { LLMQueryRequest, LLMQueryResult } from './llm-tool.ts';
 import { consumeLlmQueryMessages } from './claude-llm-query.ts';
 import { debug } from '../utils/debug.ts';
-import { guardLargeResult } from '../utils/large-response.ts';
+import { prepareToolResultForContext } from './tool-result-context.ts';
 import { SourceActivationDrainController } from './source-activation-drain.ts';
 import { createPushableInputStream, type PushableInputStream } from './backend/claude/persistent-input.ts';
 // fork(PLAN-011): settings-driven keep-alive (env var still wins). See keep-alive-setting.ts.
@@ -1837,17 +1837,20 @@ This is a branched conversation. All prior messages in this conversation are par
             }
 
             // Intercept large/binary/media-rich tool results — save assets to disk,
-            // preserve original JSON when needed, and/or summarize oversized text.
+            // preserve original JSON when needed, and/or summarize oversized text —
+            // then route whatever text is actually entering context through the
+            // session's Headroom adapter (SUV-0023). Both steps live in
+            // `tool-result-context.ts`; `null` means "unchanged", exactly as the
+            // guard's own `null` did before.
             if (event.type === 'tool_result' && !event.isError && event.result) {
-              const guarded = await guardLargeResult(event.result, {
+              const prepared = await prepareToolResultForContext(event, {
                 sessionPath: metadataSessionDir,
-                toolName: event.toolName || 'unknown',
-                input: event.input,
                 summarize: summarizeCallback,
                 contextWindow: this.usageTracker.getContextWindow(),
+                headroom: () => this.getHeadroomAdapter(),
               });
-              if (guarded) {
-                yield { ...event, result: guarded };
+              if (prepared) {
+                yield prepared;
                 continue;
               }
             }

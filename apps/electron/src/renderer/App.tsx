@@ -1991,6 +1991,12 @@ export default function App() {
     onSetTrafficLightsVisible: (visible: boolean) => {
       window.electronAPI.setTrafficLightsVisible(visible)
     },
+    // Redeem a Headroom handle for a compressed tool output's byte-identical
+    // original (fork: PLAN-040 / SUV-0026). The web viewer supplies no such
+    // action, which is what makes the affordance state "not available here"
+    // instead of failing silently.
+    onRetrieveHeadroomOriginal: (sessionId: string, handle: string) =>
+      window.electronAPI.retrieveHeadroomOriginal(sessionId, handle),
   }), [handleOpenFile, handleOpenUrl, linkInterceptor.openFileExternal])
 
   // Loading state - show splash screen

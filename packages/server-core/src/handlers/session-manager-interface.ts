@@ -6,7 +6,7 @@
  * satisfy it at runtime.
  */
 
-import type { Workspace, WorkspaceInfo, ActiveSessionInfo } from '@craft-agent/core/types'
+import type { Workspace, WorkspaceInfo, ActiveSessionInfo, HeadroomStatsReport, HeadroomRetrieveResult } from '@craft-agent/core/types'
 import type { StoredAttachment, AnnotationV1, AnnotationMutationResult } from '@craft-agent/core/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/mode-types'
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
@@ -236,6 +236,15 @@ export interface ISessionManager {
   // ---------------------------------------------------------------------------
 
   getSessionPath(sessionId: string): string | null
+  /**
+   * Redeem a Headroom retrieval handle for a compressed tool output's
+   * byte-identical original (fork: PLAN-040 / SUV-0026).
+   *
+   * Resolves rather than rejects for every Headroom-side failure — the boundary
+   * states the reason in the result — so the UI can distinguish "not retrieved,
+   * because X" from "here is the original". Throws only for an unknown session.
+   */
+  retrieveHeadroomOriginal(sessionId: string, handle: string): Promise<HeadroomRetrieveResult>
   refreshTitle(sessionId: string): Promise<{ success: boolean; title?: string; error?: string }>
   refreshBadge(): void
   getUnreadSummary(): UnreadSummary
@@ -260,6 +269,21 @@ export interface ISessionManager {
 
   /** Count of sessions with active backend processes. Pass workspaceId to scope. */
   getActiveSessionCount(workspaceId?: string): number
+  /**
+   * Headroom savings report for a workspace, optionally sliced to one session
+   * (fork: PLAN-040 / SUV-0027).
+   *
+   * Lives here because the session manager is the only thing that holds the live
+   * agents, and each agent holds the scope-counting adapter that measured its
+   * own compression. Optional so a host that predates PLAN-040 — or one with no
+   * agents at all — needs no change; the RPC handler answers such a host with an
+   * absent measurement rather than a zero.
+   */
+  getHeadroomStatsReport?(
+    workspaceId: string,
+    sessionId?: string,
+  ): Promise<HeadroomStatsReport>
+
   /** Automation summary for a workspace (count of configured automations + scheduler state). */
   getWorkspaceAutomationSummary(workspaceId: string): { automationCount: number; schedulerRunning: boolean }
   /** Active sessions across all workspaces (sessions with running backend processes). */

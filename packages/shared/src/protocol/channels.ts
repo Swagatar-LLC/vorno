@@ -38,6 +38,9 @@ export const RPC_CHANNELS = {
     SET_MODEL: 'session:setModel',
     GET_FILES: 'sessions:getFiles',
     GET_NOTES: 'sessions:getNotes',
+    // fork: PLAN-040 / SUV-0026 — redeem a Headroom handle for a compressed
+    // tool output's byte-identical original.
+    RETRIEVE_HEADROOM_ORIGINAL: 'sessions:retrieveHeadroomOriginal',
     SET_NOTES: 'sessions:setNotes',
     WATCH_FILES: 'sessions:watchFiles',
     UNWATCH_FILES: 'sessions:unwatchFiles',
@@ -546,6 +549,20 @@ export const RPC_CHANNELS = {
     LIFECYCLE_SET: 'vorno:artifacts:lifecycle:set',
     ROOTS_LIST: 'vorno:artifacts:roots:list',
     TYPES_LIST: 'vorno:artifacts:types:list',
+  },
+
+  /**
+   * Headroom savings report (fork: PLAN-040 / SUV-0027).
+   *
+   * `STATS_GET` answers with a `HeadroomStatsReport` — measurements taken by the
+   * scope-counting adapters, never a computed figure. `STATS_CHANGED` is a
+   * signal with no payload: it says "ask again", which is what keeps the view
+   * live after a session completes without pushing numbers at a client that may
+   * have navigated away.
+   */
+  headroom: {
+    STATS_GET: 'vorno:headroom:stats:get',
+    STATS_CHANGED: 'vorno:headroom:stats:changed',
   },
 } as const
 
