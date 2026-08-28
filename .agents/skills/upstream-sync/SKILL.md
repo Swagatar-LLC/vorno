@@ -193,6 +193,48 @@ After CI passes and PR merges, verify ancestry landed (`git rev-list --count mai
 - `INTERNAL_DIR/upstream/delta.md` — refresh via `[skill:upstream-delta-report]` (same repo)
 - `roadmap/upstream/compatibility.md` — public, stays in the main repo; add audit-log entry if any contracts touched
 
+### Step 0 — Reconcile tracking drift (runs first, every time)
+
+Step 6 is easy to skip when a sync ends late or the PR merges after the session closes — that happened to v0.12.0 (PR #152, merged 2026-08-17, never written back; caught 2026-08-25). **Treat tracking reconciliation as routine hygiene, not a finding to escalate.** Run this at the *start* of every sync, including runs that turn out to be 0-behind:
+
+```bash
+# What does the log claim was last merged?
+grep -m1 'Last merged upstream commit' INTERNAL_DIR/upstream/HEAD.md
+
+# Is that actually the tip we've merged?
+# Fetch plainly and read `origin/main` throughout — do NOT use a refspec fetch like
+# `git fetch origin main:main`. Step 1 expects `main` to be checked out, and Git
+# refuses to update a checked-out branch via refspec ("refusing to fetch into
+# branch 'refs/heads/main' checked out at ..."), which kills Step 0 before it can
+# check or repair drift. `origin/main` is the authoritative ref here anyway.
+cd REPO_DIR && git fetch upstream && git fetch origin
+git log --oneline --merges --grep='Upstream_Merge' origin/main | head -3
+```
+
+If `HEAD.md`'s recorded commit is **behind** the newest landed upstream merge, backfill it before doing anything else:
+
+1. Find the merge PR. Take the newest sync merge commit on `origin/main` — the one whose merged branch matches `*_Upstream_Merge` — and read the PR number straight off its subject. No ancestry walk, and no need for a historical upstream tip (which is *not* recoverable from the current `upstream/main`: if upstream has advanced since the landed sync, an `--ancestry-path <upstream-tip>..origin/main` walk starts from a commit that isn't an ancestor of `origin/main` and silently returns nothing).
+
+   ```bash
+   git log -1 --merges -E \
+     --grep='^Merge pull request #[0-9]+ from Swagatar-LLC/.*_Upstream_Merge$' \
+     --format='%h %s' origin/main
+   # 7d5c9133 Merge pull request #152 from Swagatar-LLC/jh/2026-08-17_Upstream_Merge
+
+   # Just the number, for scripting:
+   git log -1 --merges -E \
+     --grep='^Merge pull request #[0-9]+ from Swagatar-LLC/.*_Upstream_Merge$' \
+     --format='%s' origin/main | sed -E 's/^Merge pull request #([0-9]+) .*/\1/'
+   ```
+
+   The anchored pattern matters: a bare `--grep='Upstream_Merge'` also matches the branch's own `Merge remote-tracking branch 'upstream/main' into jh/<date>_Upstream_Merge` commits, which carry no PR number.
+2. Pull its body — `gh pr view <N> --repo Swagatar-LLC/vorno --json body,mergeCommit,mergedAt`. Sync PR bodies follow the Step 5 template, so conflicts, validations, and architecture notes are all recoverable from it; write the `HEAD.md` entry from that rather than re-deriving from the diff.
+3. Update the **Current state** table, add a `## Versions covered in last merge` bullet, demote the previous one to `## Versions covered in prior merge (PR #N, date)`, and mark the entry as backfilled with the date.
+4. Refresh `delta.md` per `[skill:upstream-delta-report]` — at minimum the header (last-refresh date, total count, ancestry verification, protocol posture via `git diff --numstat upstream/main...origin/main -- packages/shared/src/protocol/`).
+5. Commit and push `vorno-internal`.
+
+Then continue to Step 1. **Do not report drift repair as a finding or route the session to `needs-review` for it** — fix it silently and mention it in one line of the summary. It only becomes a finding if the repair reveals something substantive (a squashed sync PR, broken ancestry, or a protocol delta that grew).
+
 ## Constraints
 
 - **Never** force-push. **Never** rebase merged commits.
