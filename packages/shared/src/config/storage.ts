@@ -40,7 +40,7 @@ export type {
 
 // Import for local use
 import type { Workspace, AuthType } from '@craft-agent/core/types';
-import type { HeadroomConfigOverrides } from '@craft-agent/core/types';
+import type { HeadroomConfigOverrides, MemoryConfigOverrides } from '@craft-agent/core/types';
 
 // Import LLM connection types and constants
 import type { LlmConnection } from './llm-connections.ts';
@@ -103,6 +103,11 @@ export interface StoredConfig {
   // workspace's own config.json under `defaults.headroom` and win field-by-
   // field. Absent here means "disabled" — see resolveHeadroomConfig().
   headroom?: HeadroomConfigOverrides;
+  // Memory provider seam (fork: PLAN-040, SUV-0029; ADR-0031). A sibling of
+  // `headroom`, not a section inside it: memory is a capability with providers
+  // and Headroom is one of them. Per-workspace overrides live under
+  // `defaults.memory`. Absent means "disabled" — see resolveMemoryConfig().
+  memory?: MemoryConfigOverrides;
   // One-shot migration markers. Used by migrations that should run at most
   // once per user (e.g. restoring a previously-removed model to connection
   // lists without re-adding it if the user later removes it deliberately).
@@ -491,6 +496,35 @@ export function setHeadroomInstanceConfig(
     delete config.headroom;
   } else {
     config.headroom = headroom;
+  }
+  saveConfig(config);
+}
+
+/**
+ * Get the instance-level memory base config (fork: PLAN-040, SUV-0029).
+ *
+ * Returns the stored layer *unresolved and unvalidated*, exactly as the
+ * Headroom accessor above does — callers merge it with the workspace layer via
+ * `resolveMemoryConfig()`, which owns validation and the disabled default.
+ */
+export function getMemoryInstanceConfig(): MemoryConfigOverrides | undefined {
+  const config = loadStoredConfig();
+  return config?.memory;
+}
+
+/**
+ * Set the instance-level memory base config.
+ *
+ * Pass `undefined` to clear the key entirely — "unset", which is distinct from
+ * "disabled" once a workspace layer is in play.
+ */
+export function setMemoryInstanceConfig(memory: MemoryConfigOverrides | undefined): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+  if (memory === undefined) {
+    delete config.memory;
+  } else {
+    config.memory = memory;
   }
   saveConfig(config);
 }

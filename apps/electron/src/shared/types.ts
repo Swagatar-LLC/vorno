@@ -748,6 +748,20 @@ export interface ElectronAPI {
     callback: (payload: { workspaceId: string; sessionId?: string }) => void,
   ): () => void
 
+  // Memory provider capabilities (fork: PLAN-040 / SUV-0029 + SUV-0040)
+  /**
+   * What the workspace's configured memory provider can actually do, as the
+   * provider itself reports it (`MemoryProvider.describe()`).
+   *
+   * Never rejects: a provider that cannot be reached or constructed comes back
+   * `state: 'absent'` with the reason in `notes`. Callers render this object;
+   * they must never branch on `providerId` to infer a capability — that is the
+   * exact coupling ADR-0031 removed.
+   */
+  getMemoryCapabilities(
+    workspaceId: string,
+  ): Promise<import('@craft-agent/core/types').MemoryProviderCapabilities>
+
   // Sources
   getSources(workspaceId: string): Promise<LoadedSource[]>
   createSource(workspaceId: string, config: Partial<FolderSourceConfig>): Promise<FolderSourceConfig>

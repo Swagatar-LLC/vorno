@@ -225,6 +225,12 @@ export const CHANNEL_MAP = {
   getHeadroomStats: invoke(RPC_CHANNELS.headroom.STATS_GET),
   onHeadroomStatsChanged: listener(RPC_CHANNELS.headroom.STATS_CHANGED),
 
+  // Memory provider capabilities (fork: PLAN-040 / SUV-0029 + SUV-0040). Read
+  // only, and re-read rather than cached: what a provider can do depends on the
+  // host's filesystem (store present, embedder provisioned), which changes
+  // underneath us without any event to subscribe to.
+  getMemoryCapabilities: invoke(RPC_CHANNELS.memory.CAPABILITIES_GET),
+
   // Sources
   getSources: invoke(RPC_CHANNELS.sources.GET),
   createSource: invoke(RPC_CHANNELS.sources.CREATE),

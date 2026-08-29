@@ -30,6 +30,10 @@ import { loadAllSources } from '../sources/storage.ts';
 import { loadEffectiveHeadroomConfig } from '../workspaces/headroom.ts';
 import { createSessionHeadroomAdapter } from '../headroom/session-adapter.ts';
 import type { HeadroomAdapter, HeadroomConfig } from '@craft-agent/core/types';
+import { loadEffectiveMemoryConfig } from '../workspaces/memory.ts';
+import { createMemoryProvider } from '../memory/registry.ts';
+import { loadMemoryContext, saveTurnMemory } from '../memory/session-memory.ts';
+import type { MemoryConfig, MemoryProvider, MemoryScope } from '@craft-agent/core/types';
 import type { ApiServerConfig } from '../mcp/mcp-pool.ts';
 
 import type {
@@ -214,6 +218,22 @@ export abstract class BaseAgent implements AgentBackend {
   private readonly _headroomAdapter: Promise<HeadroomAdapter>;
 
   // ============================================================
+  // Memory (fork: PLAN-040 / SUV-0029; ADR-0031)
+  //
+  // Same "read at session start, never reassigned" rule as Headroom above, and
+  // the provider is constructed rather than promised because both providers
+  // construct synchronously — the expensive part (probing whether Headroom's
+  // Python server actually works) is lazy, inside that provider, on first use.
+  //
+  // Note this is a *sibling* of the Headroom fields, not a member of them.
+  // Memory is a capability with providers; Headroom is one provider behind it
+  // (ADR-0031). If these two ever merge, an engine swap becomes surgery on the
+  // Headroom boundary, which is the shape that ADR rejected.
+  // ============================================================
+  private readonly _memoryConfig: MemoryConfig;
+  private readonly _memoryProvider: MemoryProvider;
+
+  // ============================================================
   // Additional State (protected for subclass access)
   // ============================================================
   protected temporaryClarifications: string | null = null;
@@ -356,6 +376,20 @@ export abstract class BaseAgent implements AgentBackend {
       },
       config.headroom,
     );
+
+    // Memory: same synchronous-snapshot rule. `createMemoryProvider` never
+    // throws — a disabled feature, an unknown provider id, and a broken
+    // workspace path all come back as a provider that reports unavailable, so
+    // there is no failure mode here that can stop a session from starting.
+    this._memoryConfig = loadEffectiveMemoryConfig(config.workspace.rootPath);
+    this._memoryProvider = createMemoryProvider(this._memoryConfig, {
+      workspaceRootPath: config.workspace.rootPath,
+      // The workspace id, deliberately — not the session id. `userId` feeds the
+      // one scoping layer `headroom-mcp` honours (ADR-0029 C2), and scoping it
+      // per session would make every memory invisible to the next one, which is
+      // the exact opposite of what a memory system is for.
+      ...(config.workspace.id ? { userId: config.workspace.id } : {}),
+    });
   }
 
   // ============================================================
@@ -383,6 +417,81 @@ export abstract class BaseAgent implements AgentBackend {
    */
   getHeadroomConfig(): HeadroomConfig {
     return { ...this._headroomConfig, compressionEngines: [...this._headroomConfig.compressionEngines] };
+  }
+
+  // ============================================================
+  // Memory accessors (fork: PLAN-040 / SUV-0029)
+  // ============================================================
+
+  /**
+   * The memory provider this session was constructed with.
+   *
+   * Always the same instance for the life of the session. Callers need no
+   * branch and no try/catch: an unavailable provider is an ordinary state it
+   * reports through `MemoryResult`, not an exception.
+   */
+  getMemoryProvider(): MemoryProvider {
+    return this._memoryProvider;
+  }
+
+  /** The effective memory config read at session start, as a copy. */
+  getMemoryConfig(): MemoryConfig {
+    return { ...this._memoryConfig };
+  }
+
+  /**
+   * The scope every memory operation in this session is tagged with.
+   *
+   * `user` is the workspace and `session` is the session — which means a memory
+   * saved with this scope is, by the scope-trim rule in
+   * `memory/lexical.ts`, visible only back inside the same session. That is why
+   * {@link loadSessionMemoryContext} and {@link saveSessionMemory} deliberately
+   * do *not* use it for the automatic path: durable facts are saved unscoped so
+   * they survive into later sessions, which is acceptance item 3 of SUV-0029.
+   * This accessor exists for callers that genuinely want session-local memory.
+   */
+  getMemoryScope(): MemoryScope {
+    return {
+      ...(this.config.workspace.id ? { user: this.config.workspace.id } : {}),
+      ...(this.config.session?.id ? { session: this.config.session.id } : {}),
+    };
+  }
+
+  /**
+   * Search memory and render the block to splice into this turn's context.
+   *
+   * **This is the host-invoked read.** It runs because the turn started, not
+   * because the model asked for it — ADR-0029 commitment 1, which is what makes
+   * memory deterministic rather than adherence-dependent, and what leaves room
+   * for a later slice to fan the search across several providers and merge.
+   *
+   * Returns `null` whenever there is nothing to add, so a caller splices
+   * nothing and the assembled prompt is byte-identical to what it would have
+   * been with memory absent.
+   */
+  protected async loadSessionMemoryContext(query: string): Promise<string | null> {
+    return loadMemoryContext(this._memoryProvider, this._memoryConfig, {
+      query,
+      // Unscoped on purpose — see getMemoryScope(). A session-scoped search
+      // would only ever find memories this same session wrote.
+      topK: this._memoryConfig.topK,
+    });
+  }
+
+  /**
+   * Mine a finished turn for durable facts and save them.
+   *
+   * **The host-invoked write.** Costs one mini-model call per turn when
+   * `autoSave` is on, which is why the whole feature ships gated and `autoSave`
+   * is separately switchable underneath the master switch. Never throws, and
+   * returns an empty array for the common and entirely normal case that nothing
+   * in the turn was worth remembering.
+   */
+  protected async saveSessionMemory(transcript: string): Promise<readonly string[]> {
+    return saveTurnMemory(this._memoryProvider, this._memoryConfig, {
+      transcript,
+      summarize: (prompt) => this.runMiniCompletion(prompt),
+    });
   }
 
   // ============================================================
@@ -1112,9 +1221,30 @@ ${formattedMessages}
       this.config.markTransferredSessionSummaryApplied?.();
     }
 
+    // Memory: the host-invoked read (fork: PLAN-040 / SUV-0029, ADR-0031).
+    //
+    // Placed here, before the message parts are joined, because this is the one
+    // point where the host owns the assembled prompt. Returns null — and so
+    // contributes nothing to `messageParts` — whenever memory is off, autoLoad
+    // is off, the provider is unavailable, or nothing matched. With memory
+    // disabled the joined string below is byte-identical to what it was before
+    // this feature existed, which is what makes "fully functional with it off"
+    // a checkable property rather than a claim.
+    //
+    // The query is the user's own message. That is the honest signal available
+    // at this point: the host cannot know what the turn will need before the
+    // turn runs, and inventing a richer query would mean guessing.
+    const memoryContext = await this.loadSessionMemoryContext(cleanMessage);
+
     // Prepend read directive to the message so the model reads SKILL.md first.
     const directive = this.formatSkillDirective(skillPaths);
-    const messageParts = [branchSeedContext, transferredSessionContext, directive, cleanMessage].filter(Boolean);
+    const messageParts = [
+      memoryContext,
+      branchSeedContext,
+      transferredSessionContext,
+      directive,
+      cleanMessage,
+    ].filter(Boolean);
     const effectiveMessage = messageParts.join('\n\n');
 
     // Capture the raw user message for source-activation auto-retry. `cleanMessage`
@@ -1125,6 +1255,17 @@ ${formattedMessages}
       yield* this.chatImpl(effectiveMessage, attachments, options);
     } finally {
       this.setCurrentTurnUserMessage(null);
+      // Memory: the host-invoked write, at the turn's one guaranteed exit.
+      //
+      // Deliberately not awaited. A turn is over from the user's point of view
+      // when the generator finishes; making them wait on a mini-model call that
+      // may produce nothing would trade a visible delay for an invisible
+      // benefit. Errors cannot escape — `saveTurnMemory` never throws — but the
+      // catch is kept so a contract violation cannot become an unhandled
+      // rejection that takes down the process.
+      void this.saveSessionMemory(cleanMessage).catch((error) => {
+        this.debug(`[memory] save after turn failed: ${String(error)}`);
+      });
     }
   }
 

@@ -198,10 +198,16 @@ describe('Headroom docs page (SUV-0032)', () => {
     });
   });
 
-  test('claims no memory feature, because the pinned SDK has none', () => {
-    // SUV-0029 is blocked on exactly this: there is no memory API to document.
-    // A page that grew a memory how-to would be documenting something absent.
+  test('points memory at the memory page, not at Headroom (ADR-0031)', () => {
+    // This assertion used to require the words "not available in Vorno". That
+    // was true while the pinned SDK was the only route looked at; ADR-0031 then
+    // shipped memory as a capability with providers, of which Headroom's MCP
+    // server is one. The page must no longer say memory is absent, must not
+    // grow a memory how-to of its own, and must link to the page that has one.
     expect(doc).toContain('## Memory');
-    expect(doc).toMatch(/not available in Vorno/i);
+    expect(doc).not.toMatch(/memory is \*\*not available in Vorno\*\*/i);
+    expect(doc).toContain('(memory.md)');
+    // Headroom is one provider, not the feature.
+    expect(doc).toMatch(/not a Headroom feature/i);
   });
 });

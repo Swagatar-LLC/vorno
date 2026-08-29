@@ -55,8 +55,10 @@ import {
 import { HeadroomSettingsSection } from './HeadroomSettingsSection'
 // fork(PLAN-040, SUV-0027): the measured-savings report, workspace scope
 import { HeadroomReportSection } from './HeadroomReportSection'
-import type { HeadroomConfigOverrides } from '@craft-agent/core'
-import type { HeadroomConfigViewDto } from '@craft-agent/shared/protocol'
+// fork(PLAN-040, SUV-0029 + SUV-0040; ADR-0031): vendor-neutral memory settings
+import { MemorySettingsSection } from './MemorySettingsSection'
+import type { HeadroomConfigOverrides, MemoryConfigOverrides } from '@craft-agent/core'
+import type { HeadroomConfigViewDto, MemoryConfigViewDto } from '@craft-agent/shared/protocol'
 
 export const meta: DetailsPageMeta = {
   navigator: 'settings',
@@ -97,6 +99,10 @@ export default function WorkspaceSettingsPage() {
   // fork(PLAN-040 SUV-0017): Headroom view — effective config + per-field
   // provenance, resolved server-side. undefined = no config anywhere yet.
   const [headroomView, setHeadroomView] = useState<HeadroomConfigViewDto | undefined>(undefined)
+  // fork(PLAN-040 SUV-0029 + SUV-0040): memory config view — a sibling of the
+  // Headroom view, not a section of it (ADR-0031). Provider *capabilities* are
+  // not held here; they are live host state the section reads for itself.
+  const [memoryView, setMemoryView] = useState<MemoryConfigViewDto | undefined>(undefined)
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true)
 
   // Default sources state
@@ -129,6 +135,7 @@ export default function WorkspaceSettingsPage() {
           setArtifactsEnabled(settings.artifactsEnabled ?? false)
           setArtifactRoots(settings.artifactRoots ?? {})
           setHeadroomView(settings.headroomView)
+          setMemoryView(settings.memoryView)
           if (settings.artifactsEnabled) void refreshRootDescriptors()
           // Load cyclable permission modes from workspace settings
           if (settings.cyclablePermissionModes && settings.cyclablePermissionModes.length >= 2) {
@@ -404,6 +411,25 @@ export default function WorkspaceSettingsPage() {
         setHeadroomView(settings?.headroomView)
       } catch (error) {
         console.error('Failed to reload Headroom settings:', error)
+      }
+    },
+    [updateWorkspaceSetting, activeWorkspaceId]
+  )
+
+  // fork(PLAN-040, SUV-0029 + SUV-0040): same round-trip for the memory
+  // override layer, and for the same reason — a cleared field can only reveal
+  // what the instance base says by asking the resolver again. Re-reading also
+  // re-keys the capabilities probe in the section below, so changing provider
+  // re-describes rather than leaving the previous provider's claims on screen.
+  const saveMemoryOverrides = useCallback(
+    async (next: MemoryConfigOverrides | undefined) => {
+      const saved = await updateWorkspaceSetting('memory', next)
+      if (!saved || !window.electronAPI || !activeWorkspaceId) return
+      try {
+        const settings = await window.electronAPI.getWorkspaceSettings(activeWorkspaceId)
+        setMemoryView(settings?.memoryView)
+      } catch (error) {
+        console.error('Failed to reload memory settings:', error)
       }
     },
     [updateWorkspaceSetting, activeWorkspaceId]
@@ -747,6 +773,15 @@ export default function WorkspaceSettingsPage() {
 
             {/* fork(PLAN-040, SUV-0027): what Headroom measured across this workspace */}
             <HeadroomReportSection workspaceId={activeWorkspaceId} />
+
+            {/* fork(PLAN-040, SUV-0029 + SUV-0040): memory — a capability with
+                providers, of which Headroom is one. Sits after the Headroom
+                sections rather than inside them (ADR-0031). */}
+            <MemorySettingsSection
+              workspaceId={activeWorkspaceId}
+              view={memoryView}
+              onSaveOverrides={saveMemoryOverrides}
+            />
 
           </div>
         </div>

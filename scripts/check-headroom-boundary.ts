@@ -41,6 +41,38 @@ export const BOUNDARY_FILES: readonly string[] = [
   'packages/shared/src/headroom/sdk-adapter.ts',
 ];
 
+/**
+ * The Python module that serves Headroom's memory over stdio (SUV-0029).
+ *
+ * Assembled rather than written whole, for the same reason as
+ * {@link HEADROOM_PACKAGE}: so this script's own source is not a violation of
+ * the rule it enforces.
+ */
+export const HEADROOM_MEMORY_MODULE = ['headroom', 'memory', 'mcp_server'].join('.');
+
+/**
+ * The one file allowed to spawn it.
+ *
+ * ## Why this second pattern exists
+ *
+ * The import gate above matches package *imports*. It is therefore structurally
+ * blind to a subprocess: `python -m headroom.memory.mcp_server` spawned from any
+ * file in the repo is invisible to it, because no module is imported. Until
+ * SUV-0029 that blindness cost nothing, since nothing spawned Headroom. SUV-0029
+ * is precisely the change that introduces a non-import path to Headroom — so it
+ * is also the change that has to close the hole, or the boundary would hold in
+ * one direction only while appearing to hold in both.
+ *
+ * The failure this prevents is concrete: a call site that shells out to
+ * Headroom's memory server directly would bypass the provider seam entirely,
+ * hardcoding one vendor's three constraints (C1/C2/C3) at a call site that
+ * `describe()` exists to keep them out of — which is the exact shape ADR-0031
+ * was written to prevent.
+ */
+export const MEMORY_SUBPROCESS_BOUNDARY_FILES: readonly string[] = [
+  'packages/shared/src/memory/headroom-mcp-provider.ts',
+];
+
 /** Roots that ship to users. `scripts/` is excluded — this file lives there. */
 const DEFAULT_ROOTS = ['apps', 'packages'];
 
@@ -55,6 +87,24 @@ const SOURCE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 function importPattern(): RegExp {
   return new RegExp(
     `(from|require\\(|import\\()\\s*['"\`]${HEADROOM_PACKAGE}(/[^'"\`]*)?['"\`]`,
+  );
+}
+
+/**
+ * Matches a reference to the memory subprocess module in any spawn-ish shape:
+ * `'headroom.memory.mcp_server'`, `["headroom","memory","mcp_server"]` joined,
+ * or the bare dotted path in an argv array.
+ *
+ * Two alternatives, because the string can legitimately be written either whole
+ * or assembled — and a gate that only catches the literal teaches the next
+ * author to assemble it, which is the wrong lesson. The assembled form is
+ * matched by looking for the three segments as adjacent quoted strings.
+ */
+function memoryModulePattern(): RegExp {
+  const [a, b, c] = HEADROOM_MEMORY_MODULE.split('.');
+  return new RegExp(
+    `${a}\\.${b}\\.${c}` +
+      `|['"\`]${a}['"\`]\\s*,\\s*['"\`]${b}['"\`]\\s*,\\s*['"\`]${c}['"\`]`,
   );
 }
 
@@ -141,11 +191,62 @@ export function findStaleBoundaryEntries(
     .sort();
 }
 
+/**
+ * Find every file that names Headroom's memory subprocess and is not the
+ * memory boundary (SUV-0029).
+ *
+ * Same shape as {@link findBoundaryViolations} — deliberately, so the two
+ * halves of the boundary are enforced by code that reads the same way rather
+ * than by one real gate and one afterthought.
+ */
+export function findMemorySubprocessViolations(
+  repoRoot: string,
+  roots: readonly string[] = DEFAULT_ROOTS,
+  allowed: readonly string[] = MEMORY_SUBPROCESS_BOUNDARY_FILES,
+): string[] {
+  const pattern = memoryModulePattern();
+  const allowedSet = new Set(allowed);
+
+  return roots
+    .flatMap((root) => collectSourceFiles(join(repoRoot, root)))
+    .filter((file) => {
+      let contents: string;
+      try {
+        contents = readFileSync(file, 'utf8');
+      } catch {
+        return false;
+      }
+      if (!pattern.test(contents)) return false;
+      return !allowedSet.has(relative(repoRoot, file).split(sep).join('/'));
+    })
+    .map((file) => relative(repoRoot, file).split(sep).join('/'))
+    .sort();
+}
+
+/** Memory-boundary allowlist entries that no longer name the subprocess. */
+export function findStaleMemoryBoundaryEntries(
+  repoRoot: string,
+  allowed: readonly string[] = MEMORY_SUBPROCESS_BOUNDARY_FILES,
+): string[] {
+  const pattern = memoryModulePattern();
+  return allowed
+    .filter((rel) => {
+      try {
+        return !pattern.test(readFileSync(join(repoRoot, rel), 'utf8'));
+      } catch {
+        return true;
+      }
+    })
+    .sort();
+}
+
 if (import.meta.main) {
   const repoRoot = join(import.meta.dir, '..');
 
   const stale = findStaleBoundaryEntries(repoRoot);
   const violations = findBoundaryViolations(repoRoot);
+  const memoryStale = findStaleMemoryBoundaryEntries(repoRoot);
+  const memoryViolations = findMemorySubprocessViolations(repoRoot);
 
   if (stale.length > 0) {
     console.error(
@@ -171,9 +272,41 @@ if (import.meta.main) {
     );
   }
 
-  if (stale.length > 0 || violations.length > 0) process.exit(1);
+  if (memoryStale.length > 0) {
+    console.error(
+      `✗ Headroom boundary gate: allowlisted memory boundary file(s) no longer reference ${HEADROOM_MEMORY_MODULE}:`,
+    );
+    for (const file of memoryStale) console.error(`    ${file}`);
+    console.error(
+      '\n  Either the memory provider moved (update MEMORY_SUBPROCESS_BOUNDARY_FILES\n' +
+        '  in this script) or it was removed (then PLAN-040 SUV-0029 needs revisiting).',
+    );
+  }
+
+  if (memoryViolations.length > 0) {
+    console.error(
+      `✗ Headroom boundary gate: ${memoryViolations.length} file(s) reference ${HEADROOM_MEMORY_MODULE} outside the memory boundary:`,
+    );
+    for (const file of memoryViolations) console.error(`    ${file}`);
+    console.error(
+      `\n  Only ${MEMORY_SUBPROCESS_BOUNDARY_FILES.join(', ')} may spawn Headroom's\n` +
+        '  memory server. Everything else goes through the vendor-neutral seam:\n' +
+        "    import { createMemoryProvider } from '@craft-agent/shared/memory'\n" +
+        '  See ADR-0031 and packages/core/src/types/memory-provider.ts.',
+    );
+  }
+
+  if (
+    stale.length > 0 ||
+    violations.length > 0 ||
+    memoryStale.length > 0 ||
+    memoryViolations.length > 0
+  ) {
+    process.exit(1);
+  }
 
   console.log(
-    `✓ Headroom boundary gate: ${HEADROOM_PACKAGE} imported only by ${BOUNDARY_FILES.join(', ')}`,
+    `✓ Headroom boundary gate: ${HEADROOM_PACKAGE} imported only by ${BOUNDARY_FILES.join(', ')}\n` +
+      `✓ Headroom memory boundary gate: ${HEADROOM_MEMORY_MODULE} spawned only by ${MEMORY_SUBPROCESS_BOUNDARY_FILES.join(', ')}`,
   );
 }

@@ -153,11 +153,14 @@ folder for detail.
   typed form, view it as a DAG, and trust steps to produce schema-validated outputs;
   a task becomes one bound instance of a definition (PLAN-039). **Headroom integration**: the
   [Headroom](https://github.com/headroomlabs-ai/headroom) OSS project adopted into the
-  supply chain (vetted, pinned, flag-gated) as the context-discipline layer —
-  compression, token management, and multi-layer memory — with one build item on our
-  side: a pluggable extension interface for additional memory storage formats and
-  querying, pursued as an upstream contribution, behind which Vorno's existing memory
-  engine plugs in as a backend (PLAN-040).
+  supply chain (vetted, pinned, flag-gated) for compression and token management, with
+  one build item on our side: a pluggable extension interface for additional memory
+  storage formats and querying, pursued as an upstream contribution (PLAN-040).
+  **Memory is a capability with providers, not a Headroom feature** (ADR-0031): it sits
+  behind a vendor-neutral, host-invoked seam, with a zero-setup built-in markdown
+  provider as the default — plain files in your workspace, nothing leaving the machine —
+  and Headroom as one selectable provider behind it, offering semantic search in
+  exchange for a one-time model download.
   One deliberate detour runs first: the roadmap console becomes an interactive work
   surface that decomposes plans into runnable tasks — dogfooding that doubles as
   PLAN-039's test harness (PLAN-043). The direction also carries an explicit

@@ -144,3 +144,47 @@ export type {
   HeadroomStatsScope,
   HeadroomStatsReport,
 } from './headroom-report.ts';
+
+// Memory configuration (fork: PLAN-040, SUV-0029; ADR-0031)
+export type {
+  MemoryProviderChoice,
+  MemoryConfig,
+  MemoryConfigOverrides,
+  MemoryConfigField,
+  MemoryConfigSource,
+  MemoryConfigSources,
+} from './memory.ts';
+export {
+  MEMORY_PROVIDER_CHOICES,
+  MEMORY_CONFIG_DEFAULTS,
+  MEMORY_CONFIG_FIELDS,
+  MEMORY_TOP_K_MIN,
+  MEMORY_TOP_K_MAX,
+  MEMORY_HALF_LIFE_MIN_DAYS,
+  MEMORY_HALF_LIFE_MAX_DAYS,
+  sanitizeMemoryConfigLayer,
+  resolveMemoryConfig,
+  resolveMemoryConfigSources,
+} from './memory.ts';
+
+// Vendor-neutral memory provider seam (fork: PLAN-040, SUV-0029; ADR-0031)
+export type {
+  MemoryScopeLayer,
+  MemoryScope,
+  MemoryFact,
+  MemorySearchRequest,
+  MemorySaveRequest,
+  MemoryRecord,
+  MemoryUnavailableReason,
+  MemoryResult,
+  MemoryProviderState,
+  MemorySearchKind,
+  MemoryEgress,
+  MemoryProviderCapabilities,
+  MemoryProvider,
+} from './memory-provider.ts';
+export {
+  MEMORY_SCOPE_LAYERS,
+  memoryUnavailable,
+  memoryAvailable,
+} from './memory-provider.ts';

@@ -13,7 +13,11 @@
 
 import type { PermissionMode } from '../agent/mode-manager.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
-import type { RootBindingConfig, HeadroomConfigOverrides } from '@craft-agent/core/types';
+import type {
+  RootBindingConfig,
+  HeadroomConfigOverrides,
+  MemoryConfigOverrides,
+} from '@craft-agent/core/types';
 
 /**
  * Local MCP server configuration
@@ -111,6 +115,15 @@ export interface WorkspaceConfig {
      * from `@craft-agent/core/types` — never read this raw.
      */
     headroom?: HeadroomConfigOverrides;
+
+    /**
+     * Per-workspace memory overrides (fork: PLAN-040, SUV-0029; ADR-0031).
+     *
+     * A **sibling** of `headroom`, not a section inside it — memory is a
+     * capability with providers, and Headroom is one of them. Same precedence
+     * rules as above; merge only via `resolveMemoryConfig()`.
+     */
+    memory?: MemoryConfigOverrides;
   };
 
   /**

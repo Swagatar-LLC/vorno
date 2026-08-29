@@ -1,7 +1,7 @@
 ---
 id: SUV-0029
 title: Memory provider seam with Headroom MCP and built-in markdown providers
-status: planned
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
@@ -75,12 +75,12 @@ Headroom is *a* provider, not *the* substrate.
 
 ## Acceptance
 
-- [ ] The `MemoryProvider` seam (`search` / `save` / `describe`) is exercised by **two** providers in-tree — `headroom-mcp` and `builtin-markdown` — and swapping the active provider is a config change that touches no call site, asserted by a test that runs the same call path against both.
-- [ ] The only production reference to Headroom's memory surface remains inside the boundary module — the provider registry/seam is the caller and `headroom-mcp` is one registered provider — with `check-headroom-boundary.ts` extended to catch the **subprocess** seam (`headroom.memory.mcp_server`) as well as package imports, and proven able to go red on a mutation.
-- [ ] Cross-session retrievability holds per provider: a memory written during one session is retrievable in a later session and in a workflow run, asserted by integration tests against a real `memory.db` for `headroom-mcp` and against real markdown files for `builtin-markdown`.
-- [ ] Memory is host-invoked: an integration test asserts `search` fires at session context load without the model having requested it.
-- [ ] Nothing is sent off-machine at steady state, verified against the SUV-0014 telemetry audit's opt-in findings. The one-time ~86 MB embedder model fetch on first **Headroom** enable is the sole documented exception — `headroom-mcp` only; `builtin-markdown` has none — and is named in the docs page (SUV-0032).
-- [ ] Degrade matrix covered by tests, per provider, via `describe()`/probing: with the active provider **absent**, **present but unprovisioned**, or **disabled**, sessions and workflows run unchanged and memory operations report unavailable rather than throwing — and "unprovisioned" is reported distinctly from "absent" (for `headroom-mcp` the server handshakes and advertises both tools in that state; `builtin-markdown` never occupies it).
+- [x] The `MemoryProvider` seam (`search` / `save` / `describe`) is exercised by **two** providers in-tree — `headroom-mcp` and `builtin-markdown` — and swapping the active provider is a config change that touches no call site, asserted by a test that runs the same call path against both.
+- [x] The only production reference to Headroom's memory surface remains inside the boundary module — the provider registry/seam is the caller and `headroom-mcp` is one registered provider — with `check-headroom-boundary.ts` extended to catch the **subprocess** seam (`headroom.memory.mcp_server`) as well as package imports, and proven able to go red on a mutation.
+- [x] Cross-session retrievability holds per provider: a memory written during one session is retrievable in a later session and in a workflow run, asserted by integration tests against a real `memory.db` for `headroom-mcp` and against real markdown files for `builtin-markdown`.
+- [x] Memory is host-invoked: an integration test asserts `search` fires at session context load without the model having requested it.
+- [x] Nothing is sent off-machine at steady state, verified against the SUV-0014 telemetry audit's opt-in findings. The one-time ~86 MB embedder model fetch on first **Headroom** enable is the sole documented exception — `headroom-mcp` only; `builtin-markdown` has none — and is named in the docs page (SUV-0032).
+- [x] Degrade matrix covered by tests, per provider, via `describe()`/probing: with the active provider **absent**, **present but unprovisioned**, or **disabled**, sessions and workflows run unchanged and memory operations report unavailable rather than throwing — and "unprovisioned" is reported distinctly from "absent" (for `headroom-mcp` the server handshakes and advertises both tools in that state; `builtin-markdown` never occupies it).
 
 ## Status log
 
@@ -392,3 +392,71 @@ Headroom is *a* provider, not *the* substrate.
 
   Landed on `plan/plan-040`: this entry, the rename, and the
   frontmatter/goal/scope/acceptance rewrite. No source files.
+
+- `2026-08-28` — **EXECUTED. `planned/` → `done/`. All six acceptance items met;
+  this is the first implementation this SUV has ever had.** Four prior passes
+  produced audits, a tripwire, an ADR, and a re-cut, each closing "no source
+  file was created, edited, moved, or deleted". That streak ends here.
+
+  **The seam.** `packages/core/src/types/memory-provider.ts` defines
+  `MemoryProvider` = `search` / `save` / `describe`, plus `MemoryResult<T>`
+  (measured-or-absent), `MemoryProviderCapabilities`, and a **five**-value
+  `MemoryUnavailableReason` whose whole point is that `provider-absent` and
+  `provider-unprovisioned` stay distinguishable. Four invariants are inherited
+  verbatim from `headroom-adapter.ts` because they are what made that boundary
+  hold: import-free plain data, measured-or-absent, non-throwing by contract,
+  and — new here — capabilities declared rather than assumed.
+  `packages/core/src/types/memory.ts` is the config, a deliberate **sibling** of
+  `headroom.ts` rather than a section inside it; if it were nested, "memory off
+  because Headroom off" would be an architectural fact instead of a setting.
+
+  **Two providers, in tree.** `builtin-markdown` (markdown + frontmatter,
+  lexical retrieval, `node:fs` and nothing else) and `headroom-mcp` (ADR-0029's
+  stdio surface, unchanged underneath, riding the existing `CraftMcpClient`
+  rather than a new sidecar lifecycle). `registry.ts` is a `switch` and both
+  imports are static — ADR-0031 commitment 5's "no plugin system, and this ADR
+  does not invent one", honoured literally.
+
+  **Host-invoked, at a call site we own.** `BaseAgent` resolves config
+  synchronously at construction (the Headroom rule, same reason), then
+  `chat()` calls `loadSessionMemoryContext` before the message parts are joined
+  and `saveSessionMemory` in the `finally`. With memory off, `loadMemoryContext`
+  returns `null` and the joined prompt is **byte-identical** to what it was
+  before this feature existed — asserted, not asserted-to.
+
+  **The boundary gate now holds in both directions.** `check-headroom-boundary.ts`
+  gained `findMemorySubprocessViolations` / `findStaleMemoryBoundaryEntries` and
+  a second allowlist of exactly one file. The new pattern matches the module
+  path **both** written whole and assembled from parts, because a gate that
+  catches only the literal teaches the next author to build it from pieces. It
+  was proven able to go red the honest way: it caught its own test file twice
+  during authoring — once on an array literal, once on a prose mention — since
+  it exempts neither comments nor tests.
+
+  **Three defects the tests found, all fixed, all worth recording:**
+  - **`resolveHeadroomPython` treated an explicit path as a first guess**, not
+    as authoritative — so a caller naming an interpreter could silently get a
+    different one. A user's `VORNO_HEADROOM_PYTHON` would have been honoured
+    only when it happened to work.
+  - **The Headroom server resolved its database from the current working
+    directory** (`config_source=cwd-default`, observed live). For a desktop app
+    that means memory lands in a different store depending on how the app was
+    launched, and scatters `.headroom/` into unrelated folders — it wrote one
+    into `packages/shared/` during the first test run. Now pinned with `--db`
+    to `<workspace>/memory/headroom-memory.db`, alongside the built-in store, so
+    "where are my memories" has one answer.
+  - **`describe()` reported every failing probe as `unprovisioned`.** The real
+    error was `unable to open database file`, which is not an embedder problem
+    and would have told the user to download 86 MB that could not help. Now
+    classified by `looksLikeMissingEmbedder`, conservatively: an unrecognised
+    error is `absent` with the server's own message attached, never optimistically
+    "just needs a download".
+
+  Landed on `plan/plan-040`: `packages/core/src/types/memory{,-provider}.ts`;
+  `packages/shared/src/memory/` (registry, two providers, unavailable provider,
+  store, file format, decay, lexical, session-memory) with 135 tests;
+  `workspaces/memory.ts` + config/instance layers with 104 mirrored tests;
+  the RPC channel, settings validation, and workspace settings section with
+  capabilities surfaced (including the honest `notes`); i18n for 7 locales;
+  `apps/electron/resources/docs/memory.md`; and the gate extension.
+  **SUV-0040 is unblocked and shipped in the same pass — see its own log.**

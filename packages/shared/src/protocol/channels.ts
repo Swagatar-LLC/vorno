@@ -564,6 +564,24 @@ export const RPC_CHANNELS = {
     STATS_GET: 'vorno:headroom:stats:get',
     STATS_CHANGED: 'vorno:headroom:stats:changed',
   },
+
+  /**
+   * Memory provider capabilities (fork: PLAN-040 / SUV-0029 + SUV-0040).
+   *
+   * One read channel, answering with a `MemoryProviderCapabilities` — the
+   * provider's own `describe()`, not a table this layer keeps about providers.
+   * That is the whole reason the channel exists: a settings surface that wants
+   * to say "lexical, not semantic" or "needs a one-time model download" must ask
+   * the provider, because ADR-0031 forbids branching on a provider id anywhere
+   * outside the registry.
+   *
+   * Read-only and unpaired: the *configuration* is written through
+   * `workspaceSettings:update` like every other workspace setting, so there is
+   * no memory-specific write channel to keep in sync with it.
+   */
+  memory: {
+    CAPABILITIES_GET: 'vorno:memory:capabilities:get',
+  },
 } as const
 
 // IPC_CHANNELS compat alias removed — all consumers now use RPC_CHANNELS
