@@ -460,3 +460,30 @@ Headroom is *a* provider, not *the* substrate.
   capabilities surfaced (including the honest `notes`); i18n for 7 locales;
   `apps/electron/resources/docs/memory.md`; and the gate extension.
   **SUV-0040 is unblocked and shipped in the same pass — see its own log.**
+
+- `2026-08-28` — **Review follow-up: the task definition was stale and is now
+  re-grounded.** Greptile raised one P1 on PR #183, and it was correct:
+  `roadmap/suvs/definitions/SUV-0029.task.yaml` still carried the *original*
+  scope — it directed an implementer at the `HeadroomAdapter` design ADR-0031
+  rejects by name, and at the "local markdown substrate" premise three audit
+  passes falsified. The re-cut on 2026-08-28 rewrote this SUV's own file and
+  updated the definition's stale *title strings*, but never its prompts.
+
+  **Why this mattered even though the SUV is done.** Definitions are
+  status-independent and never move (`roadmap/suvs/README.md`), so a stale one
+  outlives the work it describes and stays runnable. Its four-item acceptance
+  list omitted the second provider, host invocation, the subprocess boundary
+  check, and the three-state degrade matrix — so a future run could have graded
+  itself PASS while building the rejected shape. **A stale definition is worse
+  than an absent one**: an absent one blocks, a stale one succeeds at the wrong
+  thing.
+
+  Fixed: goal, scope, and all three copies of the acceptance list re-derived
+  from the shipped SUV; a `PREMISE CORRECTION` block added to the `orient`
+  prompt naming the SQLite reality and pointing at the tripwire that pins it;
+  and a dated header recording that re-running this is now a re-verification of
+  shipped work rather than an implementation. YAML re-parsed, four nodes intact.
+
+  **Standing lesson: re-cutting an SUV means re-cutting its task definition.**
+  The two files are one unit, and only one of them is the thing an agent
+  actually executes.
