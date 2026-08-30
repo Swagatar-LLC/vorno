@@ -237,7 +237,7 @@ must degrade gracefully if Headroom is absent.
 - [x] Token displays/thresholds (PLAN-002/003 surfaces) read through Headroom stats where they overlap; gaps documented as glue or filed upstream — no new library introduced.
 - [x] Memory extension interface designed against Headroom's seams; upstream contribution opened (or their decline documented and the patch carried with rationale).
 - [x] agentic-memory v2 runs as a plugged backend behind that interface; the MCP source is a thin host over it.
-- [~] Docs: a `vorno.ai/docs` page on Vorno + Headroom — what it does, how to toggle it, and what leaves the machine (nothing without opt-in, save the one-time embedder model fetch on first enable, which is disclosed). **This item is discharged by two SUVs, not one:** SUV-0032 authors the page into the in-app docs tree, and SUV-0033 publishes it to the site. In-app content alone does not discharge it — the acceptance says `vorno.ai/docs`, and a guide written for a filesystem stays valid on disk while breaking on the web. **Status 2026-08-28: the in-app half is complete and now spans two pages** (`headroom.md` plus `memory.md`, which it links to); **the publish half is owner-gated**, not merely unfinished — see SUV-0033 in `blocked/`. Marked `[~]` rather than `[x]` deliberately: ticking it would claim something is on the web that is not.
+- [x] Docs: a `vorno.ai/docs` page on Vorno + Headroom — what it does, how to toggle it, and what leaves the machine (nothing without opt-in, save the one-time embedder model fetch on first enable, which is disclosed). **This item is discharged by two SUVs, not one:** SUV-0032 authors the page into the in-app docs tree, and SUV-0033 publishes it to the site. In-app content alone does not discharge it — the acceptance says `vorno.ai/docs`, and a guide written for a filesystem stays valid on disk while breaking on the web. **Status 2026-08-28: the in-app half is complete and now spans two pages** (`headroom.md` plus `memory.md`, which it links to); **the publish half is owner-gated**, not merely unfinished — see SUV-0033 in `blocked/`. Marked `[~]` rather than `[x]` deliberately: ticking it would claim something is on the web that is not.
 
 ## Status log
 
@@ -301,3 +301,13 @@ must degrade gracefully if Headroom is absent.
   the owner gate — publishing to the site is outward-facing and timed against
   announcements, so it is Jeff's call, not an oversight. Every other SUV under
   this plan is in `done/`.
+- `2026-08-30` — **Acceptance item 7 ticked; every item on this plan is now
+  `[x]` and every SUV is in `done/`.** Jeff gave the explicit go-ahead and
+  release **v0.20.0** was cut (tag on `0f626fc4`, release PR #184), whose
+  `publish-docs` job rebuilt `vorno-site` from the tag. Verified over real HTTP:
+  `vorno.ai/docs/headroom/` and `/docs/memory/` both serve the current copies,
+  the cross-link resolves, and the memory page carries the ~86 MB embedder-fetch
+  disclosure. SUV-0033 moved `blocked/` → `done/` with the verification detail
+  in its own log. The plan is left in `in-progress/` deliberately — closing it
+  is a documentation pass (`[skill:roadmap-plan-document]`) and the owner's
+  read, not a side effect of a release.

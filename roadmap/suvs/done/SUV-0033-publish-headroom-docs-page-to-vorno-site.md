@@ -1,12 +1,12 @@
 ---
 id: SUV-0033
 title: Publish the Headroom docs page to vorno.ai/docs
-status: blocked
+status: done
 plan: PLAN-040
 direction: DIR-05
 owner: jh
 created: 2026-08-27
-updated: 2026-08-28
+updated: 2026-08-30
 related:
   - SUV-0032-vorno-plus-headroom-docs-page.md (authors the page this SUV publishes)
   - SUV-0029-memory-provider-seam-with-headroom-and-builtin-markdown-providers.md (the memory behaviour and the embedder-fetch disclosure the page must carry)
@@ -65,11 +65,11 @@ one — and carries its own branch in `vorno-site`. The rule is satisfied by
 
 ## Acceptance
 
-- [ ] The Headroom page renders at `vorno.ai/docs` and is reachable from the docs navigation.
-- [ ] The memory page renders there too, and the Headroom page's link to it resolves on the web rather than only on disk.
-- [ ] The `vorno-site` build gate passes on the branch that publishes it, with any link/href findings fixed rather than suppressed — and the fixes landed in the in-app source of truth where that is where they belong.
-- [ ] Published content and `apps/electron/resources/docs/{headroom,memory}.md` agree; any divergence forced by the gate is recorded in this SUV's status log with its reason.
-- [ ] The privacy section names the one-time embedder model fetch explicitly, so "nothing leaves the machine without opt-in" is stated with its actual carve-out rather than as an overclaim — and attributes it to the `headroom-mcp` provider specifically, since the default provider has no such fetch.
+- [x] The Headroom page renders at `vorno.ai/docs` and is reachable from the docs navigation.
+- [x] The memory page renders there too, and the Headroom page's link to it resolves on the web rather than only on disk.
+- [x] The `vorno-site` build gate passes on the branch that publishes it, with any link/href findings fixed rather than suppressed — and the fixes landed in the in-app source of truth where that is where they belong.
+- [x] Published content and `apps/electron/resources/docs/{headroom,memory}.md` agree; any divergence forced by the gate is recorded in this SUV's status log with its reason.
+- [x] The privacy section names the one-time embedder model fetch explicitly, so "nothing leaves the machine without opt-in" is stated with its actual carve-out rather than as an overclaim — and attributes it to the `headroom-mcp` provider specifically, since the default provider has no such fetch.
 
 ## Status log
 
@@ -93,3 +93,16 @@ one — and carries its own branch in `vorno-site`. The rule is satisfied by
   `blocked/` conventions exist to preserve. Everything upstream of the publish is
   done; this SUV is one branch in `vorno-site` away from closing, whenever that
   is the right week.
+
+- `2026-08-30` — **done.** Jeff gave the explicit go-ahead this morning,
+  discharging the owner gate. Cut as release **v0.20.0** (tag on merge commit
+  `0f626fc4`, release PR #184): `release.yml`'s `publish-docs` job dispatched to
+  `vorno-site`, whose build succeeded from the tag — no hand-cut `vorno-site`
+  branch was needed because the automated publish path (built after the v0.17.0
+  miss) already carries the in-app docs tree. Verified live over real HTTP:
+  `vorno.ai/docs/headroom/` and `/docs/memory/` both 200; the Headroom page's
+  `/docs/memory/` link resolves; published copies carry the current content
+  (headroom.md's new "compression and memory are separate features" section,
+  memory.md's `builtin-markdown`/`headroom-mcp` providers); the memory page
+  names the one-time ~86 MB HuggingFace embedder fetch. No gate-forced
+  divergence between published and in-app copies — nothing to reconcile.
