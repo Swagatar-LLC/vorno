@@ -1,11 +1,11 @@
 ---
 id: PLAN-040
 title: Integrate Headroom — context compression, token management, and memory
-status: planned
+status: in-progress
 direction: DIR-05
 owner: jh
 created: 2026-08-22
-updated: 2026-08-27
+updated: 2026-08-28
 related:
   - PLAN-002-token-usage-display.md (surface that migrates onto Headroom stats)
   - PLAN-003-token-usage-thresholds-workspace-settings.md (surface that migrates onto Headroom stats)
@@ -22,7 +22,8 @@ related-suvs:
   - SUV-0026-user-visible-retrieval-of-compressed-originals.md (I1 — after 0023)
   - SUV-0027-in-app-headroom-savings-and-stats-report-view.md (I1 — after 0023)
   - SUV-0028-token-displays-and-thresholds-read-through-headroom-stats.md (I1 — after 0023)
-  - SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md (I2 — after 0018)
+  - SUV-0029-memory-provider-seam-with-headroom-and-builtin-markdown-providers.md (I2 — after 0018; re-cut 2026-08-28 around ADR-0031's provider seam)
+  - SUV-0040-builtin-markdown-memory-provider-with-decay-and-temporal-processing.md (I2 — after 0029; builds the minimal built-in provider out to full semantics)
   - SUV-0030-memory-extension-interface-designed-and-proposed-upstream.md (I2 — after 0029)
   - SUV-0031-agentic-memory-v2-as-a-plugged-backend-behind-the-interface.md (I2 — after 0030)
   - SUV-0032-vorno-plus-headroom-docs-page.md (in-app docs — after the surfaces it documents)
@@ -133,6 +134,22 @@ must degrade gracefully if Headroom is absent.
 
 - Adopt Headroom's multi-layer memory as the memory substrate for agent
   sessions and workflows.
+  **CORRECTED 2026-08-28 by [ADR-0031](../../decisions/0031-vendor-neutral-memory-provider-seam.md) —
+  Headroom is one provider, not the substrate.** Memory lands behind a
+  vendor-neutral, **host-invoked** `MemoryProvider` seam
+  (`search`/`save`/`describe`); the first slice ships two providers,
+  `headroom-mcp` (ADR-0029's surface, unchanged underneath) and a
+  `builtin-markdown` default, with agentic-memory as the third. "Adopt the
+  layers" survives as "adopt Headroom as a provider"; what does not survive
+  is memory as a feature of the `HeadroomAdapter` behind `HeadroomConfig.enabled` —
+  that shape would have made every future engine swap a migration through the
+  boundary module, the config schema, and the settings surface. The re-cut is
+  free precisely because SUV-0029 has zero implementation to migrate.
+  **SHIPPED 2026-08-28 by SUV-0029 + SUV-0040.** The seam is
+  `packages/core/src/types/memory-provider.ts`; the two providers are
+  `builtin-markdown` (default, zero provisioning) and `headroom-mcp`; the host
+  calls them from `BaseAgent.chat()`. Headroom is now, in code and not only on
+  paper, one provider among several.
 - **The priority build item of this plan:** a **pluggable extension interface
   for additional memory storage formats and querying** — so alternative
   backends (different formats, different query semantics) can sit behind
@@ -152,6 +169,14 @@ must degrade gracefully if Headroom is absent.
 - **Building our own compression, token, or memory library.** (Corrected twice
   during planning; recording it so it cannot drift back in: the earlier
   "extract our own OSS library" framing is dead.)
+  **AMENDED 2026-08-28 by [ADR-0031](../../decisions/0031-vendor-neutral-memory-provider-seam.md):**
+  the `builtin-markdown` default memory provider (SUV-0040) is a deliberate,
+  bounded carve-out — a provider implementation behind the seam (markdown +
+  frontmatter, lexical retrieval, no embeddings, no vector index), not a
+  memory platform. SUV-0029's three blocked passes invoked this non-goal
+  against writing a markdown substrate ourselves; the ADR records why the
+  carve-out does not reopen that door. The non-goal still forbids the library
+  ambition; it no longer forbids the default provider.
 - **Forking Headroom.** Extension via its seams and upstream PRs only.
 - **Vector-DB / RAG infrastructure.** A retrieval backend could arrive later
   *through* the extension interface; building one is out of scope.
@@ -206,13 +231,13 @@ must degrade gracefully if Headroom is absent.
 
 ## Acceptance
 
-- [ ] I0: vetting report (license, telemetry/network audit, pinning + update cadence) and benchmark results on real Vorno workloads committed to `roadmap/evidence/`.
-- [ ] Headroom integrated behind a per-workspace flag, off by default until benchmarks set defaults; Vorno fully functional with it absent or disabled.
-- [ ] A workflow run (PLAN-039) executes with compression active; originals retrievable through a user-visible affordance.
-- [ ] Token displays/thresholds (PLAN-002/003 surfaces) read through Headroom stats where they overlap; gaps documented as glue or filed upstream — no new library introduced.
-- [ ] Memory extension interface designed against Headroom's seams; upstream contribution opened (or their decline documented and the patch carried with rationale).
-- [ ] agentic-memory v2 runs as a plugged backend behind that interface; the MCP source is a thin host over it.
-- [ ] Docs: a `vorno.ai/docs` page on Vorno + Headroom — what it does, how to toggle it, and what leaves the machine (nothing without opt-in, save the one-time embedder model fetch on first enable, which is disclosed). **This item is discharged by two SUVs, not one:** SUV-0032 authors the page into the in-app docs tree, and SUV-0033 publishes it to the site. In-app content alone does not discharge it — the acceptance says `vorno.ai/docs`, and a guide written for a filesystem stays valid on disk while breaking on the web.
+- [x] I0: vetting report (license, telemetry/network audit, pinning + update cadence) and benchmark results on real Vorno workloads committed to `roadmap/evidence/`.
+- [x] Headroom integrated behind a per-workspace flag, off by default until benchmarks set defaults; Vorno fully functional with it absent or disabled.
+- [x] A workflow run (PLAN-039) executes with compression active; originals retrievable through a user-visible affordance.
+- [x] Token displays/thresholds (PLAN-002/003 surfaces) read through Headroom stats where they overlap; gaps documented as glue or filed upstream — no new library introduced.
+- [x] Memory extension interface designed against Headroom's seams; upstream contribution opened (or their decline documented and the patch carried with rationale).
+- [x] agentic-memory v2 runs as a plugged backend behind that interface; the MCP source is a thin host over it.
+- [~] Docs: a `vorno.ai/docs` page on Vorno + Headroom — what it does, how to toggle it, and what leaves the machine (nothing without opt-in, save the one-time embedder model fetch on first enable, which is disclosed). **This item is discharged by two SUVs, not one:** SUV-0032 authors the page into the in-app docs tree, and SUV-0033 publishes it to the site. In-app content alone does not discharge it — the acceptance says `vorno.ai/docs`, and a guide written for a filesystem stays valid on disk while breaking on the web. **Status 2026-08-28: the in-app half is complete and now spans two pages** (`headroom.md` plus `memory.md`, which it links to); **the publish half is owner-gated**, not merely unfinished — see SUV-0033 in `blocked/`. Marked `[~]` rather than `[x]` deliberately: ticking it would claim something is on the web that is not.
 
 ## Status log
 
@@ -223,3 +248,56 @@ must degrade gracefully if Headroom is absent.
 - `2026-08-27` — **SUV-0030 delivered, and it inverts I2's premise in the favourable direction: the "priority build item" of this plan largely exists upstream already.** `headroom/memory/ports.py` defines the `MemoryStore` / `VectorIndex` / `TextIndex` / `Embedder` / `MemoryCache` / `GraphStore` Protocols; `config.py` carries `EXTERNAL` on all three storage backend enums; `factory.py` loads third-party backends from setuptools `entry_points`. §I2's build item therefore shrinks from "design a pluggable extension interface" to **four additive gaps** taken upstream as [headroomlabs-ai/headroom#3287](https://github.com/headroomlabs-ai/headroom/issues/3287) (retrieval context, withheld/refused envelope, compression-surviving annotations, a TypeScript path) plus a docs PR. Design, on-paper backend walk, and the dated follow-up plan for open question 2: [`roadmap/evidence/PLAN-040/memory-extension-interface-design.md`](../../evidence/PLAN-040/memory-extension-interface-design.md). **Two corrections owed to this file, deliberately not applied in place pending the owner's read** (doc §4): (a) the *Salvaged from prior plans* frontmatter bullet justifies itself with "Headroom's default memory substrate is local markdown" — the same false claim already struck from the capability list on 2026-08-26; the bullet's *recommendation* is sound and re-grounded on `metadata_filters`/`entity_refs`, its *reason* is not. (b) The **"Extension seams"** bullet above is wrong for the TypeScript SDK: `on_pipeline_event` does not exist in `headroom-ai@0.36.5` (the only `pipeline` token is `pipelineTiming`, a stats field), and "downstream MCP tools" is not a seam of that package. Exactly one of the four named seams — compression hooks — is a real extension point there. Related upstream bug reported in the same issue: `CompressionHooks.computeBiases` is documented but inert on `main` (`biases` assigned, never read).
 - `2026-08-27` — **Open question 1 closed by [ADR-0029](../../decisions/0029-headroom-memory-via-host-invoked-mcp.md); the I2 stall is over.** The memory surface is Headroom's **memory MCP stdio server**, host-invoked from the `HeadroomAdapter` boundary — a fifth option all three SUV-0029 audit passes missed because they reasoned about the npm bundle and upstream's wiki, never the installed Python package. `headroom/memory/mcp_server.py` ships **in the pinned 0.36.5**, exposes `memory_search`/`memory_save`, and launches as `python -m headroom.memory.mcp_server` with **no `headroom wrap` in the path** — which is what makes the F3 posture structural rather than argued. Verified by driving it over real stdio JSON-RPC: `initialize` → `tools/list` → save two facts → search returned both, ranked. **That is this plan's first working memory round-trip.** Three constraints came with it and are carried into the ADR and SUV-0029's re-cut: a third lifecycle state (**installed but unprovisioned** — the ONNX embedder needs an ~86 MB HuggingFace model while the server forces `HF_HUB_OFFLINE=1`, so it advertises both tools while both fail); the surface **collapses four-layer scoping to USER only** (`session_id`/`agent_id`/`turn_id` NULL on disk); and **reads are prose, not structured**. The latter two join the LocalBackend-bypass gap on [#3287](https://github.com/headroomlabs-ai/headroom/issues/3287) at the 9/3 bump. Two corrections owed to this file since 2026-08-27 are now **applied in place** (owner-read condition met): the *Salvaged* frontmatter bullet's false justification struck and its recommendation re-grounded on `metadata_filters`/`entity_refs`, and the *Extension seams* bullet reduced from four named seams to the one that is real. Acceptance item 7 is re-scoped: it takes **two** SUVs, and SUV-0033 is cut to own the site-side publish that no SUV on this branch could.
 - `2026-08-26` — second breakdown round, to completion: SUV-0023..0032 cut covering the full remainder — I1 compression call sites (session loop 0023, Conductor 0024), I0 benchmarks→defaults (0025), user-visible retrieval (0026), the in-app savings/stats report view (0027), token display/threshold migration onto Headroom stats (0028), I2 memory adoption (0029), the extension interface + upstream contribution (0030), agentic-memory v2 as plugged backend (0031), and the docs page (0032). Every plan acceptance item now maps to at least one SUV.
+- `2026-08-28` — **[ADR-0031](../../decisions/0031-vendor-neutral-memory-provider-seam.md) generalizes the memory seam one layer above ADR-0029; SUV-0029 re-cut around it, SUV-0040 cut for the built-in provider.** ADR-0029 stands unchanged — its host-invoked MCP surface and constraints C1/C2/C3 all hold — but the layer above it was about to be built vendor-shaped: SUV-0029 as written bolted `memorySearch`/`memorySave` onto `HeadroomAdapter` behind `HeadroomConfig.enabled`, making memory a *feature of Headroom* rather than a capability with providers. ADR-0031 names the seam instead: a vendor-neutral, host-invoked `MemoryProvider` (`search`/`save`/`describe`), with Headroom demoted to one provider (`headroom-mcp`) and a `builtin-markdown` default provider that restores ADR-0027's file-first alignment *literally at the storage layer* for the default path — no Python, no model fetch, no egress, and C1's unprovisioned state structurally impossible there (honest cost, stated not hidden: lexical retrieval, not semantic). The existence proof is already running in this workspace: the `agentic-memory` MCP source is structurally identical to Headroom's memory MCP server — and, ironically, being an ordinary source today its tools are *model-invoked*, the exact adherence-dependence ADR-0029 rules out; as the third provider it becomes host-invoked too. `describe()` exists because C1/C2/C3 taught us providers have shapes the host must degrade around rather than assume; host-invocation is what makes deterministic composition (fan-out search, mirrored writes) possible at all. The re-cut is free because SUV-0029 has **zero implementation** — three blocked passes wrote audits and tripwires, never source; naming the seam correctly before writing it costs nothing, after it would be a migration through the shipped settings surface and the boundary lint. §I2's substrate bullet corrected in place above; the first non-goal amended with the bounded carve-out; SUV-0040 added to the breakdown (after 0029, which it is blocked by).
+- `2026-08-28` — **The plan's memory half is built. SUV-0029 and SUV-0040 both
+  executed and moved to `done/`; six of seven plan acceptance items are ticked,
+  and the seventh is owner-gated rather than unfinished.** `planned/` →
+  `in-progress/`.
+
+  **What landed.** ADR-0031's `MemoryProvider` seam (`search`/`save`/`describe`),
+  a provider registry, two real providers in-tree, host-invoked calls at
+  `BaseAgent.chat()`'s context assembly and turn exit, a memory config schema
+  and workspace settings section that surfaces each provider's *declared*
+  capabilities including its limitations, a docs page, and the boundary gate's
+  missing second direction. 239 new tests. Detail lives in the two SUV logs
+  rather than here; what belongs at plan level is the shape:
+
+  **§I2's "priority build item" has now resolved twice, in opposite directions,
+  and both resolutions stand.** SUV-0030 found the *Headroom-internal* extension
+  interface already existed upstream (`ports.py` Protocols + setuptools entry
+  points), shrinking that build item to four additive gaps filed as
+  [#3287](https://github.com/headroomlabs-ai/headroom/issues/3287). ADR-0031 then
+  named a *second, Vorno-side* seam one layer above it. These are not competing
+  answers — they are the two pluggability layers ADR-0031 commitment 5 warns not
+  to confuse, and this plan now has both.
+
+  **The non-goal carve-out was exercised, and stayed narrow.** `builtin-markdown`
+  is ~700 lines of provider across five focused modules: markdown files,
+  frontmatter, lexical retrieval, decay, archive. No embeddings, no vector index,
+  no public API beyond the seam, no library. The AMENDED non-goal above predicted
+  exactly this boundary and it held — worth recording, because a carve-out that
+  quietly widens is how "we are not building a library" becomes a library.
+
+  **Three integration-time defects, consistent with this plan's standing
+  instruction to verify rather than trust.** (1) Headroom's memory server
+  resolves its database **from the current working directory** — for a desktop
+  app, wherever it was launched from; now pinned with `--db` into the workspace.
+  (2) An explicit interpreter path was treated as a first guess rather than as
+  authoritative. (3) `describe()` initially reported every failing probe as the
+  C1 "unprovisioned" state, including a database error that no model download
+  would fix. All three were found by tests, none by review. The first is the kind
+  of thing that ships and then produces a bug report reading "my memories
+  disappeared", which is worth more than the two-line fix suggests.
+
+  **On sequencing:** SUV-0040 was `blocked-by` SUV-0029 and both shipped in one
+  pass. The split was about scope legibility, not ordering — SUV-0029 needed a
+  second real provider to demonstrate vendor-neutrality at all, and a
+  `builtin-markdown` without depth would have been written twice. Each kept its
+  own acceptance list and each is ticked on its own evidence.
+
+  **What is left, precisely.** Acceptance item 7 is `[~]`: the in-app docs are
+  complete and now span two pages, but `vorno.ai/docs` does not yet carry them.
+  SUV-0033 owns that publish, is moved to `blocked/`, and its `blocked-by` names
+  the owner gate — publishing to the site is outward-facing and timed against
+  announcements, so it is Jeff's call, not an oversight. Every other SUV under
+  this plan is in `done/`.

@@ -548,6 +548,15 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   // sessions, so this follows the workspace (fork: PLAN-040 / SUV-0027).
   RPC_CHANNELS.headroom.STATS_GET,
   RPC_CHANNELS.headroom.STATS_CHANGED,
+
+  // memory — capabilities are a property of the provider *as constructed for a
+  // given workspace root*: whether its store exists, whether its embedder is
+  // provisioned, whether the interpreter it needs is on that machine. All of
+  // that is true or false on the host holding the workspace, so asking the
+  // local server about a remote workspace would describe the wrong machine's
+  // filesystem. Follows the workspace, same as headroom (fork: PLAN-040 /
+  // SUV-0029 + SUV-0040).
+  RPC_CHANNELS.memory.CAPABILITIES_GET,
 ])
 
 // ---------------------------------------------------------------------------

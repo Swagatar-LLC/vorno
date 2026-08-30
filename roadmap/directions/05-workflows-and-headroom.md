@@ -5,6 +5,8 @@ status: active
 opened: 2026-08-22
 related-decisions:
   - 0027-lean-on-the-os-for-lifecycle-chores.md
+  - 0029-headroom-memory-via-host-invoked-mcp.md
+  - 0031-vendor-neutral-memory-provider-seam.md
 related-plans:
   - PLAN-039-workflow-definitions-reusable-parameterized-tasks.md
   - PLAN-040-integrate-headroom.md
@@ -79,7 +81,7 @@ discovering the ceiling in production.
 graph LR
     T[PLAN-043<br/>Roadmap-console detour:<br/>dogfood the task breakdown] --> A[PLAN-039<br/>Workflows]
     A --> M[Milestone:<br/>reusable, durable,<br/>self-serve agent work]
-    B[PLAN-040<br/>Headroom integration:<br/>compression, tokens,<br/>memory + extension seam] --> M
+    B[PLAN-040<br/>Headroom integration:<br/>compression, tokens,<br/>memory provider seam] --> M
     M --> C[PLAN-041<br/>Server-homed instances + auth]
     M --> D[PLAN-042<br/>Team management]
     M --> E[PLAN-044<br/>Cross-system work requests]

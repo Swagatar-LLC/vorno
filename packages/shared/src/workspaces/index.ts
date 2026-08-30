@@ -17,6 +17,11 @@ export type {
 export { loadEffectiveHeadroomConfig, loadHeadroomConfigView } from './headroom.ts';
 export type { HeadroomConfigView } from './headroom.ts';
 
+// Memory config resolution and its editing view (fork: PLAN-040, SUV-0029;
+// ADR-0031). A sibling of the Headroom section above, not part of it.
+export { loadEffectiveMemoryConfig, loadMemoryConfigView } from './memory.ts';
+export type { MemoryConfigView } from './memory.ts';
+
 // Storage functions
 export {
   // Path utilities

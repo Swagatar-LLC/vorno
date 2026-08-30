@@ -19,9 +19,12 @@ its own.
 | A badge on compressed tool output, and the original behind it | The session view |
 | Measured savings, per session and per workspace | Workspace Settings → **Headroom savings**, and the session info panel |
 
-Two things Headroom does **not** do in Vorno today:
+Two things worth knowing about Headroom's shape in Vorno today:
 
-- **It does not store memory.** See [Memory](#memory).
+- **Compression and memory are separate features.** The package Vorno compresses
+  with has no memory API at all; Headroom's memory is a different program with
+  its own prerequisites, and it is one of two providers behind Vorno's own
+  memory capability. See [Memory](#memory).
 - **It does not run by itself.** Compression happens in a separate local
   process you install and start yourself. See [Before it can do anything](#before-it-can-do-anything-the-local-proxy).
 
@@ -173,16 +176,23 @@ that is the path where compressed content is not recoverable.
 
 ## Memory
 
-Headroom's multi-layer memory is **not available in Vorno**, and no Vorno surface
-exposes it.
+**Vorno has memory, and it is not a Headroom feature.** It is a separate
+capability with providers, and Headroom is one of the two.
 
-Vorno audited the pinned Headroom package for a memory API and found none: no
-memory endpoint, no memory client, and no filesystem access at all. Upstream
-reaches memory only through its own CLI wrapper, its Python client, or tools the
-proxy injects into the model's tool list — none of which Vorno uses. Whether to
-adopt one of those routes is an open decision, not a shipped feature.
+- **Built-in (markdown)** — the default. Plain markdown files in your workspace,
+  lexical search, no setup and no egress.
+- **Headroom (MCP)** — semantic search, reached by running Headroom's memory MCP
+  server. It needs Headroom installed plus a one-time ~86 MB embedding-model
+  download.
 
-If you are looking for memory in Vorno today, Headroom is not where it lives.
+None of this runs through the compression proxy this page describes, and the
+Headroom package Vorno compresses with has no memory API — memory ships in the
+matched Python half of the product as a separate stdio server. Turning Headroom
+compression on does not turn memory on, and vice versa.
+
+Memory is off by default, like compression. **See [Memory](memory.md)** for what
+it stores, where it stores it, how to choose a provider, and what leaves your
+machine.
 
 ## Privacy: what leaves your machine
 

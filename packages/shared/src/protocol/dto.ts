@@ -16,6 +16,9 @@ import type {
   HeadroomConfig,
   HeadroomConfigOverrides,
   HeadroomConfigSources,
+  MemoryConfig,
+  MemoryConfigOverrides,
+  MemoryConfigSources,
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
@@ -813,6 +816,29 @@ export interface WorkspaceSettings {
    * what you read back is what you may write.
    */
   headroomView?: HeadroomConfigViewDto
+  /**
+   * This workspace's memory override layer (PLAN-040, SUV-0029 + SUV-0040;
+   * ADR-0031). A **sibling** of `headroom`, never a section inside it: memory is
+   * a capability with providers, and Headroom is one of those providers. Folding
+   * it under `headroom` would make "memory off because Headroom off" a wire fact
+   * instead of a configuration.
+   *
+   * `undefined` means the workspace overrides nothing and inherits entirely. As
+   * with `headroom`, the instance base layer is deliberately not settable here.
+   */
+  memory?: MemoryConfigOverrides
+  /**
+   * Derived, read-only companion to `memory` — same split, same reason as
+   * `headroomView`: for every key a client can write, what it reads back under
+   * that name is exactly what it may write, and everything derived lives under
+   * a different name.
+   *
+   * Note this carries *configuration*, not provider state. What the selected
+   * provider can actually do today is a separate, live question answered by
+   * `RPC_CHANNELS.memory.CAPABILITIES_GET`, because it depends on the host's
+   * filesystem rather than on any stored config.
+   */
+  memoryView?: MemoryConfigViewDto
 }
 
 /** Read-side Headroom view for one workspace (PLAN-040, SUV-0017). */
@@ -825,6 +851,23 @@ export interface HeadroomConfigViewDto {
   overrides?: HeadroomConfigOverrides
   /** Which layer supplied each effective field. */
   sources: HeadroomConfigSources
+}
+
+/**
+ * Read-side memory config view for one workspace (PLAN-040, SUV-0029 +
+ * SUV-0040). Structurally identical to {@link HeadroomConfigViewDto} on
+ * purpose — two config surfaces in one product that report provenance
+ * differently is a bug waiting for a support ticket.
+ */
+export interface MemoryConfigViewDto {
+  /** Resolved: workspace override → instance base → disabled defaults. */
+  effective: MemoryConfig
+  /** Resolved with the workspace layer removed — what clearing reverts to. */
+  instanceEffective: MemoryConfig
+  /** The workspace layer exactly as stored; absent when there is none. */
+  overrides?: MemoryConfigOverrides
+  /** Which layer supplied each effective field. */
+  sources: MemoryConfigSources
 }
 
 // ---------------------------------------------------------------------------

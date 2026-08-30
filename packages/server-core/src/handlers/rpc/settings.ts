@@ -108,7 +108,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
     }
 
     // Load workspace config
-    const { loadWorkspaceConfig, loadHeadroomConfigView } = await import('@craft-agent/shared/workspaces')
+    const { loadWorkspaceConfig, loadHeadroomConfigView, loadMemoryConfigView } = await import('@craft-agent/shared/workspaces')
     const config = loadWorkspaceConfig(workspace.rootPath)
 
     return {
@@ -133,6 +133,14 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       // layers it merges live in different files.
       headroom: config?.defaults?.headroom,
       headroomView: loadHeadroomConfigView(workspace.rootPath),
+      // fork(PLAN-040, SUV-0029 + SUV-0040; ADR-0031): the same writable-layer
+      // + derived-view pair for memory. A sibling key, not a section under
+      // `headroom` — memory is a capability with providers, and Headroom is one
+      // of them. What the *selected provider* can do is a separate, live
+      // question; it is answered by `vorno:memory:capabilities:get`, not here,
+      // because it depends on the host's filesystem rather than stored config.
+      memory: config?.defaults?.memory,
+      memoryView: loadMemoryConfigView(workspace.rootPath),
     }
   })
 
@@ -144,7 +152,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'idleAgentTtlMinutes', 'workbenchEnabled', 'artifactsEnabled', 'artifactRoots', 'headroom']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'idleAgentTtlMinutes', 'workbenchEnabled', 'artifactsEnabled', 'artifactRoots', 'headroom', 'memory']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
     }
@@ -210,6 +218,22 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       if (sanitizeHeadroomConfigLayer(normalizedValue) === null) {
         throw new Error(
           'headroom must be an object whose known fields are well-typed: enabled/exposeStats boolean, compressionEngines string[], verbosity one of terse|balanced|verbose',
+        )
+      }
+    }
+
+    // Validate the memory workspace override layer (PLAN-040, SUV-0029 +
+    // SUV-0040; ADR-0031) — same shape of check, same reason as `headroom`
+    // above: the write surface calls the very validator the read-time resolver
+    // calls, so a value that stores cannot later be treated as corrupt. Note
+    // the validator *rejects* out-of-range numbers rather than clamping them,
+    // deliberately, so the stored file and the effective config can never
+    // silently disagree about a number the user typed.
+    if (key === 'memory' && normalizedValue !== undefined && normalizedValue !== null) {
+      const { sanitizeMemoryConfigLayer } = await import('@craft-agent/core/types')
+      if (sanitizeMemoryConfigLayer(normalizedValue) === null) {
+        throw new Error(
+          'memory must be an object whose known fields are well-typed: enabled/autoLoad/autoSave/includeArchived boolean, provider one of builtin-markdown|headroom-mcp, topK integer 1–50, decayHalfLifeDays number 1–3650',
         )
       }
     }

@@ -1,17 +1,18 @@
 ---
 id: SUV-0033
 title: Publish the Headroom docs page to vorno.ai/docs
-status: planned
+status: blocked
 plan: PLAN-040
 direction: DIR-05
 owner: jh
 created: 2026-08-27
-updated: 2026-08-27
+updated: 2026-08-28
 related:
   - SUV-0032-vorno-plus-headroom-docs-page.md (authors the page this SUV publishes)
-  - SUV-0029-adopt-headroom-multi-layer-memory-for-sessions-and-workflows.md (the memory behaviour and the embedder-fetch disclosure the page must carry)
+  - SUV-0029-memory-provider-seam-with-headroom-and-builtin-markdown-providers.md (the memory behaviour and the embedder-fetch disclosure the page must carry)
 blocked-by:
   - SUV-0032-vorno-plus-headroom-docs-page.md (the page must exist in the in-app docs tree before it can be published)
+  - jh (owner gate: publishing to vorno.ai is an outward-facing release step Jeff coordinates with site and social timing — the content is ready, the publish is his call)
 ---
 
 # SUV-0033 — Publish the Headroom docs page to vorno.ai/docs
@@ -41,6 +42,13 @@ one — and carries its own branch in `vorno-site`. The rule is satisfied by
 
 - Publish the Headroom page into `vorno-site`'s content tree so it renders at
   `vorno.ai/docs`, matching how the other 17 in-app guides are carried.
+- **Publish the memory page alongside it (added 2026-08-28).** SUV-0029/0040
+  landed `apps/electron/resources/docs/memory.md`, and the Headroom page's
+  Memory section now *links to it*. Publishing one without the other would ship
+  a dangling cross-reference on the live site — so the two pages are one
+  publishing unit, not two. The memory page also carries the privacy claim that
+  most needs to be right in public: the built-in provider sends nothing, and the
+  ~86 MB embedder fetch belongs to the Headroom provider alone.
 - **Exercise the `vorno-site` build gate as part of this loop**, not after it.
   This is the whole point of the SUV: a guide written for a filesystem stays
   valid on disk and breaks on the web. The PLAN-034 arc is the precedent — that
@@ -58,9 +66,10 @@ one — and carries its own branch in `vorno-site`. The rule is satisfied by
 ## Acceptance
 
 - [ ] The Headroom page renders at `vorno.ai/docs` and is reachable from the docs navigation.
+- [ ] The memory page renders there too, and the Headroom page's link to it resolves on the web rather than only on disk.
 - [ ] The `vorno-site` build gate passes on the branch that publishes it, with any link/href findings fixed rather than suppressed — and the fixes landed in the in-app source of truth where that is where they belong.
-- [ ] Published content and `apps/electron/resources/docs/headroom.md` agree; any divergence forced by the gate is recorded in this SUV's status log with its reason.
-- [ ] The privacy section names the one-time embedder model fetch explicitly, so "nothing leaves the machine without opt-in" is stated with its actual carve-out rather than as an overclaim.
+- [ ] Published content and `apps/electron/resources/docs/{headroom,memory}.md` agree; any divergence forced by the gate is recorded in this SUV's status log with its reason.
+- [ ] The privacy section names the one-time embedder model fetch explicitly, so "nothing leaves the machine without opt-in" is stated with its actual carve-out rather than as an overclaim — and attributes it to the `headroom-mcp` provider specifically, since the default provider has no such fetch.
 
 ## Status log
 
@@ -70,3 +79,17 @@ one — and carries its own branch in `vorno-site`. The rule is satisfied by
   half. Item 7 is re-scoped in the plan to name both SUVs. Spans repositories by
   design; see *Why this is its own SUV* on why that is compatible with the
   one-branch rule rather than an exception to it.
+
+- `2026-08-28` — **scope widened to two pages; still `planned/`, and deliberately
+  not executed.** SUV-0029/0040 shipped memory and with it
+  `apps/electron/resources/docs/memory.md`, which the Headroom page now links
+  to — so publishing Headroom alone would put a dangling link on the live site.
+  Both pages are in the repo, written, and tested; what remains is the publish.
+
+  **Left for the owner on purpose, not overlooked.** Publishing to `vorno.ai` is
+  outward-facing and effectively irreversible once indexed, and site changes are
+  timed against announcements. Recorded as an explicit `blocked-by` so the state
+  is "waiting on a decision" rather than "nobody got to it" — the distinction the
+  `blocked/` conventions exist to preserve. Everything upstream of the publish is
+  done; this SUV is one branch in `vorno-site` away from closing, whenever that
+  is the right week.

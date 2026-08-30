@@ -2,12 +2,21 @@
 # Machine-neutral on purpose: no cwd, no project id, no model route. Those are
 # supplied at publish time. Derived from the SUV's own Goal/Scope/Acceptance —
 # if this file and the SUV disagree, the SUV is right and this is stale.
+#
+# STATUS 2026-08-28: SUV-0029 is DONE. This definition was re-grounded on
+# ADR-0029 + ADR-0031 at the same time, because it had drifted badly: it still
+# directed an implementer at the `HeadroomAdapter` design ADR-0031 rejects by
+# name, and at the "local markdown substrate" premise three audit passes
+# falsified. A stale definition is worse than an absent one — it lets a run pass
+# while building the wrong thing. Re-running this now is a RE-VERIFICATION of
+# shipped work, not an implementation.
 id: suv-0029-adopt-headroom-multi-layer-memory-for-sessio
-title: SUV-0029 - Adopt Headroom multi-layer memory for sessions and workflows
+title: SUV-0029 - Memory provider seam with Headroom MCP and built-in markdown providers
 goal: |
-  Make Headroom's multi-layer memory the flag-gated memory substrate for agent
-  sessions and workflow runs, exposed through memory operations on the boundary
-  adapter.
+  Ship the vendor-neutral, host-invoked `MemoryProvider` seam of ADR-0031 as the
+  memory surface for agent sessions and workflow runs, exercised by two real
+  providers in-tree: `headroom-mcp` and `builtin-markdown`. Headroom is one
+  provider, not the substrate.
 acceptance_criteria: |
   Grade in this order.
 
@@ -25,10 +34,12 @@ acceptance_criteria: |
   Reply `VERDICT: PASS` only if `adversarial-verify` said PASS and none of 2, 3 or 4 holds.
 
   This SUV's acceptance list, for reference:
-  - [ ] The boundary adapter exposes memory operations, and the only production import of Headroom's memory APIs remains inside the boundary module (SUV-0015 guard still passes).
-  - [ ] In an enabled workspace, a memory written during one session is retrievable in a later session and in a workflow run, asserted by an integration test.
-  - [ ] The memory substrate on disk is local markdown, human-readable, and nothing is sent off-machine — verified against the SUV-0014 telemetry audit's opt-in findings.
-  - [ ] With Headroom disabled or absent, sessions and workflows run unchanged and memory operations report unavailable rather than throwing.
+  - [ ] The `MemoryProvider` seam (search / save / describe) is exercised by TWO providers in-tree — `headroom-mcp` and `builtin-markdown` — and swapping the active provider is a config change that touches no call site.
+  - [ ] The only production reference to Headroom's memory surface stays inside the `headroom-mcp` provider, with `check-headroom-boundary.ts` covering the SUBPROCESS seam as well as package imports, and proven able to go red on a mutation.
+  - [ ] Cross-session retrievability holds per provider, asserted by integration tests against real storage.
+  - [ ] Memory is host-invoked: a test asserts search fires during context assembly without the model having requested it.
+  - [ ] Nothing is sent off-machine at steady state. The one-time ~86 MB embedder fetch on first Headroom enable is the sole documented exception — `headroom-mcp` only; `builtin-markdown` has none.
+  - [ ] Degrade matrix covered per provider via describe()/probing: absent, present-but-unprovisioned, and disabled are three DISTINCT reported states, and sessions run unchanged in all of them.
 nodes:
   - id: orient
     title: Orient in PLAN-040 and SUV-0029
@@ -59,7 +70,7 @@ nodes:
   - id: implement
     title: Implement SUV-0029
     prompt: |
-      Implement SUV-0029 — Adopt Headroom multi-layer memory for sessions and workflows.
+      Implement SUV-0029 — Memory provider seam with Headroom MCP and built-in markdown providers.
 
       Your working directory is a checkout of the Vorno repository on PLAN-040's branch.
       Commit your work there. Do not create a second branch for this SUV, do not merge, do
@@ -76,25 +87,47 @@ nodes:
       --- end orientation ---
 
       GOAL
-      Make Headroom's multi-layer memory the flag-gated memory substrate for agent
-      sessions and workflow runs, exposed through memory operations on the boundary
-      adapter.
+      Ship the vendor-neutral, HOST-INVOKED `MemoryProvider` seam of ADR-0031 as
+      the memory surface for agent sessions and workflow runs, exercised by two
+      real providers in-tree. Headroom is ONE PROVIDER, not the substrate.
 
       SCOPE — including what is deliberately OUT
-      - Extend the `HeadroomAdapter` boundary (SUV-0015) with the memory operations
-        the plan needs — write, query, and provenance-carrying reads — backed by
-        Headroom's memory layers with its default local-markdown substrate; the
-        no-op adapter reports memory as unavailable.
-      - Wire session and Conductor workflow construction so agents read and write
-        through that memory when the workspace flag enables it.
-      - Deliberately out: the pluggable extension interface (SUV-0030), the
-        agentic-memory v2 backend (SUV-0031), and `headroom learn` mining.
+      - Define the `MemoryProvider` seam (search / save / describe) plus the
+        registry the host resolves the active provider from. Do NOT bolt memory
+        onto `HeadroomAdapter` — ADR-0031 alternative A rejects that shape by
+        name, because it makes every future engine swap a migration through the
+        Headroom boundary, config schema, and settings surface.
+      - Provider 1, `headroom-mcp`: ADR-0029's memory MCP stdio server,
+        host-invoked, reusing the existing stdio MCP machinery. Its describe()
+        declares C1 (unprovisioned third state), C2 (scoping collapses to USER)
+        and C3 (reads are prose).
+      - Provider 2, `builtin-markdown`: markdown + frontmatter, lexical
+        retrieval, no Python, no model fetch, no egress. Its DEPTH (decay,
+        temporal processing, archive markers, retrieval logging) is SUV-0040.
+      - Wire session and Conductor construction so the HOST calls search at
+        context assembly and save at save points — never contingent on the model
+        electing to call a tool.
+      - Extend `check-headroom-boundary.ts` to the subprocess seam. It matches
+        package imports and is therefore blind to `python -m`.
+      - Deliberately out: SUV-0040's build-out, multi-provider composition,
+        exposing memory tools to the model, update/delete/supersession verbs,
+        the extension interface (SUV-0030), the agentic-memory backend
+        (SUV-0031), and `headroom learn` mining.
+
+      PREMISE CORRECTION — read before planning any of this. Earlier revisions of
+      this file said Headroom's memory substrate is "local markdown". It is not:
+      it is SQLite + a vector index, reachable from TypeScript only through a
+      Python stdio MCP server. Three audit passes established this and the
+      tripwire `headroom/__tests__/sdk-memory-surface.test.ts` pins it. Do not
+      plan against the old premise.
 
       ACCEPTANCE — every item must be true when you are done
-      - [ ] The boundary adapter exposes memory operations, and the only production import of Headroom's memory APIs remains inside the boundary module (SUV-0015 guard still passes).
-      - [ ] In an enabled workspace, a memory written during one session is retrievable in a later session and in a workflow run, asserted by an integration test.
-      - [ ] The memory substrate on disk is local markdown, human-readable, and nothing is sent off-machine — verified against the SUV-0014 telemetry audit's opt-in findings.
-      - [ ] With Headroom disabled or absent, sessions and workflows run unchanged and memory operations report unavailable rather than throwing.
+      - [ ] The `MemoryProvider` seam (search / save / describe) is exercised by TWO providers in-tree — `headroom-mcp` and `builtin-markdown` — and swapping the active provider is a config change that touches no call site.
+      - [ ] The only production reference to Headroom's memory surface stays inside the `headroom-mcp` provider, with `check-headroom-boundary.ts` covering the SUBPROCESS seam as well as package imports, and proven able to go red on a mutation.
+      - [ ] Cross-session retrievability holds per provider, asserted by integration tests against real storage.
+      - [ ] Memory is host-invoked: a test asserts search fires during context assembly without the model having requested it.
+      - [ ] Nothing is sent off-machine at steady state. The one-time ~86 MB embedder fetch on first Headroom enable is the sole documented exception — `headroom-mcp` only; `builtin-markdown` has none.
+      - [ ] Degrade matrix covered per provider via describe()/probing: absent, present-but-unprovisioned, and disabled are three DISTINCT reported states, and sessions run unchanged in all of them.
 
       Rules that decide whether this run is graded a pass:
         - Stay inside the scope boundary. Work the SUV declares out of scope is a defect,
@@ -124,10 +157,12 @@ nodes:
       --- end account ---
 
       THE ACCEPTANCE LIST THIS IS GRADED AGAINST:
-      - [ ] The boundary adapter exposes memory operations, and the only production import of Headroom's memory APIs remains inside the boundary module (SUV-0015 guard still passes).
-      - [ ] In an enabled workspace, a memory written during one session is retrievable in a later session and in a workflow run, asserted by an integration test.
-      - [ ] The memory substrate on disk is local markdown, human-readable, and nothing is sent off-machine — verified against the SUV-0014 telemetry audit's opt-in findings.
-      - [ ] With Headroom disabled or absent, sessions and workflows run unchanged and memory operations report unavailable rather than throwing.
+      - [ ] The `MemoryProvider` seam (search / save / describe) is exercised by TWO providers in-tree — `headroom-mcp` and `builtin-markdown` — and swapping the active provider is a config change that touches no call site.
+      - [ ] The only production reference to Headroom's memory surface stays inside the `headroom-mcp` provider, with `check-headroom-boundary.ts` covering the SUBPROCESS seam as well as package imports, and proven able to go red on a mutation.
+      - [ ] Cross-session retrievability holds per provider, asserted by integration tests against real storage.
+      - [ ] Memory is host-invoked: a test asserts search fires during context assembly without the model having requested it.
+      - [ ] Nothing is sent off-machine at steady state. The one-time ~86 MB embedder fetch on first Headroom enable is the sole documented exception — `headroom-mcp` only; `builtin-markdown` has none.
+      - [ ] Degrade matrix covered per provider via describe()/probing: absent, present-but-unprovisioned, and disabled are three DISTINCT reported states, and sessions run unchanged in all of them.
 
       Do all of the following yourself:
         1. Read the actual diff on the branch (`git diff` against the branch point, and

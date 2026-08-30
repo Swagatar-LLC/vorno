@@ -7,6 +7,7 @@ import { registerFilesHandlers } from './files'
 import { registerHeadroomHandlers } from './headroom'
 import { registerLabelsHandlers } from './labels'
 import { registerLlmConnectionsHandlers } from './llm-connections'
+import { registerMemoryHandlers } from './memory'
 import { registerOAuthHandlers } from './oauth'
 import { registerResourcesHandlers } from './resources'
 import { registerOnboardingHandlers } from './onboarding'
@@ -40,6 +41,7 @@ export function registerCoreRpcHandlers(
   registerHeadroomHandlers(server, deps)
   registerLabelsHandlers(server, deps)
   registerLlmConnectionsHandlers(server, deps)
+  registerMemoryHandlers(server, deps)
   registerOAuthHandlers(server, deps)
   registerOnboardingHandlers(server, deps)
   registerResourcesHandlers(server, deps)
