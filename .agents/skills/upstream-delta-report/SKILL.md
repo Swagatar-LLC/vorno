@@ -5,7 +5,7 @@ description: Refresh roadmap/upstream/delta.md with the current set of files we 
 
 # Skill: upstream-delta-report
 
-Compute the current diff between our `main` and `upstream/main`, group by component, and rewrite `roadmap/upstream/delta.md` accordingly.
+Compute the current diff between our `main` and `upstream/main`, group by component, and rewrite `INTERNAL_DIR/upstream/delta.md` (the private `Swagatar-LLC/vorno-internal` checkout, `~/dev/vorno-internal` by convention — moved out of `roadmap/upstream/` when the main repo went public on 2026-07-17) accordingly.
 
 ## When to invoke
 
@@ -44,7 +44,7 @@ Bucket each file into one of:
 - **Lock files** — `bun.lock` (always diverges; mechanical)
 - **Other** — anything that doesn't fit above (flag to user)
 
-### Step 4 — Rewrite `roadmap/upstream/delta.md`
+### Step 4 — Rewrite `INTERNAL_DIR/upstream/delta.md` (the private `Swagatar-LLC/vorno-internal` checkout, `~/dev/vorno-internal` by convention — moved out of `roadmap/upstream/` when the main repo went public on 2026-07-17)
 
 Preserve the structure of the existing file:
 

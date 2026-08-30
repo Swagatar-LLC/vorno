@@ -64,3 +64,4 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 > but it lives on the `plan/plan-046` line of work and is not on this branch. The
 > hole in the sequence above is branch topology, not a lost decision. It closes
 > when PR #181 merges.
+| [0030](0030-suv-identity-is-global-per-plan-coherence-is-derived.md) | SUV identity stays global; per-plan coherence is a derived view | accepted |
