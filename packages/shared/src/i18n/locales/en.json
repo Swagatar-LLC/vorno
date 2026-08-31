@@ -1414,6 +1414,8 @@
   "settings.workspace.icon": "Icon",
   "settings.workspace.idleAgentTtl": "Idle agent timeout (minutes)",
   "settings.workspace.idleAgentTtlDesc": "Dispose a session's warm agent process after this many idle minutes. It restarts transparently on the next message. 0 keeps agents alive until quit.",
+  "settings.workspace.idleBrowserTtl": "Idle browser window timeout (minutes)",
+  "settings.workspace.idleBrowserTtlDesc": "Destroys a session's hidden browser window after this many idle minutes. Windows you opened yourself are never affected. 0 keeps hidden windows alive until quit.",
   "settings.workspace.localMcpServers": "Local MCP Servers",
   "settings.workspace.localMcpServersDesc": "Enable stdio subprocess servers",
   "settings.workspace.modeCycling": "Mode Cycling",

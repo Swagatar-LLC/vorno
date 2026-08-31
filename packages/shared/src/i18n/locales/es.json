@@ -1414,6 +1414,8 @@
   "settings.workspace.icon": "Icono",
   "settings.workspace.idleAgentTtl": "Tiempo de espera del agente inactivo (minutos)",
   "settings.workspace.idleAgentTtlDesc": "Elimina el proceso de agente activo de una sesión tras estos minutos de inactividad. Se reinicia de forma transparente con el siguiente mensaje. 0 mantiene los agentes activos hasta salir.",
+  "settings.workspace.idleBrowserTtl": "Tiempo de espera de ventana de navegador inactiva (minutos)",
+  "settings.workspace.idleBrowserTtlDesc": "Destruye la ventana de navegador oculta de una sesión tras estos minutos de inactividad. Las ventanas que abriste tú nunca se ven afectadas. 0 mantiene las ventanas ocultas hasta salir.",
   "settings.workspace.localMcpServers": "Servidores MCP locales",
   "settings.workspace.localMcpServersDesc": "Activar servidores de subprocesos stdio",
   "settings.workspace.modeCycling": "Ciclo de modos",

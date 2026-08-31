@@ -173,6 +173,25 @@ interface BrowserInstance {
   ownerType: 'session' | 'manual'
   ownerSessionId: string | null
   /**
+   * Create-time origin: true iff this window was created FOR a session
+   * (SUV-0044). Immutable — set once in createInstance and never rewritten
+   * by bind/unbind. Neither mutable ownership field can carry this: turn-end
+   * unbinding flips `ownerType` to 'manual' while retaining `ownerSessionId`,
+   * and `bindSession` stamps `ownerSessionId` onto a user-opened window a
+   * session adopts. The idle reaper keys on this flag so former session
+   * windows are reapable and adopted user windows never are.
+   */
+  sessionCreated: boolean
+  /**
+   * Number of browser commands currently in flight against this instance
+   * (SUV-0044). Incremented/decremented by guardInstanceOp around every
+   * dispatched command; the idle reaper never destroys a window mid-command
+   * (destroy-during-command is the exact race SUV-0043 removes).
+   */
+  inFlightOps: number
+  /** Idle clock for the reaper: last create/bind/unbind/op-completion time. */
+  lastActivityAt: number
+  /**
    * Workspace this instance is associated with, or `null` for unbound manual
    * windows. Renderers in other workspaces filter such entries out of the tab
    * strip / status badge. Stamped at create-time (or first bind) — once non-null,
@@ -486,6 +505,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       boundSessionId: ownerSessionId,
       ownerType,
       ownerSessionId,
+      sessionCreated: ownerType === 'session',
+      inFlightOps: 0,
+      lastActivityAt: Date.now(),
       workspaceId,
       isVisible: false,
       isHiding: false,
@@ -637,6 +659,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * know; other errors pass through untouched.
    */
   private async guardInstanceOp<T>(instance: BrowserInstance, op: () => Promise<T>): Promise<T> {
+    instance.inFlightOps += 1
     try {
       return await op()
     } catch (error) {
@@ -651,6 +674,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         throw this.closedWindowError(instance.id)
       }
       throw error
+    } finally {
+      instance.inFlightOps = Math.max(0, instance.inFlightOps - 1)
+      // Every completed operation resets the idle clock (SUV-0044).
+      instance.lastActivityAt = Date.now()
     }
   }
 
@@ -1825,6 +1852,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       instance.boundSessionId = sessionId
       instance.ownerType = 'session'
       instance.ownerSessionId = sessionId
+      instance.lastActivityAt = Date.now()
       // Adopt the new binder's workspace. Manual windows being reused for a
       // session start carrying that session's workspace so the receiving
       // workspace's UI sees them and others don't.
@@ -1841,6 +1869,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       instance.boundSessionId = null
       instance.ownerType = 'manual'
       // Preserve ownerSessionId as last-known owner for lifecycle targeting.
+      instance.lastActivityAt = Date.now()
       this.emitStateChange(instance)
     }
   }
@@ -1853,6 +1882,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         instance.ownerType = 'manual'
         // Keep ownerSessionId for post-turn lifecycle commands like `close` and `hide`.
         instance.ownerSessionId = instance.ownerSessionId ?? sessionId
+        instance.lastActivityAt = Date.now()
         this.emitStateChange(instance)
         mainLog.info(`[browser-pane] Unbound instance ${instance.id} from session ${sessionId} (owner retained: ${instance.ownerSessionId ?? 'none'})`)
       }
@@ -2219,6 +2249,98 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     for (const id of [...this.instances.keys()]) {
       this.destroyInstance(id)
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Idle TTL reaper (SUV-0044) — PLAN-038's idle-sweep pattern, browser-shaped.
+  // Hidden, unbound, session-created windows are destroyed after a
+  // per-workspace idle TTL instead of accumulating for the life of the app
+  // (each is a full Chromium window + 3 BrowserViews + a CDP client).
+  // ---------------------------------------------------------------------------
+
+  private idleReaperTimer: ReturnType<typeof setInterval> | null = null
+  private idleReaperTtlResolver: ((workspaceId: string | null) => number) | null = null
+
+  /**
+   * Start the minute-tick idle sweep. `resolveTtlMinutes` maps an instance's
+   * workspace to its TTL (read live per tick, so a Settings change applies
+   * without restart); `0` disables reaping for that workspace.
+   */
+  startIdleReaper(resolveTtlMinutes: (workspaceId: string | null) => number): void {
+    this.idleReaperTtlResolver = resolveTtlMinutes
+    if (this.idleReaperTimer) return
+    this.idleReaperTimer = setInterval(() => {
+      this.sweepIdleBrowserInstances()
+    }, 60_000)
+    this.idleReaperTimer.unref?.()
+    mainLog.info('[browser-pane] idle reaper started (minute tick)')
+  }
+
+  stopIdleReaper(): void {
+    if (this.idleReaperTimer) {
+      clearInterval(this.idleReaperTimer)
+      this.idleReaperTimer = null
+    }
+  }
+
+  /**
+   * Reap-eligibility, stated exactly (SUV-0044):
+   * eligible ⇔ `sessionCreated` (immutable create-time origin — never the
+   * mutable `ownerType`/`ownerSessionId`) AND unbound AND hidden AND
+   * quiescent (no in-flight command, no network activity, no active
+   * download) AND idle past the workspace TTL. A user-opened window is never
+   * eligible, even after sessions adopted and released it.
+   *
+   * Returns the reason the instance survives, or null when eligible.
+   */
+  private reapExemptionReason(instance: BrowserInstance, now: number, ttlMinutes: number): string | null {
+    if (!instance.sessionCreated) return 'user-created'
+    if (ttlMinutes <= 0) return 'ttl-disabled'
+    if (instance.boundSessionId !== null) return 'bound'
+    if (instance.isVisible) return 'visible'
+    if (instance.inFlightOps > 0) return 'command-in-flight'
+    const wcId = instance.pageView.webContents.id
+    if ((this.inFlightRequestsByWebContentsId.get(wcId) ?? 0) > 0) return 'network-active'
+    if (instance.downloads.some((d) => d.state === 'started')) return 'download-active'
+    if (now - instance.lastActivityAt <= ttlMinutes * 60_000) return 'not-idle-yet'
+    return null
+  }
+
+  /**
+   * One sweep pass. Public for tests (which inject `now` instead of faking
+   * timers). Returns the ids of destroyed instances. Stale entries whose
+   * window is already gone are finalized as a side effect.
+   */
+  sweepIdleBrowserInstances(now: number = Date.now()): string[] {
+    const resolver = this.idleReaperTtlResolver
+    if (!resolver) return []
+
+    const reaped: string[] = []
+    for (const instance of [...this.instances.values()]) {
+      if (instance.window.isDestroyed()) {
+        this.cleanupDestroyedInstance(instance, 'idle sweep')
+        continue
+      }
+
+      let ttlMinutes: number
+      try {
+        ttlMinutes = resolver(instance.workspaceId)
+      } catch (error) {
+        mainLog.warn(`[browser-pane] idle-reap TTL resolution failed instance=${instance.id} workspace=${instance.workspaceId ?? 'none'}: ${error instanceof Error ? error.message : String(error)} — skipping`)
+        continue
+      }
+
+      const exemption = this.reapExemptionReason(instance, now, ttlMinutes)
+      if (exemption) continue
+
+      const idleMinutes = Math.round((now - instance.lastActivityAt) / 60_000)
+      mainLog.info(
+        `[browser-pane] idle-reap destroying instance=${instance.id} reason=idle-ttl idle=${idleMinutes}m ttl=${ttlMinutes}m lastOwner=${instance.ownerSessionId ?? 'none'} workspace=${instance.workspaceId ?? 'none'} partition=${instance.partition}`,
+      )
+      this.destroyInstance(instance.id)
+      reaped.push(instance.id)
+    }
+    return reaped
   }
 
   private finalizeDestroyedInstance(instance: BrowserInstance, source: 'destroy' | 'closed'): void {

@@ -1414,6 +1414,8 @@
   "settings.workspace.icon": "Ikon",
   "settings.workspace.idleAgentTtl": "Tétlen ügynök időkorlátja (perc)",
   "settings.workspace.idleAgentTtlDesc": "Ennyi tétlen perc után leállítja a munkamenet betöltött ügynökfolyamatát. A következő üzenetnél átlátszóan újraindul. A 0 érték kilépésig életben tartja az ügynököket.",
+  "settings.workspace.idleBrowserTtl": "Tétlen böngészőablak időkorlátja (perc)",
+  "settings.workspace.idleBrowserTtlDesc": "Ennyi tétlen perc után megsemmisíti a munkamenet rejtett böngészőablakát. A saját kezűleg megnyitott ablakokat soha nem érinti. A 0 érték kilépésig megtartja a rejtett ablakokat.",
   "settings.workspace.localMcpServers": "Helyi MCP szerverek",
   "settings.workspace.localMcpServersDesc": "stdio alfolyamat-szerverek engedélyezése",
   "settings.workspace.modeCycling": "Módváltás",

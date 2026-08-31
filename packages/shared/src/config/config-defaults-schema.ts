@@ -38,6 +38,11 @@ export interface ConfigDefaults {
      * SessionManager disposes it (PLAN-038). 0 disables eviction.
      */
     idleAgentTtlMinutes: number;  // fork(PLAN-038)
+    /**
+     * Minutes a hidden, unbound, session-created browser window survives
+     * before the idle reaper destroys it. 0 disables reaping.
+     */
+    idleBrowserTtlMinutes: number;  // fork(PLAN-047, SUV-0044)
     localMcpServers: {
       enabled: boolean;
     };

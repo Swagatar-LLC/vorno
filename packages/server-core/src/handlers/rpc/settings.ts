@@ -124,6 +124,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       tokenUsageThresholds: config?.defaults?.tokenUsageThresholds,
       tokenUsageModelOverrides: config?.defaults?.tokenUsageModelOverrides,
       idleAgentTtlMinutes: config?.defaults?.idleAgentTtlMinutes,
+      idleBrowserTtlMinutes: config?.defaults?.idleBrowserTtlMinutes,
       workbenchEnabled: config?.defaults?.workbenchEnabled ?? false,
       artifactsEnabled: config?.defaults?.artifactsEnabled ?? false,
       artifactRoots: config?.defaults?.artifactRoots ?? {},
@@ -152,7 +153,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'idleAgentTtlMinutes', 'workbenchEnabled', 'artifactsEnabled', 'artifactRoots', 'headroom', 'memory']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'idleAgentTtlMinutes', 'idleBrowserTtlMinutes', 'workbenchEnabled', 'artifactsEnabled', 'artifactRoots', 'headroom', 'memory']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
     }
@@ -265,6 +266,15 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       const v = normalizedValue
       if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 10080) {
         throw new Error('idleAgentTtlMinutes must be an integer between 0 (disabled) and 10080 (one week)')
+      }
+    }
+
+    // Validate idleBrowserTtlMinutes (PLAN-047, SUV-0044): same semantics as
+    // idleAgentTtlMinutes — whole minutes, 0 = reaping disabled, one-week cap.
+    if (key === 'idleBrowserTtlMinutes' && normalizedValue !== undefined && normalizedValue !== null) {
+      const v = normalizedValue
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 10080) {
+        throw new Error('idleBrowserTtlMinutes must be an integer between 0 (disabled) and 10080 (one week)')
       }
     }
 

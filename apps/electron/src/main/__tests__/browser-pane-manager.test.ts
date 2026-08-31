@@ -1370,6 +1370,175 @@ describe('BrowserPaneManager', () => {
     })
   })
 
+  describe('idle TTL reaper (SUV-0044)', () => {
+    const HOUR = 60 * 60_000
+
+    function armReaper(ttlByWorkspace: Record<string, number> | number) {
+      manager.startIdleReaper((workspaceId) =>
+        typeof ttlByWorkspace === 'number'
+          ? ttlByWorkspace
+          : (ttlByWorkspace[workspaceId ?? ''] ?? 60))
+      manager.stopIdleReaper() // resolver stays; no live timer during tests
+    }
+
+    it('destroys a hidden unbound session-created window past the TTL', () => {
+      armReaper(60)
+      const id = manager.createForSession('sess-reap', { workspaceId: 'ws-r' })
+      manager.unbindAllForSession('sess-reap')
+      const instance = (manager as any).instances.get(id)
+
+      // Precondition pins the predicate: after turn-end unbind BOTH mutable
+      // ownership fields say "manual window that once belonged to a session".
+      expect(instance.ownerType).toBe('manual')
+      expect(instance.ownerSessionId).toBe('sess-reap')
+      expect(instance.sessionCreated).toBe(true)
+      expect(instance.isVisible).toBe(false)
+
+      instance.lastActivityAt = Date.now() - HOUR - 60_000
+      const reaped = manager.sweepIdleBrowserInstances()
+
+      expect(reaped).toEqual([id])
+      expect(manager.listInstances()).toHaveLength(0)
+    })
+
+    it('never reaps a user-opened window — even after a session adopted and released it', () => {
+      armReaper(60)
+      manager.createInstance('user-window')
+      // A session adopts the ownerless user window, then its turn ends.
+      const adopted = manager.createForSession('sess-adopter', { workspaceId: 'ws-r' })
+      expect(adopted).toBe('user-window')
+      manager.unbindAllForSession('sess-adopter')
+
+      const instance = (manager as any).instances.get('user-window')
+      // The mutable ownership fields now look exactly like a former session
+      // window — ownerSessionId is stamped. Only sessionCreated tells the truth.
+      expect(instance.ownerSessionId).toBe('sess-adopter')
+      expect(instance.ownerType).toBe('manual')
+      expect(instance.sessionCreated).toBe(false)
+
+      instance.lastActivityAt = Date.now() - 10 * HOUR
+      const reaped = manager.sweepIdleBrowserInstances()
+
+      expect(reaped).toEqual([])
+      expect(manager.listInstances()).toHaveLength(1)
+    })
+
+    it('TTL 0 disables reaping', () => {
+      armReaper(0)
+      const id = manager.createForSession('sess-ttl0')
+      manager.unbindAllForSession('sess-ttl0')
+      ;(manager as any).instances.get(id).lastActivityAt = Date.now() - 100 * HOUR
+
+      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+      expect(manager.listInstances()).toHaveLength(1)
+    })
+
+    it('bound windows survive the sweep regardless of idle time', () => {
+      armReaper(60)
+      const id = manager.createForSession('sess-bound-survive')
+      const instance = (manager as any).instances.get(id)
+      expect(instance.boundSessionId).toBe('sess-bound-survive')
+      instance.lastActivityAt = Date.now() - 10 * HOUR
+
+      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+    })
+
+    it('visible windows survive the sweep', () => {
+      armReaper(60)
+      const id = manager.createForSession('sess-visible-survive')
+      manager.unbindAllForSession('sess-visible-survive')
+      const instance = (manager as any).instances.get(id)
+      instance.isVisible = true
+      instance.lastActivityAt = Date.now() - 10 * HOUR
+
+      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+    })
+
+    it('mid-command windows (in-flight op count > 0) survive the sweep', async () => {
+      armReaper(60)
+      const id = manager.createForSession('sess-midcmd')
+      manager.unbindAllForSession('sess-midcmd')
+      const instance = (manager as any).instances.get(id)
+      instance.lastActivityAt = Date.now() - 10 * HOUR
+
+      let resolveOp!: () => void
+      instance.cdp.getAccessibilitySnapshot = mock(
+        () => new Promise((resolve) => { resolveOp = () => resolve({ url: '', title: '', nodes: [] }) }),
+      )
+      const pending = manager.getAccessibilitySnapshot(id)
+      expect(instance.inFlightOps).toBe(1)
+
+      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+      expect(manager.listInstances()).toHaveLength(1)
+
+      resolveOp()
+      await pending
+      expect(instance.inFlightOps).toBe(0)
+    })
+
+    it('a completed operation resets the idle clock', async () => {
+      armReaper(60)
+      const id = manager.createForSession('sess-op-resets')
+      manager.unbindAllForSession('sess-op-resets')
+      const instance = (manager as any).instances.get(id)
+      instance.lastActivityAt = Date.now() - 10 * HOUR
+
+      instance.pageView.webContents.executeJavaScript = mock(async () => 'ok')
+      await manager.evaluate(id, '1 + 1')
+
+      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+    })
+
+    it('active-download windows survive the sweep', () => {
+      armReaper(60)
+      const id = manager.createForSession('sess-download')
+      manager.unbindAllForSession('sess-download')
+      const instance = (manager as any).instances.get(id)
+      instance.lastActivityAt = Date.now() - 10 * HOUR
+      instance.downloads.push({
+        id: 'dl-active', timestamp: Date.now(), url: 'https://example.com/big.zip',
+        filename: 'big.zip', state: 'started', bytesReceived: 10, totalBytes: 100,
+        mimeType: 'application/zip',
+      })
+
+      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+    })
+
+    it('network-active windows survive the sweep', () => {
+      armReaper(60)
+      const id = manager.createForSession('sess-network')
+      manager.unbindAllForSession('sess-network')
+      const instance = (manager as any).instances.get(id)
+      instance.lastActivityAt = Date.now() - 10 * HOUR
+      instance.pageView.webContents.id = 777
+      ;(manager as any).inFlightRequestsByWebContentsId.set(777, 2)
+
+      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+    })
+
+    it('resolves the TTL per workspace', () => {
+      armReaper({ 'ws-never': 0, 'ws-short': 30 })
+      const keep = manager.createForSession('sess-ws-never', { workspaceId: 'ws-never' })
+      const reap = manager.createForSession('sess-ws-short', { workspaceId: 'ws-short' })
+      manager.unbindAllForSession('sess-ws-never')
+      manager.unbindAllForSession('sess-ws-short')
+      ;(manager as any).instances.get(keep).lastActivityAt = Date.now() - HOUR
+      ;(manager as any).instances.get(reap).lastActivityAt = Date.now() - HOUR
+
+      const reaped = manager.sweepIdleBrowserInstances()
+      expect(reaped).toEqual([reap])
+      expect(manager.listInstances().map((i) => i.id)).toEqual([keep])
+    })
+
+    it('sweep is a no-op before startIdleReaper wires a TTL resolver', () => {
+      const id = manager.createForSession('sess-unarmed')
+      manager.unbindAllForSession('sess-unarmed')
+      ;(manager as any).instances.get(id).lastActivityAt = Date.now() - 100 * HOUR
+
+      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+    })
+  })
+
   describe('destroyed-window guards (SUV-0043)', () => {
     it('command dispatched against a destroyed window returns the clear closed error', async () => {
       manager.createInstance('guard-destroyed')

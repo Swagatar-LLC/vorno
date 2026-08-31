@@ -785,6 +785,12 @@ export interface WorkspaceSettings {
    * disposes it (PLAN-038). 0 disables eviction. Default: 60.
    */
   idleAgentTtlMinutes?: number
+  /**
+   * Minutes a hidden, unbound, session-created browser window survives before
+   * the idle reaper destroys it (PLAN-047, SUV-0044). User-opened windows are
+   * never reaped. 0 disables reaping. Default: 60.
+   */
+  idleBrowserTtlMinutes?: number
   /** Feature flag for the Workbench surface (ADR-0014, PLAN-024). Default off. */
   workbenchEnabled?: boolean
   /** Feature flag for the Artifact Home surface (ADR-0016, PLAN-025). Default off. */
