@@ -495,6 +495,38 @@ describe('BrowserPaneManager', () => {
       expect(perSession.on).toHaveBeenCalledTimes(1)
     })
 
+    it('sanitizes remote owner keys into filesystem-safe partition names', async () => {
+      // Remote sessions arrive through the capability dispatcher as owner
+      // keys "remote:<workspaceId>:<sessionId>" — colons are invalid in the
+      // on-disk partition directory name and must be encoded.
+      const id = await (manager as any).dispatchCapability({
+        v: 1,
+        workspaceId: 'ws-remote',
+        sessionId: 'sess-remote-1',
+        method: 'getOrCreateForSession',
+        args: ['sess-remote-1'],
+      })
+
+      const instance = (manager as any).instances.get(id)
+      expect(instance.partition.startsWith('persist:browser-pane-')).toBe(true)
+      // Exactly one colon — the one in the "persist:" scheme prefix.
+      expect(instance.partition.split(':').length).toBe(2)
+      expect(instance.sessionCreated).toBe(true)
+      expect(instance.ownerSessionId).toBe('remote:ws-remote:sess-remote-1')
+    })
+
+    it('partition sanitization is deterministic per session', () => {
+      const idA1 = manager.createForSession('remote:ws:a')
+      manager.unbindAllForSession('remote:ws:a')
+      const idA2 = manager.getOrCreateForSession('remote:ws:a')
+      expect(idA2).toBe(idA1)
+
+      const other = manager.createForSession('remote:ws:b')
+      const partA = (manager as any).instances.get(idA1).partition
+      const partB = (manager as any).instances.get(other).partition
+      expect(partA).not.toBe(partB)
+    })
+
     it('popups from a session window inherit the per-session partition', () => {
       const id = manager.createForSession('sess-popup')
       const instance = (manager as any).instances.get(id)

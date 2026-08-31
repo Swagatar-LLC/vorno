@@ -137,7 +137,14 @@ const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
  */
 export function partitionForOwner(ownerType: 'session' | 'manual', ownerSessionId: string | null): string {
   if (ownerType === 'session' && ownerSessionId) {
-    return `${SESSION_PARTITION}-${ownerSessionId}`
+    // Electron uses the partition name (sans `persist:`) as an on-disk
+    // directory under userData/Partitions, so it must be filesystem-safe.
+    // Local session ids are slugs, but remote sessions arrive as owner keys
+    // (`remote:<workspaceId>:<sessionId>`) with embedded colons. Encode
+    // anything outside a conservative set; deterministic, so the same
+    // session always maps to the same partition.
+    const safe = ownerSessionId.replace(/[^a-zA-Z0-9._-]/g, (c) => `_${c.charCodeAt(0).toString(16)}`)
+    return `${SESSION_PARTITION}-${safe}`
   }
   return SESSION_PARTITION
 }
@@ -156,7 +163,11 @@ interface AgentControlLockState {
 
 interface BrowserInstance {
   id: string
-  /** Storage partition this window's views were created on. Immutable. */
+  /**
+   * Storage partition this window's views were created on. Immutable — a
+   * window adopted by a session later (bindSession) keeps its create-time
+   * partition; only windows created FOR a session get a private one.
+   */
   partition: string
   window: BrowserWindow
   toolbarView: BrowserView
@@ -1933,6 +1944,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // and page state silently point at someone else's window across turns,
     // and with per-session partitions (SUV-0041) a foreign window's storage
     // would be the wrong session's anyway.
+    // No workspace re-check on the own tier: a session lives in exactly one
+    // workspace, so its own former window is that workspace's window by
+    // construction — the ownership edge is strictly stronger evidence than
+    // the workspaceId hint (which callers sometimes omit).
     const own = unbound.filter((i) => i.ownerSessionId === sessionId)
     if (own.length > 0) {
       return own.find((i) => i.isVisible) ?? own[0]
