@@ -1,7 +1,7 @@
 ---
 id: ADR-0027
-title: Lean on the OS — filesystem and OS primitives for lifecycle chores
-status: proposed
+title: Lean on the OS  — filesystem and OS primitives for lifecycle chores
+status: accepted
 date: 2026-08-22
 supersedes: []
 superseded-by: []
