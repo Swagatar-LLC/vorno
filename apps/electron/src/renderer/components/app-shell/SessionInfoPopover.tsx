@@ -8,6 +8,11 @@ import { cn } from '@/lib/utils'
 import { SessionFilesSection } from '../right-sidebar/SessionFilesSection'
 // fork(PLAN-040, SUV-0027): the session-scoped entry point to the savings report
 import { HeadroomReportSection } from '@/pages/settings/HeadroomReportSection'
+import {
+  CONTENT_SCROLL_REGION_CLASS,
+  DEFAULT_DRAWER_CONTENT_CLASS,
+  DEFAULT_POPOVER_CONTENT_CLASS,
+} from './SessionInfoPopover.layout'
 
 interface SessionInfoPopoverProps {
   sessionId: string
@@ -19,15 +24,6 @@ interface SessionInfoPopoverProps {
   contentClassName?: string
   presentation?: 'popover' | 'drawer'
 }
-
-const DEFAULT_POPOVER_CONTENT_CLASS = 'w-[360px] h-[460px] min-w-[200px] max-w-[420px] overflow-hidden rounded-[8px] bg-background text-foreground shadow-modal-small p-0'
-const DEFAULT_DRAWER_CONTENT_CLASS = [
-  'data-[vaul-drawer-direction=bottom]:inset-x-2',
-  'data-[vaul-drawer-direction=bottom]:bottom-2',
-  'data-[vaul-drawer-direction=bottom]:mt-0',
-  'data-[vaul-drawer-direction=bottom]:max-h-[min(82vh,42rem)]',
-  'overflow-hidden rounded-[14px] border border-border/60 bg-background shadow-modal-small',
-].join(' ')
 
 export function SessionInfoPopover({
   sessionId,
@@ -150,26 +146,32 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
           />
         </div>
       </div>
-      {/*
-        fork(PLAN-040, SUV-0027): this session's own Headroom measurements, plus
-        the workspace aggregate. Renders one explanatory line — not a row of
-        zeros — whenever there is nothing measured, so it costs no space on a
-        workspace that has Headroom off.
-      */}
-      <div className="shrink-0 border-b border-border/50">
-        <HeadroomReportSection
-          workspaceId={activeWorkspaceId}
-          sessionId={sessionId}
-          compact
-        />
-      </div>
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <SessionFilesSection
-          sessionId={sessionId}
-          sessionFolderPath={sessionFolderPath}
-          hideHeader={false}
-          className="h-full min-h-0"
-        />
+      {/* One scroll region for everything below the pinned title row — the
+          Headroom report can be taller than the viewport allows, and clipping
+          it also clipped the files list (see SessionInfoPopover.layout.ts). */}
+      <div className={CONTENT_SCROLL_REGION_CLASS}>
+        {/*
+          fork(PLAN-040, SUV-0027): this session's own Headroom measurements, plus
+          the workspace aggregate. Renders one explanatory line — not a row of
+          zeros — whenever there is nothing measured, so it costs no space on a
+          workspace that has Headroom off.
+        */}
+        <div className="border-b border-border/50">
+          <HeadroomReportSection
+            workspaceId={activeWorkspaceId}
+            sessionId={sessionId}
+            compact
+          />
+        </div>
+        {/* Plain wrapper breaks the section's baked-in h-full percentage chain
+            so the tree renders at natural height and this region scrolls as one. */}
+        <div>
+          <SessionFilesSection
+            sessionId={sessionId}
+            sessionFolderPath={sessionFolderPath}
+            hideHeader={false}
+          />
+        </div>
       </div>
     </div>
   )
