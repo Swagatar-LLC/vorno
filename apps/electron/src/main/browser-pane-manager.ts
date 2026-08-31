@@ -125,6 +125,23 @@ const TOOLBAR_CHANNELS = {
 export const BROWSER_PANE_SESSION_PARTITION = 'persist:browser-pane'
 const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
 
+/**
+ * Storage partition for a browser window, derived at create time.
+ *
+ * Session-owned windows get a private partition (`persist:browser-pane-<sessionId>`)
+ * so cookies/logins/storage are isolated per session (PLAN-047, SUV-0041).
+ * Manual (user-opened) windows keep the shared partition — their behavior is
+ * an explicit PLAN-047 non-goal. Consequence: a session's browser starts
+ * logged out; auth hand-off from the manual browser is deliberately out of
+ * scope here.
+ */
+export function partitionForOwner(ownerType: 'session' | 'manual', ownerSessionId: string | null): string {
+  if (ownerType === 'session' && ownerSessionId) {
+    return `${SESSION_PARTITION}-${ownerSessionId}`
+  }
+  return SESSION_PARTITION
+}
+
 interface AgentControlState {
   active: boolean
   sessionId: string
@@ -139,6 +156,8 @@ interface AgentControlLockState {
 
 interface BrowserInstance {
   id: string
+  /** Storage partition this window's views were created on. Immutable. */
+  partition: string
   window: BrowserWindow
   toolbarView: BrowserView
   pageView: BrowserView
@@ -331,8 +350,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private stateChangeCallback: ((info: BrowserInstanceInfo) => void) | null = null
   private removedCallback: ((id: string) => void) | null = null
   private interactedCallback: ((id: string) => void) | null = null
-  private partitionPermissionsInitialized = false
-  private partitionObserversInitialized = false
+  /**
+   * Per-partition-name init tracking (SUV-0041). With per-session partitions,
+   * each new partition's Electron session needs its permission handlers and
+   * webRequest/download observers installed exactly once — a boolean would
+   * initialize only the first partition ever seen.
+   */
+  private permissionsInitializedPartitions = new Set<string>()
+  private observersInitializedPartitions = new Set<string>()
   private inFlightRequestsByWebContentsId = new Map<number, number>()
   private lastNetworkActivityByWebContentsId = new Map<number, number>()
   private popupWindowsByParentInstanceId = new Map<string, Set<BrowserWindow>>()
@@ -372,9 +397,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return instanceId
     }
 
-    const ses = session.fromPartition(SESSION_PARTITION)
-    this.setupSessionPermissions(ses)
-    this.setupSessionObservers(ses)
+    const partition = partitionForOwner(ownerType, ownerSessionId)
+    const ses = session.fromPartition(partition)
+    this.setupSessionPermissions(ses, partition)
+    this.setupSessionObservers(ses, partition)
 
     // Match background to current OS theme to prevent black/white flash on open
     const bgColor = nativeTheme.shouldUseDarkColors ? '#2b292e' : '#fafafb'
@@ -389,7 +415,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // Fully chromeless — toolbar is rendered in a dedicated BrowserView
       frame: false,
       webPreferences: {
-        partition: SESSION_PARTITION,
+        partition,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -400,7 +426,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const toolbarView = new BrowserView({
       webPreferences: {
         preload: join(__dirname, 'browser-toolbar-preload.cjs'),
-        partition: SESSION_PARTITION,
+        partition,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -410,7 +436,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const pageView = new BrowserView({
       webPreferences: {
-        partition: SESSION_PARTITION,
+        partition,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -425,7 +451,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const nativeOverlayView = new BrowserView({
       webPreferences: {
-        partition: SESSION_PARTITION,
+        partition,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -445,6 +471,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const instance: BrowserInstance = {
       id: instanceId,
+      partition,
       window,
       toolbarView,
       pageView,
@@ -504,7 +531,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.instances.set(instanceId, instance)
     this.emitStateChange(instance)
     mainLog.info(`[browser-pane] toolbar version: v4-react-chromeless`)
-    mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, ownerType=${ownerType}, ownerSessionId=${ownerSessionId ?? 'none'})`)
+    mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, ownerType=${ownerType}, ownerSessionId=${ownerSessionId ?? 'none'}, partition=${partition})`)
 
     void this.loadToolbarPage(instance)
       .finally(() => {
@@ -3133,9 +3160,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return `${name}_${counter}${ext}`
   }
 
-  private setupSessionObservers(ses: ElectronSession): void {
-    if (this.partitionObserversInitialized) return
-    this.partitionObserversInitialized = true
+  private setupSessionObservers(ses: ElectronSession, partition: string): void {
+    if (this.observersInitializedPartitions.has(partition)) return
+    this.observersInitializedPartitions.add(partition)
 
     ses.webRequest.onBeforeRequest((details, callback) => {
       const wcId = details.webContentsId
@@ -3248,9 +3275,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     mainLog.warn(message)
   }
 
-  private setupSessionPermissions(ses: ElectronSession): void {
-    if (this.partitionPermissionsInitialized) return
-    this.partitionPermissionsInitialized = true
+  private setupSessionPermissions(ses: ElectronSession, partition: string): void {
+    if (this.permissionsInitializedPartitions.has(partition)) return
+    this.permissionsInitializedPartitions.add(partition)
 
     const allow = new Set([
       'fullscreen',
@@ -3545,7 +3572,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           parent: instance.window,
           modal: false,
           webPreferences: {
-            partition: SESSION_PARTITION,
+            // Popups (OAuth flows etc.) must share the opener's storage
+            // partition, or the popup's login lands in the wrong cookie jar.
+            partition: instance.partition,
             session: pageWc.session,
             contextIsolation: true,
             nodeIntegration: false,

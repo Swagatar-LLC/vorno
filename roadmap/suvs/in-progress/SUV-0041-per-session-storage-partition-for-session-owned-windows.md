@@ -1,12 +1,12 @@
 ---
 id: SUV-0041
 title: Per-session storage partition for session-owned browser windows
-status: planned
+status: in-progress
 plan: PLAN-047
 direction: DIR-05
 owner: jh
 created: 2026-08-30
-updated: 2026-08-30
+updated: 2026-08-31
 related: [SUV-0042]
 blocked-by: []
 ---
@@ -47,3 +47,4 @@ logins, and storage are private to it.
 ## Status log
 
 - `2026-08-30` — created in `planned/`
+- `2026-08-31` — moved from planned to in-progress: implementation started (session 260831-high-cascade)

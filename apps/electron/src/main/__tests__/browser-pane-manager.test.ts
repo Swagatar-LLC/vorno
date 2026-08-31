@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
 
 const createdWindows: any[] = []
+const partitionSessions = new Map<string, any>()
 let toolbarLoadFailuresRemaining = 0
 const mockShellOpenExternal = mock(async () => {})
 const mockIpcMainHandle = mock(() => {})
@@ -170,16 +171,40 @@ mock.module('electron', () => ({
     openExternal: mockShellOpenExternal,
   },
   session: {
-    fromPartition: mock(() => ({
-      setPermissionCheckHandler: mock(() => {}),
-      setPermissionRequestHandler: mock(() => {}),
-      webRequest: {
-        onBeforeRequest: mock((_cb: any) => {}),
-        onCompleted: mock((_cb: any) => {}),
-        onErrorOccurred: mock((_cb: any) => {}),
-      },
-      on: mock((_event: string, _cb: any) => {}),
-    })),
+    fromPartition: mock((partition: string) => {
+      // Electron memoizes sessions per partition name; the mock must too so
+      // partition-isolation tests observe the same storage for the same name
+      // and per-partition init tracking is observable per session object.
+      let ses = partitionSessions.get(partition)
+      if (!ses) {
+        const cookieJar = new Map<string, string>()
+        ses = {
+          partition,
+          cookies: {
+            set: mock(async (opts: { name: string; value: string }) => {
+              cookieJar.set(opts.name, opts.value)
+            }),
+            get: mock(async (filter?: { name?: string }) => {
+              const out: Array<{ name: string; value: string }> = []
+              for (const [name, value] of cookieJar) {
+                if (!filter?.name || filter.name === name) out.push({ name, value })
+              }
+              return out
+            }),
+          },
+          setPermissionCheckHandler: mock(() => {}),
+          setPermissionRequestHandler: mock(() => {}),
+          webRequest: {
+            onBeforeRequest: mock((_cb: any) => {}),
+            onCompleted: mock((_cb: any) => {}),
+            onErrorOccurred: mock((_cb: any) => {}),
+          },
+          on: mock((_event: string, _cb: any) => {}),
+        }
+        partitionSessions.set(partition, ses)
+      }
+      return ses
+    }),
   },
 }))
 
@@ -243,6 +268,7 @@ describe('BrowserPaneManager', () => {
 
   beforeEach(() => {
     createdWindows.length = 0
+    partitionSessions.clear()
     toolbarLoadFailuresRemaining = 0
     mockShellOpenExternal.mockClear()
     mockIpcMainHandle.mockClear()
@@ -408,6 +434,81 @@ describe('BrowserPaneManager', () => {
     expect(info.ownerSessionId).toBe('sess-reuse')
     expect(info.boundSessionId).toBe('sess-reuse')
     expect(manager.listInstances()).toHaveLength(1)
+  })
+
+  describe('per-session storage partition (SUV-0041)', () => {
+    it('creates session-owned windows on persist:browser-pane-<sessionId>', () => {
+      const idA = manager.createForSession('sess-part-a')
+      const idB = manager.createForSession('sess-part-b')
+
+      const instA = (manager as any).instances.get(idA)
+      const instB = (manager as any).instances.get(idB)
+      expect(instA.partition).toBe('persist:browser-pane-sess-part-a')
+      expect(instB.partition).toBe('persist:browser-pane-sess-part-b')
+      expect(instA.partition).not.toBe(instB.partition)
+    })
+
+    it('manual windows keep the shared persist:browser-pane partition', () => {
+      manager.createInstance('manual-shared-partition')
+      const instance = (manager as any).instances.get('manual-shared-partition')
+      expect(instance.partition).toBe('persist:browser-pane')
+    })
+
+    it('cookies set in one session partition are invisible to other sessions and manual windows', async () => {
+      manager.createForSession('sess-cookie-a')
+      manager.createForSession('sess-cookie-b')
+      manager.createInstance('manual-cookie')
+
+      const sesA = partitionSessions.get('persist:browser-pane-sess-cookie-a')
+      const sesB = partitionSessions.get('persist:browser-pane-sess-cookie-b')
+      const sesManual = partitionSessions.get('persist:browser-pane')
+      expect(sesA).toBeDefined()
+      expect(sesB).toBeDefined()
+      expect(sesManual).toBeDefined()
+
+      await sesA.cookies.set({ name: 'auth', value: 'user-a-token' })
+      await sesManual.cookies.set({ name: 'auth', value: 'user-manual-token' })
+
+      expect(await sesA.cookies.get({ name: 'auth' })).toEqual([{ name: 'auth', value: 'user-a-token' }])
+      expect(await sesB.cookies.get({ name: 'auth' })).toEqual([])
+      expect(await sesManual.cookies.get({ name: 'auth' })).toEqual([{ name: 'auth', value: 'user-manual-token' }])
+    })
+
+    it('installs permission handlers and observers exactly once per partition', () => {
+      // A session window gets its own fresh partition — its own init.
+      // (Created first: an unbound manual window would otherwise be reused
+      // for the session, and a reused window keeps its create-time partition.)
+      manager.createForSession('sess-init')
+      // Two manual windows share the same partition — one init, not two.
+      manager.createInstance('manual-init-1')
+      manager.createInstance('manual-init-2')
+
+      const shared = partitionSessions.get('persist:browser-pane')
+      const perSession = partitionSessions.get('persist:browser-pane-sess-init')
+      expect(shared.setPermissionCheckHandler).toHaveBeenCalledTimes(1)
+      expect(shared.setPermissionRequestHandler).toHaveBeenCalledTimes(1)
+      expect(shared.webRequest.onBeforeRequest).toHaveBeenCalledTimes(1)
+      expect(shared.on).toHaveBeenCalledTimes(1)
+      expect(perSession.setPermissionCheckHandler).toHaveBeenCalledTimes(1)
+      expect(perSession.setPermissionRequestHandler).toHaveBeenCalledTimes(1)
+      expect(perSession.webRequest.onBeforeRequest).toHaveBeenCalledTimes(1)
+      expect(perSession.on).toHaveBeenCalledTimes(1)
+    })
+
+    it('popups from a session window inherit the per-session partition', () => {
+      const id = manager.createForSession('sess-popup')
+      const instance = (manager as any).instances.get(id)
+      const openHandler = instance.pageView.webContents.setWindowOpenHandler.mock.calls[0][0]
+
+      const result = openHandler({
+        url: 'https://accounts.google.com/o/oauth2/v2/auth',
+        disposition: 'new-popup',
+        frameName: 'oauth-popup',
+      })
+
+      expect(result.action).toBe('allow')
+      expect(result.overrideBrowserWindowOptions?.webPreferences?.partition).toBe('persist:browser-pane-sess-popup')
+    })
   })
 
   describe('workspaceId stamping', () => {

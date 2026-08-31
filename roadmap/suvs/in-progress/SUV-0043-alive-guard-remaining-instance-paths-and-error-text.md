@@ -1,12 +1,12 @@
 ---
 id: SUV-0043
 title: Alive-guard remaining instance paths and fix destroyed-window error text
-status: planned
+status: in-progress
 plan: PLAN-047
 direction: DIR-05
 owner: jh
 created: 2026-08-30
-updated: 2026-08-30
+updated: 2026-08-31
 related: []
 blocked-by: []
 ---
@@ -45,3 +45,4 @@ Operations against a destroyed browser window always surface as a clear
 ## Status log
 
 - `2026-08-30` — created in `planned/`
+- `2026-08-31` — moved from planned to in-progress: implementation started (session 260831-high-cascade)
