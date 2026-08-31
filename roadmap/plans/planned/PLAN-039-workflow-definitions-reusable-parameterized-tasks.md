@@ -5,14 +5,14 @@ status: planned
 direction: DIR-05
 owner: jh
 created: 2026-08-22
-updated: 2026-08-26
+updated: 2026-08-30
 related:
   - PLAN-041-server-homed-instances-with-auth.md (sequel — definition ownership model must not preclude it)
   - PLAN-042-team-management.md (sequel)
   - PLAN-043-roadmap-console-interactive-work-surface.md (the detour that precedes W1 and becomes this plan's test harness)
   - ../discussions/2026-08-24-plan-043-authoring-gaps-for-plan-039.md (W1's evidence base — every gap PLAN-043 hit authoring, publishing and running a definition by hand)
 related-suvs:
-  - SUV-0033-definition-instance-split-data-model.md
+  - SUV-0045-definition-instance-split-data-model.md
   - SUV-0034-reconcile-published-task-definitions-into-board-cards.md
   - SUV-0035-reuse-the-orchestrator-session-across-task-runs.md
   - SUV-0036-surface-a-task-tile-whose-definition-is-missing.md
@@ -300,3 +300,4 @@ a back-pointer; the source plan is not the place to look them up again.
 - `2026-08-24` — first decomposition round, scoped to the enabling move only: SUV-0014 (definition/instance split in the store) and SUV-0015 (typed param form at bind time). W2–W5 remain undecomposed.
 - `2026-08-24` — second decomposition round, at owner request: collapsed to a single SUV covering the definition/instance split only. SUV-0015 (typed param form at bind time) dropped and its file deleted; W2's params work is explicitly out of SUV-0014's scope and remains undecomposed alongside W3–W5.
 - `2026-08-26` — **W6 added**: four runtime gaps verified by reading `TaskRunner.ts` — no partial-success terminal state (`maybeFinish()`/`allGood`), repair unreachable after a hard failure (`finish('failed')` precedes `enterVerifying()`), no subgraph-scoped retry budget between per-node `retry` and run-global `max_iterations`, and a `cache` field the runner never reads. Firming up the workflow/task/task-set/subgraph/node vocabulary is folded in as W6's first item, at owner request. Driven by the plan-level ~60-node `task.yaml` for PLAN-040. Recorded alongside three behaviors that already work correctly and must be preserved.
+- `2026-08-30` — **branch hygiene, no scope change.** This plan's four SUVs were sitting on `plan/plan-039` against a base from 2026-08-25 (`f19d5d96`), so the console rendered them against a corpus that predated everything PLAN-040 landed since — the plan looked emptier and staler than it is. Rebased onto fresh `origin/main`; the four SUVs are unchanged. One id moved: **SUV-0033 → SUV-0045**, because PLAN-040 minted its own `SUV-0033` on 2026-08-27 and shipped it in v0.20.0 (main wins by possession; see SUV-0045's status log for the double-blind-spot cause). Sibling `plan/plan-040` was deleted the same day — fully merged, zero unique commits, and its lingering existence was what made the console report "PLAN-040 has work on 2 branches".

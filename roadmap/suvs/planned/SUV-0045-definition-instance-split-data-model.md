@@ -1,17 +1,17 @@
 ---
-id: SUV-0033
+id: SUV-0045
 title: Split workflow definitions from task instances in the store
 status: planned
 plan: PLAN-039
 direction: DIR-05
 owner: jh
 created: 2026-08-24
-updated: 2026-08-26
+updated: 2026-08-30
 related: []
 blocked-by: []
 ---
 
-# SUV-0033 — Split workflow definitions from task instances in the store
+# SUV-0045 — Split workflow definitions from task instances in the store
 
 ## Goal
 
@@ -54,3 +54,16 @@ instance records the definition id + version it was bound from.
   `origin/main`; this unit was still unmerged, so it moved. Cause: this
   breakdown record predates SUV-0019/0020, so it was allocated and merged
   without consulting unmerged candidate branches.
+- `2026-08-30` — renumbered **SUV-0033 → SUV-0045**: the 2026-08-26 renumber
+  above landed the unit on an id that PLAN-040 then minted independently one day
+  later (`SUV-0033-publish-headroom-docs-page-to-vorno-site`, created 2026-08-27
+  on `plan/plan-040`, since merged to `origin/main` and shipped in v0.20.0).
+  Possession decided it: main's copy is immovable, this one was still unmerged,
+  so this one moved. **The renumber reproduced the very collision it was fixing**
+  — it picked `max+1` over the ids it could see, and PLAN-040's allocator could
+  not see *this* branch either. Both directions of the same blind spot, one day
+  apart. `SUV-0045` was allocated by the [ADR-0030](../../decisions/0030-suv-identity-is-global-per-plan-coherence-is-derived.md)
+  all-refs sweep, which sees `plan/plan-047`'s unmerged SUV-0041..0044.
+  This branch was also rebased onto fresh `origin/main` the same day; before
+  that it still carried a 2026-08-25 base (`f19d5d96`), so the console showed
+  its SUVs against a corpus that predated everything PLAN-040 landed since.

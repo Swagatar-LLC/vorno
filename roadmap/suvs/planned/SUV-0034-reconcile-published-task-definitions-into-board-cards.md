@@ -8,7 +8,7 @@ owner: jh
 created: 2026-08-26
 updated: 2026-08-26
 related:
-  - SUV-0033-definition-instance-split-data-model.md
+  - SUV-0045-definition-instance-split-data-model.md
   - ../../decisions/0028-suv-as-the-shippable-unit-between-plan-and-task.md
 blocked-by: []
 ---
