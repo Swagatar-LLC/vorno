@@ -1806,32 +1806,48 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Pick an unbound window that the caller's workspace is allowed to adopt.
+   * Pick an unbound window the calling session may re-bind (SUV-0042).
    *
-   * Why workspace filtering matters: when a session ends, its window stays
-   * alive and becomes `ownerType='manual'` so the next turn of the **same**
-   * session can re-bind it. But the window keeps its original `workspaceId`.
-   * Without filtering, a session in workspace B would grab a window left
-   * behind by workspace A — moving the window across workspaces, which is
-   * exactly the leak this whole workspace-isolation work is fixing.
+   * Two tiers, in order:
+   * 1. The session's OWN former window — turn-end unbinding flips
+   *    `ownerType` to `'manual'` but retains `ownerSessionId`, which is the
+   *    edge that makes "same session, next turn" reclaim its previous window
+   *    (same partition, same page state, same instance id).
+   * 2. A truly ownerless window (`ownerSessionId === null`, user-opened and
+   *    never session-created), gated by the existing workspace rule:
+   *    `workspaceId === null` or matching the caller's workspace.
    *
-   * Rule: adoption is allowed if the unbound window has `workspaceId === null`
-   * (truly user-opened, no workspace context) OR matches the caller's
-   * `workspaceId`. Same-workspace reuse covers the legitimate "turn ended,
-   * next turn re-binds" case as well as any future turn of any session in
-   * that workspace.
+   * A window last owned by a DIFFERENT session is never returned — adopting
+   * it would swap windows across sessions mid-conversation, and with
+   * per-session partitions (SUV-0041) its storage belongs to the other
+   * session anyway.
    */
-  private findReusableUnboundInstance(workspaceId: string | null): BrowserInstance | null {
-    const candidates = Array.from(this.instances.values()).filter(
+  private findReusableUnboundInstance(sessionId: string, workspaceId: string | null): BrowserInstance | null {
+    const unbound = Array.from(this.instances.values()).filter(
       (i) =>
         i.boundSessionId === null &&
         i.ownerType === 'manual' &&
-        (i.workspaceId === null || i.workspaceId === workspaceId),
+        !i.window.isDestroyed(),
     )
-    if (candidates.length === 0) return null
 
-    // Prefer visible windows first, then fall back to first available.
-    return candidates.find((i) => i.isVisible) ?? candidates[0]
+    // A session reclaims only ITS OWN former window (the retained
+    // ownerSessionId edge from turn-end unbinding) — never another session's
+    // leftover (SUV-0042). Cross-session adoption is what made instance ids
+    // and page state silently point at someone else's window across turns,
+    // and with per-session partitions (SUV-0041) a foreign window's storage
+    // would be the wrong session's anyway.
+    const own = unbound.filter((i) => i.ownerSessionId === sessionId)
+    if (own.length > 0) {
+      return own.find((i) => i.isVisible) ?? own[0]
+    }
+
+    // Truly ownerless windows (user-opened, never session-created) remain
+    // adoptable under the existing workspace rule.
+    const ownerless = unbound.filter(
+      (i) => i.ownerSessionId === null && (i.workspaceId === null || i.workspaceId === workspaceId),
+    )
+    if (ownerless.length === 0) return null
+    return ownerless.find((i) => i.isVisible) ?? ownerless[0]
   }
 
   createForSession(
@@ -1858,13 +1874,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // can never hijack a window the user opened manually.
     const allowReuseManual = options?.allowReuseManual ?? true
     if (allowReuseManual) {
-      const reusable = this.findReusableUnboundInstance(workspaceId)
+      const reusable = this.findReusableUnboundInstance(sessionId, workspaceId)
       if (reusable) {
+        const reclaimedOwn = reusable.ownerSessionId === sessionId
         this.bindSession(reusable.id, sessionId, { workspaceId })
         if (options?.show) {
           this.focus(reusable.id)
         }
-        mainLog.info(`[browser-pane] Reused unbound instance ${reusable.id} for session ${sessionId} (workspace=${workspaceId ?? 'none'})`)
+        mainLog.info(
+          reclaimedOwn
+            ? `[browser-pane] Session ${sessionId} reclaimed its own former window ${reusable.id} (workspace=${workspaceId ?? 'none'})`
+            : `[browser-pane] Session ${sessionId} adopted ownerless window ${reusable.id} (workspace=${workspaceId ?? 'none'})`,
+        )
         return reusable.id
       }
     }

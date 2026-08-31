@@ -601,14 +601,15 @@ describe('BrowserPaneManager', () => {
         expect(stillA?.workspaceId).toBe('ws-a')
       })
 
-      it('DOES reuse an unbound window within the same workspace (next-turn case)', () => {
-        // The legitimate same-workspace reuse: session-A ends a turn, leaves
-        // an unbound window behind; the same workspace's session-A (or any
-        // session in workspace A) should grab it on the next turn.
+      it('DOES reuse an unbound window for the same session next turn', () => {
+        // The legitimate reuse: session-A ends a turn, leaves an unbound
+        // window behind; session-A's next turn re-binds it. (Since SUV-0042
+        // this is owner-scoped — another session in the same workspace no
+        // longer qualifies; see the owner-scoped reuse suite.)
         const original = manager.createForSession('sess-a1', { workspaceId: 'ws-a' })
         manager.unbindAllForSession('sess-a1')
 
-        const reused = manager.createForSession('sess-a2', { workspaceId: 'ws-a' })
+        const reused = manager.createForSession('sess-a1', { workspaceId: 'ws-a' })
         expect(reused).toBe(original)
         expect(manager.listInstances()).toHaveLength(1)
       })
@@ -640,6 +641,66 @@ describe('BrowserPaneManager', () => {
         // A new instance was created for the remote session.
         expect(manager.listInstances().find((i) => i.id === fresh)?.ownerSessionId).toBe('sess-d')
       })
+    })
+  })
+
+  describe('owner-scoped window reuse (SUV-0042)', () => {
+    it('never hands session A\'s unbound window to session B in the same workspace', () => {
+      // Regression for the pre-SUV-0042 cross-adoption: A's turn ends, the
+      // window is unbound (ownerType='manual', ownerSessionId retained), and
+      // B's getOrCreateForSession in the SAME workspace used to adopt it.
+      const winA = manager.createForSession('sess-owner-a', { workspaceId: 'ws-shared' })
+      manager.unbindAllForSession('sess-owner-a')
+
+      const after = manager.listInstances().find((i) => i.id === winA)
+      expect(after?.boundSessionId).toBeNull()
+      expect(after?.ownerType).toBe('manual')
+      expect(after?.ownerSessionId).toBe('sess-owner-a')
+
+      const winB = manager.getOrCreateForSession('sess-owner-b', { workspaceId: 'ws-shared' })
+      expect(winB).not.toBe(winA)
+      expect(manager.listInstances()).toHaveLength(2)
+      // A's window still remembers A as its last owner.
+      expect(manager.listInstances().find((i) => i.id === winA)?.ownerSessionId).toBe('sess-owner-a')
+    })
+
+    it('a session re-binds the same instance id across alternating turns of two sessions', () => {
+      const winA = manager.createForSession('sess-alt-a', { workspaceId: 'ws-alt' })
+      const winB = manager.createForSession('sess-alt-b', { workspaceId: 'ws-alt' })
+      expect(winA).not.toBe(winB)
+
+      // Turn ends for both; both windows drop into the unbound pool.
+      manager.unbindAllForSession('sess-alt-a')
+      manager.unbindAllForSession('sess-alt-b')
+
+      // Next turns re-bind each session's own former window regardless of order.
+      expect(manager.getOrCreateForSession('sess-alt-b', { workspaceId: 'ws-alt' })).toBe(winB)
+      expect(manager.getOrCreateForSession('sess-alt-a', { workspaceId: 'ws-alt' })).toBe(winA)
+      expect(manager.listInstances()).toHaveLength(2)
+    })
+
+    it('a user-opened ownerless window is still adoptable by a session', () => {
+      manager.createInstance('user-ownerless')
+      const adopted = manager.createForSession('sess-adopt', { workspaceId: 'ws-any' })
+      expect(adopted).toBe('user-ownerless')
+    })
+
+    it('prefers the session\'s own former window over an ownerless manual window', () => {
+      const own = manager.createForSession('sess-prefer', { workspaceId: 'ws-p' })
+      manager.unbindAllForSession('sess-prefer')
+      manager.createInstance('ownerless-competitor')
+
+      expect(manager.getOrCreateForSession('sess-prefer', { workspaceId: 'ws-p' })).toBe(own)
+    })
+
+    it('does not reclaim a destroyed former window; creates fresh instead', () => {
+      const winA = manager.createForSession('sess-destroyed-own', { workspaceId: 'ws-x' })
+      manager.unbindAllForSession('sess-destroyed-own')
+      const instance = (manager as any).instances.get(winA)
+      instance.window.isDestroyed = mock(() => true)
+
+      const next = manager.getOrCreateForSession('sess-destroyed-own', { workspaceId: 'ws-x' })
+      expect(next).not.toBe(winA)
     })
   })
 
