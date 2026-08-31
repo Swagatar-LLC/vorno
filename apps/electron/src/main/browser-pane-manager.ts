@@ -622,6 +622,38 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return instance
   }
 
+  private closedWindowError(id: string): Error {
+    return new Error(`Browser window was closed (instance: ${id})`)
+  }
+
+  /**
+   * Run an async operation against an alive-checked instance, translating
+   * mid-command teardown into the same clear error `requireAliveInstance`
+   * throws (SUV-0043). Electron surfaces a window destroyed while a command
+   * is in flight as a raw "Object has been destroyed" TypeError — that text
+   * must never reach a tool result. Any rejection that coincides with the
+   * window being gone (destroyed, or already finalized out of the map) is
+   * reported as the window closing, since that is what the caller needs to
+   * know; other errors pass through untouched.
+   */
+  private async guardInstanceOp<T>(instance: BrowserInstance, op: () => Promise<T>): Promise<T> {
+    try {
+      return await op()
+    } catch (error) {
+      if (error instanceof Error && /object has been destroyed/i.test(error.message)) {
+        throw this.closedWindowError(instance.id)
+      }
+      if (!this.instances.has(instance.id)) {
+        throw this.closedWindowError(instance.id)
+      }
+      if (instance.window.isDestroyed()) {
+        this.cleanupDestroyedInstance(instance, 'operation raced window teardown')
+        throw this.closedWindowError(instance.id)
+      }
+      throw error
+    }
+  }
+
   async handleEmptyStateLaunchFromRenderer(
     senderWebContentsId: number,
     payload: BrowserEmptyStateLaunchPayload,
@@ -775,14 +807,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null
 
     try {
-      const loaded = instance.pageView.webContents.loadURL(normalizedUrl)
-      const timeout = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(() => reject(new Error(`Navigation to "${normalizedUrl}" timed out after ${timeoutMs / 1000}s`)), timeoutMs)
-      })
-      await Promise.race([loaded, timeout])
-      this.pushToolbarState(instance)
+      return await this.guardInstanceOp(instance, async () => {
+        const loaded = instance.pageView.webContents.loadURL(normalizedUrl)
+        const timeout = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error(`Navigation to "${normalizedUrl}" timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+        })
+        await Promise.race([loaded, timeout])
+        this.pushToolbarState(instance)
 
-      return { url: instance.currentUrl, title: instance.title }
+        return { url: instance.currentUrl, title: instance.title }
+      })
     } finally {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle)
@@ -792,16 +826,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async goBack(id: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    if (instance.pageView.webContents.canGoBack()) {
-      instance.pageView.webContents.goBack()
-    }
+    return this.guardInstanceOp(instance, async () => {
+      if (instance.pageView.webContents.canGoBack()) {
+        instance.pageView.webContents.goBack()
+      }
+    })
   }
 
   async goForward(id: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    if (instance.pageView.webContents.canGoForward()) {
-      instance.pageView.webContents.goForward()
-    }
+    return this.guardInstanceOp(instance, async () => {
+      if (instance.pageView.webContents.canGoForward()) {
+        instance.pageView.webContents.goForward()
+      }
+    })
   }
 
   reload(id: string): void {
@@ -889,14 +927,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async getAccessibilitySnapshot(id: string): Promise<AccessibilitySnapshot> {
     const instance = this.requireAliveInstance(id)
-    return instance.cdp.getAccessibilitySnapshot()
+    return this.guardInstanceOp(instance, () => instance.cdp.getAccessibilitySnapshot())
   }
 
   async clickAtCoordinates(id: string, x: number, y: number): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await instance.cdp.clickAtCoordinates(x, y)
+      await this.guardInstanceOp(instance, () => instance.cdp.clickAtCoordinates(x, y))
       instance.lastAction = {
         tool: 'browser_click_at',
         status: 'succeeded',
@@ -916,7 +954,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await instance.cdp.drag(x1, y1, x2, y2)
+      await this.guardInstanceOp(instance, () => instance.cdp.drag(x1, y1, x2, y2))
       instance.lastAction = {
         tool: 'browser_drag',
         status: 'succeeded',
@@ -936,7 +974,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await instance.cdp.typeText(text)
+      await this.guardInstanceOp(instance, () => instance.cdp.typeText(text))
       instance.lastAction = {
         tool: 'browser_type',
         status: 'succeeded',
@@ -954,12 +992,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async setClipboard(id: string, text: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    await instance.cdp.setClipboard(text)
+    await this.guardInstanceOp(instance, () => instance.cdp.setClipboard(text))
   }
 
   async getClipboard(id: string): Promise<string> {
     const instance = this.requireAliveInstance(id)
-    return instance.cdp.getClipboard()
+    return this.guardInstanceOp(instance, () => instance.cdp.getClipboard())
   }
 
   async clickElement(
@@ -970,7 +1008,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      const geometry = await instance.cdp.clickElement(ref)
+      const geometry = await this.guardInstanceOp(instance, () => instance.cdp.clickElement(ref))
       instance.lastAction = {
         tool: 'browser_click',
         ref,
@@ -998,8 +1036,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
           const cleanup = () => {
             clearTimeout(timer)
-            instance.pageView.webContents.removeListener('did-navigate', onNav)
-            instance.pageView.webContents.removeListener('did-navigate-in-page', onNav)
+            // The wait can end because the window was destroyed — touching a
+            // destroyed webContents here would throw inside the timer callback.
+            const pageWc = instance.pageView.webContents
+            if (!pageWc.isDestroyed()) {
+              pageWc.removeListener('did-navigate', onNav)
+              pageWc.removeListener('did-navigate-in-page', onNav)
+            }
           }
 
           instance.pageView.webContents.once('did-navigate', onNav)
@@ -1023,7 +1066,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      const geometry = await instance.cdp.fillElement(ref, value)
+      const geometry = await this.guardInstanceOp(instance, () => instance.cdp.fillElement(ref, value))
       instance.lastAction = {
         tool: 'browser_fill',
         ref,
@@ -1046,7 +1089,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      const geometry = await instance.cdp.selectOption(ref, value)
+      const geometry = await this.guardInstanceOp(instance, () => instance.cdp.selectOption(ref, value))
       instance.lastAction = {
         tool: 'browser_select',
         ref,
@@ -1082,7 +1125,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async screenshot(id: string, options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult> {
     const instance = this.requireAliveInstance(id)
+    return this.guardInstanceOp(instance, () => this.screenshotImpl(instance, options))
+  }
 
+  private async screenshotImpl(instance: BrowserInstance, options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult> {
     // Hide native agent overlay so it doesn't appear in captures
     const suspendedOverlay = this.suspendOverlayForCapture(instance)
 
@@ -1222,9 +1268,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   async screenshotRegion(id: string, target: BrowserScreenshotRegionTarget): Promise<BrowserScreenshotResult> {
-    const instance = this.instances.get(id)
-    if (!instance) throw new Error(`Browser instance not found: ${id}`)
+    const instance = this.requireAliveInstance(id)
+    return this.guardInstanceOp(instance, () => this.screenshotRegionImpl(instance, target))
+  }
 
+  private async screenshotRegionImpl(instance: BrowserInstance, target: BrowserScreenshotRegionTarget): Promise<BrowserScreenshotResult> {
     const hasCoords = [target.x, target.y, target.width, target.height].every((v) => typeof v === 'number')
     const hasRef = typeof target.ref === 'string' && target.ref.length > 0
     const hasSelector = typeof target.selector === 'string' && target.selector.length > 0
@@ -1540,7 +1588,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const until = async (predicate: () => Promise<boolean>, detail: string): Promise<BrowserWaitResult> => {
       while (Date.now() - started <= timeoutMs) {
-        if (await predicate()) {
+        // A wait can outlive the window (another session's close, user close).
+        // Bail with the clear closed error instead of polling a dead target
+        // until timeout (url/network-idle predicates never touch webContents,
+        // so without this check they would spin blind).
+        if (instance.window.isDestroyed() || !this.instances.has(instance.id)) {
+          throw this.closedWindowError(instance.id)
+        }
+        if (await this.guardInstanceOp(instance, predicate)) {
           return {
             ok: true,
             kind: args.kind,
@@ -1603,16 +1658,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const modifiers = (args.modifiers ?? []) as Array<'shift' | 'control' | 'alt' | 'meta'>
 
-    instance.pageView.webContents.sendInputEvent({
-      type: 'keyDown',
-      keyCode: key,
-      modifiers,
-    } as any)
-    instance.pageView.webContents.sendInputEvent({
-      type: 'keyUp',
-      keyCode: key,
-      modifiers,
-    } as any)
+    await this.guardInstanceOp(instance, async () => {
+      instance.pageView.webContents.sendInputEvent({
+        type: 'keyDown',
+        keyCode: key,
+        modifiers,
+      } as any)
+      instance.pageView.webContents.sendInputEvent({
+        type: 'keyUp',
+        keyCode: key,
+        modifiers,
+      } as any)
+    })
   }
 
   async getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]> {
@@ -1625,6 +1682,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const timeoutMs = Math.max(100, Number(options?.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS))
       const started = Date.now()
       while (Date.now() - started <= timeoutMs) {
+        if (instance.window.isDestroyed() || !this.instances.has(instance.id)) {
+          throw this.closedWindowError(instance.id)
+        }
         const hasTerminal = instance.downloads.some((d) => d.state === 'completed' || d.state === 'interrupted' || d.state === 'cancelled')
         if (hasTerminal) break
         await this.sleep(100)
@@ -1647,7 +1707,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       safePaths.push(safePath)
     }
 
-    return instance.cdp.setFileInputFiles(ref, safePaths)
+    return this.guardInstanceOp(instance, () => instance.cdp.setFileInputFiles(ref, safePaths))
   }
 
   windowResize(id: string, width: number, height: number): { width: number; height: number } {
@@ -1669,7 +1729,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async evaluate(id: string, expression: string): Promise<unknown> {
     const instance = this.requireAliveInstance(id)
-    return instance.pageView.webContents.executeJavaScript(expression)
+    return this.guardInstanceOp(instance, () => instance.pageView.webContents.executeJavaScript(expression))
   }
 
   async detectSecurityChallenge(id: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
@@ -1749,12 +1809,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const deltaX = direction === 'left' ? -amount : direction === 'right' ? amount : 0
     const deltaY = direction === 'up' ? -amount : direction === 'down' ? amount : 0
 
-    await instance.pageView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`)
+    await this.guardInstanceOp(instance, () =>
+      instance.pageView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`))
   }
 
   bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null }): void {
     const instance = this.instances.get(id)
     if (instance) {
+      if (instance.window.isDestroyed()) {
+        // Never bind a session to a dead window — the very next command would
+        // hit the destroyed-window path. Drop the stale entry instead.
+        this.cleanupDestroyedInstance(instance, `bindSession(${sessionId})`)
+        return
+      }
       instance.boundSessionId = sessionId
       instance.ownerType = 'session'
       instance.ownerSessionId = sessionId
@@ -2060,11 +2127,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const menuActive = !!instance.toolbarMenuOverlayActive
     const shouldShow = agentActive || menuActive
 
-    if (!shouldShow || !instance.nativeOverlayReady || instance.window.isDestroyed()) {
+    // A destroyed window's views may already be torn down — touching their
+    // bounds mid-teardown throws, and this runs from finalize/destroy paths.
+    if (instance.window.isDestroyed()) return
+
+    if (!shouldShow || !instance.nativeOverlayReady) {
       instance.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-      if (!instance.window.isDestroyed()) {
-        instance.window.setTopBrowserView(instance.toolbarView)
-      }
+      instance.window.setTopBrowserView(instance.toolbarView)
       return
     }
 
@@ -2122,6 +2191,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private applyAgentControlLock(instance: BrowserInstance, active: boolean): void {
+    // Runs on finalize/destroy paths — a destroyed window cannot hold a lock
+    // and touching its resizable state throws mid-teardown.
+    if (instance.window.isDestroyed()) {
+      instance.lockState.active = false
+      return
+    }
+
     const wantsLock = active && !!instance.agentControl?.active
 
     if (wantsLock && !instance.lockState.active) {
@@ -2483,13 +2559,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private requireOwnedInstance(instanceId: string, ownerKey: string): void {
     const instance = this.instances.get(instanceId)
-    if (!instance || instance.window.isDestroyed()) {
+    if (!instance) {
       throw new CodedError('BROWSER_INSTANCE_NOT_OWNED', `Browser instance "${instanceId}" not found.`)
     }
     const owned = instance.boundSessionId === ownerKey || instance.ownerSessionId === ownerKey
     if (!owned) {
       throw new CodedError('BROWSER_INSTANCE_NOT_OWNED',
         `Browser instance "${instanceId}" is not owned by this session.`)
+    }
+    // Owned but the window is gone: report the closure, not a misleading
+    // ownership failure, and drop the stale entry (SUV-0043).
+    if (instance.window.isDestroyed()) {
+      this.cleanupDestroyedInstance(instance, `capability access ${instanceId}`)
+      throw new CodedError('HANDLER_ERROR', `Browser window was closed (instance: ${instanceId})`)
     }
   }
 
@@ -2610,11 +2692,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       case 'getInstance': {
         const [instanceId] = args as [string]
         this.requireOwnedInstance(instanceId, ownerKey)
-        const live = this.getInstance(instanceId)
-        if (!live) return undefined
-        // `getInstance` returns the live BrowserInstance (which embeds non-
-        // cloneable Electron native objects). Project to a plain snapshot
-        // before crossing the IPC boundary.
+        // Alive-checked lookup (SUV-0043): a raw getInstance here could hand
+        // back an instance whose window died between the ownership check and
+        // the read. `getInstance` returns the live BrowserInstance (which
+        // embeds non-cloneable Electron native objects), so project to a
+        // plain snapshot before crossing the IPC boundary.
+        const live = this.requireAliveInstance(instanceId)
         return this.stripOwnerKeysInPlace(this.toSnapshot(live))
       }
       case 'listInstances':

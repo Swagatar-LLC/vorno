@@ -1062,3 +1062,63 @@ describe('createBrowserTools', () => {
     })
   })
 })
+
+// ============================================================================
+// Error text for non-Error rejections (SUV-0043)
+// ============================================================================
+
+describe('browser_tool error serialization (SUV-0043)', () => {
+  it('renders a non-Error object rejection readably, never "[object Object]"', async () => {
+    const mockFns = createMockFns()
+    mockFns.navigate = async () => {
+      // Electron IPC / remote-bridge failures can reject with plain objects.
+      throw { code: 'BROWSER_NO_CAPABLE_CLIENT', detail: 'no desktop client connected' }
+    }
+    const tools = createBrowserTools({ sessionId: 'test-session', getBrowserPaneFns: () => mockFns })
+
+    const result = await executeTool(tools, 'browser_tool', { command: 'navigate https://example.com' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).not.toContain('[object Object]')
+    expect(result.content[0].text).toContain('BROWSER_NO_CAPABLE_CLIENT')
+  })
+
+  it('prefers a message property on object rejections', async () => {
+    const mockFns = createMockFns()
+    mockFns.click = async () => {
+      throw { message: 'Browser window was closed (instance: browser-9)' }
+    }
+    const tools = createBrowserTools({ sessionId: 'test-session', getBrowserPaneFns: () => mockFns })
+
+    const result = await executeTool(tools, 'browser_tool', { command: 'click @e1' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('Browser window was closed (instance: browser-9)')
+  })
+
+  it('renders string rejections as-is', async () => {
+    const mockFns = createMockFns()
+    mockFns.snapshot = async () => {
+      throw 'plain string failure'
+    }
+    const tools = createBrowserTools({ sessionId: 'test-session', getBrowserPaneFns: () => mockFns })
+
+    const result = await executeTool(tools, 'browser_tool', { command: 'snapshot' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('plain string failure')
+  })
+
+  it('falls back to String() for circular objects', async () => {
+    const mockFns = createMockFns()
+    mockFns.snapshot = async () => {
+      const circular: Record<string, unknown> = {}
+      circular.self = circular
+      throw circular
+    }
+    const tools = createBrowserTools({ sessionId: 'test-session', getBrowserPaneFns: () => mockFns })
+
+    const result = await executeTool(tools, 'browser_tool', { command: 'snapshot' })
+    expect(result.isError).toBe(true)
+    // Circular with no message has no better rendering than String(); the
+    // guarantee is that the tool still returns a result instead of crashing.
+    expect(typeof result.content[0].text).toBe('string')
+  })
+})

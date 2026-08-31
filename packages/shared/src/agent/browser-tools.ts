@@ -30,6 +30,28 @@ function errorResponse(message: string): ToolResult {
   };
 }
 
+/**
+ * Render an arbitrary rejection value as readable tool-error text (SUV-0043).
+ * `String(error)` on a plain object yields "[object Object]" — worse than
+ * useless in a tool result. Prefer the Error message, then a `message`
+ * property, then JSON.
+ */
+export function describeBrowserToolError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.length > 0) return message;
+    try {
+      const json = JSON.stringify(error);
+      if (json && json !== '{}') return json;
+    } catch {
+      // circular — fall through
+    }
+  }
+  return String(error);
+}
+
 function successResponse(text: string): ToolResult {
   return {
     content: [{ type: 'text', text }],
@@ -273,7 +295,7 @@ export function createBrowserTools(options: BrowserToolsOptions) {
 
           return successResponse(text);
         } catch (error) {
-          return errorResponse(error instanceof Error ? error.message : String(error));
+          return errorResponse(describeBrowserToolError(error));
         }
       },
     ),

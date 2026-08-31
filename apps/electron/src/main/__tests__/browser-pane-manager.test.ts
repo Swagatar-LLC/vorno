@@ -1370,6 +1370,82 @@ describe('BrowserPaneManager', () => {
     })
   })
 
+  describe('destroyed-window guards (SUV-0043)', () => {
+    it('command dispatched against a destroyed window returns the clear closed error', async () => {
+      manager.createInstance('guard-destroyed')
+      const instance = (manager as any).instances.get('guard-destroyed')
+      instance.window.isDestroyed = mock(() => true)
+
+      await expect(manager.navigate('guard-destroyed', 'https://example.com'))
+        .rejects.toThrow('Browser window was closed (instance: guard-destroyed)')
+      // Stale entry is dropped from the map.
+      expect((manager as any).instances.has('guard-destroyed')).toBe(false)
+    })
+
+    it('window destroyed WHILE a command is in flight surfaces the closed error, not the raw Electron text', async () => {
+      manager.createInstance('guard-midflight')
+      const instance = (manager as any).instances.get('guard-midflight')
+      instance.cdp.clickElement = mock(async () => {
+        instance.window.isDestroyed = mock(() => true)
+        throw new TypeError('Object has been destroyed')
+      })
+
+      await expect(manager.clickElement('guard-midflight', '@e1'))
+        .rejects.toThrow('Browser window was closed (instance: guard-midflight)')
+    })
+
+    it('translates a raw "Object has been destroyed" rejection even when the destroy flag lags', async () => {
+      manager.createInstance('guard-raw-error')
+      const instance = (manager as any).instances.get('guard-raw-error')
+      instance.pageView.webContents.executeJavaScript = mock(async () => {
+        throw new Error('Object has been destroyed')
+      })
+
+      await expect(manager.evaluate('guard-raw-error', 'document.title'))
+        .rejects.toThrow('Browser window was closed (instance: guard-raw-error)')
+    })
+
+    it('screenshotRegion on a destroyed window throws the closed error (was previously unguarded)', async () => {
+      manager.createInstance('guard-region')
+      const instance = (manager as any).instances.get('guard-region')
+      instance.window.isDestroyed = mock(() => true)
+
+      await expect(manager.screenshotRegion('guard-region', { x: 0, y: 0, width: 10, height: 10 }))
+        .rejects.toThrow('Browser window was closed (instance: guard-region)')
+    })
+
+    it('waitFor bails with the closed error instead of polling a dead window to timeout', async () => {
+      manager.createInstance('guard-wait')
+      const instance = (manager as any).instances.get('guard-wait')
+
+      const wait = manager.waitFor('guard-wait', { kind: 'url', value: 'never-matches', timeoutMs: 5_000 })
+      instance.window.isDestroyed = mock(() => true)
+
+      const started = Date.now()
+      await expect(wait).rejects.toThrow('Browser window was closed (instance: guard-wait)')
+      expect(Date.now() - started).toBeLessThan(2_000)
+    })
+
+    it('does not bind a session to a destroyed window and drops the stale entry', () => {
+      manager.createInstance('guard-bind')
+      const instance = (manager as any).instances.get('guard-bind')
+      instance.window.isDestroyed = mock(() => true)
+
+      manager.bindSession('guard-bind', 'sess-guard')
+
+      expect((manager as any).instances.has('guard-bind')).toBe(false)
+    })
+
+    it('non-destroy errors pass through untranslated', async () => {
+      manager.createInstance('guard-passthrough')
+      const instance = (manager as any).instances.get('guard-passthrough')
+      instance.cdp.clickElement = mock(async () => { throw new Error('No element found for ref @e404') })
+
+      await expect(manager.clickElement('guard-passthrough', '@e404'))
+        .rejects.toThrow('No element found for ref @e404')
+    })
+  })
+
   describe('failed interaction tracking', () => {
     it('clickElement records failed lastAction on error', async () => {
       manager.createInstance('fail-click')
