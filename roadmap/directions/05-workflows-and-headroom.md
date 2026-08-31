@@ -15,6 +15,7 @@ related-plans:
   - PLAN-043-roadmap-console-interactive-work-surface.md
   - PLAN-044-cross-system-work-requests.md
   - PLAN-045-roadmap-reduction-pass.md
+  - PLAN-047-per-session-browser-isolation-and-lifecycle.md
 ---
 
 # Direction 5 — Durable Workflows & Headroom
