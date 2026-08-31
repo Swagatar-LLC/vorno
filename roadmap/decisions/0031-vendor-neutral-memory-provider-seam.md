@@ -248,7 +248,7 @@ upstream.
 
 - [ADR-0029 — Headroom memory through the memory MCP stdio server, host-invoked from the boundary adapter](0029-headroom-memory-via-host-invoked-mcp.md) (stands unchanged; this ADR generalizes the layer above it)
 - [ADR-0027 — Lean on the OS for lifecycle chores](0027-lean-on-the-os-for-lifecycle-chores.md) (file-first bias, restored at the storage layer for the default provider)
-- [PLAN-040 — Integrate Headroom](../plans/in-progress/PLAN-040-integrate-headroom.md) (§I2, the first non-goal this ADR carves against)
+- [PLAN-040 — Integrate Headroom](../plans/documented/PLAN-040-integrate-headroom.md) (§I2, the first non-goal this ADR carves against)
 - [SUV-0029 — Memory provider seam with Headroom MCP and built-in markdown providers](../suvs/done/SUV-0029-memory-provider-seam-with-headroom-and-builtin-markdown-providers.md) (the first slice; re-cut under this ADR)
 - [SUV-0040 — Built-in markdown memory provider with decay and temporal processing](../suvs/done/SUV-0040-builtin-markdown-memory-provider-with-decay-and-temporal-processing.md) (owns the default provider's build-out)
 - [SUV-0030 — Memory extension interface designed and proposed upstream](../suvs/done/SUV-0030-memory-extension-interface-designed-and-proposed-upstream.md) (the *other* pluggability layer — Headroom-internal)
