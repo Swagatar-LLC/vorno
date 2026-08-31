@@ -264,7 +264,7 @@ otherwise.
 
 ## References
 
-- [PLAN-040 — Integrate Headroom](../plans/in-progress/PLAN-040-integrate-headroom.md) (§I1 surface choice, §I2 memory, open question 1)
+- [PLAN-040 — Integrate Headroom](../plans/documented/PLAN-040-integrate-headroom.md) (§I1 surface choice, §I2 memory, open question 1)
 - [SUV-0029 — Memory provider seam with Headroom MCP and built-in markdown providers](../suvs/done/SUV-0029-memory-provider-seam-with-headroom-and-builtin-markdown-providers.md) (unblocked and re-cut by this ADR; re-cut again 2026-08-28 under ADR-0031)
 - [SUV-0030 — Memory extension interface designed and proposed upstream](../suvs/done/SUV-0030-memory-extension-interface-designed-and-proposed-upstream.md)
 - [SUV-0031 — agentic-memory v2 as a plugged backend](../suvs/done/SUV-0031-agentic-memory-v2-as-a-plugged-backend-behind-the-interface.md)

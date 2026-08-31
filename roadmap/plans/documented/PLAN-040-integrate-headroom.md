@@ -1,11 +1,11 @@
 ---
 id: PLAN-040
 title: Integrate Headroom — context compression, token management, and memory
-status: in-progress
+status: documented
 direction: DIR-05
 owner: jh
 created: 2026-08-22
-updated: 2026-08-28
+updated: 2026-08-31
 related:
   - PLAN-002-token-usage-display.md (surface that migrates onto Headroom stats)
   - PLAN-003-token-usage-thresholds-workspace-settings.md (surface that migrates onto Headroom stats)
@@ -237,7 +237,7 @@ must degrade gracefully if Headroom is absent.
 - [x] Token displays/thresholds (PLAN-002/003 surfaces) read through Headroom stats where they overlap; gaps documented as glue or filed upstream — no new library introduced.
 - [x] Memory extension interface designed against Headroom's seams; upstream contribution opened (or their decline documented and the patch carried with rationale).
 - [x] agentic-memory v2 runs as a plugged backend behind that interface; the MCP source is a thin host over it.
-- [x] Docs: a `vorno.ai/docs` page on Vorno + Headroom — what it does, how to toggle it, and what leaves the machine (nothing without opt-in, save the one-time embedder model fetch on first enable, which is disclosed). **This item is discharged by two SUVs, not one:** SUV-0032 authors the page into the in-app docs tree, and SUV-0033 publishes it to the site. In-app content alone does not discharge it — the acceptance says `vorno.ai/docs`, and a guide written for a filesystem stays valid on disk while breaking on the web. **Status 2026-08-28: the in-app half is complete and now spans two pages** (`headroom.md` plus `memory.md`, which it links to); **the publish half is owner-gated**, not merely unfinished — see SUV-0033 in `blocked/`. Marked `[~]` rather than `[x]` deliberately: ticking it would claim something is on the web that is not.
+- [x] Docs: a `vorno.ai/docs` page on Vorno + Headroom — what it does, how to toggle it, and what leaves the machine (nothing without opt-in, save the one-time embedder model fetch on first enable, which is disclosed). **This item is discharged by two SUVs, not one:** SUV-0032 authors the page into the in-app docs tree, and SUV-0033 publishes it to the site. In-app content alone does not discharge it — the acceptance says `vorno.ai/docs`, and a guide written for a filesystem stays valid on disk while breaking on the web. **Status 2026-08-28: the in-app half is complete and now spans two pages** (`headroom.md` plus `memory.md`, which it links to); **the publish half is owner-gated**, not merely unfinished — see SUV-0033 in `blocked/`. Marked `[~]` rather than `[x]` deliberately: ticking it would claim something is on the web that is not. **DISCHARGED 2026-08-30 by v0.20.0:** SUV-0033 moved `blocked/` → `done/` when `release.yml`'s `publish-docs` job put both pages on the web — `vorno.ai/docs/memory/` and the updated `/docs/headroom/` were verified live over real HTTP, cross-link resolving, with the ~86 MB embedder disclosure present. The tick above is now the true claim, and this paragraph is kept rather than rewritten so the reason it was once `[~]` stays legible.
 
 ## Status log
 
@@ -311,3 +311,5 @@ must degrade gracefully if Headroom is absent.
   in its own log. The plan is left in `in-progress/` deliberately — closing it
   is a documentation pass (`[skill:roadmap-plan-document]`) and the owner's
   read, not a side effect of a release.
+- `2026-08-31` — moved from in-progress to done: all seventeen SUVs (0014–0018, 0023–0033, 0040) are in `done/`, and all seven acceptance items are ticked — the last of them discharged by v0.20.0 putting both docs pages on `vorno.ai/docs`. Nothing in this plan was left open; the delay between the final SUV closing and this transition was the deliberate one its own log describes, not unfinished work.
+- `2026-08-31` — moved from done to documented: Headroom context compression, token management and the vendor-neutral memory seam ship enabled-per-workspace and off by default, with both docs pages live on `vorno.ai/docs`. Docs touched: `packages/shared/CLAUDE.md` (added `src/headroom/` and `src/memory/` to Key folders; added two Notes entries recording the two contracts a reader of this repo can otherwise only learn by reading source — Headroom is reached *only* through the boundary factory and never by importing `headroom-ai`, and provider choice lives solely in `memory/registry.ts` with `createMemoryProvider` degrading rather than throwing). Audited and found already accurate, so left untouched: `roadmap/directions/05-*.md` (PLAN-040 already in `related-plans` and named in the thesis), the in-app docs tree (`headroom.md`, `memory.md` — SUV-0032/0033), and `roadmap/upstream/compatibility.md` (no wire/protocol change). Post-merge review of the merged diff found no acceptance item unbacked by shipped code and no follow-up worth a LEARNING; the two behaviours most likely to be mis-used later are precisely the ones now written into the package CLAUDE.md.
