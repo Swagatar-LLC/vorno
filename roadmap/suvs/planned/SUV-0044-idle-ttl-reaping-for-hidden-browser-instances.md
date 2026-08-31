@@ -23,13 +23,17 @@ per-workspace idle TTL instead of accumulating for the life of the app.
 - Reuse the PLAN-038 idle-sweep pattern: a minute tick in the Electron main
   process destroys instances that are hidden, unbound, session-owned, and
   idle past the TTL.
-- **Reap-eligibility predicate, stated exactly** (turn-end unbinding flips
-  `ownerType` to `'manual'` while retaining `ownerSessionId`, so
-  `ownerType` alone cannot distinguish a former session window from a
-  genuinely manual one): eligible ⇔ `boundSessionId === null` **and**
-  `ownerSessionId !== null` **and** not visible **and** idle past TTL.
-  `ownerSessionId === null` (a window the user opened that no session has
-  ever driven) is never eligible, regardless of ownerType.
+- **Reap-eligibility predicate, stated exactly.** Neither mutable ownership
+  field can carry it: turn-end unbinding flips `ownerType` to `'manual'`
+  while retaining `ownerSessionId`, and `bindSession` stamps
+  `ownerSessionId` onto a user-opened window a session adopts — so keying
+  on either would miss former session windows or reap adopted user windows.
+  Instead, `BrowserInstance` records its **create-time origin** as a new
+  immutable field (`sessionCreated: boolean`, set in `createInstance` from
+  the creation `ownerType`, never rewritten by bind/unbind). Eligible ⇔
+  `sessionCreated` **and** `boundSessionId === null` **and** not visible
+  **and** idle past TTL. A user-opened window is never eligible, even after
+  sessions have adopted and released it.
 - Quiescence guards: never reap a visible window, a bound window, or one
   with in-flight work — network activity, downloads, **or an active browser
   command against the instance (`executeJavaScript`, CDP operations, any
@@ -40,8 +44,9 @@ per-workspace idle TTL instead of accumulating for the life of the app.
   must not reintroduce it.
 - Per-workspace TTL setting on the existing `workspaceSettings:*` surface
   (default aligned with `idleAgentTtlMinutes` semantics; `0` = never).
-- Manual windows (per the predicate above: `ownerSessionId === null`) are
-  exempt entirely.
+- Manual windows (per the predicate above: `sessionCreated === false`,
+  i.e. user-opened at creation) are exempt entirely — adoption by a session
+  never revokes the exemption.
 - Out: on-disk partition data cleanup (retention untouched), and any change
   to the close-intercepts-to-hide behavior for live windows.
 
@@ -51,9 +56,10 @@ per-workspace idle TTL instead of accumulating for the life of the app.
       the sweep log names the instance and reason (test with fake timers).
 - [ ] Bound, visible, active-download, or mid-command (in-flight op count
       > 0) windows survive the sweep (tests).
-- [ ] A formerly session-driven window (`ownerType 'manual'` after turn-end
-      unbind, `ownerSessionId` retained) IS reaped; a never-session-driven
-      window (`ownerSessionId === null`) is NOT (tests pin the predicate).
+- [ ] A session-created window unbound at turn end (`ownerType 'manual'`,
+      `ownerSessionId` retained) IS reaped; a user-opened window is NOT —
+      including after a session adopted and released it (tests pin the
+      predicate on `sessionCreated`, not on the mutable ownership fields).
 - [ ] TTL `0` disables reaping (test).
 - [ ] Setting is readable/editable via the existing per-workspace settings
       surface with no new IPC channels.
@@ -65,3 +71,7 @@ per-workspace idle TTL instead of accumulating for the life of the app.
   explicit (`ownerSessionId`, not `ownerType`, is the session-owned signal
   after turn-end unbind); quiescence contract extended to in-flight browser
   commands via a per-instance op count.
+- `2026-08-31` — Greptile P1 follow-up: `ownerSessionId` is also mutable
+  (`bindSession` stamps it onto adopted user windows), so the predicate now
+  keys on an immutable create-time origin flag (`sessionCreated`); adopted
+  user-opened windows are never reapable.
