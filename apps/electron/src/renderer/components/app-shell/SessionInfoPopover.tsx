@@ -146,9 +146,7 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
           />
         </div>
       </div>
-      {/* One scroll region for everything below the pinned title row — the
-          Headroom report can be taller than the viewport allows, and clipping
-          it also clipped the files list (see SessionInfoPopover.layout.ts). */}
+      {/* Everything below the pinned title scrolls as one region. */}
       <div className={CONTENT_SCROLL_REGION_CLASS}>
         {/*
           fork(PLAN-040, SUV-0027): this session's own Headroom measurements, plus
@@ -163,15 +161,12 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
             compact
           />
         </div>
-        {/* Plain wrapper breaks the section's baked-in h-full percentage chain
-            so the tree renders at natural height and this region scrolls as one. */}
-        <div>
-          <SessionFilesSection
-            sessionId={sessionId}
-            sessionFolderPath={sessionFolderPath}
-            hideHeader={false}
-          />
-        </div>
+        <SessionFilesSection
+          sessionId={sessionId}
+          sessionFolderPath={sessionFolderPath}
+          hideHeader={false}
+          className="h-auto"
+        />
       </div>
     </div>
   )

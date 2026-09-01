@@ -1,24 +1,13 @@
 /**
- * Layout contract for the session Info popover (bottom-right "Info" button).
+ * Pins the SessionInfoPopover layout contract: no fixed popover height,
+ * viewport-capped, one scroll region below the pinned title, page-height
+ * bottom drawer. Regression origin: a fixed h-[460px] plus overflow-hidden
+ * panes clipped the Headroom rows and made the files list unreachable.
  *
- * The regression under test: with Headroom enabled, the Headroom report rows
- * plus the title row exceeded the popover's fixed 460px height, and because
- * every pane was `overflow-hidden` there was no scroll region anywhere — the
- * rest of the session info (including the files list) was unreachable.
- *
- * These assertions pin the layout contract that prevents that:
- *
- *   1. The popover must not hard-fix its height. It sizes to content and is
- *      capped by the viewport space Radix reports for it, so it can use as
- *      much screen real estate as it needs (matching the dropdown/context-menu
- *      precedent in components/ui).
- *   2. The region below the pinned title row must scroll, not clip.
- *   3. The mobile presentation (vaul bottom drawer) must be able to use the
- *      full dynamic viewport height, page-like, rather than a fixed cap that
- *      reproduces the same clipping on small screens.
- *
- * Tests are class-contract tests (no DOM), matching the conventions of this
- * suite — the components here are styled entirely through these constants.
+ * Class-contract only (this suite has no DOM). Known, accepted residual risk
+ * from the PR #188 review: the component could stop applying these constants
+ * and this suite would stay green; mounting the component would require DOM
+ * test infrastructure the repo does not have.
  */
 
 import { describe, expect, it } from 'bun:test'
@@ -62,7 +51,14 @@ describe('SessionInfoPopover content scroll region', () => {
 })
 
 describe('SessionInfoPopover drawer (mobile presentation) sizing', () => {
-  it('can occupy the full dynamic viewport height', () => {
-    expect(DEFAULT_DRAWER_CONTENT_CLASS).toContain('100dvh')
+  it('is page-height: exact height and max-height tokens, not just a substring', () => {
+    // Both tokens asserted exactly — dropping the height while keeping the
+    // max-height would silently return the drawer to content-sized behavior.
+    expect(DEFAULT_DRAWER_CONTENT_CLASS).toContain(
+      'data-[vaul-drawer-direction=bottom]:h-[calc(100dvh-1rem)]',
+    )
+    expect(DEFAULT_DRAWER_CONTENT_CLASS).toContain(
+      'data-[vaul-drawer-direction=bottom]:max-h-[calc(100dvh-1rem)]',
+    )
   })
 })
