@@ -1,7 +1,7 @@
 ---
 id: SUV-0044
 title: Idle TTL reaping for hidden browser instances
-status: in-progress
+status: done
 plan: PLAN-047
 direction: DIR-05
 owner: jh
@@ -52,16 +52,16 @@ per-workspace idle TTL instead of accumulating for the life of the app.
 
 ## Acceptance
 
-- [ ] A hidden unbound session window is destroyed after the TTL elapses;
+- [x] A hidden unbound session window is destroyed after the TTL elapses;
       the sweep log names the instance and reason (test with fake timers).
-- [ ] Bound, visible, active-download, or mid-command (in-flight op count
+- [x] Bound, visible, active-download, or mid-command (in-flight op count
       > 0) windows survive the sweep (tests).
-- [ ] A session-created window unbound at turn end (`ownerType 'manual'`,
+- [x] A session-created window unbound at turn end (`ownerType 'manual'`,
       `ownerSessionId` retained) IS reaped; a user-opened window is NOT —
       including after a session adopted and released it (tests pin the
       predicate on `sessionCreated`, not on the mutable ownership fields).
-- [ ] TTL `0` disables reaping (test).
-- [ ] Setting is readable/editable via the existing per-workspace settings
+- [x] TTL `0` disables reaping (test).
+- [x] Setting is readable/editable via the existing per-workspace settings
       surface with no new IPC channels.
 
 ## Status log
@@ -76,3 +76,4 @@ per-workspace idle TTL instead of accumulating for the life of the app.
   keys on an immutable create-time origin flag (`sessionCreated`); adopted
   user-opened windows are never reapable.
 - `2026-08-31` — moved from planned to in-progress: implementation started (session 260831-high-cascade)
+- `2026-08-31` — moved from in-progress to done: shipped in PR #189 (merge 047cb286); gate = two-session OpenAI Sol adversarial review (fan-in in PR #189 comments), all findings addressed in af0859bc

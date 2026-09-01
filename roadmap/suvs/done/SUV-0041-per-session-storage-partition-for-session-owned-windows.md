@@ -1,7 +1,7 @@
 ---
 id: SUV-0041
 title: Per-session storage partition for session-owned browser windows
-status: in-progress
+status: done
 plan: PLAN-047
 direction: DIR-05
 owner: jh
@@ -35,16 +35,17 @@ logins, and storage are private to it.
 
 ## Acceptance
 
-- [ ] A cookie set in session A's browser window is not visible in session B's
+- [x] A cookie set in session A's browser window is not visible in session B's
       window or in a manual window, and vice versa (test drives two instances
       with different `ownerSessionId`s).
-- [ ] Manual windows still share `persist:browser-pane` (existing behavior
+- [x] Manual windows still share `persist:browser-pane` (existing behavior
       test unchanged/green).
-- [ ] Permission handlers and observers fire for windows on a fresh
+- [x] Permission handlers and observers fire for windows on a fresh
       per-session partition (test or assertion on per-partition init).
-- [ ] `browser-pane-manager.test.ts` passes with the new cases.
+- [x] `browser-pane-manager.test.ts` passes with the new cases.
 
 ## Status log
 
 - `2026-08-30` — created in `planned/`
 - `2026-08-31` — moved from planned to in-progress: implementation started (session 260831-high-cascade)
+- `2026-08-31` — moved from in-progress to done: shipped in PR #189 (merge 047cb286); gate = two-session OpenAI Sol adversarial review (fan-in in PR #189 comments), all findings addressed in af0859bc

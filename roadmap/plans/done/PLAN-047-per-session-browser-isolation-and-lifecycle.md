@@ -1,7 +1,7 @@
 ---
 id: PLAN-047
 title: Per-session browser isolation and lifecycle
-status: in-progress
+status: done
 direction: DIR-05
 owner: jh
 created: 2026-08-30
@@ -118,19 +118,19 @@ SUV-0043 and SUV-0044 are independent of both. Each is one PR.
 
 ## Acceptance
 
-- [ ] Two concurrent sessions can hold different logins on the same site;
+- [x] Two concurrent sessions can hold different logins on the same site;
       cookies set in one session's browser are invisible to the other's.
-- [ ] Across alternating turns of two sessions in one workspace, each session
+- [x] Across alternating turns of two sessions in one workspace, each session
       re-binds the same window it used last turn; no cross-session adoption
       is observed in logs.
-- [ ] Closing one session's window while another session runs produces a
+- [x] Closing one session's window while another session runs produces a
       clear "window was closed" tool error — never a raw
       "Object has been destroyed" or "[object Object]".
-- [ ] Hidden unbound session windows are destroyed after the idle TTL;
+- [x] Hidden unbound session windows are destroyed after the idle TTL;
       manual windows are never reaped.
-- [ ] Tests added/updated (`browser-pane-manager.test.ts` covers partition
+- [x] Tests added/updated (`browser-pane-manager.test.ts` covers partition
       derivation, owner-scoped reuse, and reaper quiescence guards).
-- [ ] Updated relevant docs (`browser-tools` guide notes per-session
+- [x] Updated relevant docs (`browser-tools` guide notes per-session
       isolation and the logged-out-by-default consequence).
 
 ## Status log
@@ -138,3 +138,4 @@ SUV-0043 and SUV-0044 are independent of both. Each is one PR.
 - `2026-08-30` — created in `planned/`, from the 260828-vivid-mountain
   architecture trace; SUV-0041..0044 cut in the same pass.
 - `2026-08-31` — moved from planned to in-progress: implementation started (session 260831-high-cascade)
+- `2026-08-31` — moved from in-progress to done: all four SUVs shipped in one PR (#189, merge 047cb286). Gate: Greptile unavailable (trial credit limit) — replaced at owner direction by a two-session OpenAI Sol adversarial review (deep-review correctness/security + ponytail complexity/architecture lenses), fan-in and dispositions recorded in PR #189 comments; 2 P1 / 6 P2 / 5 P3 findings addressed in af0859bc, one rebutted. All six acceptance items verified by tests in the PR. Documentation pass (→ documented) remains the owner's.
