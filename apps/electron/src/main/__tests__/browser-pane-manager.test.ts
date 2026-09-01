@@ -24,6 +24,19 @@ function createMockWebContents() {
       if (!listeners[event]) listeners[event] = []
       listeners[event].push(cb)
     },
+    once: (event: string, cb: Function) => {
+      const wrapped = (...args: any[]) => {
+        listeners[event] = (listeners[event] || []).filter(fn => fn !== wrapped)
+        cb(...args)
+      }
+      if (!listeners[event]) listeners[event] = []
+      listeners[event].push(wrapped)
+    },
+    removeListener: (event: string, _cb: Function) => {
+      // `once` wraps callbacks, so identity-based removal can't match the
+      // original; tests only need removal not to throw.
+      listeners[event] = listeners[event] || []
+    },
     loadURL: mock(async (url: string) => {
       currentUrl = url
       const isToolbarUrl = typeof url === 'string' && url.includes('browser-toolbar.html')
@@ -146,14 +159,16 @@ mock.module('electron', () => ({
       const win = createMockWindow(opts)
       this.webContents = win.webContents
       Object.assign(this, win)
+      ;(this as any)._ctorOpts = opts
     }
   },
   BrowserView: class MockBrowserView {
     webContents: any
-    constructor(_opts?: any) {
+    constructor(opts?: any) {
       const view = createMockBrowserView()
       this.webContents = view.webContents
       Object.assign(this, view)
+      ;(this as any)._ctorOpts = opts
     }
   },
   ipcMain: {
@@ -208,8 +223,10 @@ mock.module('electron', () => ({
   },
 }))
 
+const mockMainLogInfo = mock((..._args: any[]) => {})
+
 mock.module('../logger', () => {
-  const stubLog = { info: () => {}, error: () => {}, warn: () => {}, debug: () => {} }
+  const stubLog = { info: mockMainLogInfo, error: () => {}, warn: () => {}, debug: () => {} }
   return {
     mainLog: stubLog,
     sessionLog: stubLog,
@@ -272,6 +289,7 @@ describe('BrowserPaneManager', () => {
     toolbarLoadFailuresRemaining = 0
     mockShellOpenExternal.mockClear()
     mockIpcMainHandle.mockClear()
+    mockMainLogInfo.mockClear()
     manager = new BrowserPaneManager()
   })
 
@@ -454,24 +472,52 @@ describe('BrowserPaneManager', () => {
       expect(instance.partition).toBe('persist:browser-pane')
     })
 
-    it('cookies set in one session partition are invisible to other sessions and manual windows', async () => {
-      manager.createForSession('sess-cookie-a')
-      manager.createForSession('sess-cookie-b')
-      manager.createInstance('manual-cookie')
+    it('window and every view are constructed on the owner-derived partition and session', () => {
+      // The isolation contract we own is that Electron receives distinct
+      // partition names + session objects everywhere a webContents is
+      // created — Electron guarantees the storage isolation from there.
+      const id = manager.createForSession('sess-ctor', { workspaceId: 'ws-ctor' })
+      const instance = (manager as any).instances.get(id)
+      const expected = instance.partition
+      expect(expected.startsWith('persist:browser-pane-')).toBe(true)
 
-      const sesA = partitionSessions.get('persist:browser-pane-sess-cookie-a')
-      const sesB = partitionSessions.get('persist:browser-pane-sess-cookie-b')
-      const sesManual = partitionSessions.get('persist:browser-pane')
-      expect(sesA).toBeDefined()
-      expect(sesB).toBeDefined()
-      expect(sesManual).toBeDefined()
+      const ses = partitionSessions.get(expected)
+      expect(ses).toBeDefined()
+      expect((instance.window as any)._ctorOpts?.webPreferences?.partition).toBe(expected)
+      expect((instance.window as any)._ctorOpts?.webPreferences?.session).toBe(ses)
+      for (const view of [instance.toolbarView, instance.pageView, instance.nativeOverlayView]) {
+        expect((view as any)._ctorOpts?.webPreferences?.partition).toBe(expected)
+        expect((view as any)._ctorOpts?.webPreferences?.session).toBe(ses)
+      }
+    })
 
-      await sesA.cookies.set({ name: 'auth', value: 'user-a-token' })
-      await sesManual.cookies.set({ name: 'auth', value: 'user-manual-token' })
+    it('the same session id in two workspaces maps to two different partitions and windows', () => {
+      // Session ids are only unique WITHIN a workspace (copied workspaces
+      // preserve ids) — a bare-id partition would alias two sessions' storage.
+      const idA = manager.createForSession('sess-dup', { workspaceId: 'ws-1' })
+      const idB = manager.createForSession('sess-dup', { workspaceId: 'ws-2' })
 
-      expect(await sesA.cookies.get({ name: 'auth' })).toEqual([{ name: 'auth', value: 'user-a-token' }])
-      expect(await sesB.cookies.get({ name: 'auth' })).toEqual([])
-      expect(await sesManual.cookies.get({ name: 'auth' })).toEqual([{ name: 'auth', value: 'user-manual-token' }])
+      expect(idA).not.toBe(idB)
+      const partA = (manager as any).instances.get(idA).partition
+      const partB = (manager as any).instances.get(idB).partition
+      expect(partA).not.toBe(partB)
+    })
+
+    it('a session never reclaims a same-id session\'s unbound window from another workspace', () => {
+      const winA = manager.createForSession('sess-dup-reclaim', { workspaceId: 'ws-1' })
+      manager.unbindAllForSession('sess-dup-reclaim')
+
+      const winB = manager.getOrCreateForSession('sess-dup-reclaim', { workspaceId: 'ws-2' })
+      expect(winB).not.toBe(winA)
+      expect(manager.listInstances()).toHaveLength(2)
+    })
+
+    it('partition encoding is injective — a literal "_2f" cannot collide with an encoded "/"', () => {
+      const id1 = manager.createForSession('a_2f')
+      const id2 = manager.createForSession('a/')
+      const part1 = (manager as any).instances.get(id1).partition
+      const part2 = (manager as any).instances.get(id2).partition
+      expect(part1).not.toBe(part2)
     })
 
     it('installs permission handlers and observers exactly once per partition', () => {
@@ -1427,7 +1473,7 @@ describe('BrowserPaneManager', () => {
       expect(instance.isVisible).toBe(false)
 
       instance.lastActivityAt = Date.now() - HOUR - 60_000
-      const reaped = manager.sweepIdleBrowserInstances()
+      const reaped = (manager as any).sweepIdleBrowserInstances()
 
       expect(reaped).toEqual([id])
       expect(manager.listInstances()).toHaveLength(0)
@@ -1449,7 +1495,7 @@ describe('BrowserPaneManager', () => {
       expect(instance.sessionCreated).toBe(false)
 
       instance.lastActivityAt = Date.now() - 10 * HOUR
-      const reaped = manager.sweepIdleBrowserInstances()
+      const reaped = (manager as any).sweepIdleBrowserInstances()
 
       expect(reaped).toEqual([])
       expect(manager.listInstances()).toHaveLength(1)
@@ -1461,7 +1507,7 @@ describe('BrowserPaneManager', () => {
       manager.unbindAllForSession('sess-ttl0')
       ;(manager as any).instances.get(id).lastActivityAt = Date.now() - 100 * HOUR
 
-      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([])
       expect(manager.listInstances()).toHaveLength(1)
     })
 
@@ -1472,7 +1518,7 @@ describe('BrowserPaneManager', () => {
       expect(instance.boundSessionId).toBe('sess-bound-survive')
       instance.lastActivityAt = Date.now() - 10 * HOUR
 
-      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([])
     })
 
     it('visible windows survive the sweep', () => {
@@ -1483,7 +1529,7 @@ describe('BrowserPaneManager', () => {
       instance.isVisible = true
       instance.lastActivityAt = Date.now() - 10 * HOUR
 
-      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([])
     })
 
     it('mid-command windows (in-flight op count > 0) survive the sweep', async () => {
@@ -1500,7 +1546,7 @@ describe('BrowserPaneManager', () => {
       const pending = manager.getAccessibilitySnapshot(id)
       expect(instance.inFlightOps).toBe(1)
 
-      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([])
       expect(manager.listInstances()).toHaveLength(1)
 
       resolveOp()
@@ -1518,7 +1564,7 @@ describe('BrowserPaneManager', () => {
       instance.pageView.webContents.executeJavaScript = mock(async () => 'ok')
       await manager.evaluate(id, '1 + 1')
 
-      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([])
     })
 
     it('active-download windows survive the sweep', () => {
@@ -1533,7 +1579,7 @@ describe('BrowserPaneManager', () => {
         mimeType: 'application/zip',
       })
 
-      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([])
     })
 
     it('network-active windows survive the sweep', () => {
@@ -1543,9 +1589,9 @@ describe('BrowserPaneManager', () => {
       const instance = (manager as any).instances.get(id)
       instance.lastActivityAt = Date.now() - 10 * HOUR
       instance.pageView.webContents.id = 777
-      ;(manager as any).inFlightRequestsByWebContentsId.set(777, 2)
+      ;(manager as any).inFlightRequestIdsByWebContentsId.set(777, new Set([1, 2]))
 
-      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([])
     })
 
     it('resolves the TTL per workspace', () => {
@@ -1557,9 +1603,67 @@ describe('BrowserPaneManager', () => {
       ;(manager as any).instances.get(keep).lastActivityAt = Date.now() - HOUR
       ;(manager as any).instances.get(reap).lastActivityAt = Date.now() - HOUR
 
-      const reaped = manager.sweepIdleBrowserInstances()
+      const reaped = (manager as any).sweepIdleBrowserInstances()
       expect(reaped).toEqual([reap])
       expect(manager.listInstances().map((i) => i.id)).toEqual([keep])
+    })
+
+    it('the reap log names the instance and reason', () => {
+      armReaper(60)
+      const id = manager.createForSession('sess-reap-log')
+      manager.unbindAllForSession('sess-reap-log')
+      ;(manager as any).instances.get(id).lastActivityAt = Date.now() - 2 * HOUR
+
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([id])
+
+      const reapLine = mockMainLogInfo.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes('idle-reap destroying'))
+      expect(reapLine).toBeDefined()
+      expect(reapLine).toContain(`instance=${id}`)
+      expect(reapLine).toContain('reason=idle-ttl')
+    })
+
+    it('an invalid persisted TTL never reaps (fail-safe), even with the idle window expired', () => {
+      // Workspace config.json is user-editable and loaded through a type
+      // assertion — a string TTL would make the idle comparison NaN-false.
+      ;(manager as any).idleReaperTtlResolver = () => 'never' as unknown as number
+      const id = manager.createForSession('sess-bad-ttl')
+      manager.unbindAllForSession('sess-bad-ttl')
+      ;(manager as any).instances.get(id).lastActivityAt = Date.now() - 100 * HOUR
+
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([])
+      expect(manager.listInstances()).toHaveLength(1)
+    })
+
+    it('a completed network request resets the idle clock, and redirects leave no in-flight residue', () => {
+      armReaper(60)
+      const id = manager.createForSession('sess-net-reset', { workspaceId: 'ws-net' })
+      manager.unbindAllForSession('sess-net-reset')
+      const instance = (manager as any).instances.get(id)
+      instance.pageView.webContents.id = 4242
+
+      const ses = partitionSessions.get(instance.partition)
+      const onBeforeRequest = ses.webRequest.onBeforeRequest.mock.calls[0][0]
+      const onCompleted = ses.webRequest.onCompleted.mock.calls[0][0]
+
+      instance.lastActivityAt = Date.now() - 10 * HOUR
+
+      // A redirect chain re-fires onBeforeRequest for the SAME request id.
+      onBeforeRequest({ webContentsId: 4242, id: 7 }, () => {})
+      onBeforeRequest({ webContentsId: 4242, id: 7 }, () => {})
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([]) // network-active
+
+      // One terminal completion must fully drain the tracking (id-set, not a
+      // counter) AND start a new idle period.
+      onCompleted({ webContentsId: 4242, id: 7, method: 'GET', url: 'https://example.com/x', statusCode: 200, resourceType: 'xhr' })
+      expect((manager as any).inFlightRequestIdsByWebContentsId.get(4242)?.size ?? 0).toBe(0)
+      expect(Date.now() - instance.lastActivityAt).toBeLessThan(5_000)
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([]) // fresh idle clock
+
+      // Once genuinely idle again, the window IS reaped — no permanent residue.
+      instance.lastActivityAt = Date.now() - 2 * HOUR
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([id])
     })
 
     it('sweep is a no-op before startIdleReaper wires a TTL resolver', () => {
@@ -1567,7 +1671,7 @@ describe('BrowserPaneManager', () => {
       manager.unbindAllForSession('sess-unarmed')
       ;(manager as any).instances.get(id).lastActivityAt = Date.now() - 100 * HOUR
 
-      expect(manager.sweepIdleBrowserInstances()).toEqual([])
+      expect((manager as any).sweepIdleBrowserInstances()).toEqual([])
     })
   })
 
@@ -1635,6 +1739,53 @@ describe('BrowserPaneManager', () => {
       manager.bindSession('guard-bind', 'sess-guard')
 
       expect((manager as any).instances.has('guard-bind')).toBe(false)
+    })
+
+    it('detectSecurityChallenge on a destroyed window throws the closed error, not a benign result', async () => {
+      manager.createInstance('guard-challenge')
+      const instance = (manager as any).instances.get('guard-challenge')
+      instance.window.isDestroyed = mock(() => true)
+
+      await expect(manager.detectSecurityChallenge('guard-challenge'))
+        .rejects.toThrow('Browser window was closed (instance: guard-challenge)')
+    })
+
+    it('detectSecurityChallenge does not swallow a mid-probe teardown', async () => {
+      manager.createInstance('guard-challenge-mid')
+      const instance = (manager as any).instances.get('guard-challenge-mid')
+      instance.pageView.webContents.executeJavaScript = mock(async () => {
+        throw new Error('Object has been destroyed')
+      })
+
+      await expect(manager.detectSecurityChallenge('guard-challenge-mid'))
+        .rejects.toThrow('Browser window was closed (instance: guard-challenge-mid)')
+    })
+
+    it('window destroyed during a click navigation wait rejects with the closed error and keeps the op in flight until then', async () => {
+      manager.createInstance('guard-navwait')
+      const instance = (manager as any).instances.get('guard-navwait')
+
+      const pending = manager.clickElement('guard-navwait', '@e1', { waitFor: 'navigation', timeoutMs: 30_000 })
+      await Bun.sleep(0)
+      // The whole command — click plus wait — counts as one in-flight op.
+      expect(instance.inFlightOps).toBe(1)
+
+      instance.pageView.webContents._emit('destroyed')
+      await expect(pending).rejects.toThrow('Browser window was closed (instance: guard-navwait)')
+      expect(instance.inFlightOps).toBe(0)
+    })
+
+    it('waitFor holds the in-flight op count for its entire duration', async () => {
+      manager.createInstance('guard-wait-op')
+      const instance = (manager as any).instances.get('guard-wait-op')
+
+      const pending = manager.waitFor('guard-wait-op', { kind: 'url', value: 'target', timeoutMs: 2_000, pollMs: 25 })
+      await Bun.sleep(60)
+      expect(instance.inFlightOps).toBe(1)
+
+      instance.currentUrl = 'https://example.com/target'
+      await pending
+      expect(instance.inFlightOps).toBe(0)
     })
 
     it('non-destroy errors pass through untranslated', async () => {

@@ -1117,8 +1117,9 @@ describe('browser_tool error serialization (SUV-0043)', () => {
 
     const result = await executeTool(tools, 'browser_tool', { command: 'snapshot' })
     expect(result.isError).toBe(true)
-    // Circular with no message has no better rendering than String(); the
-    // guarantee is that the tool still returns a result instead of crashing.
-    expect(typeof result.content[0].text).toBe('string')
+    // The contract: NO path may render "[object Object]" — circular objects
+    // fall back to an explicit unserializable-rejection message.
+    expect(result.content[0].text).not.toContain('[object Object]')
+    expect(result.content[0].text).toContain('Unserializable')
   })
 })

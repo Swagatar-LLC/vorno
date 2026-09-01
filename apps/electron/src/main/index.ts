@@ -550,9 +550,12 @@ app.whenReady().then(async () => {
         ? getWorkspaces().find((w) => w.id === workspaceId)?.rootPath
         : undefined
       const wsDefaults = rootPath ? loadWorkspaceConfig(rootPath)?.defaults : undefined
-      return wsDefaults?.idleBrowserTtlMinutes
+      const ttl = wsDefaults?.idleBrowserTtlMinutes
         ?? loadConfigDefaults().workspaceDefaults.idleBrowserTtlMinutes
         ?? 60
+      // config.json is user-editable and read through a type assertion — a
+      // malformed value must degrade to the default, never reach the reaper.
+      return Number.isInteger(ttl) && ttl >= 0 && ttl <= 10080 ? ttl : 60
     })
 
     // Build real PlatformServices from Electron APIs

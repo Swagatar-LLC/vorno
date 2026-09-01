@@ -34,9 +34,9 @@ function errorResponse(message: string): ToolResult {
  * Render an arbitrary rejection value as readable tool-error text (SUV-0043).
  * `String(error)` on a plain object yields "[object Object]" — worse than
  * useless in a tool result. Prefer the Error message, then a `message`
- * property, then JSON.
+ * property, then JSON; never emit "[object Object]" on any path.
  */
-export function describeBrowserToolError(error: unknown): string {
+function describeBrowserToolError(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   if (error && typeof error === 'object') {
@@ -49,7 +49,8 @@ export function describeBrowserToolError(error: unknown): string {
       // circular — fall through
     }
   }
-  return String(error);
+  const text = String(error);
+  return text === '[object Object]' ? 'Unserializable non-Error rejection (object with no message)' : text;
 }
 
 function successResponse(text: string): ToolResult {

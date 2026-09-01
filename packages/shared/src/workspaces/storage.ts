@@ -310,6 +310,7 @@ export function createWorkspaceAtPath(
     permissionMode: globalDefaults.workspaceDefaults.permissionMode,
     cyclablePermissionModes: globalDefaults.workspaceDefaults.cyclablePermissionModes,
     idleAgentTtlMinutes: globalDefaults.workspaceDefaults.idleAgentTtlMinutes,
+    idleBrowserTtlMinutes: globalDefaults.workspaceDefaults.idleBrowserTtlMinutes,
     enabledSourceSlugs: [],
     workingDirectory: undefined,
     ...defaults, // User-provided defaults override global defaults
