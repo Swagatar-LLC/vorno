@@ -1,7 +1,7 @@
 ---
 id: SUV-0044
 title: Idle TTL reaping for hidden browser instances
-status: planned
+status: in-progress
 plan: PLAN-047
 direction: DIR-05
 owner: jh
@@ -75,3 +75,4 @@ per-workspace idle TTL instead of accumulating for the life of the app.
   (`bindSession` stamps it onto adopted user windows), so the predicate now
   keys on an immutable create-time origin flag (`sessionCreated`); adopted
   user-opened windows are never reapable.
+- `2026-08-31` — moved from planned to in-progress: implementation started (session 260831-high-cascade)

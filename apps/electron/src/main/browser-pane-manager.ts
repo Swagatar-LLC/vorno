@@ -125,6 +125,43 @@ const TOOLBAR_CHANNELS = {
 export const BROWSER_PANE_SESSION_PARTITION = 'persist:browser-pane'
 const SESSION_PARTITION = BROWSER_PANE_SESSION_PARTITION
 
+/**
+ * Injective filesystem-safe encoding for partition-name components. Electron
+ * uses the partition name (sans `persist:`) as an on-disk directory under
+ * userData/Partitions, so it must be filesystem-safe — and it must be
+ * injective, or two different identities could share a cookie jar. `_` is the
+ * escape character and is itself always encoded (`_5f`), so a literal "_2f"
+ * in an id can never collide with an encoded "/".
+ */
+function encodePartitionComponent(value: string): string {
+  return value.replace(/[^a-zA-Z0-9.-]/g, (c) => `_${c.charCodeAt(0).toString(16)}`)
+}
+
+/**
+ * Storage partition for a browser window, derived at create time.
+ *
+ * Session-owned windows get a private partition so cookies/logins/storage are
+ * isolated per session (PLAN-047, SUV-0041). The identity includes the
+ * workspace when known: session ids are only unique WITHIN a workspace
+ * (`generateSessionId` checks the target workspace's sessions dir only, and a
+ * copied workspace preserves ids), so a bare session id could alias two
+ * different sessions' storage across workspaces. Manual (user-opened) windows
+ * keep the shared partition — their behavior is an explicit PLAN-047
+ * non-goal. Consequence: a session's browser starts logged out; auth
+ * hand-off from the manual browser is deliberately out of scope here.
+ */
+function partitionForOwner(
+  ownerType: 'session' | 'manual',
+  ownerSessionId: string | null,
+  workspaceId: string | null,
+): string {
+  if (ownerType === 'session' && ownerSessionId) {
+    const identity = workspaceId ? `${workspaceId}:${ownerSessionId}` : ownerSessionId
+    return `${SESSION_PARTITION}-${encodePartitionComponent(identity)}`
+  }
+  return SESSION_PARTITION
+}
+
 interface AgentControlState {
   active: boolean
   sessionId: string
@@ -139,6 +176,12 @@ interface AgentControlLockState {
 
 interface BrowserInstance {
   id: string
+  /**
+   * Storage partition this window's views were created on. Immutable — a
+   * window adopted by a session later (bindSession) keeps its create-time
+   * partition; only windows created FOR a session get a private one.
+   */
+  partition: string
   window: BrowserWindow
   toolbarView: BrowserView
   pageView: BrowserView
@@ -153,6 +196,25 @@ interface BrowserInstance {
   boundSessionId: string | null
   ownerType: 'session' | 'manual'
   ownerSessionId: string | null
+  /**
+   * Create-time origin: true iff this window was created FOR a session
+   * (SUV-0044). Immutable — set once in createInstance and never rewritten
+   * by bind/unbind. Neither mutable ownership field can carry this: turn-end
+   * unbinding flips `ownerType` to 'manual' while retaining `ownerSessionId`,
+   * and `bindSession` stamps `ownerSessionId` onto a user-opened window a
+   * session adopts. The idle reaper keys on this flag so former session
+   * windows are reapable and adopted user windows never are.
+   */
+  sessionCreated: boolean
+  /**
+   * Number of browser commands currently in flight against this instance
+   * (SUV-0044). Incremented/decremented by guardInstanceOp around every
+   * dispatched command; the idle reaper never destroys a window mid-command
+   * (destroy-during-command is the exact race SUV-0043 removes).
+   */
+  inFlightOps: number
+  /** Idle clock for the reaper: last create/bind/unbind/op-completion time. */
+  lastActivityAt: number
   /**
    * Workspace this instance is associated with, or `null` for unbound manual
    * windows. Renderers in other workspaces filter such entries out of the tab
@@ -331,9 +393,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private stateChangeCallback: ((info: BrowserInstanceInfo) => void) | null = null
   private removedCallback: ((id: string) => void) | null = null
   private interactedCallback: ((id: string) => void) | null = null
-  private partitionPermissionsInitialized = false
-  private partitionObserversInitialized = false
-  private inFlightRequestsByWebContentsId = new Map<number, number>()
+  /**
+   * Per-partition-name init tracking (SUV-0041). With per-session partitions,
+   * each new partition's Electron session needs its permission handlers and
+   * webRequest/download observers installed exactly once — a boolean would
+   * initialize only the first partition ever seen.
+   */
+  private permissionsInitializedPartitions = new Set<string>()
+  private observersInitializedPartitions = new Set<string>()
+  /**
+   * Active webRequest ids per webContents. A Set keyed on `details.id` (not a
+   * counter): a redirect chain re-fires onBeforeRequest for the SAME request
+   * id with only one terminal completion, so callback counting leaks a
+   * positive residue that would exempt the window from the idle reaper
+   * forever and stall network-idle waits.
+   */
+  private inFlightRequestIdsByWebContentsId = new Map<number, Set<number>>()
   private lastNetworkActivityByWebContentsId = new Map<number, number>()
   private popupWindowsByParentInstanceId = new Map<string, Set<BrowserWindow>>()
   private popupParentByWebContentsId = new Map<number, string>()
@@ -372,9 +447,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return instanceId
     }
 
-    const ses = session.fromPartition(SESSION_PARTITION)
-    this.setupSessionPermissions(ses)
-    this.setupSessionObservers(ses)
+    const partition = partitionForOwner(ownerType, ownerSessionId, workspaceId)
+    const ses = session.fromPartition(partition)
+    this.setupSessionPermissions(ses, partition)
+    this.setupSessionObservers(ses, partition)
 
     // Match background to current OS theme to prevent black/white flash on open
     const bgColor = nativeTheme.shouldUseDarkColors ? '#2b292e' : '#fafafb'
@@ -389,7 +465,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // Fully chromeless — toolbar is rendered in a dedicated BrowserView
       frame: false,
       webPreferences: {
-        partition: SESSION_PARTITION,
+        partition,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -400,7 +476,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const toolbarView = new BrowserView({
       webPreferences: {
         preload: join(__dirname, 'browser-toolbar-preload.cjs'),
-        partition: SESSION_PARTITION,
+        partition,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -410,7 +486,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const pageView = new BrowserView({
       webPreferences: {
-        partition: SESSION_PARTITION,
+        partition,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -425,7 +501,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const nativeOverlayView = new BrowserView({
       webPreferences: {
-        partition: SESSION_PARTITION,
+        partition,
         session: ses,
         contextIsolation: true,
         nodeIntegration: false,
@@ -445,6 +521,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const instance: BrowserInstance = {
       id: instanceId,
+      partition,
       window,
       toolbarView,
       pageView,
@@ -459,6 +536,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       boundSessionId: ownerSessionId,
       ownerType,
       ownerSessionId,
+      sessionCreated: ownerType === 'session',
+      inFlightOps: 0,
+      lastActivityAt: Date.now(),
       workspaceId,
       isVisible: false,
       isHiding: false,
@@ -504,7 +584,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.instances.set(instanceId, instance)
     this.emitStateChange(instance)
     mainLog.info(`[browser-pane] toolbar version: v4-react-chromeless`)
-    mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, ownerType=${ownerType}, ownerSessionId=${ownerSessionId ?? 'none'})`)
+    mainLog.info(`[browser-pane] Created instance: ${instanceId} (show=${shouldShow}, ownerType=${ownerType}, ownerSessionId=${ownerSessionId ?? 'none'}, partition=${partition})`)
 
     void this.loadToolbarPage(instance)
       .finally(() => {
@@ -542,7 +622,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     // Clean up in-flight network tracking for this instance's webContents
     const wcId = instance.pageView.webContents.id
-    this.inFlightRequestsByWebContentsId.delete(wcId)
+    this.inFlightRequestIdsByWebContentsId.delete(wcId)
     this.lastNetworkActivityByWebContentsId.delete(wcId)
 
     const runCleanup = (label: string, action: () => void): void => {
@@ -593,6 +673,43 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       throw new Error(`Browser window was closed (instance: ${id})`)
     }
     return instance
+  }
+
+  private closedWindowError(id: string): Error {
+    return new Error(`Browser window was closed (instance: ${id})`)
+  }
+
+  /**
+   * Run an async operation against an alive-checked instance, translating
+   * mid-command teardown into the same clear error `requireAliveInstance`
+   * throws (SUV-0043). Electron surfaces a window destroyed while a command
+   * is in flight as a raw "Object has been destroyed" TypeError — that text
+   * must never reach a tool result. Any rejection that coincides with the
+   * window being gone (destroyed, or already finalized out of the map) is
+   * reported as the window closing, since that is what the caller needs to
+   * know; other errors pass through untouched.
+   */
+  private async guardInstanceOp<T>(instance: BrowserInstance, op: () => Promise<T>): Promise<T> {
+    instance.inFlightOps += 1
+    try {
+      return await op()
+    } catch (error) {
+      if (error instanceof Error && /object has been destroyed/i.test(error.message)) {
+        throw this.closedWindowError(instance.id)
+      }
+      if (!this.instances.has(instance.id)) {
+        throw this.closedWindowError(instance.id)
+      }
+      if (instance.window.isDestroyed()) {
+        this.cleanupDestroyedInstance(instance, 'operation raced window teardown')
+        throw this.closedWindowError(instance.id)
+      }
+      throw error
+    } finally {
+      instance.inFlightOps = Math.max(0, instance.inFlightOps - 1)
+      // Every completed operation resets the idle clock (SUV-0044).
+      instance.lastActivityAt = Date.now()
+    }
   }
 
   async handleEmptyStateLaunchFromRenderer(
@@ -748,14 +865,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null
 
     try {
-      const loaded = instance.pageView.webContents.loadURL(normalizedUrl)
-      const timeout = new Promise<never>((_, reject) => {
-        timeoutHandle = setTimeout(() => reject(new Error(`Navigation to "${normalizedUrl}" timed out after ${timeoutMs / 1000}s`)), timeoutMs)
-      })
-      await Promise.race([loaded, timeout])
-      this.pushToolbarState(instance)
+      return await this.guardInstanceOp(instance, async () => {
+        const loaded = instance.pageView.webContents.loadURL(normalizedUrl)
+        const timeout = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error(`Navigation to "${normalizedUrl}" timed out after ${timeoutMs / 1000}s`)), timeoutMs)
+        })
+        await Promise.race([loaded, timeout])
+        this.pushToolbarState(instance)
 
-      return { url: instance.currentUrl, title: instance.title }
+        return { url: instance.currentUrl, title: instance.title }
+      })
     } finally {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle)
@@ -765,16 +884,20 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async goBack(id: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    if (instance.pageView.webContents.canGoBack()) {
-      instance.pageView.webContents.goBack()
-    }
+    return this.guardInstanceOp(instance, async () => {
+      if (instance.pageView.webContents.canGoBack()) {
+        instance.pageView.webContents.goBack()
+      }
+    })
   }
 
   async goForward(id: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    if (instance.pageView.webContents.canGoForward()) {
-      instance.pageView.webContents.goForward()
-    }
+    return this.guardInstanceOp(instance, async () => {
+      if (instance.pageView.webContents.canGoForward()) {
+        instance.pageView.webContents.goForward()
+      }
+    })
   }
 
   reload(id: string): void {
@@ -862,14 +985,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async getAccessibilitySnapshot(id: string): Promise<AccessibilitySnapshot> {
     const instance = this.requireAliveInstance(id)
-    return instance.cdp.getAccessibilitySnapshot()
+    return this.guardInstanceOp(instance, () => instance.cdp.getAccessibilitySnapshot())
   }
 
   async clickAtCoordinates(id: string, x: number, y: number): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await instance.cdp.clickAtCoordinates(x, y)
+      await this.guardInstanceOp(instance, () => instance.cdp.clickAtCoordinates(x, y))
       instance.lastAction = {
         tool: 'browser_click_at',
         status: 'succeeded',
@@ -889,7 +1012,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await instance.cdp.drag(x1, y1, x2, y2)
+      await this.guardInstanceOp(instance, () => instance.cdp.drag(x1, y1, x2, y2))
       instance.lastAction = {
         tool: 'browser_drag',
         status: 'succeeded',
@@ -909,7 +1032,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      await instance.cdp.typeText(text)
+      await this.guardInstanceOp(instance, () => instance.cdp.typeText(text))
       instance.lastAction = {
         tool: 'browser_type',
         status: 'succeeded',
@@ -927,12 +1050,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async setClipboard(id: string, text: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
-    await instance.cdp.setClipboard(text)
+    await this.guardInstanceOp(instance, () => instance.cdp.setClipboard(text))
   }
 
   async getClipboard(id: string): Promise<string> {
     const instance = this.requireAliveInstance(id)
-    return instance.cdp.getClipboard()
+    return this.guardInstanceOp(instance, () => instance.cdp.getClipboard())
   }
 
   async clickElement(
@@ -942,61 +1065,84 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   ): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
-    try {
-      const geometry = await instance.cdp.clickElement(ref)
-      instance.lastAction = {
-        tool: 'browser_click',
-        ref,
-        status: 'succeeded',
-        geometry,
-        timestamp: Date.now(),
+    // One guard owns the ENTIRE command lifetime — click AND the optional
+    // navigation/network wait — so the in-flight op count covers the whole
+    // dispatched action (the reaper must never see this window as idle
+    // mid-wait) and a window closed during the wait surfaces as the clear
+    // closed error, not a navigation timeout.
+    return this.guardInstanceOp(instance, async () => {
+      try {
+        const geometry = await instance.cdp.clickElement(ref)
+        instance.lastAction = {
+          tool: 'browser_click',
+          ref,
+          status: 'succeeded',
+          geometry,
+          timestamp: Date.now(),
+        }
+
+        const waitFor = options?.waitFor ?? 'none'
+        if (waitFor === 'navigation') {
+          const timeoutMs = Math.max(100, options?.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)
+          await new Promise<void>((resolve, reject) => {
+            const pageWc = instance.pageView.webContents
+
+            const timer = setTimeout(() => {
+              cleanup()
+              reject(new Error(
+                `Click navigation wait timed out after ${timeoutMs}ms (no navigation event observed). `
+                + `Tip: retry with "click ${ref}" (no navigation wait), then use "wait url <pattern>" or "wait network-idle".`
+              ))
+            }, timeoutMs)
+
+            const onNav = () => {
+              cleanup()
+              resolve()
+            }
+
+            // The event-based wait would otherwise dangle until timeout when
+            // the window dies mid-wait — reject promptly with the teardown
+            // signal (the outer guard translates it to the closed error).
+            const onDestroyed = () => {
+              cleanup()
+              reject(this.closedWindowError(instance.id))
+            }
+
+            const cleanup = () => {
+              clearTimeout(timer)
+              // Touching a destroyed webContents here would throw inside the
+              // timer callback.
+              if (!pageWc.isDestroyed()) {
+                pageWc.removeListener('did-navigate', onNav)
+                pageWc.removeListener('did-navigate-in-page', onNav)
+                pageWc.removeListener('destroyed', onDestroyed)
+              }
+            }
+
+            pageWc.once('did-navigate', onNav)
+            pageWc.once('did-navigate-in-page', onNav)
+            pageWc.once('destroyed', onDestroyed)
+          })
+        } else if (waitFor === 'network-idle') {
+          await this.waitFor(id, { kind: 'network-idle', timeoutMs: options?.timeoutMs })
+        }
+      } catch (error) {
+        instance.lastAction = {
+          tool: 'browser_click',
+          ref,
+          status: 'failed',
+          timestamp: Date.now(),
+        }
+        throw error
       }
-
-      const waitFor = options?.waitFor ?? 'none'
-      if (waitFor === 'navigation') {
-        const timeoutMs = Math.max(100, options?.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            cleanup()
-            reject(new Error(
-              `Click navigation wait timed out after ${timeoutMs}ms (no navigation event observed). `
-              + `Tip: retry with "click ${ref}" (no navigation wait), then use "wait url <pattern>" or "wait network-idle".`
-            ))
-          }, timeoutMs)
-
-          const onNav = () => {
-            cleanup()
-            resolve()
-          }
-
-          const cleanup = () => {
-            clearTimeout(timer)
-            instance.pageView.webContents.removeListener('did-navigate', onNav)
-            instance.pageView.webContents.removeListener('did-navigate-in-page', onNav)
-          }
-
-          instance.pageView.webContents.once('did-navigate', onNav)
-          instance.pageView.webContents.once('did-navigate-in-page', onNav)
-        })
-      } else if (waitFor === 'network-idle') {
-        await this.waitFor(id, { kind: 'network-idle', timeoutMs: options?.timeoutMs })
-      }
-    } catch (error) {
-      instance.lastAction = {
-        tool: 'browser_click',
-        ref,
-        status: 'failed',
-        timestamp: Date.now(),
-      }
-      throw error
-    }
+    })
   }
 
   async fillElement(id: string, ref: string, value: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
 
     try {
-      const geometry = await instance.cdp.fillElement(ref, value)
+      const geometry = await this.guardInstanceOp(instance, () => instance.cdp.fillElement(ref, value))
       instance.lastAction = {
         tool: 'browser_fill',
         ref,
@@ -1019,7 +1165,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const instance = this.requireAliveInstance(id)
 
     try {
-      const geometry = await instance.cdp.selectOption(ref, value)
+      const geometry = await this.guardInstanceOp(instance, () => instance.cdp.selectOption(ref, value))
       instance.lastAction = {
         tool: 'browser_select',
         ref,
@@ -1055,7 +1201,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async screenshot(id: string, options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult> {
     const instance = this.requireAliveInstance(id)
+    return this.guardInstanceOp(instance, () => this.screenshotImpl(instance, options))
+  }
 
+  private async screenshotImpl(instance: BrowserInstance, options?: BrowserScreenshotOptions): Promise<BrowserScreenshotResult> {
     // Hide native agent overlay so it doesn't appear in captures
     const suspendedOverlay = this.suspendOverlayForCapture(instance)
 
@@ -1195,9 +1344,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   async screenshotRegion(id: string, target: BrowserScreenshotRegionTarget): Promise<BrowserScreenshotResult> {
-    const instance = this.instances.get(id)
-    if (!instance) throw new Error(`Browser instance not found: ${id}`)
+    const instance = this.requireAliveInstance(id)
+    return this.guardInstanceOp(instance, () => this.screenshotRegionImpl(instance, target))
+  }
 
+  private async screenshotRegionImpl(instance: BrowserInstance, target: BrowserScreenshotRegionTarget): Promise<BrowserScreenshotResult> {
     const hasCoords = [target.x, target.y, target.width, target.height].every((v) => typeof v === 'number')
     const hasRef = typeof target.ref === 'string' && target.ref.length > 0
     const hasSelector = typeof target.selector === 'string' && target.selector.length > 0
@@ -1505,7 +1656,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async waitFor(id: string, args: BrowserWaitArgs): Promise<BrowserWaitResult> {
     const instance = this.requireAliveInstance(id)
+    // One guard for the whole wait: the op count must cover the full command
+    // duration (not just each predicate evaluation), or the reaper could
+    // destroy a window a long wait is actively watching.
+    return this.guardInstanceOp(instance, () => this.waitForImpl(instance, args))
+  }
 
+  private async waitForImpl(instance: BrowserInstance, args: BrowserWaitArgs): Promise<BrowserWaitResult> {
     const timeoutMs = Math.max(100, args.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)
     const pollMs = Math.max(25, args.pollMs ?? DEFAULT_WAIT_POLL_MS)
     const idleMs = Math.max(100, args.idleMs ?? 700)
@@ -1513,6 +1670,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const until = async (predicate: () => Promise<boolean>, detail: string): Promise<BrowserWaitResult> => {
       while (Date.now() - started <= timeoutMs) {
+        // A wait can outlive the window (another session's close, user close).
+        // Bail with the clear closed error instead of polling a dead target
+        // until timeout (url/network-idle predicates never touch webContents,
+        // so without this check they would spin blind).
+        if (instance.window.isDestroyed() || !this.instances.has(instance.id)) {
+          throw this.closedWindowError(instance.id)
+        }
         if (await predicate()) {
           return {
             ok: true,
@@ -1559,7 +1723,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     if (args.kind === 'network-idle') {
       const wcId = instance.pageView.webContents.id
       return until(async () => {
-        const inflight = this.inFlightRequestsByWebContentsId.get(wcId) ?? 0
+        const inflight = this.inFlightRequestIdsByWebContentsId.get(wcId)?.size ?? 0
         const last = this.lastNetworkActivityByWebContentsId.get(wcId) ?? started
         return inflight === 0 && (Date.now() - last) >= idleMs
       }, `network idle for ${idleMs}ms`)
@@ -1576,35 +1740,45 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const modifiers = (args.modifiers ?? []) as Array<'shift' | 'control' | 'alt' | 'meta'>
 
-    instance.pageView.webContents.sendInputEvent({
-      type: 'keyDown',
-      keyCode: key,
-      modifiers,
-    } as any)
-    instance.pageView.webContents.sendInputEvent({
-      type: 'keyUp',
-      keyCode: key,
-      modifiers,
-    } as any)
+    await this.guardInstanceOp(instance, async () => {
+      instance.pageView.webContents.sendInputEvent({
+        type: 'keyDown',
+        keyCode: key,
+        modifiers,
+      } as any)
+      instance.pageView.webContents.sendInputEvent({
+        type: 'keyUp',
+        keyCode: key,
+        modifiers,
+      } as any)
+    })
   }
 
   async getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]> {
     const instance = this.requireAliveInstance(id)
 
-    const action = options?.action ?? 'list'
-    const limit = Math.max(1, Math.min(200, Number(options?.limit ?? 20)))
+    // Whole-lifetime guard: a `downloads wait` is an active command for its
+    // full duration — the op count keeps the reaper away and teardown
+    // mid-wait surfaces as the clear closed error.
+    return this.guardInstanceOp(instance, async () => {
+      const action = options?.action ?? 'list'
+      const limit = Math.max(1, Math.min(200, Number(options?.limit ?? 20)))
 
-    if (action === 'wait') {
-      const timeoutMs = Math.max(100, Number(options?.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS))
-      const started = Date.now()
-      while (Date.now() - started <= timeoutMs) {
-        const hasTerminal = instance.downloads.some((d) => d.state === 'completed' || d.state === 'interrupted' || d.state === 'cancelled')
-        if (hasTerminal) break
-        await this.sleep(100)
+      if (action === 'wait') {
+        const timeoutMs = Math.max(100, Number(options?.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS))
+        const started = Date.now()
+        while (Date.now() - started <= timeoutMs) {
+          if (instance.window.isDestroyed() || !this.instances.has(instance.id)) {
+            throw this.closedWindowError(instance.id)
+          }
+          const hasTerminal = instance.downloads.some((d) => d.state === 'completed' || d.state === 'interrupted' || d.state === 'cancelled')
+          if (hasTerminal) break
+          await this.sleep(100)
+        }
       }
-    }
 
-    return instance.downloads.slice(-limit)
+      return instance.downloads.slice(-limit)
+    })
   }
 
   // validateUploadFilePath removed — uses shared validateFilePath from @craft-agent/server-core/handlers
@@ -1620,7 +1794,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       safePaths.push(safePath)
     }
 
-    return instance.cdp.setFileInputFiles(ref, safePaths)
+    return this.guardInstanceOp(instance, () => instance.cdp.setFileInputFiles(ref, safePaths))
   }
 
   windowResize(id: string, width: number, height: number): { width: number; height: number } {
@@ -1642,13 +1816,26 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   async evaluate(id: string, expression: string): Promise<unknown> {
     const instance = this.requireAliveInstance(id)
-    return instance.pageView.webContents.executeJavaScript(expression)
+    return this.guardInstanceOp(instance, () => instance.pageView.webContents.executeJavaScript(expression))
   }
 
   async detectSecurityChallenge(id: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
-    const instance = this.instances.get(id)
-    if (!instance || instance.window.isDestroyed()) return { detected: false, provider: 'none', signals: [] }
+    // A real browser_tool command path (SUV-0043): a destroyed window must
+    // surface the clear closed error, not a benign "no challenge" result.
+    const instance = this.requireAliveInstance(id)
+    return this.guardInstanceOp(instance, () => this.detectSecurityChallengeImpl(instance))
+  }
 
+  /**
+   * Rethrow errors that mean the window died mid-probe; anything else is a
+   * transient page-state failure this best-effort detector may ignore.
+   */
+  private rethrowIfTeardown(instance: BrowserInstance, error: unknown): void {
+    if (instance.window.isDestroyed() || !this.instances.has(instance.id)) throw this.closedWindowError(instance.id)
+    if (error instanceof Error && /object has been destroyed/i.test(error.message)) throw error
+  }
+
+  private async detectSecurityChallengeImpl(instance: BrowserInstance): Promise<{ detected: boolean; provider: string; signals: string[] }> {
     const signals: string[] = []
     const title = instance.title || ''
     const url = instance.currentUrl || ''
@@ -1681,7 +1868,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (Array.isArray(domSignals)) {
         signals.push(...domSignals)
       }
-    } catch {
+    } catch (error) {
+      this.rethrowIfTeardown(instance, error)
       // JS evaluation can fail if page is in a weird state — don't block on it
     }
 
@@ -1699,7 +1887,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (snapshot.nodes.length > 0 && actionableCount <= 2) {
         signals.push(`ax:near-empty(${actionableCount}/${snapshot.nodes.length})`)
       }
-    } catch {
+    } catch (error) {
+      this.rethrowIfTeardown(instance, error)
       // AX snapshot can fail transiently during navigation; ignore
     }
 
@@ -1710,7 +1899,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const provider = detected ? (isCloudflare ? 'cloudflare' : 'unknown') : 'none'
 
     if (detected) {
-      mainLog.info(`[browser-pane] security challenge detected id=${id} provider=${provider} signals=[${signals.join(', ')}]`)
+      mainLog.info(`[browser-pane] security challenge detected id=${instance.id} provider=${provider} signals=[${signals.join(', ')}]`)
     }
 
     return { detected, provider, signals }
@@ -1722,15 +1911,23 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const deltaX = direction === 'left' ? -amount : direction === 'right' ? amount : 0
     const deltaY = direction === 'up' ? -amount : direction === 'down' ? amount : 0
 
-    await instance.pageView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`)
+    await this.guardInstanceOp(instance, () =>
+      instance.pageView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`))
   }
 
   bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null }): void {
     const instance = this.instances.get(id)
     if (instance) {
+      if (instance.window.isDestroyed()) {
+        // Never bind a session to a dead window — the very next command would
+        // hit the destroyed-window path. Drop the stale entry instead.
+        this.cleanupDestroyedInstance(instance, `bindSession(${sessionId})`)
+        return
+      }
       instance.boundSessionId = sessionId
       instance.ownerType = 'session'
       instance.ownerSessionId = sessionId
+      instance.lastActivityAt = Date.now()
       // Adopt the new binder's workspace. Manual windows being reused for a
       // session start carrying that session's workspace so the receiving
       // workspace's UI sees them and others don't.
@@ -1747,6 +1944,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       instance.boundSessionId = null
       instance.ownerType = 'manual'
       // Preserve ownerSessionId as last-known owner for lifecycle targeting.
+      instance.lastActivityAt = Date.now()
       this.emitStateChange(instance)
     }
   }
@@ -1759,14 +1957,22 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         instance.ownerType = 'manual'
         // Keep ownerSessionId for post-turn lifecycle commands like `close` and `hide`.
         instance.ownerSessionId = instance.ownerSessionId ?? sessionId
+        instance.lastActivityAt = Date.now()
         this.emitStateChange(instance)
         mainLog.info(`[browser-pane] Unbound instance ${instance.id} from session ${sessionId} (owner retained: ${instance.ownerSessionId ?? 'none'})`)
       }
     }
   }
 
-  getBoundForSession(sessionId: string): string | null {
+  getBoundForSession(sessionId: string, workspaceId?: string | null): string | null {
     for (const instance of this.instances.values()) {
+      // Same workspace-tiebreak as reuse: session ids are only unique within
+      // a workspace, so when both sides carry a workspace they must match.
+      if (
+        workspaceId != null &&
+        instance.workspaceId !== null &&
+        instance.workspaceId !== workspaceId
+      ) continue
       if (instance.ownerType === 'session' && instance.ownerSessionId === sessionId) {
         if (instance.window.isDestroyed()) {
           this.cleanupDestroyedInstance(instance, `getBoundForSession(${sessionId})`)
@@ -1779,32 +1985,58 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   /**
-   * Pick an unbound window that the caller's workspace is allowed to adopt.
+   * Pick an unbound window the calling session may re-bind (SUV-0042).
    *
-   * Why workspace filtering matters: when a session ends, its window stays
-   * alive and becomes `ownerType='manual'` so the next turn of the **same**
-   * session can re-bind it. But the window keeps its original `workspaceId`.
-   * Without filtering, a session in workspace B would grab a window left
-   * behind by workspace A — moving the window across workspaces, which is
-   * exactly the leak this whole workspace-isolation work is fixing.
+   * Two tiers, in order:
+   * 1. The session's OWN former window — turn-end unbinding flips
+   *    `ownerType` to `'manual'` but retains `ownerSessionId`, which is the
+   *    edge that makes "same session, next turn" reclaim its previous window
+   *    (same partition, same page state, same instance id).
+   * 2. A truly ownerless window (`ownerSessionId === null`, user-opened and
+   *    never session-created), gated by the existing workspace rule:
+   *    `workspaceId === null` or matching the caller's workspace.
    *
-   * Rule: adoption is allowed if the unbound window has `workspaceId === null`
-   * (truly user-opened, no workspace context) OR matches the caller's
-   * `workspaceId`. Same-workspace reuse covers the legitimate "turn ended,
-   * next turn re-binds" case as well as any future turn of any session in
-   * that workspace.
+   * A window last owned by a DIFFERENT session is never returned — adopting
+   * it would swap windows across sessions mid-conversation, and with
+   * per-session partitions (SUV-0041) its storage belongs to the other
+   * session anyway.
    */
-  private findReusableUnboundInstance(workspaceId: string | null): BrowserInstance | null {
-    const candidates = Array.from(this.instances.values()).filter(
+  private findReusableUnboundInstance(sessionId: string, workspaceId: string | null): BrowserInstance | null {
+    const unbound = Array.from(this.instances.values()).filter(
       (i) =>
         i.boundSessionId === null &&
         i.ownerType === 'manual' &&
-        (i.workspaceId === null || i.workspaceId === workspaceId),
+        !i.window.isDestroyed(),
     )
-    if (candidates.length === 0) return null
 
-    // Prefer visible windows first, then fall back to first available.
-    return candidates.find((i) => i.isVisible) ?? candidates[0]
+    // A session reclaims only ITS OWN former window (the retained
+    // ownerSessionId edge from turn-end unbinding) — never another session's
+    // leftover (SUV-0042). Cross-session adoption is what made instance ids
+    // and page state silently point at someone else's window across turns,
+    // and with per-session partitions (SUV-0041) a foreign window's storage
+    // would be the wrong session's anyway.
+    // The own tier ALSO checks workspace when both sides carry one: session
+    // ids are only unique within a workspace, so "same ownerSessionId" in a
+    // different workspace is a different session that happens to share the
+    // id (copied workspaces preserve ids). When either side lacks a
+    // workspace the ownership edge stands alone — callers sometimes omit the
+    // hint, and a session lives in exactly one workspace.
+    const own = unbound.filter(
+      (i) =>
+        i.ownerSessionId === sessionId &&
+        (i.workspaceId === null || workspaceId === null || i.workspaceId === workspaceId),
+    )
+    if (own.length > 0) {
+      return own.find((i) => i.isVisible) ?? own[0]
+    }
+
+    // Truly ownerless windows (user-opened, never session-created) remain
+    // adoptable under the existing workspace rule.
+    const ownerless = unbound.filter(
+      (i) => i.ownerSessionId === null && (i.workspaceId === null || i.workspaceId === workspaceId),
+    )
+    if (ownerless.length === 0) return null
+    return ownerless.find((i) => i.isVisible) ?? ownerless[0]
   }
 
   createForSession(
@@ -1812,7 +2044,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     options?: { show?: boolean; allowReuseManual?: boolean; workspaceId?: string | null },
   ): string {
     const workspaceId = options?.workspaceId ?? null
-    const existing = this.getBoundForSession(sessionId)
+    const existing = this.getBoundForSession(sessionId, workspaceId)
     if (existing) {
       // Already bound — adopt the workspace if the caller provided one and the
       // existing instance was bound before we knew about its workspace.
@@ -1831,13 +2063,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // can never hijack a window the user opened manually.
     const allowReuseManual = options?.allowReuseManual ?? true
     if (allowReuseManual) {
-      const reusable = this.findReusableUnboundInstance(workspaceId)
+      const reusable = this.findReusableUnboundInstance(sessionId, workspaceId)
       if (reusable) {
+        const reclaimedOwn = reusable.ownerSessionId === sessionId
         this.bindSession(reusable.id, sessionId, { workspaceId })
         if (options?.show) {
           this.focus(reusable.id)
         }
-        mainLog.info(`[browser-pane] Reused unbound instance ${reusable.id} for session ${sessionId} (workspace=${workspaceId ?? 'none'})`)
+        mainLog.info(
+          reclaimedOwn
+            ? `[browser-pane] Session ${sessionId} reclaimed its own former window ${reusable.id} (workspace=${workspaceId ?? 'none'})`
+            : `[browser-pane] Session ${sessionId} adopted ownerless window ${reusable.id} (workspace=${workspaceId ?? 'none'})`,
+        )
         return reusable.id
       }
     }
@@ -2012,11 +2249,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const menuActive = !!instance.toolbarMenuOverlayActive
     const shouldShow = agentActive || menuActive
 
-    if (!shouldShow || !instance.nativeOverlayReady || instance.window.isDestroyed()) {
+    // A destroyed window's views may already be torn down — touching their
+    // bounds mid-teardown throws, and this runs from finalize/destroy paths.
+    if (instance.window.isDestroyed()) return
+
+    if (!shouldShow || !instance.nativeOverlayReady) {
       instance.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-      if (!instance.window.isDestroyed()) {
-        instance.window.setTopBrowserView(instance.toolbarView)
-      }
+      instance.window.setTopBrowserView(instance.toolbarView)
       return
     }
 
@@ -2074,6 +2313,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private applyAgentControlLock(instance: BrowserInstance, active: boolean): void {
+    // Runs on finalize/destroy paths — a destroyed window cannot hold a lock
+    // and touching its resizable state throws mid-teardown.
+    if (instance.window.isDestroyed()) {
+      instance.lockState.active = false
+      return
+    }
+
     const wantsLock = active && !!instance.agentControl?.active
 
     if (wantsLock && !instance.lockState.active) {
@@ -2095,6 +2341,107 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     for (const id of [...this.instances.keys()]) {
       this.destroyInstance(id)
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Idle TTL reaper (SUV-0044) — PLAN-038's idle-sweep pattern, browser-shaped.
+  // Hidden, unbound, session-created windows are destroyed after a
+  // per-workspace idle TTL instead of accumulating for the life of the app
+  // (each is a full Chromium window + 3 BrowserViews + a CDP client).
+  // ---------------------------------------------------------------------------
+
+  private idleReaperTimer: ReturnType<typeof setInterval> | null = null
+  private idleReaperTtlResolver: ((workspaceId: string | null) => number) | null = null
+
+  /**
+   * Start the minute-tick idle sweep. `resolveTtlMinutes` maps an instance's
+   * workspace to its TTL (read live per tick, so a Settings change applies
+   * without restart); `0` disables reaping for that workspace.
+   */
+  startIdleReaper(resolveTtlMinutes: (workspaceId: string | null) => number): void {
+    this.idleReaperTtlResolver = resolveTtlMinutes
+    if (this.idleReaperTimer) return
+    this.idleReaperTimer = setInterval(() => {
+      this.sweepIdleBrowserInstances()
+    }, 60_000)
+    this.idleReaperTimer.unref?.()
+    mainLog.info('[browser-pane] idle reaper started (minute tick)')
+  }
+
+  stopIdleReaper(): void {
+    if (this.idleReaperTimer) {
+      clearInterval(this.idleReaperTimer)
+      this.idleReaperTimer = null
+    }
+  }
+
+  /**
+   * Reap-eligibility, stated exactly (SUV-0044):
+   * eligible ⇔ `sessionCreated` (immutable create-time origin — never the
+   * mutable `ownerType`/`ownerSessionId`) AND unbound AND hidden AND
+   * quiescent (no in-flight command, no network activity, no active
+   * download) AND idle past the workspace TTL. A user-opened window is never
+   * eligible, even after sessions adopted and released it.
+   *
+   * Returns the reason the instance survives, or null when eligible.
+   */
+  private reapExemptionReason(instance: BrowserInstance, now: number, ttlMinutes: number): string | null {
+    if (!instance.sessionCreated) return 'user-created'
+    if (ttlMinutes <= 0) return 'ttl-disabled'
+    if (instance.boundSessionId !== null) return 'bound'
+    if (instance.isVisible) return 'visible'
+    if (instance.inFlightOps > 0) return 'command-in-flight'
+    const wcId = instance.pageView.webContents.id
+    if ((this.inFlightRequestIdsByWebContentsId.get(wcId)?.size ?? 0) > 0) return 'network-active'
+    if (instance.downloads.some((d) => d.state === 'started')) return 'download-active'
+    if (now - instance.lastActivityAt <= ttlMinutes * 60_000) return 'not-idle-yet'
+    return null
+  }
+
+  /**
+   * One sweep pass (tests invoke it directly with an injected `now` instead
+   * of faking timers). Returns the ids of destroyed instances. Stale entries
+   * whose window is already gone are finalized as a side effect.
+   */
+  private sweepIdleBrowserInstances(now: number = Date.now()): string[] {
+    const resolver = this.idleReaperTtlResolver
+    if (!resolver) return []
+
+    const reaped: string[] = []
+    for (const instance of [...this.instances.values()]) {
+      if (instance.window.isDestroyed()) {
+        this.cleanupDestroyedInstance(instance, 'idle sweep')
+        continue
+      }
+
+      let ttlMinutes: number
+      try {
+        ttlMinutes = resolver(instance.workspaceId)
+      } catch (error) {
+        mainLog.warn(`[browser-pane] idle-reap TTL resolution failed instance=${instance.id} workspace=${instance.workspaceId ?? 'none'}: ${error instanceof Error ? error.message : String(error)} — skipping`)
+        continue
+      }
+      // The RPC validates writes, but workspace config.json is user/agent
+      // editable and loaded through a type assertion — a malformed value
+      // (e.g. a string) would make the idle comparison NaN-false and reap
+      // EVERYTHING immediately. Destructive decisions get a runtime check:
+      // invalid TTL → skip, never reap.
+      if (typeof ttlMinutes !== 'number' || !Number.isInteger(ttlMinutes) || ttlMinutes < 0) {
+        mainLog.warn(`[browser-pane] idle-reap invalid TTL (${String(ttlMinutes)}) for workspace=${instance.workspaceId ?? 'none'} — skipping instance=${instance.id}`)
+        continue
+      }
+
+      const exemption = this.reapExemptionReason(instance, now, ttlMinutes)
+      if (exemption) continue
+
+      const idleMinutes = Math.round((now - instance.lastActivityAt) / 60_000)
+      mainLog.info(
+        `[browser-pane] idle-reap destroying instance=${instance.id} reason=idle-ttl idle=${idleMinutes}m ttl=${ttlMinutes}m lastOwner=${instance.ownerSessionId ?? 'none'} workspace=${instance.workspaceId ?? 'none'} partition=${instance.partition}`,
+      )
+      this.destroyInstance(instance.id)
+      reaped.push(instance.id)
+    }
+    return reaped
   }
 
   private finalizeDestroyedInstance(instance: BrowserInstance, source: 'destroy' | 'closed'): void {
@@ -2435,13 +2782,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    */
   private requireOwnedInstance(instanceId: string, ownerKey: string): void {
     const instance = this.instances.get(instanceId)
-    if (!instance || instance.window.isDestroyed()) {
+    if (!instance) {
       throw new CodedError('BROWSER_INSTANCE_NOT_OWNED', `Browser instance "${instanceId}" not found.`)
     }
     const owned = instance.boundSessionId === ownerKey || instance.ownerSessionId === ownerKey
     if (!owned) {
       throw new CodedError('BROWSER_INSTANCE_NOT_OWNED',
         `Browser instance "${instanceId}" is not owned by this session.`)
+    }
+    // Owned but the window is gone: report the closure, not a misleading
+    // ownership failure, and drop the stale entry (SUV-0043).
+    if (instance.window.isDestroyed()) {
+      this.cleanupDestroyedInstance(instance, `capability access ${instanceId}`)
+      throw new CodedError('HANDLER_ERROR', `Browser window was closed (instance: ${instanceId})`)
     }
   }
 
@@ -2562,11 +2915,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       case 'getInstance': {
         const [instanceId] = args as [string]
         this.requireOwnedInstance(instanceId, ownerKey)
-        const live = this.getInstance(instanceId)
-        if (!live) return undefined
-        // `getInstance` returns the live BrowserInstance (which embeds non-
-        // cloneable Electron native objects). Project to a plain snapshot
-        // before crossing the IPC boundary.
+        // Alive-checked lookup (SUV-0043): a raw getInstance here could hand
+        // back an instance whose window died between the ownership check and
+        // the read. `getInstance` returns the live BrowserInstance (which
+        // embeds non-cloneable Electron native objects), so project to a
+        // plain snapshot before crossing the IPC boundary.
+        const live = this.requireAliveInstance(instanceId)
         return this.stripOwnerKeysInPlace(this.toSnapshot(live))
       }
       case 'listInstances':
@@ -3133,15 +3487,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return `${name}_${counter}${ext}`
   }
 
-  private setupSessionObservers(ses: ElectronSession): void {
-    if (this.partitionObserversInitialized) return
-    this.partitionObserversInitialized = true
+  private setupSessionObservers(ses: ElectronSession, partition: string): void {
+    if (this.observersInitializedPartitions.has(partition)) return
+    this.observersInitializedPartitions.add(partition)
 
     ses.webRequest.onBeforeRequest((details, callback) => {
       const wcId = details.webContentsId
       if (typeof wcId === 'number' && wcId > 0) {
-        const current = this.inFlightRequestsByWebContentsId.get(wcId) ?? 0
-        this.inFlightRequestsByWebContentsId.set(wcId, current + 1)
+        let ids = this.inFlightRequestIdsByWebContentsId.get(wcId)
+        if (!ids) {
+          ids = new Set<number>()
+          this.inFlightRequestIdsByWebContentsId.set(wcId, ids)
+        }
+        ids.add(details.id)
         this.lastNetworkActivityByWebContentsId.set(wcId, Date.now())
       }
       callback({})
@@ -3151,12 +3509,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const wcId = details.webContentsId
       if (typeof wcId !== 'number' || wcId <= 0) return
 
-      const current = this.inFlightRequestsByWebContentsId.get(wcId) ?? 0
-      this.inFlightRequestsByWebContentsId.set(wcId, Math.max(0, current - 1))
+      this.inFlightRequestIdsByWebContentsId.get(wcId)?.delete(details.id)
       this.lastNetworkActivityByWebContentsId.set(wcId, Date.now())
 
       const instance = this.getInstanceByWebContentsId(wcId)
       if (!instance) return
+
+      // Completed network work starts a NEW idle period for the reaper — a
+      // window must get its full TTL of idle time after activity ceases.
+      instance.lastActivityAt = Date.now()
 
       this.pushNetworkLog(instance, {
         timestamp: Date.now(),
@@ -3172,12 +3533,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const wcId = details.webContentsId
       if (typeof wcId !== 'number' || wcId <= 0) return
 
-      const current = this.inFlightRequestsByWebContentsId.get(wcId) ?? 0
-      this.inFlightRequestsByWebContentsId.set(wcId, Math.max(0, current - 1))
+      this.inFlightRequestIdsByWebContentsId.get(wcId)?.delete(details.id)
       this.lastNetworkActivityByWebContentsId.set(wcId, Date.now())
 
       const instance = this.getInstanceByWebContentsId(wcId)
       if (!instance) return
+
+      instance.lastActivityAt = Date.now()
 
       this.pushNetworkLog(instance, {
         timestamp: Date.now(),
@@ -3221,6 +3583,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         latest.bytesReceived = item.getReceivedBytes()
         latest.totalBytes = item.getTotalBytes()
         if (state === 'interrupted') latest.state = 'interrupted'
+        // Download progress is activity — keep the reaper's idle clock fresh.
+        instance.lastActivityAt = Date.now()
       }
 
       item.on('updated', onUpdated)
@@ -3233,6 +3597,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         latest.totalBytes = item.getTotalBytes()
         latest.savePath = item.getSavePath()
         latest.state = state === 'completed' ? 'completed' : state === 'cancelled' ? 'cancelled' : 'interrupted'
+        // A finished download starts a NEW idle period — the window gets its
+        // full TTL of idle time after the work ends, not a reap on the next tick.
+        instance.lastActivityAt = Date.now()
       })
     })
   }
@@ -3248,9 +3615,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     mainLog.warn(message)
   }
 
-  private setupSessionPermissions(ses: ElectronSession): void {
-    if (this.partitionPermissionsInitialized) return
-    this.partitionPermissionsInitialized = true
+  private setupSessionPermissions(ses: ElectronSession, partition: string): void {
+    if (this.permissionsInitializedPartitions.has(partition)) return
+    this.permissionsInitializedPartitions.add(partition)
 
     const allow = new Set([
       'fullscreen',
@@ -3351,8 +3718,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       instance.isLoading = false
       instance.canGoBack = pageWc.canGoBack()
       instance.canGoForward = pageWc.canGoForward()
-      // Drain in-flight count — all pending requests are settled once loading stops
-      this.inFlightRequestsByWebContentsId.set(pageWc.id, 0)
+      // Drain in-flight tracking — all pending requests are settled once loading stops
+      this.inFlightRequestIdsByWebContentsId.get(pageWc.id)?.clear()
       this.lastNetworkActivityByWebContentsId.set(pageWc.id, Date.now())
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
@@ -3402,8 +3769,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       mainLog.info(`[browser-pane] did-navigate id=${instance.id} from=${previousUrl} to=${instance.currentUrl}`)
       instance.canGoBack = pageWc.canGoBack()
       instance.canGoForward = pageWc.canGoForward()
-      // Drain in-flight count — prior page's requests are cancelled on navigation
-      this.inFlightRequestsByWebContentsId.set(pageWc.id, 0)
+      // Drain in-flight tracking — prior page's requests are cancelled on navigation
+      this.inFlightRequestIdsByWebContentsId.get(pageWc.id)?.clear()
       this.lastNetworkActivityByWebContentsId.set(pageWc.id, Date.now())
       this.emitStateChange(instance)
       void this.pushToolbarState(instance)
@@ -3545,7 +3912,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
           parent: instance.window,
           modal: false,
           webPreferences: {
-            partition: SESSION_PARTITION,
+            // Popups (OAuth flows etc.) must share the opener's storage
+            // partition, or the popup's login lands in the wrong cookie jar.
+            partition: instance.partition,
             session: pageWc.session,
             contextIsolation: true,
             nodeIntegration: false,

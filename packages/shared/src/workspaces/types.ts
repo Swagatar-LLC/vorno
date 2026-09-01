@@ -90,6 +90,13 @@ export interface WorkspaceConfig {
      */
     idleAgentTtlMinutes?: number;
 
+    /**
+     * Minutes a hidden, unbound, session-created browser window survives
+     * before the idle reaper destroys it (PLAN-047, SUV-0044). User-opened
+     * windows are never reaped. 0 disables reaping. Default: 60.
+     */
+    idleBrowserTtlMinutes?: number;
+
     /** Feature flag for the Workbench surface (ADR-0014, PLAN-024). Default off. */
     workbenchEnabled?: boolean;
 

@@ -1414,6 +1414,8 @@
   "settings.workspace.icon": "Symbol",
   "settings.workspace.idleAgentTtl": "Leerlauf-Timeout für Agenten (Minuten)",
   "settings.workspace.idleAgentTtlDesc": "Beendet den warmen Agentenprozess einer Sitzung nach so vielen Minuten Leerlauf. Er startet bei der nächsten Nachricht transparent neu. 0 hält Agenten bis zum Beenden am Leben.",
+  "settings.workspace.idleBrowserTtl": "Leerlauf-Timeout für Browserfenster (Minuten)",
+  "settings.workspace.idleBrowserTtlDesc": "Zerstört das ausgeblendete Browserfenster einer Sitzung nach so vielen Minuten Leerlauf. Selbst geöffnete Fenster sind nie betroffen. 0 hält ausgeblendete Fenster bis zum Beenden am Leben.",
   "settings.workspace.localMcpServers": "Lokale MCP-Server",
   "settings.workspace.localMcpServersDesc": "Stdio-Subprozess-Server aktivieren",
   "settings.workspace.modeCycling": "Modusumschaltung",

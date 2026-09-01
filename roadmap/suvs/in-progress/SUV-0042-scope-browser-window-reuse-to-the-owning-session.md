@@ -1,12 +1,12 @@
 ---
 id: SUV-0042
 title: Scope browser window reuse to the owning session
-status: planned
+status: in-progress
 plan: PLAN-047
 direction: DIR-05
 owner: jh
 created: 2026-08-30
-updated: 2026-08-30
+updated: 2026-08-31
 related: [SUV-0041]
 blocked-by: []
 ---
@@ -45,3 +45,4 @@ unbound leftover.
 ## Status log
 
 - `2026-08-30` — created in `planned/`
+- `2026-08-31` — moved from planned to in-progress: implementation started (session 260831-high-cascade)

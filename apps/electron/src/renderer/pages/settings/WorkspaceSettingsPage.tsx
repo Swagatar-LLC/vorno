@@ -88,6 +88,8 @@ export default function WorkspaceSettingsPage() {
   const [localMcpEnabled, setLocalMcpEnabled] = useState(true)
   // fork(PLAN-038): idle agent runtime TTL (minutes; 0 = disabled)
   const [idleAgentTtlMinutes, setIdleAgentTtlMinutes] = useState(60)
+  // fork(PLAN-047, SUV-0044): idle browser window TTL (minutes; 0 = disabled)
+  const [idleBrowserTtlMinutes, setIdleBrowserTtlMinutes] = useState(60)
   // fork(PLAN-024): Review Workbench feature flag
   const [workbenchEnabled, setWorkbenchEnabled] = useState(false)
   // fork(PLAN-025 C1): Artifact plane feature flag + registered roots
@@ -131,6 +133,7 @@ export default function WorkspaceSettingsPage() {
           setWorkingDirectory(settings.workingDirectory || '')
           setLocalMcpEnabled(settings.localMcpEnabled ?? true)
           setIdleAgentTtlMinutes(settings.idleAgentTtlMinutes ?? 60)
+          setIdleBrowserTtlMinutes(settings.idleBrowserTtlMinutes ?? 60)
           setWorkbenchEnabled(settings.workbenchEnabled ?? false)
           setArtifactsEnabled(settings.artifactsEnabled ?? false)
           setArtifactRoots(settings.artifactRoots ?? {})
@@ -333,6 +336,16 @@ export default function WorkspaceSettingsPage() {
     async (minutes: number) => {
       setIdleAgentTtlMinutes(minutes)
       await updateWorkspaceSetting('idleAgentTtlMinutes', minutes)
+    },
+    [updateWorkspaceSetting]
+  )
+
+  // fork(PLAN-047, SUV-0044): idle browser window TTL. The reaper resolves the
+  // TTL live per sweep tick, so the change applies without restart.
+  const handleIdleBrowserTtlCommit = useCallback(
+    async (minutes: number) => {
+      setIdleBrowserTtlMinutes(minutes)
+      await updateWorkspaceSetting('idleBrowserTtlMinutes', minutes)
     },
     [updateWorkspaceSetting]
   )
@@ -731,6 +744,19 @@ export default function WorkspaceSettingsPage() {
                     aria-label={t("settings.workspace.idleAgentTtl")}
                     value={idleAgentTtlMinutes}
                     onCommit={handleIdleAgentTtlCommit}
+                    min={0}
+                    max={10080}
+                  />
+                </SettingsRow>
+                {/* fork(PLAN-047, SUV-0044): idle browser window TTL */}
+                <SettingsRow
+                  label={t("settings.workspace.idleBrowserTtl")}
+                  description={t("settings.workspace.idleBrowserTtlDesc")}
+                >
+                  <SettingsNumberInput
+                    aria-label={t("settings.workspace.idleBrowserTtl")}
+                    value={idleBrowserTtlMinutes}
+                    onCommit={handleIdleBrowserTtlCommit}
                     min={0}
                     max={10080}
                   />

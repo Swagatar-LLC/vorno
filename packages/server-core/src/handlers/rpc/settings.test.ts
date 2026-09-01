@@ -90,38 +90,31 @@ afterAll(() => {
   }
 })
 
-describe('workspace settings: idleAgentTtlMinutes (PLAN-038)', () => {
-  it('accepts 0 (disabled), 60 (default), and 10080 (one week)', async () => {
-    const { get, update } = createHarness()
+// Table-driven over both idle-TTL keys: idleAgentTtlMinutes (PLAN-038) and
+// idleBrowserTtlMinutes (PLAN-047, SUV-0044) share semantics and validation.
+for (const key of ['idleAgentTtlMinutes', 'idleBrowserTtlMinutes'] as const) {
+  describe(`workspace settings: ${key}`, () => {
+    it('accepts 0 (disabled), 60 (default), and 10080 (one week) and reads back', async () => {
+      const { get, update } = createHarness()
 
-    for (const value of [0, 60, 10080]) {
-      await update(ctx(), WORKSPACE_ID, 'idleAgentTtlMinutes', value)
-      const settings = await get(ctx(), WORKSPACE_ID) as { idleAgentTtlMinutes?: number }
-      expect(settings.idleAgentTtlMinutes).toBe(value)
+      for (const value of [0, 60, 10080]) {
+        await update(ctx(), WORKSPACE_ID, key, value)
+        const settings = await get(ctx(), WORKSPACE_ID) as Record<string, number | undefined>
+        expect(settings[key]).toBe(value)
+      }
+    })
+
+    for (const [label, bad] of [
+      ['negative values', -1],
+      ['non-integer values', 1.5],
+      ['values above one week', 10081],
+      ['non-numeric values', 'abc'],
+    ] as const) {
+      it(`rejects ${label}`, async () => {
+        const { update } = createHarness()
+        await expect(update(ctx(), WORKSPACE_ID, key, bad))
+          .rejects.toThrow(`${key} must be an integer between 0 (disabled) and 10080 (one week)`)
+      })
     }
   })
-
-  it('rejects negative values', async () => {
-    const { update } = createHarness()
-    await expect(update(ctx(), WORKSPACE_ID, 'idleAgentTtlMinutes', -1))
-      .rejects.toThrow('idleAgentTtlMinutes must be an integer between 0 (disabled) and 10080 (one week)')
-  })
-
-  it('rejects non-integer values', async () => {
-    const { update } = createHarness()
-    await expect(update(ctx(), WORKSPACE_ID, 'idleAgentTtlMinutes', 1.5))
-      .rejects.toThrow('idleAgentTtlMinutes must be an integer between 0 (disabled) and 10080 (one week)')
-  })
-
-  it('rejects values above one week', async () => {
-    const { update } = createHarness()
-    await expect(update(ctx(), WORKSPACE_ID, 'idleAgentTtlMinutes', 10081))
-      .rejects.toThrow('idleAgentTtlMinutes must be an integer between 0 (disabled) and 10080 (one week)')
-  })
-
-  it('rejects non-numeric values', async () => {
-    const { update } = createHarness()
-    await expect(update(ctx(), WORKSPACE_ID, 'idleAgentTtlMinutes', 'abc'))
-      .rejects.toThrow('idleAgentTtlMinutes must be an integer between 0 (disabled) and 10080 (one week)')
-  })
-})
+}

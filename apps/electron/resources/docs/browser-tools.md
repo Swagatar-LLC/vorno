@@ -192,6 +192,33 @@ Manage and inspect browser window ownership and visibility.
 
 ---
 
+## Per-session isolation and lifecycle
+
+Each agent session's browser window has its **own private storage partition**
+— cookies, logins, localStorage, and permission grants are isolated per
+session. Windows the user opened manually keep a separate shared partition.
+
+Consequences worth planning around:
+
+- **Sessions start logged out.** A login the user (or another session) holds
+  in their own browser is not visible here. Log in within this session's
+  window when a task needs authenticated access; the login persists for this
+  session across turns.
+- **Windows are session-sticky.** Across turns a session re-binds the same
+  window it used last turn; it never adopts another session's window. A
+  user-opened window with no session history can still be adopted.
+- **Hidden windows are reaped.** A hidden, unbound session window is
+  destroyed after the workspace's idle TTL (Workspace Settings → Advanced →
+  idle browser window timeout; default 60 minutes, `0` disables). User-opened
+  windows are never reaped. After a reap, the next `open` simply creates a
+  fresh window — but page state and logins in that window's partition survive
+  only if the partition persists (it does; only the window is destroyed).
+- **Closed windows fail clearly.** Commands against a window that was closed
+  return `Browser window was closed (instance: …)` — re-run `open` to get a
+  fresh window.
+
+---
+
 ## Common validation errors
 
 - `Missing command...` → pass a command string (try `--help`)

@@ -108,9 +108,9 @@ import { setSearchPlatform, setImageProcessor } from '@craft-agent/server-core/s
 import { createApplicationMenu } from './menu'
 import { WindowManager } from './window-manager'
 import { loadWindowState, saveWindowState } from './window-state'
-import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig } from '@craft-agent/shared/config'
+import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig, loadConfigDefaults } from '@craft-agent/shared/config'
 import { CONFIG_DIR_RESOLUTION } from '@craft-agent/shared/config/paths'
-import { getDefaultWorkspacesDir } from '@craft-agent/shared/workspaces'
+import { getDefaultWorkspacesDir, loadWorkspaceConfig } from '@craft-agent/shared/workspaces'
 import { initializeDocs } from '@craft-agent/shared/docs'
 import { initializeReleaseNotes } from '@craft-agent/shared/release-notes'
 import { ensureDefaultPermissions } from '@craft-agent/shared/agent/permissions-config'
@@ -542,6 +542,21 @@ app.whenReady().then(async () => {
     browserPaneManager.setWindowManager(windowManager)
     browserPaneManager.registerToolbarIpc()
     browserPaneManager.registerCapabilityIpc()
+    // fork(PLAN-047, SUV-0044): idle TTL reaper for hidden session-created
+    // browser windows. TTL resolved live per sweep tick (workspace config →
+    // global workspaceDefaults → 60), same precedence as idleAgentTtlMinutes.
+    browserPaneManager.startIdleReaper((workspaceId) => {
+      const rootPath = workspaceId
+        ? getWorkspaces().find((w) => w.id === workspaceId)?.rootPath
+        : undefined
+      const wsDefaults = rootPath ? loadWorkspaceConfig(rootPath)?.defaults : undefined
+      const ttl = wsDefaults?.idleBrowserTtlMinutes
+        ?? loadConfigDefaults().workspaceDefaults.idleBrowserTtlMinutes
+        ?? 60
+      // config.json is user-editable and read through a type assertion — a
+      // malformed value must degrade to the default, never reach the reaper.
+      return Number.isInteger(ttl) && ttl >= 0 && ttl <= 10080 ? ttl : 60
+    })
 
     // Build real PlatformServices from Electron APIs
     const platform: PlatformServices = createElectronPlatform({

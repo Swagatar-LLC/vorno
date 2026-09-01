@@ -1,11 +1,11 @@
 ---
 id: PLAN-047
 title: Per-session browser isolation and lifecycle
-status: planned
+status: in-progress
 direction: DIR-05
 owner: jh
 created: 2026-08-30
-updated: 2026-08-30
+updated: 2026-08-31
 related: []
 related-suvs:
   - SUV-0041-per-session-storage-partition-for-session-owned-windows.md
@@ -137,3 +137,4 @@ SUV-0043 and SUV-0044 are independent of both. Each is one PR.
 
 - `2026-08-30` — created in `planned/`, from the 260828-vivid-mountain
   architecture trace; SUV-0041..0044 cut in the same pass.
+- `2026-08-31` — moved from planned to in-progress: implementation started (session 260831-high-cascade)

@@ -150,6 +150,7 @@ const FALLBACK_CONFIG_DEFAULTS: ConfigDefaults = {
     permissionMode: 'ask',
     cyclablePermissionModes: ['safe', 'ask', 'allow-all'],
     idleAgentTtlMinutes: 60,  // fork(PLAN-038)
+    idleBrowserTtlMinutes: 60,  // fork(PLAN-047, SUV-0044)
     localMcpServers: { enabled: true },
   },
 };
