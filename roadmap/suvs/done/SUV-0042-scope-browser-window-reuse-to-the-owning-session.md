@@ -1,7 +1,7 @@
 ---
 id: SUV-0042
 title: Scope browser window reuse to the owning session
-status: in-progress
+status: done
 plan: PLAN-047
 direction: DIR-05
 owner: jh
@@ -33,16 +33,17 @@ unbound leftover.
 
 ## Acceptance
 
-- [ ] With sessions A and B alternating turns in one workspace, B's
+- [x] With sessions A and B alternating turns in one workspace, B's
       `getOrCreateForSession` never returns A's unbound window (regression
       test reproduces today's cross-adoption, then passes).
-- [ ] A session's second turn re-binds the same instance id as its first
+- [x] A session's second turn re-binds the same instance id as its first
       turn when that window is still alive.
-- [ ] A user-opened window with no owner is still adoptable by a session in
+- [x] A user-opened window with no owner is still adoptable by a session in
       the same workspace (existing test stays green).
-- [ ] `browser-pane-manager.test.ts` passes with the new cases.
+- [x] `browser-pane-manager.test.ts` passes with the new cases.
 
 ## Status log
 
 - `2026-08-30` — created in `planned/`
 - `2026-08-31` — moved from planned to in-progress: implementation started (session 260831-high-cascade)
+- `2026-08-31` — moved from in-progress to done: shipped in PR #189 (merge 047cb286); gate = two-session OpenAI Sol adversarial review (fan-in in PR #189 comments), all findings addressed in af0859bc

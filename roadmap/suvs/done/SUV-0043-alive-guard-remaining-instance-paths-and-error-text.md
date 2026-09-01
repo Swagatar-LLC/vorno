@@ -1,7 +1,7 @@
 ---
 id: SUV-0043
 title: Alive-guard remaining instance paths and fix destroyed-window error text
-status: in-progress
+status: done
 plan: PLAN-047
 direction: DIR-05
 owner: jh
@@ -33,16 +33,17 @@ Operations against a destroyed browser window always surface as a clear
 
 ## Acceptance
 
-- [ ] Destroying a window while a command is dispatched against it returns
+- [x] Destroying a window while a command is dispatched against it returns
       the "Browser window was closed (instance: …)" error (test).
-- [ ] No call site in `browser-pane-manager.ts` invokes `webContents`/view
+- [x] No call site in `browser-pane-manager.ts` invokes `webContents`/view
       methods on an instance obtained without an alive check (survey listed
       in the PR description).
-- [ ] A rejected non-`Error` value produces a readable tool error message
+- [x] A rejected non-`Error` value produces a readable tool error message
       (test at the browser-tools layer).
-- [ ] `browser-pane-manager.test.ts` and shared package tests pass.
+- [x] `browser-pane-manager.test.ts` and shared package tests pass.
 
 ## Status log
 
 - `2026-08-30` — created in `planned/`
 - `2026-08-31` — moved from planned to in-progress: implementation started (session 260831-high-cascade)
+- `2026-08-31` — moved from in-progress to done: shipped in PR #189 (merge 047cb286); gate = two-session OpenAI Sol adversarial review (fan-in in PR #189 comments), all findings addressed in af0859bc
