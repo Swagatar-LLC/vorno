@@ -1,12 +1,12 @@
 ---
 id: SUV-0039
 title: Per-plan sequence computed from the plan's related-suvs order and shown on the board
-status: in-progress
+status: done
 plan: PLAN-046
 direction: DIR-05
 owner: jh
 created: 2026-08-27
-updated: 2026-08-27
+updated: 2026-09-01
 related:
   - SUV-0022-add-suv-form-records-the-reverse-related-suvs-edge.md (the edge this view depends on)
   - SUV-0004-render-suvs-on-the-console-board-and-workstream-view.md (the surface being extended)
@@ -72,3 +72,4 @@ an identifier, filename, branch name, or lookup key.
   nothing still holds its slot (skipping it would renumber everything below the
   moment a placeholder was fixed), and `rec["suvs"]` stays id-sorted — reordering
   it is a separate visible change. Tests 187 + 51 = 238 (226 before, 12 new).
+- `2026-09-01` — moved from `in-progress` to `done`: acceptance fully met; landed as console PR #2 (`suv-0039-plan-seq`). Per-plan sequence renders on the board.

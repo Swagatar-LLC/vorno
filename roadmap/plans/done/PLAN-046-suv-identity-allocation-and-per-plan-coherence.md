@@ -1,11 +1,11 @@
 ---
 id: PLAN-046
 title: SUV identity, collision-safe allocation, and per-plan coherence
-status: in-progress
+status: done
 direction: DIR-05
 owner: jh
 created: 2026-08-27
-updated: 2026-08-27
+updated: 2026-09-01
 related:
   - PLAN-043-roadmap-console-interactive-work-surface.md (the plan whose retrospective this hardens)
   - PLAN-040-integrate-headroom.md (next plan to be decomposed; must allocate cleanly)
@@ -146,3 +146,4 @@ merge.
   console PRs are based on `plan-043-retrospective-fixes`, not console `main` —
   console `main` is still the initial commit and all 19 PLAN-043 commits are
   unmerged into it. Console→main remains the owner's call.
+- `2026-09-01` — moved from `in-progress` to `done`: all three owned SUVs (SUV-0037, SUV-0038, SUV-0039) are done and ADR-0030 has merged via PR #181. Code has landed; `done` rather than `documented` because release notes are still pending.

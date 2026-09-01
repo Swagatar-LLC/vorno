@@ -57,11 +57,5 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0027](0027-lean-on-the-os-for-lifecycle-chores.md) | Lean on filesystem and OS primitives for lifecycle chores | proposed |
 | [0028](0028-suv-as-the-shippable-unit-between-plan-and-task.md) | SUV as the shippable unit between a plan and an executable task | accepted |
 | [0029](0029-headroom-memory-via-host-invoked-mcp.md) | Headroom memory through the memory MCP stdio server, host-invoked from the boundary adapter | accepted |
-| [0031](0031-vendor-neutral-memory-provider-seam.md) | Memory behind a vendor-neutral, host-invoked MemoryProvider seam; Headroom is one provider | accepted |
-
-> **On the gap at 0030.** [ADR-0030](https://github.com/Swagatar-LLC/vorno/pull/181)
-> — *SUV identity is global; per-plan coherence is derived* — is real and accepted,
-> but it lives on the `plan/plan-046` line of work and is not on this branch. The
-> hole in the sequence above is branch topology, not a lost decision. It closes
-> when PR #181 merges.
 | [0030](0030-suv-identity-is-global-per-plan-coherence-is-derived.md) | SUV identity stays global; per-plan coherence is a derived view | accepted |
+| [0031](0031-vendor-neutral-memory-provider-seam.md) | Memory behind a vendor-neutral, host-invoked MemoryProvider seam; Headroom is one provider | accepted |

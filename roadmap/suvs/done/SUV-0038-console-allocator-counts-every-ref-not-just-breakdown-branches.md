@@ -1,12 +1,12 @@
 ---
 id: SUV-0038
 title: Console allocator counts every ref, not just breakdown and feedback branches
-status: in-progress
+status: done
 plan: PLAN-046
 direction: DIR-05
 owner: jh
 created: 2026-08-27
-updated: 2026-08-27
+updated: 2026-09-01
 related:
   - SUV-0020-suv-id-allocation-consults-unmerged-candidate-branches.md (the partial fix this completes)
   - SUV-0019-per-plan-topic-branch-as-the-breakdown-merge-target.md (introduced the plan/* convention 0020 misses)
@@ -58,3 +58,4 @@ the current allocator; the true all-refs maximum is `SUV-0036` while a fresh
   exist. The filter is gone, and the same correction was pushed back to
   SUV-0037's recipe. Tests 180 + 51 = 231 (226 before, 5 new), all five failing
   against the previous implementation.
+- `2026-09-01` — moved from `in-progress` to `done`: acceptance fully met; landed as console PR #1 (`suv-0038-allocator-all-refs`). `suv_ids_claimed_anywhere` now reaches every ref.
