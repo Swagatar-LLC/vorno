@@ -43,24 +43,59 @@ for (const w of CLI_WRAPPERS) {
 
 const builderConfigPath = 'electron-builder.yml';
 if (existsSync(builderConfigPath)) {
-  // Match whole list entries, not substrings. A naive `includes()` check is
-  // wrong here and silently so: "resources/bin/vorno-cli" is a prefix of
-  // "resources/bin/vorno-cli.cmd", so deleting the real entry still passed
-  // while the .cmd line remained. Caught by deliberately unlisting the entry
-  // and watching the check stay green.
-  const listed = new Set(
-    readFileSync(builderConfigPath, 'utf-8')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith('- '))
-      .map((line) => line.slice(2).trim().replace(/^["']|["']$/g, '')),
-  );
+  // Match whole list entries under the `files:` key specifically.
+  //
+  // Two traps, both hit during development:
+  //  - A naive `includes()` is wrong and silently so: "resources/bin/vorno-cli"
+  //    is a prefix of "resources/bin/vorno-cli.cmd", so deleting the real entry
+  //    still passed while the .cmd line remained.
+  //  - Collecting every `- ` item in the file would accept an entry sitting
+  //    under `extraResources:` or any other list, which ships different
+  //    semantics. Only `files:` puts a path inside app.asar's file map.
+  const lines = readFileSync(builderConfigPath, 'utf-8').split('\n');
+  const listed = new Set<string>();
+  let inFiles = false;
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    if (/^files:\s*$/.test(line)) {
+      inFiles = true;
+      continue;
+    }
+    // A new top-level key ends the block. List items and comments do not.
+    if (inFiles && /^[A-Za-z_][\w-]*:/.test(line)) {
+      inFiles = false;
+    }
+    if (!inFiles) continue;
+    const item = line.trim();
+    if (!item.startsWith('- ')) continue;
+    listed.add(item.slice(2).trim().replace(/^["']|["']$/g, ''));
+  }
   for (const w of CLI_WRAPPERS) {
     if (!listed.has(`resources/bin/${w}`)) {
       cliProblems.push(
-        `resources/bin/${w} is not listed in electron-builder.yml — it will NOT ship`,
+        `resources/bin/${w} is not listed under \`files:\` in electron-builder.yml — it will NOT ship`,
       );
     }
+  }
+}
+
+// The compiled binary is gitignored and only exists after scripts/build-cli.ts
+// runs, so it cannot be required during a plain dev build. The platform dist
+// scripts set CRAFT_REQUIRE_CLI_BIN=1 after their compile step, which is the
+// only moment the assertion is both meaningful and true.
+//
+// This half is what catches the failure mode the wrapper check cannot:
+// electron-builder SILENTLY SKIPS `files:` entries that do not exist — no
+// warning, no error — so a platform build script missing its compile step
+// packages successfully and ships a wrapper with nothing behind it.
+if (process.env.CRAFT_REQUIRE_CLI_BIN === '1') {
+  const binName = process.platform === 'win32' ? 'vorno-cli-bin.exe' : 'vorno-cli-bin';
+  if (!existsSync(join('resources', 'bin', binName))) {
+    cliProblems.push(
+      `resources/bin/${binName} is missing — the compile step (scripts/build-cli.ts) ` +
+        `did not run or wrote elsewhere. electron-builder would skip it silently ` +
+        `and ship a wrapper with no binary.`,
+    );
   }
 }
 

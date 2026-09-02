@@ -105,7 +105,16 @@ if (!existsSync(entry)) {
 
 const outdir = resolve(ROOT, values.outdir ?? join('dist', 'cli'));
 const isWindows = target.startsWith('windows');
-const binName = (values.name ?? 'vorno-cli') + (isWindows ? '.exe' : '');
+// Append .exe only when the caller did not already spell it out. Earlier this
+// unconditionally appended, so `--name=vorno-cli-bin` (the convention the mac
+// build uses) produced `vorno-cli-bin.exe` on a Windows target while
+// electron-builder.yml and main/index.ts expected something else — a silent
+// mismatch that would ship a wrapper with no binary behind it.
+const requestedName = values.name ?? 'vorno-cli';
+const binName =
+  isWindows && !requestedName.toLowerCase().endsWith('.exe')
+    ? `${requestedName}.exe`
+    : requestedName;
 const outfile = join(outdir, binName);
 
 mkdirSync(outdir, { recursive: true });

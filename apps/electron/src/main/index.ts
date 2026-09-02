@@ -206,7 +206,7 @@ if (isDebugMode) {
   // Legacy alias: the `craft-agent` wrapper still reads this name.
   process.env.CRAFT_COMMANDS_ENTRY = cliEntry
 
-  const bundledCliBin = join(binDir, process.platform === 'win32' ? 'vorno-cli.exe' : 'vorno-cli-bin')
+  const bundledCliBin = join(binDir, process.platform === 'win32' ? 'vorno-cli-bin.exe' : 'vorno-cli-bin')
   if (existsSync(bundledCliBin)) {
     process.env.CRAFT_VORNO_CLI_BIN = bundledCliBin
   }

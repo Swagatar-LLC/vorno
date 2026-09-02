@@ -284,6 +284,25 @@ try {
     Pop-Location
 }
 
+# Compile the standalone vorno-cli binary into resources/bin.
+# fork(PLAN-049): this step must exist in EVERY platform build script.
+# electron-builder silently skips `files:` entries that do not exist — no
+# warning, no error — so omitting it here produces a successful installer that
+# ships the wrapper with no binary behind it, and `vorno-cli` exits 127 on every
+# install. That is the exact bug PLAN-049 fixes; leaving Windows out would have
+# reintroduced it here.
+Write-Host "  Compiling vorno-cli (windows-x64)..."
+Push-Location $RootDir
+try {
+    bun run scripts/build-cli.ts --target=windows-x64 --outdir="$ElectronDir\resources\bin" --name=vorno-cli-bin
+    if ($LASTEXITCODE -ne 0) { throw "vorno-cli build failed" }
+} finally {
+    Pop-Location
+}
+
+# fork(PLAN-049): assert the compiled CLI is present during the electron build.
+$env:CRAFT_REQUIRE_CLI_BIN = "1"
+
 # Build preload
 Write-Host "  Building preload..."
 Push-Location $RootDir
