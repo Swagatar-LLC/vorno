@@ -1,0 +1,33 @@
+#!/bin/sh
+# vorno-cli — fork(PLAN-049)
+#
+# Resolves in three ways, most-specific first, so the command works in a
+# packaged app, in a dev checkout, and from a user's own terminal:
+#
+#   1. CRAFT_VORNO_CLI_BIN  — the compiled standalone binary shipped with the
+#                             app (set by the Electron main process).
+#   2. a sibling binary     — if this wrapper sits next to `vorno-cli-bin`,
+#                             use it. Covers the case where the env was not
+#                             injected, e.g. a user invoking it directly.
+#   3. CRAFT_CLI_ENTRY      — the TypeScript entry, run under bun. Dev mode.
+#
+# Exec, never fork: the CLI streams and handles its own signals.
+set -e
+
+if [ -n "$CRAFT_VORNO_CLI_BIN" ] && [ -x "$CRAFT_VORNO_CLI_BIN" ]; then
+  exec "$CRAFT_VORNO_CLI_BIN" "$@"
+fi
+
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -x "$SELF_DIR/vorno-cli-bin" ]; then
+  exec "$SELF_DIR/vorno-cli-bin" "$@"
+fi
+
+if [ -n "$CRAFT_CLI_ENTRY" ] && [ -f "$CRAFT_CLI_ENTRY" ]; then
+  exec "${CRAFT_BUN:-bun}" run "$CRAFT_CLI_ENTRY" "$@"
+fi
+
+echo "vorno-cli: no runnable CLI found." >&2
+echo "  Looked for: \$CRAFT_VORNO_CLI_BIN, $SELF_DIR/vorno-cli-bin, \$CRAFT_CLI_ENTRY" >&2
+echo "  In a dev checkout run: bun run scripts/build-cli.ts" >&2
+exit 127

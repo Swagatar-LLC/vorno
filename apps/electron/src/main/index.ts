@@ -188,12 +188,28 @@ if (isDebugMode) {
   }
 
   process.env.CRAFT_SCRIPTS = scriptsDir
-  process.env.CRAFT_COMMANDS_ENTRY = app.isPackaged
-    ? join(app.getAppPath(), 'packages', 'craft-agents-commands', 'src', 'main.ts')
-    : join(process.cwd(), 'packages', 'craft-agents-commands', 'src', 'main.ts')
-  process.env.CRAFT_CLI_ENTRY = app.isPackaged
-    ? join(app.getAppPath(), 'packages', 'craft-cli', 'src', 'cli.ts')
-    : join(process.cwd(), 'packages', 'craft-cli', 'src', 'cli.ts')
+  // fork(PLAN-049): these pointed at `packages/craft-cli` and
+  // `packages/craft-agents-commands`, neither of which exists in this repo — the
+  // CLI lives at `apps/cli`. Both variables were dead in packaged AND dev
+  // builds, so `vorno-cli` was unrunnable everywhere despite its docs shipping
+  // in the bundle. Nothing validated them, so it went unnoticed.
+  //
+  // Packaged builds now ship a compiled standalone binary (scripts/build-cli.ts)
+  // and point CRAFT_VORNO_CLI_BIN at it. Dev builds keep the source entry and
+  // run it under bun. The `vorno-cli` wrapper in resources/bin prefers the
+  // binary and falls back to the entry, so the command resolves identically in
+  // both modes.
+  const cliEntry = app.isPackaged
+    ? join(app.getAppPath(), 'apps', 'cli', 'src', 'index.ts')
+    : join(process.cwd(), 'apps', 'cli', 'src', 'index.ts')
+  process.env.CRAFT_CLI_ENTRY = cliEntry
+  // Legacy alias: the `craft-agent` wrapper still reads this name.
+  process.env.CRAFT_COMMANDS_ENTRY = cliEntry
+
+  const bundledCliBin = join(binDir, process.platform === 'win32' ? 'vorno-cli.exe' : 'vorno-cli-bin')
+  if (existsSync(bundledCliBin)) {
+    process.env.CRAFT_VORNO_CLI_BIN = bundledCliBin
+  }
   process.env.CRAFT_COMMANDS_DOC_PATH = app.isPackaged
     ? join(resourcesBase, 'resources', 'docs', 'vorno-cli.md')
     : join(process.cwd(), 'apps', 'electron', 'resources', 'docs', 'vorno-cli.md')

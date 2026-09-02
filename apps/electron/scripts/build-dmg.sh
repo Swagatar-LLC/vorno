@@ -207,6 +207,18 @@ for dep in interceptor-common.ts feature-flags.ts interceptor-request-utils.ts; 
   fi
 done
 
+# 5b. Compile the standalone vorno-cli binary into resources/bin.
+# fork(PLAN-049): the CLI previously had no build step at all and no install
+# path — `apps/cli` declared a TypeScript `bin` entry that only resolved inside
+# the workspace. Compiling here means the packaged app ships a real executable
+# on the agent PATH, with no bun and no CRAFT_* env required to run it.
+echo "Compiling vorno-cli (darwin-${ARCH})..."
+cd "$ROOT_DIR"
+bun run scripts/build-cli.ts \
+  --target="darwin-${ARCH}" \
+  --outdir="$ELECTRON_DIR/resources/bin" \
+  --name="vorno-cli-bin"
+
 # 6. Build Electron app
 echo "Building Electron app..."
 cd "$ROOT_DIR"

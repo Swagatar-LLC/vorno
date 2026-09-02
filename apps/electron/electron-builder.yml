@@ -57,6 +57,16 @@ files:
   - resources/bin/pptx-tool.cmd
   - resources/bin/ical-tool
   - resources/bin/ical-tool.cmd
+  # fork(PLAN-049): vorno-cli. This list is enumerated file-by-file, which is
+  # why the older `craft-agent` wrapper never shipped — it existed in
+  # resources/bin but was never added here, so it was absent from every packaged
+  # build. Adding a wrapper to resources/bin is NOT enough; it must be listed.
+  # `vorno-cli-bin` is the compiled standalone binary produced by
+  # scripts/build-cli.ts during the DMG build.
+  - resources/bin/vorno-cli
+  - resources/bin/vorno-cli.cmd
+  - resources/bin/vorno-cli-bin
+  - resources/bin/vorno-cli.exe
   # Include bundled uv binary (platform-specific, only the relevant one ships per build)
   - resources/bin/darwin-arm64/**/*
   - resources/bin/darwin-x64/**/*

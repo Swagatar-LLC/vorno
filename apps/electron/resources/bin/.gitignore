@@ -1,0 +1,4 @@
+# fork(PLAN-049): compiled CLI, produced by scripts/build-cli.ts at package time.
+# 57MB — built, never committed.
+vorno-cli-bin
+vorno-cli.exe
