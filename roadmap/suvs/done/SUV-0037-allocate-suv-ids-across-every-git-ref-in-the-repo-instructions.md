@@ -1,12 +1,12 @@
 ---
 id: SUV-0037
 title: Allocate SUV ids across every git ref in the repo's own instructions
-status: in-progress
+status: done
 plan: PLAN-046
 direction: DIR-05
 owner: jh
 created: 2026-08-27
-updated: 2026-08-27
+updated: 2026-09-01
 related:
   - SUV-0020-suv-id-allocation-consults-unmerged-candidate-branches.md (fixed the console only)
   - SUV-0038-console-allocator-counts-every-ref-not-just-breakdown-branches.md (same rule, console side)
@@ -75,3 +75,4 @@ console repo.
   containing one taken id created neither ref. Test refs deleted. The race is
   closed for workflows that reserve; a workflow that hand-authors an id without
   reserving is still caught only by the validator.
+- `2026-09-01` — moved from `in-progress` to `done`: acceptance fully met and merged in PR #181. Independently exercised 2026-09-01 while allocating SUV-0046..0048: the all-refs floor returned SUV-0045 (a working-tree glob would have under-read it), and all three CAS reservations on `refs/suv-ids/*` succeeded on first push. The recipe works as documented.
