@@ -130,6 +130,49 @@ the repo, `/tmp`, a home directory. It affects a developer running the artifact
 in place, never a shipped install. The build script's smoke test runs from
 `tmpdir()` because that is the real deployment condition, not to dodge this.
 
+## Adversarial review (2026-09-01) — five findings, all fixed
+
+A staff-level reviewer was asked to assume the change was wrong and find where.
+It was, in five places. The first is the one that mattered.
+
+1. **The fix shipped on macOS and reintroduced the bug on Windows and Linux.**
+   `build-win.ps1` and `build-linux.sh` never got the compile step. And
+   electron-builder **silently skips `files:` entries that do not exist** — no
+   warning, no error (confirmed against `app-builder-lib/out/fileMatcher.js`).
+   So both would have packaged *successfully*, shipping a wrapper with no binary
+   and exiting 127 on every install. Exactly the bug this PLAN fixes, on two of
+   three platforms. **Fixed:** compile step added to both scripts;
+   cross-compilation verified for `linux-x64` (97.5 MB) and `windows-x64`
+   (108.7 MB).
+
+2. **The regression gate could not catch #1** — it checked only the two
+   committed wrapper scripts, which are always present. Verified green with zero
+   compiled artifacts on disk. **Fixed:** the gate now also requires the binary
+   when `CRAFT_REQUIRE_CLI_BIN=1`, which all three dist scripts set after their
+   compile step. That flag is why the check can be strict during packaging and
+   silent during a plain dev build.
+
+3. **`vorno-cli.cmd` returned wrong exit codes.** `exit /b %ERRORLEVEL%` inside a
+   parenthesized `if (...)` block expands at parse time, before the preceding
+   command runs. **Fixed:** rewritten with `goto` labels, which sidesteps the
+   problem without needing delayed expansion.
+
+4. **A landmine for whoever fixed #1:** `--name` was not platform-aware, so the
+   mac convention `--name=vorno-cli-bin` would produce `vorno-cli-bin.exe` on a
+   Windows target while the manifest expected `vorno-cli.exe`. **Fixed:** the
+   binary is now uniformly `vorno-cli-bin` / `vorno-cli-bin.exe` across
+   `build-cli.ts`, `electron-builder.yml`, `main/index.ts`, and both wrappers;
+   `.exe` is appended only when not already present.
+
+5. **The YAML check was not scoped to `files:`** — an entry under
+   `extraResources:` would have satisfied it while shipping different semantics.
+   **Fixed:** parsing now tracks the `files:` block. Negative-tested by moving
+   the entry to `extraResources:` and confirming the gate fails.
+
+Gate now verified across four scenarios: dev build without the binary passes;
+dist build without it fails; dist build with it passes; entry moved out of
+`files:` fails.
+
 ## Not done
 
 - **`craft-agent` wrapper left alone.** It reads the now-corrected
@@ -137,7 +180,13 @@ in place, never a shipped install. The build script's smoke test runs from
   but it is still unlisted in `electron-builder.yml` and still will not ship.
   Deleting it is a separate branding decision.
 - **CI does not build the CLI.** `validate-assets` catches the packaging
-  regression; nothing yet catches a compile break on a target nobody built.
+  regression on every platform build; nothing yet catches a compile break on a
+  target nobody built. Windows and Linux packaging changes are **untested on
+  their real hosts** — the compile step and cross-compilation are verified, the
+  full `dist` runs are not.
+- **No packaged smoke test.** Nothing yet asserts that `vorno-cli` actually
+  resolves *inside* a built app. The gate proves the file ships, not that the
+  wrapper finds it at runtime.
 - **The docs describe a different CLI.** `vorno-cli.md` documents
   `label list`, `automation create` — entity/action config management. The shipped
   CLI is a WebSocket client (`run`, `ping`, `sessions`, `send`, `invoke`). Those

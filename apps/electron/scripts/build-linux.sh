@@ -180,10 +180,28 @@ for dep in interceptor-common.ts feature-flags.ts interceptor-request-utils.ts; 
   fi
 done
 
+# 5b. Compile the standalone vorno-cli binary into resources/bin.
+# fork(PLAN-049): this step must exist in EVERY platform build script.
+# electron-builder silently skips `files:` entries that do not exist — no
+# warning, no error — so omitting it here produces a successful package that
+# ships the wrapper with no binary behind it, and `vorno-cli` exits 127 on every
+# install. That is the exact bug PLAN-049 fixes; leaving Linux out would have
+# reintroduced it here.
+echo "Compiling vorno-cli (linux-${ARCH})..."
+cd "$ROOT_DIR"
+bun run scripts/build-cli.ts \
+  --target="linux-${ARCH}" \
+  --outdir="$ELECTRON_DIR/resources/bin" \
+  --name="vorno-cli-bin"
+
 # 6. Build Electron app
+# CRAFT_REQUIRE_CLI_BIN makes validate-assets assert the compiled CLI is present
+# (fork(PLAN-049)) — the compile step ran just above, so its absence here means
+# it failed or wrote to the wrong directory, and electron-builder would skip it
+# without a word.
 echo "Building Electron app..."
 cd "$ROOT_DIR"
-bun run electron:build
+CRAFT_REQUIRE_CLI_BIN=1 bun run electron:build
 
 # 7. Package with electron-builder
 echo "Packaging app with electron-builder..."

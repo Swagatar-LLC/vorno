@@ -220,9 +220,13 @@ bun run scripts/build-cli.ts \
   --name="vorno-cli-bin"
 
 # 6. Build Electron app
+# CRAFT_REQUIRE_CLI_BIN makes validate-assets assert the compiled CLI is present
+# (fork(PLAN-049)) — the compile step ran just above, so its absence here means
+# it failed or wrote to the wrong directory, and electron-builder would skip it
+# without a word.
 echo "Building Electron app..."
 cd "$ROOT_DIR"
-bun run electron:build
+CRAFT_REQUIRE_CLI_BIN=1 bun run electron:build
 
 # 7. Package with electron-builder
 echo "Packaging app with electron-builder..."
