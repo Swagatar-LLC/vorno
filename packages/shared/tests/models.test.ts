@@ -12,6 +12,8 @@ import {
   getModelIdByShortName,
   getModelSupportsFastMode,
   normalizeDeprecatedModelId,
+  isAdaptiveThinkingAlwaysOnModel,
+  inferAnthropicContextWindow,
 } from '../src/config/models.ts';
 
 describe('isClaudeModel', () => {
@@ -105,10 +107,10 @@ describe('Opus registry', () => {
     expect(ids).toContain('claude-opus-4-6');
   });
 
-  it('resolves "Opus" shortName to 4.8 (newest first)', () => {
-    // 4.8 is listed first in MODEL_REGISTRY so the abstract "Opus" short name
-    // resolves to the newest Opus release — same convention 4.7 used over 4.6.
-    expect(getModelIdByShortName('Opus')).toBe('claude-opus-4-8');
+  it('resolves "Opus" shortName to Opus 5 (newest first)', () => {
+    // Opus 5 is listed first in MODEL_REGISTRY so the abstract "Opus" short name
+    // resolves to the newest Opus release — same convention 4.8 used over 4.7.
+    expect(getModelIdByShortName('Opus')).toBe('claude-opus-5');
   });
 
   it('normalizes deprecated Opus IDs to Opus 4.8 without migrating Opus 4.7 or 4.6', () => {
@@ -162,5 +164,43 @@ describe('Sonnet registry', () => {
   it('maps Bedrock Sonnet 5 IDs back to the bare ID', () => {
     expect(getModelById('us.anthropic.claude-sonnet-5')?.id).toBe('claude-sonnet-5');
     expect(getModelById('anthropic.claude-sonnet-5')?.id).toBe('claude-sonnet-5');
+  });
+});
+
+describe('Claude 5 generation registry presence', () => {
+  it('includes claude-opus-5 with a 1M context window', () => {
+    const opus5 = getModelById('claude-opus-5');
+    expect(opus5).toBeDefined();
+    expect(opus5!.name).toBe('Opus 5');
+    expect(opus5!.contextWindow).toBe(1_000_000);
+    expect(ANTHROPIC_MODELS.some(m => m.id === 'claude-opus-5')).toBe(true);
+  });
+
+  it('includes claude-fable-5-1 with a 1M context window and keeps Fable 5', () => {
+    const fable51 = getModelById('claude-fable-5-1');
+    expect(fable51).toBeDefined();
+    expect(fable51!.name).toBe('Fable 5.1');
+    expect(fable51!.contextWindow).toBe(1_000_000);
+    expect(getModelById('claude-fable-5')).toBeDefined();
+  });
+
+  it('resolves "Fable" shortName to 5.1 (newest first)', () => {
+    expect(getModelIdByShortName('Fable')).toBe('claude-fable-5-1');
+  });
+
+  it('keeps adaptive-thinking-always-on detection for Fable 5.1', () => {
+    expect(isAdaptiveThinkingAlwaysOnModel('claude-fable-5-1')).toBe(true);
+  });
+});
+
+describe('inferAnthropicContextWindow', () => {
+  it('infers 1M for a Fable model not yet in the registry', () => {
+    expect(inferAnthropicContextWindow('claude-fable-6')).toBe(1_000_000);
+  });
+
+  it('still infers 1M for Opus and holds the 200k floor for Sonnet/Haiku', () => {
+    expect(inferAnthropicContextWindow('claude-opus-9')).toBe(1_000_000);
+    expect(inferAnthropicContextWindow('claude-sonnet-9')).toBe(200_000);
+    expect(inferAnthropicContextWindow('claude-haiku-9')).toBe(200_000);
   });
 });

@@ -1,7 +1,7 @@
 import type { ProviderDriver } from '../driver-types.ts';
 import { applyAnthropicRuntimeBootstrap } from '../runtime-resolver.ts';
 import { validateAnthropicConnection } from '../../../../config/llm-validation.ts';
-import { DEFAULT_MODEL, getModelById, getModelContextWindow, inferAnthropicContextWindow, normalizeDeprecatedModelId } from '../../../../config/models.ts';
+import { ANTHROPIC_MODELS, DEFAULT_MODEL, getModelById, getModelContextWindow, inferAnthropicContextWindow, normalizeDeprecatedModelId } from '../../../../config/models.ts';
 
 export const anthropicDriver: ProviderDriver = {
   provider: 'anthropic',
@@ -23,6 +23,24 @@ export const anthropicDriver: ProviderDriver = {
 
     if (!apiKey && !oauthAccessToken) {
       throw new Error('Anthropic credentials required to fetch models');
+    }
+
+    // Claude Pro/Max subscription OAuth tokens are scoped to Claude Code and are
+    // NOT entitled to the Developer Platform's /v1/models, which expects a console
+    // API key. Asking anyway returns 401 forever, and ModelRefreshService then keeps
+    // the previously persisted list — so the model picker freezes permanently and no
+    // newly released model can ever appear. Serve the registry instead: it is the
+    // maintained, reviewable list and it is what these connections should show.
+    //
+    // A baseUrl override means the connection points at a gateway (e.g. LiteLLM) that
+    // may well forward the token successfully, so those still take the live path.
+    if (connection.authType === 'oauth' && !connection.baseUrl) {
+      return {
+        models: ANTHROPIC_MODELS,
+        serverDefault: ANTHROPIC_MODELS.some(m => m.id === DEFAULT_MODEL)
+          ? DEFAULT_MODEL
+          : ANTHROPIC_MODELS[0]?.id,
+      };
     }
 
     const baseUrl = connection.baseUrl || 'https://api.anthropic.com';
@@ -109,9 +127,16 @@ export const anthropicDriver: ProviderDriver = {
         };
       });
 
+    // Pick the default by OUR curated registry priority, not the API's arbitrary
+    // ordering. `models[0]` alone would hand an account that lacks DEFAULT_MODEL
+    // whatever /v1/models happened to list first (e.g. Opus 4.6 over Opus 4.8).
+    const bestRegistryMatch = ANTHROPIC_MODELS.find(r => models.some(m => m.id === r.id))?.id;
+
     return {
       models,
-      serverDefault: models.some(m => m.id === DEFAULT_MODEL) ? DEFAULT_MODEL : models[0]?.id,
+      serverDefault: models.some(m => m.id === DEFAULT_MODEL)
+        ? DEFAULT_MODEL
+        : bestRegistryMatch ?? models[0]?.id,
     };
   },
   validateStoredConnection: async ({ slug, connection, credentialManager }) => {

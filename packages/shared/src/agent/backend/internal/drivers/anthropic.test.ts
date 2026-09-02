@@ -89,3 +89,94 @@ describe('inferAnthropicContextWindow', () => {
     expect(inferAnthropicContextWindow('some-unknown-model')).toBe(200_000);
   });
 });
+
+describe('anthropicDriver.fetchModels — OAuth (Claude subscription) connections', () => {
+  const oauthConnection = {
+    slug: 'claude-max',
+    name: 'Claude Max',
+    providerType: 'anthropic',
+    authType: 'oauth',
+    createdAt: Date.now(),
+  } as any;
+
+  it('never calls /v1/models — subscription OAuth is not entitled to that endpoint', async () => {
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response('{"type":"error"}', { status: 401, statusText: 'Unauthorized' });
+    }) as unknown as typeof fetch;
+
+    const result = await anthropicDriver.fetchModels!({
+      connection: oauthConnection,
+      credentials: { oauthAccessToken: 'sk-ant-oat01-test' },
+      hostRuntime: {} as any,
+      resolvedPaths: {} as any,
+      timeoutMs: 30_000,
+    });
+
+    expect(called).toBe(false);
+    expect(result.models.length).toBeGreaterThan(0);
+  });
+
+  it('serves the registry so a newly released model reaches the picker', async () => {
+    globalThis.fetch = (async () => {
+      throw new Error('fetch must not be called for OAuth connections');
+    }) as unknown as typeof fetch;
+
+    const result = await anthropicDriver.fetchModels!({
+      connection: oauthConnection,
+      credentials: { oauthAccessToken: 'sk-ant-oat01-test' },
+      hostRuntime: {} as any,
+      resolvedPaths: {} as any,
+      timeoutMs: 30_000,
+    });
+
+    const ids = result.models.map(m => m.id);
+    // The reported defect: Fable 5.1 shipped and could never appear on an OAuth connection.
+    expect(ids).toContain('claude-fable-5-1');
+    // Regression guard: the model Jeff actually runs on must not be dropped.
+    expect(ids).toContain('claude-opus-5');
+  });
+
+  it('still hits the API for OAuth connections pointed at a custom gateway', async () => {
+    let calledUrl = '';
+    globalThis.fetch = (async (url: string) => {
+      calledUrl = String(url);
+      return new Response(JSON.stringify({
+        data: [{ id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8', created_at: '2026-05-01T00:00:00Z', type: 'model' }],
+        has_more: false, first_id: 'claude-opus-4-8', last_id: 'claude-opus-4-8',
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await anthropicDriver.fetchModels!({
+      connection: { ...oauthConnection, baseUrl: 'https://gateway.internal' },
+      credentials: { oauthAccessToken: 'sk-ant-oat01-test' },
+      hostRuntime: {} as any,
+      resolvedPaths: {} as any,
+      timeoutMs: 30_000,
+    });
+
+    expect(calledUrl).toContain('https://gateway.internal/v1/models');
+  });
+
+  it('leaves API-key connections on the live endpoint', async () => {
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response(JSON.stringify({
+        data: [{ id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8', created_at: '2026-05-01T00:00:00Z', type: 'model' }],
+        has_more: false, first_id: 'claude-opus-4-8', last_id: 'claude-opus-4-8',
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await anthropicDriver.fetchModels!({
+      connection: { ...oauthConnection, authType: 'api_key' },
+      credentials: { apiKey: 'sk-ant-test' },
+      hostRuntime: {} as any,
+      resolvedPaths: {} as any,
+      timeoutMs: 30_000,
+    });
+
+    expect(called).toBe(true);
+  });
+});
