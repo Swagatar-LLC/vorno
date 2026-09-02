@@ -135,10 +135,25 @@ export const MODEL_REGISTRY: ModelDefinition[] = [
   // Anthropic Claude Models
   // ----------------------------------------
   {
+    id: 'claude-opus-5',
+    // shortName intentionally collides with 4.8/4.7/4.6. Listed first so
+    // findModelIdByShortName('Opus') returns Opus 5 — same convention used
+    // by 4.8 when it was introduced ahead of 4.7.
+    name: 'Opus 5',
+    shortName: 'Opus',
+    description: 'Most capable for complex work',
+    descriptionKey: 'model.opusDesc',
+    provider: 'anthropic',
+    contextWindow: 1_000_000,
+    // supportsFastMode deliberately omitted: getModelSupportsFastMode stays
+    // registry-only and conservative, and a wrong `true` makes the API reject
+    // the request while a wrong `false` only hides a toggle.
+  },
+  {
     id: 'claude-opus-4-8',
-    // shortName intentionally collides with 4.7/4.6. Listed first so
-    // findModelIdByShortName('Opus') returns 4.8 — same convention used
-    // by 4.7 when it was introduced ahead of 4.6.
+    // shortName intentionally collides with 5/4.7/4.6. Opus 5 is listed first,
+    // so findModelIdByShortName('Opus') returns Opus 5 — zero behavior change
+    // for callers that reference "Opus" abstractly.
     name: 'Opus 4.8',
     shortName: 'Opus',
     description: 'Most capable for complex work',
@@ -200,6 +215,17 @@ export const MODEL_REGISTRY: ModelDefinition[] = [
     descriptionKey: 'model.haikuDesc',
     provider: 'anthropic',
     contextWindow: 200_000,
+  },
+  {
+    id: 'claude-fable-5-1',
+    // Listed ahead of Fable 5 so findModelIdByShortName('Fable') returns 5.1,
+    // matching the newest-first convention used by the Opus entries.
+    name: 'Fable 5.1',
+    shortName: 'Fable',
+    description: 'Next-generation model for complex work',
+    descriptionKey: 'model.fableDesc',
+    provider: 'anthropic',
+    contextWindow: 1_000_000,
   },
   {
     id: 'claude-fable-5',
@@ -359,7 +385,9 @@ export function getModelContextWindow(modelId: string): number | undefined {
  */
 export function inferAnthropicContextWindow(modelId: string): number {
   const bare = bedrockToBareId(normalizeDeprecatedModelId(modelId)).toLowerCase();
-  if (bare.includes('opus')) return 1_000_000;
+  // Fable/Mythos ship at 1M like Opus; without them here a new Fable drop
+  // discovered over the live endpoint would be mis-sized at the 200k floor.
+  if (bare.includes('opus') || bare.includes('fable') || bare.includes('mythos')) return 1_000_000;
   return 200_000;
 }
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { anthropicDriver } from './anthropic.ts';
-import { inferAnthropicContextWindow } from '../../../../config/models.ts';
+import { ANTHROPIC_MODELS, inferAnthropicContextWindow } from '../../../../config/models.ts';
 
 const originalFetch = globalThis.fetch;
 
@@ -87,5 +87,154 @@ describe('inferAnthropicContextWindow', () => {
     expect(inferAnthropicContextWindow('claude-sonnet-9-0')).toBe(200_000);
     expect(inferAnthropicContextWindow('claude-haiku-9-0')).toBe(200_000);
     expect(inferAnthropicContextWindow('some-unknown-model')).toBe(200_000);
+  });
+});
+
+describe('anthropicDriver.fetchModels — OAuth (Claude subscription) connections', () => {
+  const oauthConnection = {
+    slug: 'claude-max',
+    name: 'Claude Max',
+    providerType: 'anthropic',
+    authType: 'oauth',
+    createdAt: Date.now(),
+  } as any;
+
+  it('never calls /v1/models — subscription OAuth is not entitled to that endpoint', async () => {
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response('{"type":"error"}', { status: 401, statusText: 'Unauthorized' });
+    }) as unknown as typeof fetch;
+
+    const result = await anthropicDriver.fetchModels!({
+      connection: oauthConnection,
+      credentials: { oauthAccessToken: 'sk-ant-oat01-test' },
+      hostRuntime: {} as any,
+      resolvedPaths: {} as any,
+      timeoutMs: 30_000,
+    });
+
+    expect(called).toBe(false);
+    expect(result.models.length).toBeGreaterThan(0);
+  });
+
+  it('serves the registry so a newly released model reaches the picker', async () => {
+    globalThis.fetch = (async () => {
+      throw new Error('fetch must not be called for OAuth connections');
+    }) as unknown as typeof fetch;
+
+    const result = await anthropicDriver.fetchModels!({
+      connection: oauthConnection,
+      credentials: { oauthAccessToken: 'sk-ant-oat01-test' },
+      hostRuntime: {} as any,
+      resolvedPaths: {} as any,
+      timeoutMs: 30_000,
+    });
+
+    const ids = result.models.map(m => m.id);
+    // The reported defect: Fable 5.1 shipped and could never appear on an OAuth connection.
+    expect(ids).toContain('claude-fable-5-1');
+    // Regression guard: the model Jeff actually runs on must not be dropped.
+    expect(ids).toContain('claude-opus-5');
+  });
+
+  it('still hits the API for OAuth connections pointed at a custom gateway', async () => {
+    let calledUrl = '';
+    globalThis.fetch = (async (url: string) => {
+      calledUrl = String(url);
+      return new Response(JSON.stringify({
+        data: [{ id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8', created_at: '2026-05-01T00:00:00Z', type: 'model' }],
+        has_more: false, first_id: 'claude-opus-4-8', last_id: 'claude-opus-4-8',
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await anthropicDriver.fetchModels!({
+      connection: { ...oauthConnection, baseUrl: 'https://gateway.internal' },
+      credentials: { oauthAccessToken: 'sk-ant-oat01-test' },
+      hostRuntime: {} as any,
+      resolvedPaths: {} as any,
+      timeoutMs: 30_000,
+    });
+
+    expect(calledUrl).toContain('https://gateway.internal/v1/models');
+  });
+
+  it('leaves API-key connections on the live endpoint', async () => {
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response(JSON.stringify({
+        data: [{ id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8', created_at: '2026-05-01T00:00:00Z', type: 'model' }],
+        has_more: false, first_id: 'claude-opus-4-8', last_id: 'claude-opus-4-8',
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await anthropicDriver.fetchModels!({
+      connection: { ...oauthConnection, authType: 'api_key' },
+      credentials: { apiKey: 'sk-ant-test' },
+      hostRuntime: {} as any,
+      resolvedPaths: {} as any,
+      timeoutMs: 30_000,
+    });
+
+    expect(called).toBe(true);
+  });
+});
+
+describe('anthropicDriver.fetchModels — auth failure vs transient failure', () => {
+  const keyConnection = {
+    slug: 'anthropic', name: 'Anthropic', providerType: 'anthropic',
+    authType: 'api_key', createdAt: Date.now(),
+  } as any;
+
+  it('falls back to the registry on 401 rather than freezing the persisted list', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 401, statusText: 'Unauthorized' })) as unknown as typeof fetch;
+
+    const result = await anthropicDriver.fetchModels!({
+      connection: keyConnection,
+      credentials: { apiKey: 'sk-ant-revoked' },
+      hostRuntime: {} as any, resolvedPaths: {} as any, timeoutMs: 30_000,
+    });
+
+    expect(result.models.map(m => m.id)).toContain('claude-fable-5-1');
+  });
+
+  it('falls back to the registry on 403', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 403, statusText: 'Forbidden' })) as unknown as typeof fetch;
+
+    const result = await anthropicDriver.fetchModels!({
+      connection: keyConnection,
+      credentials: { apiKey: 'sk-ant-forbidden' },
+      hostRuntime: {} as any, resolvedPaths: {} as any, timeoutMs: 30_000,
+    });
+
+    expect(result.models.length).toBeGreaterThan(0);
+  });
+
+  it('still throws on a transient 500 so the refresh service keeps the persisted list', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 500, statusText: 'Internal Server Error' })) as unknown as typeof fetch;
+
+    await expect(anthropicDriver.fetchModels!({
+      connection: keyConnection,
+      credentials: { apiKey: 'sk-ant-test' },
+      hostRuntime: {} as any, resolvedPaths: {} as any, timeoutMs: 30_000,
+    })).rejects.toThrow('500');
+  });
+
+  it('returns a copy so a caller mutating connection.models cannot corrupt the registry', async () => {
+    globalThis.fetch = (async () => new Response('{}', { status: 401, statusText: 'Unauthorized' })) as unknown as typeof fetch;
+
+    const before = ANTHROPIC_MODELS.length;
+    const result = await anthropicDriver.fetchModels!({
+      connection: keyConnection,
+      credentials: { apiKey: 'sk-ant-revoked' },
+      hostRuntime: {} as any, resolvedPaths: {} as any, timeoutMs: 30_000,
+    });
+
+    // storage.ts's restoreOpus46ToAnthropicConnections migration does exactly this.
+    (result.models as unknown[]).push({ id: 'injected' });
+
+    expect(ANTHROPIC_MODELS.length).toBe(before);
+    expect(ANTHROPIC_MODELS.some(m => m.id === 'injected')).toBe(false);
   });
 });
