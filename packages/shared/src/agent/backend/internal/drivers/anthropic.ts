@@ -1,4 +1,5 @@
 import type { ProviderDriver } from '../driver-types.ts';
+import type { ModelFetchResult } from '../../../../config/model-fetcher.ts';
 import { applyAnthropicRuntimeBootstrap } from '../runtime-resolver.ts';
 import { validateAnthropicConnection } from '../../../../config/llm-validation.ts';
 import { ANTHROPIC_MODELS, DEFAULT_MODEL, getModelById, getModelContextWindow, inferAnthropicContextWindow, normalizeDeprecatedModelId } from '../../../../config/models.ts';
@@ -25,6 +26,17 @@ export const anthropicDriver: ProviderDriver = {
       throw new Error('Anthropic credentials required to fetch models');
     }
 
+    // Serve our curated registry. Returns a COPY: the migration in storage.ts
+    // (restoreOpus46ToAnthropicConnections) does connection.models.push(...), which
+    // would otherwise mutate the module-level ANTHROPIC_MODELS array in place and
+    // corrupt the registry for the rest of the process.
+    const registryResult = (): ModelFetchResult => ({
+      models: [...ANTHROPIC_MODELS],
+      serverDefault: ANTHROPIC_MODELS.some(m => m.id === DEFAULT_MODEL)
+        ? DEFAULT_MODEL
+        : ANTHROPIC_MODELS[0]?.id,
+    });
+
     // Claude Pro/Max subscription OAuth tokens are scoped to Claude Code and are
     // NOT entitled to the Developer Platform's /v1/models, which expects a console
     // API key. Asking anyway returns 401 forever, and ModelRefreshService then keeps
@@ -35,12 +47,7 @@ export const anthropicDriver: ProviderDriver = {
     // A baseUrl override means the connection points at a gateway (e.g. LiteLLM) that
     // may well forward the token successfully, so those still take the live path.
     if (connection.authType === 'oauth' && !connection.baseUrl) {
-      return {
-        models: ANTHROPIC_MODELS,
-        serverDefault: ANTHROPIC_MODELS.some(m => m.id === DEFAULT_MODEL)
-          ? DEFAULT_MODEL
-          : ANTHROPIC_MODELS[0]?.id,
-      };
+      return registryResult();
     }
 
     const baseUrl = connection.baseUrl || 'https://api.anthropic.com';
@@ -67,6 +74,16 @@ export const anthropicDriver: ProviderDriver = {
 
       const response = await fetch(`${baseUrl}/v1/models?${params}`, { headers });
       if (!response.ok) {
+        // 401/403 means this credential will never be entitled to /v1/models — a
+        // `claude setup-token` bearer, a revoked key, an OAuth token forwarded by a
+        // gateway that does not accept it. Throwing makes ModelRefreshService keep
+        // the persisted list, which freezes the picker permanently and silently.
+        // Serve the registry instead so newly released models still arrive.
+        if (response.status === 401 || response.status === 403) {
+          return registryResult();
+        }
+        // Anything else (network, 5xx, rate limit) is plausibly transient, so throw
+        // and let the refresh service hold the richer persisted list.
         throw new Error(`Anthropic /v1/models failed: ${response.status} ${response.statusText}`);
       }
 
