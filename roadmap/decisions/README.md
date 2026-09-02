@@ -49,12 +49,12 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0019](0019-storage-root-config-schema-and-provider-kind-namespace.md) | Storage-root config schema and provider-kind namespace | accepted |
 | [0020](0020-dual-deep-link-url-scheme.md) | Additive `vorno://` deep-link scheme alongside frozen `craftagents://` | accepted |
 | [0021](0021-session-actions-gated-by-declared-intent.md) | Gate session-mutating automation actions on declared intent, not transport | accepted |
-| [0022](0022-context-profiles-as-the-single-context-action.md) | Activate session context through named profiles, not one action type per knob | proposed |
+| [0022](0022-context-profiles-as-the-single-context-action.md) | Activate session context through named profiles, not one action type per knob | accepted |
 | [0023](0023-vorno-owns-its-documentation-endpoint.md) | Vorno owns its documentation endpoint; `DOCS_URL` splits from `SERVICE_BASE_URL` | accepted |
 | [0024](0024-vorno-hosts-its-own-shared-sessions.md) | Vorno hosts its own shared sessions; `VIEWER_URL` splits from `SERVICE_BASE_URL` | proposed |
 | [0025](0025-oauth-redirect-relay-security-model.md) | Vorno-owned OAuth redirect relay security model | accepted |
 | [0026](0026-session-query-as-a-composable-predicate-surface.md) | Session query as a composable predicate surface with allowlisted projection | proposed |
-| [0027](0027-lean-on-the-os-for-lifecycle-chores.md) | Lean on filesystem and OS primitives for lifecycle chores | proposed |
+| [0027](0027-lean-on-the-os-for-lifecycle-chores.md) | Lean on filesystem and OS primitives for lifecycle chores | accepted |
 | [0028](0028-suv-as-the-shippable-unit-between-plan-and-task.md) | SUV as the shippable unit between a plan and an executable task | accepted |
 | [0029](0029-headroom-memory-via-host-invoked-mcp.md) | Headroom memory through the memory MCP stdio server, host-invoked from the boundary adapter | accepted |
 | [0031](0031-vendor-neutral-memory-provider-seam.md) | Memory behind a vendor-neutral, host-invoked MemoryProvider seam; Headroom is one provider | accepted |
