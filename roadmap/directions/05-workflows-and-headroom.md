@@ -16,6 +16,7 @@ related-plans:
   - PLAN-044-cross-system-work-requests.md
   - PLAN-045-roadmap-reduction-pass.md
   - PLAN-047-per-session-browser-isolation-and-lifecycle.md
+  - PLAN-051-retire-memory-provider-workers-with-agent-lifecycles.md
 ---
 
 # Direction 5 — Durable Workflows & Headroom
