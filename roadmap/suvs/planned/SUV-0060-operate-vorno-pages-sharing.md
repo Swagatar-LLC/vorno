@@ -16,39 +16,48 @@ blocked-by: []
 ## Goal
 
 Publish enabled Pages only through a Vorno-owned, isolated Worker that can be
-securely updated, password-protected, and immediately unpublished.
+securely updated, password-protected, honestly branded, and immediately
+unpublished.
 
 ## Scope
 
 - Add public `workers/pages/` source, tests, Worker config, deployment guide,
   and a separate `pages.vorno.ai`/`vorno-pages` R2 topology.
-- Implement create/update/delete plus shell/content/snapshot routes, size and
-  rate limits, hashed one-time-returned admin tokens, password tickets, revision
-  updates, no-store, and immediate delete on unpublish.
-- Use an opaque sandboxed `src` iframe and per-document CSP with
-  `connect-src 'none'`; public bridge actions always refuse.
+- Make sharing default `false`; require the owning workspace's enabled Pages
+  setting and a verified backend capability before publish is available.
+- Implement create/update/delete plus shell/content/snapshot routes, secret
+  scanning before publish, explicit snapshot opt-in, size/rate limits, hashed
+  one-time-returned admin tokens, password tickets, revision updates, no-store,
+  immediate delete, and best-effort delete warnings.
+- Use an opaque sandboxed `src` iframe, per-document CSP with
+  `connect-src 'none'`, refused public bridge actions, and a Vorno-branded shell
+  carrying a persistent "published by a Vorno user—not by Vorno" disclaimer.
 - Point publish at a strict Vorno origin allowlist; derive update/unpublish from
   a stored publication's validated HTTPS origin so existing publications remain
   revocable.
 
-Deployment is blocked until Jeff has published the privacy policy and decided
-retention. Proposed default: content until unpublish, immediate object deletion,
-and operational logs retained no longer than 30 days.
+Deployment waits for SUV-0063 and Jeff's retention decision. Proposed default:
+content until unpublish, immediate object deletion, and operational logs no
+longer than 30 days.
 
 ## Acceptance
 
 - [ ] Worker source and tests live in the public Vorno repo; Worker, R2 bucket,
       host, and admin-token namespace are isolated from `vorno-share`.
-- [ ] Content/snapshot/total caps hold for missing or false `Content-Length`
-      without partial persistence; create/password rate-limit failure behavior
-      is covered.
-- [ ] Public responses prove CSP, opaque sandbox, `nosniff`, and `no-store`;
-      copies have no privileged actions and no scripted network egress.
-- [ ] Admin tokens are returned only at creation, stored only as hashes, and
-      unauthenticated mutation leaves objects unchanged.
-- [ ] Publish rejects non-Vorno origins; update/unpublish uses the stored HTTPS
-      origin; unpublish immediately makes every public route return 404.
-- [ ] Before deployment, privacy policy, retention/log policy, and real-HTTP
+- [ ] Sharing defaults false and is unavailable unless the workspace Pages
+      setting is enabled and the backend capability check succeeds; no default
+      points to Craft infrastructure.
+- [ ] Secret scanning runs before publish; snapshot inclusion is opt-in; content,
+      snapshot, and total caps hold for missing or false `Content-Length` without
+      partial persistence, and create/password rate-limit failures are covered.
+- [ ] Public responses prove CSP, opaque sandbox, `nosniff`, `no-store`, refused
+      bridge actions, no scripted network egress, and the branded
+      user-published/phishing disclaimer.
+- [ ] Admin tokens are returned only at creation and stored only as hashes;
+      unauthenticated mutation leaves objects unchanged; update/unpublish uses
+      stored validated HTTPS origin; unpublish returns 404 or a best-effort
+      deletion warning on every public route.
+- [ ] Before deployment, the policy/site prerequisite and real-HTTP
       create/view/password/update/unpublish verification are recorded.
 
 ## Status log

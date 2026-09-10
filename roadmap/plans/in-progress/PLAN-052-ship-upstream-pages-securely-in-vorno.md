@@ -11,11 +11,12 @@ related-suvs:
   - SUV-0056-record-pages-program-decision-and-roadmap.md
   - SUV-0057-merge-upstream-v0-13-x-pages.md
   - SUV-0058-enable-pages-per-workspace-with-navigator-coexistence.md
-  - SUV-0059-secure-page-scripts-and-session-callbacks.md
+  - SUV-0059-secure-page-grant-authority-and-actions.md
+  - SUV-0064-execute-pinned-page-session-callbacks.md
   - SUV-0060-operate-vorno-pages-sharing.md
   - SUV-0061-brand-and-publish-pages-documentation.md
-  - SUV-0062-qualify-and-release-0-22-0-beta-1.md
   - SUV-0063-enable-prerelease-publishing-and-pages-privacy-policy.md
+  - SUV-0062-qualify-and-release-0-22-0-beta-1.md
 blocked-by: []
 ---
 
@@ -35,15 +36,17 @@ documentation, and release qualification.
 - Persist a workspace Pages setting that defaults to disabled and gates UI,
   tools, refresh, and privileged execution while leaving delete, unpublish,
   and grant revocation available for safe cleanup.
-- Add digest-bound, expiring, revocable grants for no-shell scripts and pinned
-  session callbacks; host-side declared intent, activation, confirmation,
-  replay, rate, cancel, audit, and containment checks are authoritative.
+- Add host-issued, digest-bound, expiring, revocable grants for no-shell
+  scripts and pinned callbacks; declared intent, consent, activation,
+  permission-mode revalidation, replay, rate, cancel, audit, and containment
+  checks are authoritative.
 - Operate Pages sharing from a separate `pages.vorno.ai` Worker and R2 bucket,
-  with isolated admin tokens, strict CSP/sandboxing, password and size/rate
-  controls, immediate unpublish deletion, and a documented retention policy.
+  with isolated admin tokens, CSP sandbox, secret scanning, opt-in snapshots,
+  rate/size limits, public-shell branding, and graceful absence of backend
+  capability.
 - Ship one bundled Pages guide as the source for in-app and online docs; close
-  Pages-specific branding/config-directory gate gaps and publish the matching
-  prerelease changelog.
+  Pages branding/config-directory gaps and publish the matching prerelease
+  changelog.
 - Qualify and release `0.22.0-beta.1` without displacing stable downloads or
   stable-user updates.
 
@@ -53,9 +56,9 @@ documentation, and release qualification.
   it after the Pages merge.
 - An account system, a generic hosted-content platform, a second sharing
   Worker on `share.vorno.ai`, or a parameterized session-message language.
-- New Sentry behavior in the upstream merge. Sentry is already shipped and
-  unchanged since the merge base; telemetry/privacy posture is a separate
-  owner decision, not hidden merge scope.
+- Changing Sentry enablement, DSN, or telemetry posture during the upstream
+  merge. SUV-0057 takes upstream's privacy-broadening redaction helper/refactor
+  while preserving that existing posture.
 - Claiming that published pages cannot navigate themselves externally. The
   contract is no **scripted network egress**; self-navigation is a documented
   residual to assess separately.
@@ -64,45 +67,53 @@ documentation, and release qualification.
 
 Land the decision and this decomposition first. Merge upstream with a merge
 commit, then use the workspace gate as the first implementation boundary.
-Callback security reuses existing broker, script-runner, session-action, and
-closure-gate choke points rather than creating a parallel privilege path.
-Sharing is a deliberately separate user-data service; its legal/privacy gate
-must clear before deployment. Documentation and prerelease delivery are
-separate owning PRs where they cross repositories.
+Host grant authority and action hardening land before pinned session callback
+execution. Callback security reuses existing broker, script-runner,
+session-action, and closure-gate choke points rather than creating a parallel
+privilege path. Sharing is a deliberately separate user-data service; its
+policy and site prerequisite must clear before deployment and, because deployed
+sharing is release acceptance, before the beta tag. Documentation and
+prerelease delivery are separate owning PRs where they cross repositories.
 
-Each SUV is one PR. Dependency ordering is recorded in the SUV records; a
-later lane rebases on the landed predecessor rather than broadening its scope.
+Each SUV is one PR. Dependency ordering is explicit below; later lanes rebase
+on their landed prerequisites rather than broadening their scope.
 
-## Owner gates and unknowns
+## Prerequisites
 
-- Jeff must approve the Page script/session first-use confirmation and the
-  grant TTL ceilings before implementation commits to the final UX values.
-- The opaque-iframe activation premise is unverified. After the upstream merge,
-  an Electron experiment must compare frame and parent activation; failure
-  selects a trusted host-click path or removes the unprovable invocation path
-  rather than weakening host enforcement.
-- A privacy policy and retention decision are pre-deploy gates. Proposed
-  default: retain content until unpublish, delete objects immediately on
-  unpublish, and retain operational logs for at most 30 days. If unanswered,
-  `pages.vorno.ai` does not deploy.
-- A separate owner decision must state Sentry's telemetry/privacy posture;
-  this plan preserves the merge-base behavior as a no-op.
+| Work | Must precede | Reason |
+| --- | --- | --- |
+| SUV-0056 | all implementation SUVs | Accepted architecture and complete PR-sized ownership records. |
+| SUV-0057 | SUV-0058, SUV-0059, SUV-0064, SUV-0061 | Actual upstream Pages surface and recorded throwaway-merge conflict set. |
+| SUV-0058 | SUV-0059, SUV-0060, SUV-0064 | Persisted workspace opt-in is the availability boundary. |
+| SUV-0059 | SUV-0064 | Host grant issuance and action authority exist before callbacks execute. |
+| SUV-0060 | SUV-0062 | Worker implementation and public sharing contract are verified. |
+| SUV-0061 and SUV-0063 | SUV-0062 | Bundled/online docs and site prerelease/privacy support are live. |
+| Jeff retention decision plus SUV-0063 | Worker deployment and beta tag | Policy, retention, and prerelease support land before deployed sharing; deployed sharing is release acceptance. |
+| SUVs 0057–0061, 0063, and 0064 | SUV-0062 tag | Release qualification verifies the integrated, already-landed behavior only. |
+
+## Owner gate
+
+- **Pending Jeff:** retention policy. Proposed default: retain content until
+  unpublish, delete objects immediately on unpublish, and retain operational
+  logs for at most 30 days. Until decided, neither `pages.vorno.ai` deployment
+  nor the beta tag proceeds.
 
 ## Acceptance
 
-- [ ] ADR-0033, this plan, and all eight reserved SUVs are internally
+- [ ] ADR-0033, this plan, and all nine reserved SUVs are internally
       consistent; every SUV has one owning plan and one PR-sized outcome.
-- [ ] Upstream `e8963854` is an ancestor of `main` through a merge commit, and
-      the compatibility audit records Pages contracts plus deliberate Vorno
-      divergences.
-- [ ] Existing and new workspaces keep Pages disabled by default; enabling it
-      persists per workspace without removing Projects, Workbench, Artifacts,
-      or existing navigation/session behavior.
-- [ ] No mutating page action can bypass its approved, digest-bound,
-      expiring/revocable grant through direct RPC, desktop, or WebUI.
-- [ ] Sharing is only to the verified Vorno endpoint and deploys only after the
-      privacy/retention gate; published pages have no privileged actions and no
-      scripted network egress under the documented CSP/sandbox contract.
+- [ ] Upstream `e8963854` is an ancestor of `main` through a merge commit; the
+      compatibility audit records Pages contracts, the grant-issuance divergence,
+      redaction refactor, and deliberate Vorno divergences.
+- [ ] Existing and new workspaces keep Pages and sharing disabled by default;
+      enabling them persists per workspace without removing Projects, Workbench,
+      Artifacts, or existing navigation/session behavior.
+- [ ] No grant can persist without host consent, and no mutating page action can
+      bypass its approved digest-bound, expiring/revocable grant, fresh
+      interaction proof, or per-invocation permission/workspace checks.
+- [ ] Sharing targets only the verified Vorno endpoint, has no privileged action
+      or scripted network egress, and deploys only after the policy/site
+      prerequisite; unresolved retention blocks deployment and the beta tag.
 - [ ] `0.22.0-beta.1` is prerelease-classified, signed/notarized, documented,
       updater-safe for stable users, and verified over the named production
       surfaces.
@@ -113,3 +124,6 @@ later lane rebases on the landed predecessor rather than broadening its scope.
   program and Phase 1 research.
 - `2026-09-10` — moved from `planned` to `in-progress`: ADR/roadmap SUV opened
   as the program's first reviewable PR.
+- `2026-09-10` — review corrections: accepted ADR-0033, split host authority
+  from callback execution, and made the sharing-policy release sequence and
+  prerequisites explicit.

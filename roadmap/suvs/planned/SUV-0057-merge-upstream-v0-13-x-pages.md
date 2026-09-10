@@ -16,33 +16,40 @@ blocked-by: []
 ## Goal
 
 Merge upstream `v0.13.0`–`v0.13.3` through `e8963854` with a merge commit while
-preserving all fork behavior and leaving Pages unavailable until SUV-0058.
+preserving fork behavior and leaving Pages unavailable until SUV-0058.
 
 ## Scope
 
+- Run a throwaway merge first and record the actual conflict set, resolving the
+  prior 33-versus-34 reconstruction discrepancy from evidence rather than
+  assumption.
 - Resolve manifests hunk-wise, retain Vorno versions, take dependency bumps,
   take upstream `bun.lock`, then regenerate it with `bun install`.
 - Preserve navigator unions/routes, automation action unions and canonical
   outcome helpers, model/OAuth fixes, memory/headroom/browser/task/session work,
   SDK lifecycle protections, and upstream Pages contracts.
+- Take upstream's privacy-broadening Sentry redaction helper/refactor. Preserve
+  the existing Sentry enablement, DSN, and telemetry posture; do not claim a
+  byte-identical Sentry hunk or introduce a telemetry decision.
 - Delete incoming upstream versioned release notes; add attributed Pages notes
   to `next.md`; audit `roadmap/upstream/compatibility.md`.
-- Preserve Sentry exactly as it exists from the merge base; no new telemetry
-  configuration, enablement, or decision is part of this merge.
 
 ## Acceptance
 
-- [ ] `e8963854` is an ancestor of the merge branch through an actual merge
-      commit, not a squash or rebase.
+- [ ] A throwaway merge records the actual conflict count and paths before the
+      production merge resolves them; `e8963854` is then an ancestor through an
+      actual merge commit, not a squash or rebase.
 - [ ] Manifest versions remain Vorno-owned; upstream dependency changes and a
       regenerated lockfile are present without whole-file ours/theirs loss.
-- [ ] Routes, parser, renderer navigation, automation unions, and existing
-      fork contracts are reconciled additively and pass their focused tests.
+- [ ] Routes, parser, renderer navigation, automation unions, and existing fork
+      contracts are reconciled additively and pass their focused tests.
 - [ ] Claude depth/retry and Pi abort/recovered-output regressions are covered
-      by tests, and required builds/tests from the upstream-sync skill pass.
-- [ ] Upstream release notes are attributed in `next.md`, and the public
-      compatibility audit records the result.
-- [ ] Pages remains disabled until the persisted workspace gate lands.
+      by tests, and required upstream-sync builds/tests pass.
+- [ ] Sentry enablement, DSN, and telemetry posture match the merge base while
+      upstream's shared privacy-broadening redaction helper/refactor is taken.
+- [ ] Upstream release notes are attributed in `next.md`, the public
+      compatibility audit records the result, and Pages remains disabled until
+      the persisted workspace gate lands.
 
 ## Status log
 

@@ -21,17 +21,23 @@ navigation baseline.
 
 ## Context
 
-The Phase 1 trace found two divergent order sources in `AppShell.tsx`: the
-rendered sidebar literal and `unifiedSidebarItems` for keyboard navigation.
-Projects, Workbench, Artifacts, and several children do not currently have the
-same keyboard reachability as rendered navigation. The trace is static evidence,
-not a runtime reproduction; that distinction is load-bearing.
+The Phase 1 static trace is durable evidence from baseline `327e673e`:
+`apps/electron/src/renderer/components/app-shell/AppShell.tsx` renders one
+sidebar literal while its `unifiedSidebarItems` supplies keyboard navigation;
+`apps/electron/src/renderer/components/app-shell/LeftSidebar.tsx` and the
+mobile/navigation consumers do not yet share one canonical resolver. Projects,
+Workbench, Artifacts, and several children therefore need a runtime keyboard
+reachability reproduction before this is called a defect.
+Static evidence is not runtime proof.
 
-A simple setting field and sortable UI are feasible, but one canonical
-render/mobile/keyboard resolver does not yet exist. Separators are positional
-product objects, not merely data: draggable, hidden, or pinned placement are
-three different product choices. The same `AppShell.tsx` hunk is also changed
-by the upstream Pages merge and the workspace Pages gate.
+The trace estimated roughly **700 lines across 13 files** for a bounded change:
+a keyed registry/resolver, workspace config/watch path, Settings controls,
+rendered/mobile/keyboard consumers, i18n, and direct tests. Two release-risk
+triggers fired: the upstream Pages merge and the workspace Pages gate both
+change the same `AppShell.tsx` navigation surface; and the competing rendered
+and keyboard order sources require registry design, not a simple setting field.
+Separators are positional product objects, not merely data: draggable, hidden,
+or pinned placement are three different product choices.
 
 ## Scope
 
@@ -39,9 +45,8 @@ by the upstream Pages merge and the workspace Pages gate.
   Electron build before calling it a defect or selecting its repair.
 - Decide separator semantics first, then extract a keyed navigation registry
   with direct tests as its own SUV.
-- Reconcile rendered, mobile, and keyboard order through one canonical
-  resolver before adding persisted order/visibility configuration and Settings
-  controls.
+- Reconcile rendered, mobile, and keyboard order through one canonical resolver
+  before adding persisted order/visibility configuration and Settings controls.
 - Preserve today's layout when configuration is absent and tolerate unknown
   future section IDs.
 
@@ -82,5 +87,6 @@ the final slice, not the starting refactor.
 ## Status log
 
 - `2026-09-10` — created in `planned/` from the navigation feasibility trace;
-  deferred because two release-risk triggers fired and no current release is
-  blocked.
+  deferred at `327e673e` after the competing-order-source and shared-AppShell
+  release-risk triggers fired. Reproduce-first remains required before an
+  implementation SUV is cut.

@@ -15,21 +15,22 @@ blocked-by: []
 
 ## Goal
 
-Ship one accurate Vorno Pages guide to both bundled docs and vorno.ai, with
+Ship one accurate Vorno Pages guide to bundled and online documentation, with
 branding, prompt, and release-note checks that catch imported Craft defaults.
 
 ## Scope
 
-- Rewrite the bundled Pages guide for actual Vorno settings, callbacks,
-  sharing, CSP limits, privacy/retention disclosure, and compatibility names
-  that must remain unchanged.
+- Rewrite the bundled Pages guide for actual Vorno settings, grant management,
+  callbacks, sharing, CSP limits, privacy/retention disclosure, and compatibility
+  names that must remain unchanged.
 - Replace Craft-owned default domains with the Vorno Pages endpoint and remove
   wrong `~/.craft-agent` paths from LLM-visible descriptions using `DOC_REFS`.
 - Extend Pages-specific branding scans to bundled markdown, server-core Pages
   paths, and config-directory references; preserve the existing narrow scan
   boundaries.
-- Keep bundled docs as the source for online docs and make an ungrouped shipped
-  guide a vorno-site build failure; add an attributed Pages release-note entry.
+- Own Pages Settings/navigation empty states, while SUV-0060 owns the public
+  Worker shell. Keep bundled docs as online-doc source and add an attributed
+  Pages release-note entry after SUV-0063's site manifest prerequisite lands.
 
 ## Acceptance
 
@@ -39,11 +40,14 @@ branding, prompt, and release-note checks that catch imported Craft defaults.
       prompts/tool descriptions direct agents to that actual guide.
 - [ ] Branding tests fail for an upstream URL in Pages docs or Pages server-core
       code and for a forbidden `.craft-agent` tool-description path.
-- [ ] i18n parity/sorted/coverage pass for Pages and workspace-setting strings.
-- [ ] vorno-site fails a build for an ungrouped shipped guide and publishes the
-      Pages guide/changelog from the tagged source after SUV-0063 lands.
-- [ ] Documentation states the actual activation, callback, privacy, retention,
-      public-action, and no-scripted-network-egress limits without overclaiming.
+- [ ] Pages Settings and navigation empty states are Vorno-branded, describe the
+      off-by-default/workspace-capability state accurately, and have i18n parity,
+      sorted, and coverage checks.
+- [ ] Documentation states the actual host consent, activation experiment,
+      callbacks, sharing, privacy/retention, public-action, and
+      no-scripted-network-egress limits without overclaiming.
+- [ ] The bundled source publishes the Pages guide and attributed changelog after
+      SUV-0063's independently owned site manifest prerequisite is merged.
 
 ## Status log
 

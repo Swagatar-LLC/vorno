@@ -15,17 +15,15 @@ blocked-by: []
 
 ## Goal
 
-Land the approved Pages architecture decision and PR-sized execution roadmap
-before implementation begins.
+Land the owner-authorized Pages architecture decision and PR-sized execution
+roadmap before implementation begins.
 
 ## Scope
 
-- ADR-0033: upstream compatibility, per-workspace opt-in, callback authority,
-  sharing topology, privacy gate, documentation/release invariants, and Sentry
-  non-scope.
-- PLAN-052 with its eight reserved SUVs and PLAN-053's deferred navigation
-  evidence, reproduction-first caveat, separator decision, and post-merge
-  sequence.
+- ADR-0033: upstream compatibility, per-workspace opt-in, host grant authority,
+  pinned callback boundaries, isolated sharing topology, and privacy gate.
+- PLAN-052 with its nine reserved SUVs and PLAN-053's deferred navigation
+  evidence, reproduce-first caveat, separator decision, and post-merge sequence.
 - DIR-04 and the ADR index backlinks.
 
 Deliberately out: upstream integration or implementation changes. Each later
@@ -33,12 +31,14 @@ SUV owns exactly one implementation PR.
 
 ## Acceptance
 
-- [ ] ADR-0033 records additive `pages:*`/`craft-pages/v1` compatibility and
-      every stated security/privacy one-way contract.
-- [ ] PLAN-052 lists all eight reserved SUVs with one owner and checkable
-      program acceptance; PLAN-053 remains planned and release-unblocking.
-- [ ] The callback activation premise, privacy/retention decision, and Sentry
-      telemetry posture are surfaced as owner gates rather than assumed facts.
+- [ ] ADR-0033 is accepted and records additive compatibility plus every stated
+      durable security, consent, sharing, and privacy boundary.
+- [ ] PLAN-052 lists all nine reserved SUVs with one owner, explicit
+      prerequisites, and checkable program acceptance.
+- [ ] The activation experiment is required before relying on iframe activation;
+      numeric ticket/TTL defaults are implementation policy, not owner gates.
+- [ ] Proposed sharing retention is surfaced as the one pending Jeff gate and
+      consistently blocks Worker deployment and the beta tag.
 - [ ] DIR-04 and `roadmap/decisions/README.md` link to the new records.
 - [ ] The corpus validator and `git diff --check` report no violations.
 

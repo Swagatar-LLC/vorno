@@ -16,7 +16,8 @@ blocked-by: []
 ## Goal
 
 Land the separate vorno-site PR that permits beta documentation publishing and
-makes the Pages privacy/retention prerequisite public before deployment.
+makes the Pages privacy/retention prerequisite public before Worker deployment
+or beta tagging.
 
 ## Scope
 
@@ -27,10 +28,11 @@ makes the Pages privacy/retention prerequisite public before deployment.
 - Publish `https://vorno.ai/privacy` with the Pages service, content-retention,
   immediate-unpublish deletion, operational-log, password, and operator
   disclosure approved by Jeff.
-- Verify the vorno-site default branch contains this PR before the beta tag or
-  any Pages Worker deployment.
+- Verify the vorno-site default branch contains this PR before the Worker deploy
+  or beta tag. Deployed sharing is release acceptance, so this prerequisite and
+  retention policy transitively gate the tag.
 
-Deliberately out: the Worker/client implementation (SUV-0060), bundled docs
+Deliberately out: Worker/client implementation (SUV-0060), bundled docs
 (SUV-0061), and release/tag execution (SUV-0062).
 
 ## Acceptance
@@ -39,17 +41,17 @@ Deliberately out: the Worker/client implementation (SUV-0060), bundled docs
       invalid tag, and it is merged to that repository's default branch first.
 - [ ] The site build fails for any fetched bundled guide absent from its docs
       manifest; Pages and currently shipped ungrouped guides are grouped.
-- [ ] `https://vorno.ai/privacy` is live before deployment and names the
+- [ ] `https://vorno.ai/privacy` is live before Worker deployment and names the
       approved Pages data controller, retention, deletion, logging, password,
       and abuse/contact posture.
 - [ ] Jeff explicitly decides retention; the proposed policy is content until
       unpublish, immediate object deletion, and operational logs <=30 days.
 - [ ] If Jeff has not decided policy/retention, the PR records the gate as open
-      and neither `pages.vorno.ai` deployment nor beta tag proceeds.
+      and neither `pages.vorno.ai` deployment nor the beta tag proceeds.
 - [ ] A dry-run or real prerelease dispatch produces the Pages docs and beta
       changelog path expected by SUV-0062.
 
 ## Status log
 
 - `2026-09-10` — created in `planned/`; this SUV owns the cross-repository
-  vorno-site PR and the explicit pre-deploy privacy gate.
+  vorno-site PR and the explicit policy gate for deployment and beta tagging.
