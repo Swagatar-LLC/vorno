@@ -7,7 +7,7 @@ direction: DIR-04
 owner: jh
 created: 2026-09-10
 updated: 2026-09-10
-related: [SUV-0059, ADR-0033]
+related: [SUV-0059, SUV-0065, ADR-0033]
 blocked-by: []
 ---
 
@@ -30,7 +30,7 @@ payloads, escalation, or session closure.
   Page callbacks and the existing webhook executor, closing the known webhook
   exposure rather than creating a Page-only check.
 
-Grant issuance, activation, scripts, and action hardening remain in SUV-0059.
+Grant issuance/lifecycle remains in SUV-0059; runtime action authority and trusted activation remain in SUV-0065.
 
 ## Acceptance
 
@@ -52,3 +52,5 @@ Grant issuance, activation, scripts, and action hardening remain in SUV-0059.
 
 - `2026-09-10` — created in `planned/` from reserved SUV-0064; split from
   SUV-0059 so callback execution remains one reviewable PR.
+- `2026-09-10` — runtime Page-action enforcement split to SUV-0065; this SUV
+  begins only after the grant lifecycle and runtime authority prerequisites.

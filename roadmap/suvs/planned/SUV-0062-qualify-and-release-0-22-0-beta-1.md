@@ -7,7 +7,7 @@ direction: DIR-04
 owner: jh
 created: 2026-09-10
 updated: 2026-09-10
-related: [SUV-0057, SUV-0058, SUV-0059, SUV-0060, SUV-0061, SUV-0063, SUV-0064]
+related: [SUV-0057, SUV-0058, SUV-0059, SUV-0060, SUV-0061, SUV-0063, SUV-0064, SUV-0065]
 blocked-by: []
 ---
 
@@ -45,7 +45,8 @@ qualification and publish an updater-safe, signed/notarized prerelease.
       create/view/password/update/unpublish proves no bridge action or scripted
       network egress.
 - [ ] Behavioral failures are returned to SUV-0058, SUV-0059, SUV-0060,
-      SUV-0061, SUV-0064, or a new SUV; this PR contains no feature repair.
+      SUV-0061, SUV-0064, SUV-0065, or a new SUV; this PR contains no feature
+      repair.
 - [ ] Release workflow pre-creates/reconciles prereleases, preserves
       `latest-mac.yml`, and release-note semver tests cover beta/stable ordering
       without `NaN`; `0.22.0-beta.1.md` exists at the tagged commit.

@@ -1,6 +1,6 @@
 ---
 id: SUV-0059
-title: Secure page grant authority and actions
+title: Manage host-consented Page grants
 status: planned
 plan: PLAN-052
 direction: DIR-04
@@ -11,57 +11,46 @@ related: [SUV-0058, ADR-0033]
 blocked-by: []
 ---
 
-# SUV-0059 — Secure page grant authority and actions
+# SUV-0059 — Manage host-consented Page grants
 
 ## Goal
 
-Make host-consented page grants and script actions safe from page content,
-renderer-only policy, or direct RPC privilege invention.
+Give users host-consented, digest-bound Page grants that they can inspect,
+revoke, and safely authorize for recurring refresh execution.
 
 ## Scope
 
-- Add shared mutating classification and `PageActionOrigin`; unattributed
-  callers fail closed at the authoritative broker.
 - Replace privileged direct `pages:issueGrant` with host-driven
   `pages:requestGrant`: render consent before persistence and refuse direct
   issuance as ADR-0033's sanctioned wire-behavior divergence.
-- Add digest/lease-bound, single-use host activation tickets plus trusted
-  first-use confirmation for script grants. Initial policy defaults are a
-  five-second ticket TTL, at most three outstanding tickets per lease, and
-  type-specific clamped grant TTLs; these defaults remain changeable policy.
-  Run and record the iframe activation experiment before relying on it.
-- Add grant listing, management, immediate revoke, replay/in-flight/rate/cancel
-  hardening, containment, permission-mode revalidation, and redacted audit
-  outcomes. Scheduled refresh scripts must use a user-approved declared grant
-  before recurring execution.
+- Store digest-bound, expiring grants with type-specific TTL policy: initial
+  defaults remain changeable policy within ADR-0033's 30-day ceiling.
+- Add user grant listing, inspection, and immediate revocation; invalidate
+  persisted grants when bound content changes.
+- Require scheduled refresh to name a user-approved declared grant before it
+  can be persisted or recur.
 
-Session callback execution, pinned payloads, and shared target-session handling
-are deliberately owned by SUV-0064.
+Runtime action authority, activation, and execution hardening are deliberately
+owned by SUV-0065; session callbacks remain SUV-0064.
 
 ## Acceptance
 
-- [ ] Table-driven tests classify every descriptor kind; only API GET is
-      non-mutating, a new kind cannot silently evade classification, and
-      unattributed mutation fails closed.
 - [ ] `pages:requestGrant` persists a grant only after host-rendered consent;
       direct `pages:issueGrant`, decline, disconnect, and no response leave no
       privileged grant.
-- [ ] The Electron activation experiment is recorded; invocation requires a
-      fresh ticket/required confirmation and revalidates origin, permission
-      mode, workspace, lease/nonce, digest, expiry, and grant every time.
-- [ ] Users can list, inspect, and revoke grants; digest change, revocation,
-      type-specific TTL clamp, ticket expiry/mismatch, and single redemption
-      have regression coverage.
-- [ ] Script and refresh execution remain argv/no-shell, workspace-confined,
-      minimal-env, abort-aware, and use a user-approved declared grant before
-      every recurring run.
-- [ ] Replay, lease-scoped in-flight keys/cancellation, page/workspace rate
-      limits, timeout, rejection, execution, and result are audited without
-      credentials or sensitive payloads.
+- [ ] Persisted grants bind their approved descriptor and page digest, use
+      type-specific TTL policy within the 30-day ceiling, and invalidate on
+      bound-content change.
+- [ ] Users can list, inspect, and immediately revoke grants, with regression
+      coverage for revocation and digest invalidation.
+- [ ] A scheduled refresh names a user-approved declared grant before it can be
+      persisted or recur; unapproved refresh residual is refused.
+- [ ] Grant lifecycle storage/management tests do not own runtime action,
+      activation, replay, or audit enforcement, which belongs to SUV-0065.
 
 ## Status log
 
 - `2026-09-10` — created in `planned/`; follows the workspace gate and
   ADR-0033 host-authority contract.
-- `2026-09-10` — split: host grant/action authority remains here; pinned session
-  callback execution moves to reserved SUV-0064.
+- `2026-09-10` — narrowed: consented grant lifecycle and refresh approval
+  remain here; runtime action hardening splits to reserved SUV-0065.
