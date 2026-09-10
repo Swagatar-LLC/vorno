@@ -5,6 +5,7 @@ node_modules
 out
 dist
 *.tgz
+.*.bun-build
 .build
 apps/electron/release
 apps/electron/resources/session-mcp-server/

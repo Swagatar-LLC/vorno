@@ -246,3 +246,6 @@ jobs:
         run: |
           bun build apps/server/src/index.ts --target=bun --outdir=/tmp/build-check --no-splitting 2>&1 | tail -5
           echo "✓ apps/server bundle built successfully"
+
+      - name: Smoke packaged CLI delivery path
+        run: bun run test:cli-packaging

@@ -1,7 +1,21 @@
+---
+id: PLAN-049
+title: vorno-cli ships with the product and has an install story
+status: in-progress
+direction: DIR-03
+owner: jh
+created: 2026-09-01
+updated: 2026-09-10
+related: []
+related-suvs:
+  - SUV-0055-harden-packaged-cli-install-and-runtime-smoke.md
+blocked-by: []
+---
+
 # PLAN-049 — `vorno-cli` ships with the product and has an install story
 
-**Status:** implemented, awaiting review
-**Branch:** `plan/plan-049-vorno-cli-install`
+**Status:** in progress — SUV-0055 is completing the delivery-path remediation.
+**Branch:** `suv/SUV-0055-vorno-cli-install`
 **Raised by:** Jeff, 2026-09-01 — *"It's pretty darned important that `vorno-cli`
 is easy to install (comes with the product) and has a clear installation path
 and story."*
@@ -105,6 +119,11 @@ bun run cli:install        # compiles to ~/.local/bin/vorno-cli
   from a stripped env.
 - Electron typecheck: **107 errors on `main`, 107 on this branch** — identical,
   all pre-existing. Zero in touched files. `apps/cli` typecheck clean.
+- SUV-0055: `bun run test:cli-packaging` compiles through the shell-independent
+  installer, invokes the packaged POSIX launcher from the monorepo root, confirms
+  its resource-directory resolver and caller-directory handoff, and checks the
+  macOS, Linux, and Windows build-script contracts. The CLI typecheck and 77
+  package tests pass.
 
 ### Two bugs this work found in itself
 
@@ -179,16 +198,17 @@ dist build without it fails; dist build with it passes; entry moved out of
   `CRAFT_COMMANDS_ENTRY`, so it works again for anyone depending on the old name,
   but it is still unlisted in `electron-builder.yml` and still will not ship.
   Deleting it is a separate branding decision.
-- **CI does not build the CLI.** `validate-assets` catches the packaging
-  regression on every platform build; nothing yet catches a compile break on a
-  target nobody built. Windows and Linux packaging changes are **untested on
-  their real hosts** — the compile step and cross-compilation are verified, the
-  full `dist` runs are not.
-- **No packaged smoke test.** Nothing yet asserts that `vorno-cli` actually
-  resolves *inside* a built app. The gate proves the file ships, not that the
-  wrapper finds it at runtime.
+- **Native Windows and Linux package runs remain untested.** CI now compiles and
+  smoke-tests the host binary through the packaged POSIX wrapper, and it asserts
+  the required compile-and-validate contract in all three platform scripts. It
+  does not claim a native Windows or Linux Electron distribution run.
 - **The docs describe a different CLI.** `vorno-cli.md` documents
   `label list`, `automation create` — entity/action config management. The shipped
   CLI is a WebSocket client (`run`, `ping`, `sessions`, `send`, `invoke`). Those
   are reachable via `invoke`, but the doc reads as though first-class subcommands
   exist. Worth reconciling; out of scope here.
+
+## Status log
+
+- `2026-09-01` — created in `planned/`.
+- `2026-09-10` — moved from `planned` to `in-progress`: SUV-0055 is hardening the packaged CLI install and runtime smoke path.

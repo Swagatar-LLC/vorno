@@ -188,6 +188,11 @@ async function resolveWorkspace(
 // Output helpers
 // ---------------------------------------------------------------------------
 
+// Packaged launchers run the binary from their resource directory so Bun resolves
+// embedded modules rather than workspace dependencies. Preserve the caller's cwd
+// separately for commands that intentionally read a project-local template.
+const CLI_WORKDIR = process.env.VORNO_CLI_WORKDIR?.trim() || process.cwd()
+
 function out(data: unknown, jsonMode: boolean): void {
   if (jsonMode) {
     process.stdout.write(JSON.stringify(data, null, 2) + '\n')
@@ -1432,7 +1437,7 @@ SKILLEOF`, 90_000, true, undefined, ctx.onEvent)
         ctx.automationsJsonBackup = existingConfig
         ctx.automationsHistoryBackup = await readFile(historyPath, 'utf-8').catch(() => null)
 
-        const templatePath = `${process.cwd()}/.github/agents/automations.json`
+        const templatePath = `${CLI_WORKDIR}/.github/agents/automations.json`
         const templateConfig = await readFile(templatePath, 'utf-8').catch(() => null)
         if (!templateConfig) {
           throw new Error(`Missing automation template at ${templatePath}`)

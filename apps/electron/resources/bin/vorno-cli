@@ -11,14 +11,24 @@
 #                             injected, e.g. a user invoking it directly.
 #   3. CRAFT_CLI_ENTRY      — the TypeScript entry, run under bun. Dev mode.
 #
-# Exec, never fork: the CLI streams and handles its own signals.
+# The wrapper preserves the caller's original working directory for CLI defaults
+# while running the compiled binary from this file's directory. This avoids
+# Bun's monorepo-root resolver ambiguity.
 set -e
+
+ORIGINAL_CWD=$(pwd)
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# `cd` affects only this wrapper process. `exec` keeps signal handling and exit
+# status owned by the CLI instead of inserting a shell parent between it and the
+# terminal.
+cd "$SELF_DIR"
+export VORNO_CLI_WORKDIR="$ORIGINAL_CWD"
 
 if [ -n "$CRAFT_VORNO_CLI_BIN" ] && [ -x "$CRAFT_VORNO_CLI_BIN" ]; then
   exec "$CRAFT_VORNO_CLI_BIN" "$@"
 fi
 
-SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ -x "$SELF_DIR/vorno-cli-bin" ]; then
   exec "$SELF_DIR/vorno-cli-bin" "$@"
 fi
