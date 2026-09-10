@@ -47,6 +47,8 @@ is SUV-0064.
 - [ ] Every invocation revalidates origin, permission mode, workspace, page
       digest, approved grant, lease/nonce, expiry, and fresh activation proof;
       direct RPC, desktop, and WebUI cannot bypass the checks.
+- [ ] Script actions remain argv/no-shell, workspace-confined,
+      minimal-environment, and abort-aware, with a direct runner test.
 - [ ] Replay, lease-scoped in-flight keys/cancellation, page/workspace rate
       limits, and timeout have regression coverage.
 - [ ] Rejection, execution, cancellation, timeout, and result are audited

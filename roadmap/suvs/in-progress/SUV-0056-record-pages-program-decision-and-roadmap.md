@@ -22,7 +22,7 @@ roadmap before implementation begins.
 
 - ADR-0033: upstream compatibility, per-workspace opt-in, host grant authority,
   pinned callback boundaries, isolated sharing topology, and privacy gate.
-- PLAN-052 with its nine reserved SUVs and PLAN-053's deferred navigation
+- PLAN-052 with its ten reserved SUVs and PLAN-053's deferred navigation
   evidence, reproduce-first caveat, separator decision, and post-merge sequence.
 - DIR-04 and the ADR index backlinks.
 
@@ -33,7 +33,7 @@ SUV owns exactly one implementation PR.
 
 - [ ] ADR-0033 is accepted and records additive compatibility plus every stated
       durable security, consent, sharing, and privacy boundary.
-- [ ] PLAN-052 lists all nine reserved SUVs with one owner, explicit
+- [ ] PLAN-052 lists all ten reserved SUVs with one owner, explicit
       prerequisites, and checkable program acceptance.
 - [ ] The activation experiment is required before relying on iframe activation;
       numeric ticket/TTL defaults are implementation policy, not owner gates.
