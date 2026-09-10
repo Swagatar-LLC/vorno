@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test'
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test'
 
 // Stub the preferences module so we can toggle `getCoAuthorPreference` per test
 // without touching disk. `formatPreferencesForPrompt` is stubbed to '' because
@@ -17,6 +17,12 @@ const GIT_CONVENTIONS_HEADING = '## Git Conventions'
 // Derive from branding so the trailer assertion survives rebrands (matches the
 // `Co-Authored-By: ${GIT_COAUTHOR}` line emitted by getSystemPrompt).
 const CO_AUTHOR_TRAILER = `Co-Authored-By: ${GIT_COAUTHOR}`
+const originalPages = process.env.CRAFT_FEATURE_PAGES
+
+afterEach(() => {
+  if (originalPages === undefined) delete process.env.CRAFT_FEATURE_PAGES
+  else process.env.CRAFT_FEATURE_PAGES = originalPages
+})
 
 describe('system prompt guidance', () => {
   it('uses backend-neutral debug log querying guidance (rg/grep via Bash)', () => {
@@ -38,6 +44,18 @@ describe('system prompt guidance', () => {
 
     expect(prompt).toContain('The subtask needs file/shell tools (for example, Read or Bash)')
     expect(prompt).not.toContain('The subtask needs tools (Read, Bash, Grep)')
+  })
+})
+
+describe('Pages prompt availability', () => {
+  it('omits the complete Pages section while Pages is disabled', () => {
+    delete process.env.CRAFT_FEATURE_PAGES
+    expect(getSystemPrompt(undefined, undefined, '/tmp/workspace', '/tmp/workspace')).not.toContain('## Pages')
+  })
+
+  it('includes the Pages section only when the host gate is enabled', () => {
+    process.env.CRAFT_FEATURE_PAGES = '1'
+    expect(getSystemPrompt(undefined, undefined, '/tmp/workspace', '/tmp/workspace')).toContain('## Pages')
   })
 })
 

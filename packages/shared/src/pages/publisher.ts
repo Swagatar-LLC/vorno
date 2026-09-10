@@ -47,24 +47,32 @@ export function isPagesSharingAvailable(apiBaseUrl = resolvePagesShareApiBaseUrl
 
 /**
  * Existing public copies remain revocable after endpoint/default changes.
- * This deliberately accepts any HTTPS stored origin: it is only used with the
- * copy's vault-held admin token, never to create a new publication.
+ * Stored URLs are resource identities, not arbitrary fetch authorities: only
+ * the legacy Craft and exact Vorno public URL shapes can recover an API base.
  */
 export function resolveStoredPagesShareApiBaseUrl(shareUrl: string): string | undefined {
-  try {
-    const url = new URL(shareUrl);
-    return url.protocol === 'https:' ? `${url.origin}/api` : undefined;
-  } catch {
-    return undefined;
-  }
+  let url: URL;
+  try { url = new URL(shareUrl); } catch { return undefined; }
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash) return undefined;
+  if (!/^\/p\/[A-Za-z0-9_-]+$/.test(url.pathname)) return undefined;
+  if (url.hostname === 'thecraftagents.com') return 'https://thecraftagents.com/p/api';
+  if (url.hostname === 'pages.vorno.ai') return 'https://pages.vorno.ai/api';
+  return undefined;
 }
 
 function resolveApprovedPagesShareApiBaseUrl(base: string): string | undefined {
   let url: URL;
   try { url = new URL(base); } catch { return undefined; }
-  const localhost = url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1');
-  const vorno = url.protocol === 'https:' && url.hostname === 'pages.vorno.ai';
-  return (localhost || vorno) ? base.replace(/\/+$/, '') : undefined;
+  if (url.username || url.password || url.search || url.hash) return undefined;
+  const apiPath = url.pathname === '/api' || url.pathname === '/api/';
+  if (!apiPath) return undefined;
+  if (url.protocol === 'https:' && url.hostname === 'pages.vorno.ai' && !url.port) {
+    return 'https://pages.vorno.ai/api';
+  }
+  if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1') && url.port) {
+    return `${url.origin}/api`;
+  }
+  return undefined;
 }
 
 /** Minimal vault seam so tests can run without the real CredentialManager */

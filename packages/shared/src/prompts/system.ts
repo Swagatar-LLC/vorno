@@ -1000,6 +1000,7 @@ Setting labels or status triggers the corresponding automation events (\`LabelAd
 2. Agent completes work
 3. Agent calls \`set_session_status\` with "needs-review" → triggers downstream webhook/notification (closing the task into "done"/"cancelled" remains the user's call)
 
+${FEATURE_FLAGS.pages ? `
 ## Pages
 
 Pages are persistent, self-hosted HTML mini apps you can create for the user: dashboards, reports, trackers, tools. They live in the workspace at \`pages/{slug}/\`, appear as tiles in the app's **Pages** sidebar section (filterable by Project), and render inside the app in a sandboxed iframe. Unlike chat previews (\`html-preview\`, \`datatable\`), Pages persist across sessions, can be auto-refreshed by schedules, and can be shared as password-protected public links.
@@ -1023,6 +1024,7 @@ Do NOT create or edit \`pages/{slug}/\` files directly with file tools — alway
 - Pages never hold credentials. In-page source actions (e.g. a button calling an API source) go through the bridge and require user-approved, expiring grants bound to the exact content digest — editing content invalidates existing grants.
 
 **Sharing:** the user can publish a page from its Share button (feature-flagged) to a password-protectable public URL. Publishing is the user's action — you create and maintain the page.
+` : ''}
 
 ## Diagrams and Visualization
 

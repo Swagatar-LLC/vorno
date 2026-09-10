@@ -11,10 +11,13 @@ import {
   resolveStoredPagesShareApiBaseUrl,
 } from './publisher.ts';
 
+const originalPages = process.env.CRAFT_FEATURE_PAGES;
 const originalSharing = process.env.CRAFT_FEATURE_PAGES_SHARING;
 const originalApi = process.env.CRAFT_PAGES_SHARE_API_URL;
 
 afterEach(() => {
+  if (originalPages === undefined) delete process.env.CRAFT_FEATURE_PAGES;
+  else process.env.CRAFT_FEATURE_PAGES = originalPages;
   if (originalSharing === undefined) delete process.env.CRAFT_FEATURE_PAGES_SHARING;
   else process.env.CRAFT_FEATURE_PAGES_SHARING = originalSharing;
   if (originalApi === undefined) delete process.env.CRAFT_PAGES_SHARE_API_URL;
@@ -54,9 +57,31 @@ describe('Pages sharing default gate', () => {
     }
   });
 
-  test('derives a cleanup API from a stored HTTPS share URL without the fresh-publish allowlist', () => {
-    expect(resolveStoredPagesShareApiBaseUrl('https://legacy.example/p/publication-1')).toBe('https://legacy.example/api');
-    expect(resolveStoredPagesShareApiBaseUrl('http://localhost/p/publication-1')).toBeUndefined();
+  test('derives cleanup APIs only from recognized legacy and Vorno public URL shapes', () => {
+    expect(resolveStoredPagesShareApiBaseUrl('https://thecraftagents.com/p/publication-1')).toBe('https://thecraftagents.com/p/api');
+    expect(resolveStoredPagesShareApiBaseUrl('https://pages.vorno.ai/p/publication-1')).toBe('https://pages.vorno.ai/api');
+    for (const hostile of [
+      'https://evil.example/p/publication-1',
+      'https://pages.vorno.ai:444/p/publication-1',
+      'https://user@pages.vorno.ai/p/publication-1',
+      'https://pages.vorno.ai/p/publication-1?redirect=https://evil.example',
+      'https://pages.vorno.ai/not-public/publication-1',
+    ]) expect(resolveStoredPagesShareApiBaseUrl(hostile)).toBeUndefined();
+  });
+
+  test('accepts only exact production and bounded local fresh-publication API forms', () => {
+    process.env.CRAFT_PAGES_SHARE_API_URL = 'https://pages.vorno.ai/api/';
+    expect(resolvePagesShareApiBaseUrl()).toBe('https://pages.vorno.ai/api');
+    process.env.CRAFT_PAGES_SHARE_API_URL = 'http://localhost:8787/api';
+    expect(resolvePagesShareApiBaseUrl()).toBe('http://localhost:8787/api');
+    for (const invalid of [
+      'https://pages.vorno.ai:444/api', 'https://pages.vorno.ai/other',
+      'https://user@pages.vorno.ai/api', 'https://pages.vorno.ai/api?x=1',
+      'http://localhost/api', 'http://localhost:8787/other',
+    ]) {
+      process.env.CRAFT_PAGES_SHARE_API_URL = invalid;
+      expect(resolvePagesShareApiBaseUrl()).toBeUndefined();
+    }
   });
 
   test('existing updates and unpublish target the stored HTTPS origin when no publish endpoint is configured', async () => {
@@ -67,7 +92,7 @@ describe('Pages sharing default gate', () => {
     const page = createPage(workspace, { name: 'Legacy copy', content: '<p>legacy</p>' });
     setPageShareState(workspace, page.slug, {
       publicationId: 'publication-1',
-      url: 'https://legacy.example/p/publication-1',
+      url: 'https://thecraftagents.com/p/publication-1',
       publishedRevision: 'r1',
       publishedContentDigest: page.contentDigest!,
       includesData: false,
@@ -83,7 +108,7 @@ describe('Pages sharing default gate', () => {
         if (init?.method === 'PUT') {
           return new Response(JSON.stringify({
             id: 'publication-1',
-            url: 'https://legacy.example/p/publication-1',
+            url: 'https://thecraftagents.com/p/publication-1',
             revision: 'r2',
             passwordProtected: true,
             status: 'published',
@@ -97,9 +122,36 @@ describe('Pages sharing default gate', () => {
       await publisher.setPassword(workspace, 'workspace', page.slug, 'password');
       await publisher.unpublish(workspace, 'workspace', page.slug);
       expect(requests).toEqual([
-        'PUT https://legacy.example/api/publications/publication-1',
-        'DELETE https://legacy.example/api/publications/publication-1',
+        'PUT https://thecraftagents.com/p/api/publications/publication-1',
+        'DELETE https://thecraftagents.com/p/api/publications/publication-1',
       ]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects a hostile edited stored URL before fetch', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'pages-publisher-hostile-'));
+    const page = createPage(workspace, { name: 'Hostile copy', content: '<p>hostile</p>' });
+    setPageShareState(workspace, page.slug, {
+      publicationId: 'publication-1',
+      url: 'https://evil.example/p/publication-1',
+      publishedRevision: 'r1',
+      publishedContentDigest: page.contentDigest!,
+      includesData: false,
+      publishedAt: Date.now(),
+      updatedAt: Date.now(),
+      passwordProtected: false,
+    });
+    let fetchCalled = false;
+    const publisher = new PagePublisher({
+      tokenStore: { get: async () => 'token', set: async () => {}, delete: async () => true },
+      fetchFn: (async () => { fetchCalled = true; return new Response('', { status: 204 }); }) as unknown as typeof fetch,
+    });
+    try {
+      await expect(publisher.unpublish(workspace, 'workspace', page.slug))
+        .rejects.toMatchObject({ code: 'PAGE_SHARE_REMOTE_ERROR' });
+      expect(fetchCalled).toBe(false);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
