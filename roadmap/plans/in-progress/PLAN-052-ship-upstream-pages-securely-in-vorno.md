@@ -1,0 +1,133 @@
+---
+id: PLAN-052
+title: Ship upstream Pages securely in Vorno
+status: in-progress
+direction: DIR-04
+owner: jh
+created: 2026-09-10
+updated: 2026-09-10
+related: [ADR-0033]
+related-suvs:
+  - SUV-0056-record-pages-program-decision-and-roadmap.md
+  - SUV-0057-merge-upstream-v0-13-x-pages.md
+  - SUV-0058-enable-pages-per-workspace-with-navigator-coexistence.md
+  - SUV-0059-secure-page-grant-authority-and-actions.md
+  - SUV-0065-enforce-page-action-runtime-authority.md
+  - SUV-0064-execute-pinned-page-session-callbacks.md
+  - SUV-0060-operate-vorno-pages-sharing.md
+  - SUV-0061-brand-and-publish-pages-documentation.md
+  - SUV-0063-enable-prerelease-publishing-and-pages-privacy-policy.md
+  - SUV-0062-qualify-and-release-0-22-0-beta-1.md
+blocked-by: []
+---
+
+# PLAN-052 — Ship upstream Pages securely in Vorno
+
+## Goal
+
+Ship signed and notarized Vorno `0.22.0-beta.1` with upstream Pages available
+only as a secure, per-workspace opt-in, backed by Vorno-owned sharing,
+documentation, and release qualification.
+
+## Scope
+
+- Adopt upstream `v0.13.0`–`v0.13.3` Pages additively, preserving
+  `pages:*`, `pages/{slug}`, and `craft-pages/v1` compatibility alongside
+  Vorno's existing navigators and automation/session behavior.
+- Persist a workspace Pages setting that defaults to disabled and gates UI,
+  tools, refresh, and privileged execution while leaving delete, unpublish,
+  and grant revocation available for safe cleanup.
+- Add host-consented, digest-bound, expiring, revocable grants for no-shell
+  scripts and pinned callbacks; grant lifecycle, runtime Page-action authority,
+  activation, permission-mode revalidation, replay, rate, cancel, audit, and
+  containment checks are authoritative.
+- Operate Pages sharing from a separate `pages.vorno.ai` Worker and R2 bucket,
+  with isolated admin tokens, CSP sandbox, secret scanning, opt-in snapshots,
+  rate/size limits, public-shell branding, and graceful absence of backend
+  capability.
+- Ship one bundled Pages guide as the source for in-app and online docs; close
+  Pages branding/config-directory gaps and publish the matching prerelease
+  changelog.
+- Qualify and release `0.22.0-beta.1` without displacing stable downloads or
+  stable-user updates.
+
+## Non-goals
+
+- Customizable navigation order or visibility in this release; PLAN-053 owns
+  it after the Pages merge.
+- An account system, a generic hosted-content platform, a second sharing
+  Worker on `share.vorno.ai`, or a parameterized session-message language.
+- Changing Sentry enablement, DSN, or telemetry posture during the upstream
+  merge. SUV-0057 takes upstream's privacy-broadening redaction helper/refactor
+  while preserving that existing posture.
+- Claiming that published pages cannot navigate themselves externally. The
+  contract is no **scripted network egress**; self-navigation is a documented
+  residual to assess separately.
+
+## Approach
+
+Land the decision and this decomposition first. Merge upstream with a merge
+commit, then use the workspace gate as the first implementation boundary.
+Host grant lifecycle, then runtime action hardening, land before pinned session
+callback execution. Callback security reuses existing broker, script-runner,
+session-action, and closure-gate choke points rather than creating a parallel
+privilege path. Sharing is a deliberately separate user-data service; its
+policy and site prerequisite must clear before deployment and, because deployed
+sharing is release acceptance, before the beta tag. Documentation and
+prerelease delivery are separate owning PRs where they cross repositories.
+
+Each SUV is one PR. Dependency ordering is explicit below; later lanes rebase
+on their landed prerequisites rather than broadening their scope.
+
+## Prerequisites
+
+| Work | Must precede | Reason |
+| --- | --- | --- |
+| SUV-0056 | all implementation SUVs | Accepted architecture and complete PR-sized ownership records. |
+| SUV-0057 | SUV-0058, SUV-0059, SUV-0065, SUV-0064, SUV-0061 | Actual upstream Pages surface and recorded throwaway-merge conflict set. |
+| SUV-0058 | SUV-0059, SUV-0060, SUV-0065, SUV-0064 | Persisted workspace opt-in is the availability boundary. |
+| SUV-0059 | SUV-0065 | Host grant lifecycle exists before runtime action enforcement. |
+| SUV-0065 | SUV-0064 | Runtime authority and trusted activation exist before callbacks execute. |
+| SUV-0060 | SUV-0062 | Worker implementation and public sharing contract are verified. |
+| SUV-0061 and SUV-0063 | SUV-0062 | Bundled/online docs and site prerelease/privacy support are live. |
+| Jeff retention decision plus SUV-0063 | Worker deployment and beta tag | Policy, retention, and prerelease support land before deployed sharing; deployed sharing is release acceptance. |
+| SUVs 0057–0061 and 0063–0065 | SUV-0062 tag | Release qualification verifies the integrated, already-landed behavior only. |
+
+## Owner gate
+
+- **Pending Jeff:** retention policy. Proposed default: retain content until
+  unpublish, delete objects immediately on unpublish, and retain operational
+  logs for at most 30 days. Until decided, neither `pages.vorno.ai` deployment
+  nor the beta tag proceeds.
+
+## Acceptance
+
+- [ ] ADR-0033, this plan, and all ten reserved SUVs are internally
+      consistent; every SUV has one owning plan and one PR-sized outcome.
+- [ ] Upstream `e8963854` is an ancestor of `main` through a merge commit; the
+      compatibility audit records Pages contracts, the grant-issuance divergence,
+      redaction refactor, and deliberate Vorno divergences.
+- [ ] Existing and new workspaces keep Pages and sharing disabled by default;
+      enabling them persists per workspace without removing Projects, Workbench,
+      Artifacts, or existing navigation/session behavior.
+- [ ] No grant can persist without host consent, and no mutating Page action can
+      bypass its approved digest-bound, expiring/revocable grant, fresh trusted
+      interaction proof, or per-invocation permission/workspace checks.
+- [ ] Sharing targets only the verified Vorno endpoint, has no privileged action
+      or scripted network egress, and deploys only after the policy/site
+      prerequisite; unresolved retention blocks deployment and the beta tag.
+- [ ] `0.22.0-beta.1` is prerelease-classified, signed/notarized, documented,
+      updater-safe for stable users, and verified over the named production
+      surfaces.
+
+## Status log
+
+- `2026-09-10` — created in `planned/` from the approved 0.22.0-beta.1 Pages
+  program and Phase 1 research.
+- `2026-09-10` — moved from `planned` to `in-progress`: ADR/roadmap SUV opened
+  as the program's first reviewable PR.
+- `2026-09-10` — review corrections: accepted ADR-0033, split host authority
+  from callback execution, and made the sharing-policy release sequence and
+  prerequisites explicit.
+- `2026-09-10` — sizing correction: split grant lifecycle (SUV-0059), runtime
+  action authority (SUV-0065), and pinned callback execution (SUV-0064).
