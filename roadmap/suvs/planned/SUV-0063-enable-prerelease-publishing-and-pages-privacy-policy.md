@@ -1,0 +1,55 @@
+---
+id: SUV-0063
+title: Enable prerelease publishing and Pages privacy policy
+status: planned
+plan: PLAN-052
+direction: DIR-04
+owner: jh
+created: 2026-09-10
+updated: 2026-09-10
+related: [SUV-0060, SUV-0061, SUV-0062, ADR-0033]
+blocked-by: []
+---
+
+# SUV-0063 — Enable prerelease publishing and Pages privacy policy
+
+## Goal
+
+Land the separate vorno-site PR that permits beta documentation publishing and
+makes the Pages privacy/retention prerequisite public before deployment.
+
+## Scope
+
+- In `vorno-site`, accept an optional SemVer prerelease suffix in the release
+  dispatch guard while retaining malformed-tag rejection.
+- Group Pages plus existing shipped guides in the docs manifest and fail rather
+  than warn when a shipped guide is ungrouped.
+- Publish `https://vorno.ai/privacy` with the Pages service, content-retention,
+  immediate-unpublish deletion, operational-log, password, and operator
+  disclosure approved by Jeff.
+- Verify the vorno-site default branch contains this PR before the beta tag or
+  any Pages Worker deployment.
+
+Deliberately out: the Worker/client implementation (SUV-0060), bundled docs
+(SUV-0061), and release/tag execution (SUV-0062).
+
+## Acceptance
+
+- [ ] A separate `vorno-site` PR accepts `v0.22.0-beta.1` while rejecting an
+      invalid tag, and it is merged to that repository's default branch first.
+- [ ] The site build fails for any fetched bundled guide absent from its docs
+      manifest; Pages and currently shipped ungrouped guides are grouped.
+- [ ] `https://vorno.ai/privacy` is live before deployment and names the
+      approved Pages data controller, retention, deletion, logging, password,
+      and abuse/contact posture.
+- [ ] Jeff explicitly decides retention; the proposed policy is content until
+      unpublish, immediate object deletion, and operational logs <=30 days.
+- [ ] If Jeff has not decided policy/retention, the PR records the gate as open
+      and neither `pages.vorno.ai` deployment nor beta tag proceeds.
+- [ ] A dry-run or real prerelease dispatch produces the Pages docs and beta
+      changelog path expected by SUV-0062.
+
+## Status log
+
+- `2026-09-10` — created in `planned/`; this SUV owns the cross-repository
+  vorno-site PR and the explicit pre-deploy privacy gate.

@@ -8,12 +8,15 @@ related-decisions:
   - 0017-standards-stack-artifact-packaging-distribution.md
   - 0018-storage-provider-seam-and-pure-admissibility.md
   - 0019-storage-root-config-schema-and-provider-kind-namespace.md
+  - 0033-pages-as-a-secure-opt-in-vorno-capability.md
 related-plans:
   - PLAN-025-artifact-plane-v1.md
   # PLAN-026 (C2) and PLAN-027 (C3) archived 2026-08-22 (PLAN-045 Pass 2):
   # a three-deep blocked chain with no live head. The C2/C3 ambitions survive
   # as direction text below; neither is a queued plan.
   - PLAN-029-storage-provider-config-and-management-surfaces.md
+  - PLAN-052-ship-upstream-pages-securely-in-vorno.md
+  - PLAN-053-customize-workspace-navigation-after-pages.md
 ---
 
 # Direction 4 — Dynamic Workspaces: the artifact plane and the surface plane
