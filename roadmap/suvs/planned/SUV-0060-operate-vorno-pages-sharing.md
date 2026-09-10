@@ -28,7 +28,8 @@ unpublished.
 - Implement create/update/delete plus shell/content/snapshot routes, secret
   scanning before publish, explicit snapshot opt-in, size/rate limits, hashed
   one-time-returned admin tokens, password tickets, revision updates, no-store,
-  immediate delete, and best-effort delete warnings.
+  immediate logical revocation, and separately warned/audited/retried physical
+  deletion failures.
 - Use an opaque sandboxed `src` iframe, per-document CSP with
   `connect-src 'none'`, refused public bridge actions, and a Vorno-branded shell
   carrying a persistent "published by a Vorno user—not by Vorno" disclaimer.
@@ -55,8 +56,9 @@ longer than 30 days.
       user-published/phishing disclaimer.
 - [ ] Admin tokens are returned only at creation and stored only as hashes;
       unauthenticated mutation leaves objects unchanged; update/unpublish uses
-      stored validated HTTPS origin; unpublish returns 404 or a best-effort
-      deletion warning on every public route.
+      stored validated HTTPS origin; unpublish first logically revokes so every
+      public route returns 404. Physical R2/object deletion failure is separately
+      warned, audited, and retried, with a delete-failure-path regression test.
 - [ ] Before deployment, the policy/site prerequisite and real-HTTP
       create/view/password/update/unpublish verification are recorded.
 
