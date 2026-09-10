@@ -37,6 +37,11 @@ export function deriveAutomationName(event: string, matcher: AutomationMatcher):
   // would make every context rule in the list read identically.
   if (firstAction.type === 'apply-context') return `Apply context ${firstAction.profile}`;
 
+  if (firstAction.type === 'script') {
+    const label = firstAction.page ? `Refresh page ${firstAction.page}` : `Script ${firstAction.script}`;
+    return label.length > 40 ? label.slice(0, 40) + '...' : label;
+  }
+
   // Extract @skill/@source mention
   const mentionMatch = firstAction.prompt.match(/@(\S+)/);
   if (mentionMatch) return `${mentionMatch[1]} prompt`;

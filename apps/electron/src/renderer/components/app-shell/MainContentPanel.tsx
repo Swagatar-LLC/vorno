@@ -34,8 +34,10 @@ import {
   isProjectsNavigation,
   isWorkbenchNavigation,
   isArtifactsNavigation,
+  isPagesNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
+import { usePages } from '@/hooks/usePages'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import type { SessionStatusId } from '@/config/session-status-config'
@@ -47,6 +49,8 @@ import ProjectInfoPage from '@/pages/ProjectInfoPage'
 import WorkbenchPage from '@/pages/WorkbenchPage'
 import ArtifactHomePage from '@/pages/ArtifactHomePage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
+import { PagesHome } from '../pages/PagesHome'
+import { PageView } from '../pages/PageView'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
@@ -89,6 +93,7 @@ export function MainContentPanel({
     getAutomationHistory,
     activeSessionWorkingDirectory,
   } = useAppShellContext()
+  const { pagesEnabled } = usePages(activeWorkspaceId)
 
   // Session multi-select state
   const isMultiSelectActive = useIsMultiSelectActive()
@@ -358,6 +363,23 @@ export function MainContentPanel({
         <div className="flex items-center justify-center h-full text-muted-foreground">
           <p className="text-sm">{t("automations.noAutomationsConfigured")}</p>
         </div>
+      </Panel>
+    )
+  }
+
+  // Pages navigator - host capability is authoritative; a manually entered
+  // route cannot render the unavailable feature before SUV-0058's workspace gate.
+  if (isPagesNavigation(navState)) {
+    if (!pagesEnabled) {
+      return wrapWithStoplight(<Panel variant="grow" className={className}>{null}</Panel>)
+    }
+    return wrapWithStoplight(
+      <Panel variant="grow" className={className}>
+        {navState.details ? (
+          <PageView key={navState.details.pageSlug} pageSlug={navState.details.pageSlug} />
+        ) : (
+          <PagesHome />
+        )}
       </Panel>
     )
   }

@@ -43,6 +43,16 @@ describe('session tool filtering helpers', () => {
     expect(names.includes('send_developer_feedback')).toBe(false);
   });
 
+  it('hides productive Pages tools while retaining delete cleanup when Pages is unavailable', () => {
+    const names = getSessionToolNames({ includePages: false });
+    expect(names.has('list_pages')).toBe(false);
+    expect(names.has('get_page')).toBe(false);
+    expect(names.has('create_page')).toBe(false);
+    expect(names.has('update_page')).toBe(false);
+    expect(names.has('write_page_data')).toBe(false);
+    expect(names.has('delete_page')).toBe(true);
+  });
+
   it('all canonical session tools declare safeMode metadata', () => {
     for (const def of SESSION_TOOL_DEFS) {
       expect(def.safeMode === 'allow' || def.safeMode === 'block').toBe(true);
@@ -61,6 +71,14 @@ describe('session tool filtering helpers', () => {
     expect(blocked.has('source_oauth_trigger')).toBe(true);
     expect(blocked.has('source_credential_prompt')).toBe(true);
     expect(blocked.has('spawn_session')).toBe(true);
+
+    // Pages: reads are Explore-safe, mutations are not
+    expect(allowed.has('list_pages')).toBe(true);
+    expect(allowed.has('get_page')).toBe(true);
+    expect(blocked.has('create_page')).toBe(true);
+    expect(blocked.has('update_page')).toBe(true);
+    expect(blocked.has('write_page_data')).toBe(true);
+    expect(blocked.has('delete_page')).toBe(true);
   });
 
   it('safe-mode helpers support MCP prefixing', () => {

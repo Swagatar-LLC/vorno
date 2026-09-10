@@ -68,6 +68,25 @@ describe('validation', () => {
       expect(result.valid).toBe(true);
     });
 
+    it('unions upstream script actions with every Vorno session action', () => {
+      const result = validateAutomationsConfig({
+        automations: {
+          LabelAdd: [{
+            actions: [
+              { type: 'script', script: 'scripts/refresh.ts', runtime: 'bun' },
+              { type: 'set-status', session: { id: 's1' }, status: 'needs-review' },
+              { type: 'set-labels', session: { id: 's1' }, add: ['reviewing'] },
+              { type: 'send-message', session: { id: 's1' }, message: 'refresh complete' },
+              { type: 'apply-context', session: { id: 's1' }, profile: 'review' },
+            ],
+          }],
+        },
+      });
+      expect(result.valid).toBe(true);
+      expect(result.config?.automations.LabelAdd?.[0]?.actions.map(action => action.type))
+        .toEqual(['script', 'set-status', 'set-labels', 'send-message', 'apply-context']);
+    });
+
     // fork(PLAN-017): onFailure actions
     it('should accept onFailure with a prompt action', () => {
       const config = {

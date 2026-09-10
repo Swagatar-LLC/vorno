@@ -35,6 +35,12 @@
       "reason": "LLM validator prompt for the external Craft (docs product) MCP server — mcp.craft.do is that product's own domain and part of functional validation rules, not our brand endpoint."
     },
     {
+      "path": "packages/shared/src/pages/publisher.ts",
+      "rules": ["upstream-domain"],
+      "class": "wire-contract",
+      "reason": "Recognizes the exact persisted legacy https://thecraftagents.com/p/{id} public-share URL solely to revoke or update an existing vault-token-held publication. Fresh publication rejects Craft endpoints."
+    },
+    {
       "path": "packages/shared/src/prompts/print-system-prompt.ts",
       "rules": ["product-name"],
       "class": "upstream-internal",

@@ -82,7 +82,11 @@
     "./protocol": "./src/protocol/index.ts",
     "./tasks": "./src/tasks/index.ts",
     "./i18n": "./src/i18n/index.ts",
-    "./resources": "./src/resources/index.ts"
+    "./resources": "./src/resources/index.ts",
+    "./pages": "./src/pages/index.ts",
+    "./pages/types": "./src/pages/types.ts",
+    "./pages/data-store": "./src/pages/data-store.ts",
+    "./utils/redaction": "./src/utils/redaction.ts"
   },
   "dependencies": {
     "@craft-agent/core": "workspace:*",
@@ -99,12 +103,12 @@
     "shell-quote": "^1.8.3",
     "yaml": "^2.8.2",
     "headroom-ai": "0.36.5",
-    "@earendil-works/pi-agent-core": "0.81.1",
-    "@earendil-works/pi-ai": "0.81.1",
-    "@earendil-works/pi-coding-agent": "0.81.1"
+    "@earendil-works/pi-agent-core": "0.85.1",
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1"
   },
   "peerDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.220",
+    "@anthropic-ai/claude-agent-sdk": "0.3.258",
     "@modelcontextprotocol/sdk": ">=1.29.0",
     "zod": ">=4.0.0"
   },

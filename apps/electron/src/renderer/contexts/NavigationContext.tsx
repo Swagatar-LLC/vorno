@@ -73,6 +73,7 @@ import {
   isProjectsNavigation,
   isWorkbenchNavigation,
   isArtifactsNavigation,
+  isPagesNavigation,
   DEFAULT_NAVIGATION_STATE,
 } from '../../shared/types'
 import { sessionMetaMapAtom, updateSessionMetaAtom, type SessionMeta } from '@/atoms/sessions'
@@ -95,7 +96,7 @@ export type { Route }
 
 // Re-export navigation state types for consumers
 export type { NavigationState, SessionFilter }
-export { isSessionsNavigation, isSourcesNavigation, isSettingsNavigation, isSkillsNavigation, isAutomationsNavigation, isProjectsNavigation, isWorkbenchNavigation, isArtifactsNavigation }
+export { isSessionsNavigation, isSourcesNavigation, isSettingsNavigation, isSkillsNavigation, isAutomationsNavigation, isProjectsNavigation, isWorkbenchNavigation, isArtifactsNavigation, isPagesNavigation }
 
 // =============================================================================
 // Context

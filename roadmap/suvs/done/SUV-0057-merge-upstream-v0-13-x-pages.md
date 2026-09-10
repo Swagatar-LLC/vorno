@@ -1,7 +1,7 @@
 ---
 id: SUV-0057
 title: Merge upstream v0.13.x Pages
-status: planned
+status: done
 plan: PLAN-052
 direction: DIR-04
 owner: jh
@@ -36,18 +36,18 @@ preserving fork behavior and leaving Pages unavailable until SUV-0058.
 
 ## Acceptance
 
-- [ ] A throwaway merge records the actual conflict count and paths before the
+- [x] A throwaway merge records the actual conflict count and paths before the
       production merge resolves them; `e8963854` is then an ancestor through an
       actual merge commit, not a squash or rebase.
-- [ ] Manifest versions remain Vorno-owned; upstream dependency changes and a
+- [x] Manifest versions remain Vorno-owned; upstream dependency changes and a
       regenerated lockfile are present without whole-file ours/theirs loss.
-- [ ] Routes, parser, renderer navigation, automation unions, and existing fork
+- [x] Routes, parser, renderer navigation, automation unions, and existing fork
       contracts are reconciled additively and pass their focused tests.
-- [ ] Claude depth/retry and Pi abort/recovered-output regressions are covered
+- [x] Claude depth/retry and Pi abort/recovered-output regressions are covered
       by tests, and required upstream-sync builds/tests pass.
-- [ ] Sentry enablement, DSN, and telemetry posture match the merge base while
+- [x] Sentry enablement, DSN, and telemetry posture match the merge base while
       upstream's shared privacy-broadening redaction helper/refactor is taken.
-- [ ] Upstream release notes are attributed in `next.md`, the public
+- [x] Upstream release notes are attributed in `next.md`, the public
       compatibility audit records the result, and Pages remains disabled until
       the persisted workspace gate lands.
 
@@ -55,3 +55,6 @@ preserving fork behavior and leaving Pages unavailable until SUV-0058.
 
 - `2026-09-10` — created in `planned/`; follows the decision/roadmap PR and
   precedes all Pages feature lanes.
+- `2026-09-10` — moved from `planned` to `in-progress`: beginning canonical upstream v0.13.x merge and conflict audit.
+- `2026-09-10` — throwaway merge recorded 34 conflicted paths (the 34-path list is retained in merge commit `7a033d15`); production merge preserved `e8963854` as second parent. Focused regressions and upstream-sync gates passed; full CI typecheck stopped only on seven pre-existing `origin/main` errors.
+- `2026-09-10` — moved from `in-progress` to `done`: upstream Pages baseline merged, sharing defaulted off with no Craft endpoint, compatibility and release-note audits recorded.
