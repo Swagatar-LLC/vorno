@@ -150,11 +150,11 @@ const patch = INPUT.patch;
 
 mkdirSync(dirname(INPUT.dbPath), { recursive: true });
 const db = new Database(INPUT.dbPath);
-// busy_timeout before WAL: concurrent first-writers each need the exclusive
-// lock to flip journal_mode, which contends immediately as SQLITE_BUSY without
-// a timeout set first. (Kept in lockstep with pages/data-store.ts.)
+// The one-shot writer does not change journal mode: concurrent first writers
+// would contend on that exclusive transition before SQLite can apply
+// busy_timeout. The long-lived data-store owns WAL setup; this writer only
+// needs bounded write-lock waiting.
 db.exec('PRAGMA busy_timeout = 5000;');
-db.exec('PRAGMA journal_mode = WAL;');
 db.exec(\`
   CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,

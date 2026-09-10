@@ -508,7 +508,7 @@ describe('PLAN-030 Phase 0 — dead-rule diagnostics', () => {
 
     it('a well-formed action of every known type passes both the union and its own schema', () => {
       for (const type of KNOWN_ACTION_TYPES) {
-        const probe = { type, prompt: 'x', url: 'https://e.com', session: { id: 's' }, status: 'todo', add: ['l'], message: 'm', profile: 'p' };
+        const probe = { type, prompt: 'x', url: 'https://e.com', script: 'scripts/refresh.ts', runtime: 'bun', session: { id: 's' }, status: 'todo', add: ['l'], message: 'm', profile: 'p' };
         expect(ActionDefinitionSchema.safeParse(probe).success).toBe(true);
         expect(KNOWN_ACTION_SCHEMAS[type].safeParse(probe).success).toBe(true);
       }
