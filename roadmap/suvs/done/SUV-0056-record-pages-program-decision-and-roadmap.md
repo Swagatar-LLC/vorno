@@ -1,7 +1,7 @@
 ---
 id: SUV-0056
 title: Record Pages program decision and roadmap
-status: in-progress
+status: done
 plan: PLAN-052
 direction: DIR-04
 owner: jh
@@ -31,16 +31,16 @@ SUV owns exactly one implementation PR.
 
 ## Acceptance
 
-- [ ] ADR-0033 is accepted and records additive compatibility plus every stated
+- [x] ADR-0033 is accepted and records additive compatibility plus every stated
       durable security, consent, sharing, and privacy boundary.
-- [ ] PLAN-052 lists all ten reserved SUVs with one owner, explicit
+- [x] PLAN-052 lists all ten reserved SUVs with one owner, explicit
       prerequisites, and checkable program acceptance.
-- [ ] The activation experiment is required before relying on iframe activation;
+- [x] The activation experiment is required before relying on iframe activation;
       numeric ticket/TTL defaults are implementation policy, not owner gates.
-- [ ] Proposed sharing retention is surfaced as the one pending Jeff gate and
+- [x] Proposed sharing retention is surfaced as the one pending Jeff gate and
       consistently blocks Worker deployment and the beta tag.
-- [ ] DIR-04 and `roadmap/decisions/README.md` link to the new records.
-- [ ] The corpus validator and `git diff --check` report no violations.
+- [x] DIR-04 and `roadmap/decisions/README.md` link to the new records.
+- [x] The corpus validator and `git diff --check` report no violations.
 
 ## Status log
 
@@ -48,3 +48,5 @@ SUV owns exactly one implementation PR.
   program and all five Phase 1 research artifacts.
 - `2026-09-10` — moved from `planned` to `in-progress`: authoring the decision
   and roadmap PR before any implementation SUV begins.
+- `2026-09-10` — moved from `in-progress` to `done`: PR #198 review findings,
+  CI, roadmap validator, and whitespace checks completed.
