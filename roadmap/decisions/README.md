@@ -59,4 +59,4 @@ Status is in frontmatter. **Never edit an `accepted` ADR's substance** — super
 | [0029](0029-headroom-memory-via-host-invoked-mcp.md) | Headroom memory through the memory MCP stdio server, host-invoked from the boundary adapter | accepted |
 | [0030](0030-suv-identity-is-global-per-plan-coherence-is-derived.md) | SUV identity stays global; per-plan coherence is a derived view | accepted |
 | [0031](0031-vendor-neutral-memory-provider-seam.md) | Memory behind a vendor-neutral, host-invoked MemoryProvider seam; Headroom is one provider | accepted |
-| [0033](0033-pages-as-a-secure-opt-in-vorno-capability.md) | Pages as a secure, opt-in Vorno capability | proposed |
+| [0033](0033-pages-as-a-secure-opt-in-vorno-capability.md) | Pages as a secure, opt-in Vorno capability | accepted |

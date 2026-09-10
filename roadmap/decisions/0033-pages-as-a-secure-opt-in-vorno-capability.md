@@ -25,8 +25,9 @@ privilege vocabulary.
 
 A published Page is a user-data service, not documentation. The existing
 `share.vorno.ai` design deliberately serves inert JSON; accepting HTML there
-would defeat that property. Privacy and retention must therefore be resolved
-before this distinct service is deployed.
+would defeat that property. The verified `vorno.ai/privacy` 404 context means
+operating this distinct service without a privacy/retention decision would
+contradict ADR-0024's stated cutover gate.
 
 ## Decision
 
@@ -60,8 +61,9 @@ by Vorno-owned, host-authoritative boundaries.**
    activation ticket bound to lease and content digest. Script and session
    grants also require host-rendered first-use confirmation per render; their
    target, action, arguments, and any message body are pinned at approval.
-   Page content never supplies executable scope or callback payload. Ticket
-   lifetime, outstanding-ticket limit, grant TTL ceilings, and confirmation
+   Page content never supplies executable scope or callback payload. Activation
+   ticket TTL is capped at 10 seconds and grant TTL is capped at 30 days. Exact
+   ticket lifetime, outstanding-ticket limit, grant TTL defaults, and confirmation
    presentation are implementation policy with conservative initial defaults,
    not owner gates or immutable ADR constants.
 
@@ -166,3 +168,8 @@ by Vorno-owned, host-authoritative boundaries.**
 - [PLAN-053 — Customize workspace navigation after Pages](../plans/planned/PLAN-053-customize-workspace-navigation-after-pages.md)
 - [ADR-0021 — Gate session-mutating automation actions on declared intent](0021-session-actions-gated-by-declared-intent.md)
 - [ADR-0024 — Vorno hosts its own shared sessions](0024-vorno-hosts-its-own-shared-sessions.md)
+- `260910-witty-raven` — Pages callback security design
+- `260910-silver-leaf` — Pages sharing and Cloudflare architecture
+- `260910-strong-valley` — navigation feasibility
+- `260910-wild-pond` — Pages documentation and branding inventory
+- `260910-strong-poplar` — prerelease delivery semantics
