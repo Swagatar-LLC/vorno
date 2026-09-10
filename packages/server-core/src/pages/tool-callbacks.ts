@@ -25,6 +25,7 @@ import type {
 } from '@craft-agent/session-tools-core'
 import type { LoadedPage, PageConfig, PageDataSnapshot, PageKind, PageRefreshSpec, UpdatePagePatch } from '@craft-agent/shared/pages'
 import { isPageGrantUsable } from '@craft-agent/shared/pages/types'
+import { assertPagesEnabled } from '@craft-agent/shared/feature-flags'
 
 export interface PagesToolCallbacksDeps {
   workspaceId: string
@@ -145,6 +146,10 @@ export function buildPagesToolCallbacks(deps: PagesToolCallbacksDeps): PagesTool
     })
   }
 
+  function assertAvailable(): void {
+    assertPagesEnabled()
+  }
+
   async function mutated(pageSlug: string): Promise<void> {
     try {
       await deps.onPagesMutated?.(pageSlug)
@@ -155,15 +160,18 @@ export function buildPagesToolCallbacks(deps: PagesToolCallbacksDeps): PagesTool
 
   return {
     async listPages(): Promise<PageToolSummary[]> {
+      assertAvailable()
       const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
       return loadWorkspacePages(workspaceRootPath).map(toSummary)
     },
 
     async getPage(slug: string, options?: { includeContent?: boolean }): Promise<PageToolDetails | null> {
+      assertAvailable()
       return loadDetails(slug, options?.includeContent === true)
     },
 
     async createPage(input: CreatePageToolInput): Promise<PageToolDetails> {
+      assertAvailable()
       const { createPage } = await import('@craft-agent/shared/pages')
       const config = createPage(workspaceRootPath, {
         name: input.name.trim(),
@@ -182,6 +190,7 @@ export function buildPagesToolCallbacks(deps: PagesToolCallbacksDeps): PagesTool
     },
 
     async updatePage(slug: string, patch: UpdatePageToolPatch): Promise<PageToolDetails> {
+      assertAvailable()
       const { updatePage, savePageContent, loadPage } = await import('@craft-agent/shared/pages')
       const existing = loadPage(workspaceRootPath, slug)
       if (!existing) throw new Error(`Page not found: ${slug}`)
@@ -211,6 +220,7 @@ export function buildPagesToolCallbacks(deps: PagesToolCallbacksDeps): PagesTool
     },
 
     async writePageData(slug: string, patch: PageDataToolPatch) {
+      assertAvailable()
       const { writePageData } = await import('@craft-agent/shared/pages')
       const { result } = await writePageData(workspaceRootPath, slug, patch)
       await mutated(slug)

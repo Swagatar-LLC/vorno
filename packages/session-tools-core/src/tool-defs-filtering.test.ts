@@ -43,6 +43,16 @@ describe('session tool filtering helpers', () => {
     expect(names.includes('send_developer_feedback')).toBe(false);
   });
 
+  it('hides productive Pages tools while retaining delete cleanup when Pages is unavailable', () => {
+    const names = getSessionToolNames({ includePages: false });
+    expect(names.has('list_pages')).toBe(false);
+    expect(names.has('get_page')).toBe(false);
+    expect(names.has('create_page')).toBe(false);
+    expect(names.has('update_page')).toBe(false);
+    expect(names.has('write_page_data')).toBe(false);
+    expect(names.has('delete_page')).toBe(true);
+  });
+
   it('all canonical session tools declare safeMode metadata', () => {
     for (const def of SESSION_TOOL_DEFS) {
       expect(def.safeMode === 'allow' || def.safeMode === 'block').toBe(true);

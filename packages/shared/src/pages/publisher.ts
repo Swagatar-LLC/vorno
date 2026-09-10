@@ -27,20 +27,36 @@
  */
 
 import type { PageConfig, PageShareInfo } from '@craft-agent/core';
-import { isPagesSharingEnabled } from '../feature-flags.ts';
+import { isPagesEnabled, isPagesSharingEnabled } from '../feature-flags.ts';
 import { deletePage, loadPageConfig, setPageShareState } from './storage.ts';
 import { buildPageShareBundle, PageShareError } from './share-bundle.ts';
 
-/** No publication endpoint is implicit: SUV-0058 supplies the verified Vorno capability. */
-export const DEFAULT_PAGES_SHARE_API_BASE_URL: undefined = undefined;
-
 /**
  * Resolve an explicitly configured Vorno or localhost-development publication API.
- * Craft endpoints are never accepted as defaults or overrides.
+ * Fresh publication never falls back to Craft or another arbitrary endpoint.
  */
 export function resolvePagesShareApiBaseUrl(): string | undefined {
   const base = typeof process !== 'undefined' ? process.env?.CRAFT_PAGES_SHARE_API_URL?.trim() : undefined;
   return base ? resolveApprovedPagesShareApiBaseUrl(base) : undefined;
+}
+
+/** The publisher and capability RPC must agree on this exact predicate. */
+export function isPagesSharingAvailable(apiBaseUrl = resolvePagesShareApiBaseUrl()): boolean {
+  return isPagesEnabled() && isPagesSharingEnabled() && apiBaseUrl !== undefined;
+}
+
+/**
+ * Existing public copies remain revocable after endpoint/default changes.
+ * This deliberately accepts any HTTPS stored origin: it is only used with the
+ * copy's vault-held admin token, never to create a new publication.
+ */
+export function resolveStoredPagesShareApiBaseUrl(shareUrl: string): string | undefined {
+  try {
+    const url = new URL(shareUrl);
+    return url.protocol === 'https:' ? `${url.origin}/api` : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveApprovedPagesShareApiBaseUrl(base: string): string | undefined {
@@ -86,7 +102,7 @@ export interface PagePublisherOptions {
   tokenStore: PagePublishTokenStore;
   /** Injectable for tests (defaults to global fetch) */
   fetchFn?: typeof fetch;
-  /** Publication API base, e.g. https://thecraftagents.com/p/api */
+  /** Fresh-publication API base, e.g. https://pages.vorno.ai/api */
   apiBaseUrl?: string;
   log?: (message: string) => void;
 }
@@ -124,13 +140,13 @@ const ERROR_BODY_MAX_CHARS = 300;
 export class PagePublisher {
   private readonly tokenStore: PagePublishTokenStore;
   private readonly fetchFn: typeof fetch;
-  private readonly apiBaseUrl: string | undefined;
+  private readonly publishApiBaseUrl: string | undefined;
   private readonly log: (message: string) => void;
 
   constructor(options: PagePublisherOptions) {
     this.tokenStore = options.tokenStore;
     this.fetchFn = options.fetchFn ?? fetch;
-    this.apiBaseUrl = options.apiBaseUrl
+    this.publishApiBaseUrl = options.apiBaseUrl
       ? resolveApprovedPagesShareApiBaseUrl(options.apiBaseUrl)
       : resolvePagesShareApiBaseUrl();
     this.log = options.log ?? (() => {});
@@ -146,7 +162,7 @@ export class PagePublisher {
     pageSlug: string,
     options: PublishPageOptions,
   ): Promise<PageConfig> {
-    this.assertSharingEnabled();
+    this.assertExistingPublicationEnabled();
 
     const config = this.requirePage(workspaceRootPath, pageSlug);
     const bundle = buildPageShareBundle(workspaceRootPath, pageSlug, {
@@ -166,7 +182,8 @@ export class PagePublisher {
       return this.uploadRevision(workspaceRootPath, pageSlug, config, existingShare, token, bundle);
     }
 
-    // Create a fresh publication
+    // Create a fresh publication only through the configured approved endpoint.
+    this.assertFreshPublishingAvailable();
     const form = new FormData();
     form.set('manifest', JSON.stringify(bundle.manifest));
     form.set('content', new Blob([bundle.content], { type: 'text/html' }), 'index.html');
@@ -175,7 +192,7 @@ export class PagePublisher {
     }
     if (options.password) form.set('password', options.password);
 
-    const response = await this.request('POST', '/publications', { body: form });
+    const response = await this.request(this.requirePublishApiBaseUrl(), 'POST', '/publications', { body: form });
     const dto = await this.parsePublication(response, 201);
     if (!dto.adminToken) {
       throw new PageShareError('PAGE_SHARE_REMOTE_ERROR', 'Create response did not include an admin token');
@@ -188,7 +205,7 @@ export class PagePublisher {
     } catch (err) {
       this.log(`Vault write failed after publication create; rolling back remote ${dto.id}`);
       try {
-        await this.request('DELETE', `/publications/${encodeURIComponent(dto.id)}`, {
+        await this.request(this.requirePublishApiBaseUrl(), 'DELETE', `/publications/${encodeURIComponent(dto.id)}`, {
           adminToken: dto.adminToken,
         });
       } catch {
@@ -223,7 +240,7 @@ export class PagePublisher {
     pageSlug: string,
     password: string | null,
   ): Promise<PageConfig> {
-    this.assertSharingEnabled();
+    this.assertExistingPublicationEnabled();
 
     const config = this.requirePage(workspaceRootPath, pageSlug);
     const share = this.requireShare(config);
@@ -233,7 +250,7 @@ export class PagePublisher {
     form.set('passwordAction', password === null ? 'clear' : 'set');
     if (password !== null) form.set('password', password);
 
-    const response = await this.request('PUT', `/publications/${encodeURIComponent(share.publicationId)}`, {
+    const response = await this.request(this.requireStoredApiBaseUrl(share), 'PUT', `/publications/${encodeURIComponent(share.publicationId)}`, {
       body: form,
       adminToken: token,
     });
@@ -271,6 +288,7 @@ export class PagePublisher {
     }
 
     const response = await this.request(
+      this.requireStoredApiBaseUrl(share),
       'DELETE',
       `/publications/${encodeURIComponent(share.publicationId)}`,
       { adminToken: token },
@@ -310,6 +328,7 @@ export class PagePublisher {
     let dto: WorkerPublicationResponse;
     try {
       const response = await this.request(
+        this.requireStoredApiBaseUrl(share),
         'PUT',
         `/publications/${encodeURIComponent(share.publicationId)}`,
         { body: form, adminToken: token },
@@ -335,8 +354,17 @@ export class PagePublisher {
     return updated;
   }
 
-  private assertSharingEnabled(): void {
-    if (!isPagesSharingEnabled() || !this.apiBaseUrl) {
+  private assertExistingPublicationEnabled(): void {
+    if (!isPagesEnabled() || !isPagesSharingEnabled()) {
+      throw new PageShareError(
+        'PAGE_SHARING_DISABLED',
+        'Pages sharing is unavailable until this workspace has a verified Vorno publication capability.',
+      );
+    }
+  }
+
+  private assertFreshPublishingAvailable(): void {
+    if (!isPagesSharingAvailable(this.publishApiBaseUrl)) {
       throw new PageShareError(
         'PAGE_SHARING_DISABLED',
         'Pages sharing is unavailable until this workspace has a verified Vorno publication capability.',
@@ -357,6 +385,21 @@ export class PagePublisher {
     return config.share;
   }
 
+  private requirePublishApiBaseUrl(): string {
+    if (!this.publishApiBaseUrl) {
+      throw new PageShareError('PAGE_SHARING_DISABLED', 'Pages sharing has no configured publication endpoint.');
+    }
+    return this.publishApiBaseUrl;
+  }
+
+  private requireStoredApiBaseUrl(share: PageShareInfo): string {
+    const apiBaseUrl = resolveStoredPagesShareApiBaseUrl(share.url);
+    if (!apiBaseUrl) {
+      throw new PageShareError('PAGE_SHARE_REMOTE_ERROR', 'Published page has no valid HTTPS origin for cleanup.');
+    }
+    return apiBaseUrl;
+  }
+
   private async requireToken(workspaceId: string, pageId: string): Promise<string> {
     const token = await this.tokenStore.get(workspaceId, pageId);
     if (!token) {
@@ -369,17 +412,15 @@ export class PagePublisher {
   }
 
   private async request(
+    apiBaseUrl: string,
     method: 'POST' | 'PUT' | 'DELETE',
     path: string,
     options: { body?: FormData; adminToken?: string } = {},
   ): Promise<Response> {
-    if (!this.apiBaseUrl) {
-      throw new PageShareError('PAGE_SHARING_DISABLED', 'Pages sharing has no configured publication endpoint.');
-    }
     const headers: Record<string, string> = {};
     if (options.adminToken) headers['Authorization'] = `Bearer ${options.adminToken}`;
     try {
-      return await this.fetchFn(`${this.apiBaseUrl}${path}`, {
+      return await this.fetchFn(`${apiBaseUrl}${path}`, {
         method,
         headers,
         body: options.body,

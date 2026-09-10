@@ -9,12 +9,16 @@ import { buildPagesToolCallbacks } from './tool-callbacks'
 // sessions inherit CRAFT_IS_PACKAGED=true) it would flip into packaged-mode
 // hardening and block the PATH fallback this suite relies on.
 const SAVED_IS_PACKAGED = process.env.CRAFT_IS_PACKAGED
+const SAVED_PAGES = process.env.CRAFT_FEATURE_PAGES
 beforeAll(() => {
   process.env.CRAFT_IS_PACKAGED = '0'
+  process.env.CRAFT_FEATURE_PAGES = '1'
 })
 afterAll(() => {
   if (SAVED_IS_PACKAGED === undefined) delete process.env.CRAFT_IS_PACKAGED
   else process.env.CRAFT_IS_PACKAGED = SAVED_IS_PACKAGED
+  if (SAVED_PAGES === undefined) delete process.env.CRAFT_FEATURE_PAGES
+  else process.env.CRAFT_FEATURE_PAGES = SAVED_PAGES
 })
 
 describe('pages tool callbacks (end-to-end against a temp workspace)', () => {
@@ -32,6 +36,13 @@ describe('pages tool callbacks (end-to-end against a temp workspace)', () => {
   })
   afterAll(() => {
     rmSync(workspace, { recursive: true, force: true })
+  })
+
+  it('refuses productive tools by default while retaining delete cleanup', async () => {
+    delete process.env.CRAFT_FEATURE_PAGES
+    await expect(callbacks.listPages()).rejects.toThrow('PAGES_DISABLED')
+    await expect(callbacks.createPage({ name: 'Blocked' })).rejects.toThrow('PAGES_DISABLED')
+    process.env.CRAFT_FEATURE_PAGES = '1'
   })
 
   it('create → list → get round-trips through real storage', async () => {

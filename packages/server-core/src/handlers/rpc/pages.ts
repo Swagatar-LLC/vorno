@@ -1,5 +1,6 @@
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
+import { assertPagesEnabled } from '@craft-agent/shared/feature-flags'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import type { PageActionRequest } from '@craft-agent/shared/pages'
@@ -36,6 +37,7 @@ const ACTION_BODY_MAX_CHARS = 512 * 1024
 
 export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): void {
   const log = deps.platform.logger
+  const assertAvailable = () => assertPagesEnabled()
 
   // One broker per workspace: render leases and in-flight actions are
   // in-memory state scoped to the hosting process.
@@ -130,7 +132,9 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   async function getBroker(workspaceId: string, workspaceRootPath: string): Promise<PageActionBroker> {
     const existing = brokers.get(workspaceRootPath)
+    // Cleanup may release/cancel a broker created before Pages was disabled.
     if (existing) return existing
+    assertAvailable()
 
     const { PageActionBroker } = await import('@craft-agent/shared/pages')
     const { loadWorkspaceSources } = await import('@craft-agent/shared/sources')
@@ -169,6 +173,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // List all pages for a workspace
   server.handle(RPC_CHANNELS.pages.GET, async (_ctx, workspaceId: string) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) {
       log.error(`PAGES_GET: Workspace not found: ${workspaceId}`)
@@ -180,6 +185,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // Get one page (by slug or id)
   server.handle(RPC_CHANNELS.pages.GET_ONE, async (_ctx, workspaceId: string, pageIdOrSlug: string) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return null
     const { loadPage, loadPageById } = await import('@craft-agent/shared/pages')
@@ -189,6 +195,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // Create a new page
   server.handle(RPC_CHANNELS.pages.CREATE, async (_ctx, workspaceId: string, input: import('@craft-agent/shared/pages').CreatePageInput) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { createPage } = await import('@craft-agent/shared/pages')
@@ -217,6 +224,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     pageSlug: string,
     patch: import('@craft-agent/shared/pages').UpdatePagePatch,
   ) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { updatePage } = await import('@craft-agent/shared/pages')
@@ -245,6 +253,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // Read page content (for editing/inspection — rendering should use CREATE_LEASE)
   server.handle(RPC_CHANNELS.pages.GET_CONTENT, async (_ctx, workspaceId: string, pageSlug: string) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return { content: null }
     const { loadPageContent, loadPageConfig } = await import('@craft-agent/shared/pages')
@@ -256,6 +265,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // Write page content (updates contentDigest; existing grants go stale by design)
   server.handle(RPC_CHANNELS.pages.SET_CONTENT, async (_ctx, workspaceId: string, pageSlug: string, content: string) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { savePageContent } = await import('@craft-agent/shared/pages')
@@ -268,6 +278,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // Read the page's data snapshot (cross-process contract written by refresh scripts)
   server.handle(RPC_CHANNELS.pages.GET_DATA, async (_ctx, workspaceId: string, pageSlug: string) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return null
     const { readPageDataSnapshot } = await import('@craft-agent/shared/pages')
@@ -276,6 +287,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // List persisted grants (validity — digest/expiry — is enforced at execution time)
   server.handle(RPC_CHANNELS.pages.LIST_GRANTS, async (_ctx, workspaceId: string, pageSlug: string) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return []
     const { loadPageConfig } = await import('@craft-agent/shared/pages')
@@ -289,6 +301,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     pageSlug: string,
     input: import('@craft-agent/shared/pages').AddPageGrantInput,
   ) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { addPageGrant } = await import('@craft-agent/shared/pages')
@@ -318,6 +331,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // to — the renderer must render THIS content string (not a separately
   // fetched copy), closing the read/lease race.
   server.handle(RPC_CHANNELS.pages.CREATE_LEASE, async (_ctx, workspaceId: string, pageSlug: string) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { loadPageContent, computePageContentDigest } = await import('@craft-agent/shared/pages')
@@ -341,6 +355,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // Execute a granted source action. Page config is re-read from disk per
   // request so revocations and content changes apply immediately.
   server.handle(RPC_CHANNELS.pages.EXECUTE_ACTION, async (_ctx, workspaceId: string, request: PageActionRequest) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { loadPageConfig } = await import('@craft-agent/shared/pages')
@@ -376,13 +391,18 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // Whether the renderer may offer publish/update UI (unpublish is always allowed)
   server.handle(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES, async () => {
-    const { isPagesSharingEnabled } = await import('@craft-agent/shared/feature-flags')
-    return { sharingEnabled: isPagesSharingEnabled() }
+    const { isPagesEnabled } = await import('@craft-agent/shared/feature-flags')
+    const { isPagesSharingAvailable } = await import('@craft-agent/shared/pages')
+    return {
+      pagesEnabled: isPagesEnabled(),
+      sharingEnabled: isPagesSharingAvailable(),
+    }
   })
 
   // What would `includeData` publish, and does any of it look like a secret?
   // Best-effort warning input for the Share dialog — never blocks publishing.
   server.handle(RPC_CHANNELS.pages.GET_SHARE_DATA_SCAN, async (_ctx, workspaceId: string, pageSlug: string) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { scanPageShareData } = await import('@craft-agent/shared/pages')
@@ -396,6 +416,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     pageSlug: string,
     options: { includeData: boolean; password?: string; viewOnlyAcknowledged?: boolean },
   ) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const publisher = await buildPublisher()
@@ -416,6 +437,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     pageSlug: string,
     password: string | null,
   ) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const publisher = await buildPublisher()
@@ -445,6 +467,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // Read a page's poster as a data URL, but ONLY when it is fresh (the stored
   // digest matches the current content). Stale/missing → null → tile falls back.
   server.handle(RPC_CHANNELS.pages.GET_THUMBNAIL, async (_ctx, workspaceId: string, pageSlug: string) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return null
     const { loadPageConfig, getPageThumbnailPath, isThumbnailFresh } = await import('@craft-agent/shared/pages')
@@ -463,6 +486,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // Manually request a (re)capture (e.g. an agent/user "refresh preview").
   server.handle(RPC_CHANNELS.pages.REGENERATE_THUMBNAIL, async (_ctx, workspaceId: string, pageSlug: string) => {
+    assertAvailable()
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return false
     deps.sessionManager.enqueuePageThumbnail(workspaceId, workspace.rootPath, pageSlug)

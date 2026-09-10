@@ -10,30 +10,40 @@
  * list to drift.
  */
 
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { pagesAtom } from '@/atoms/pages'
 import type { LoadedPage } from '@craft-agent/shared/pages/types'
 
 export interface UsePagesResult {
   pages: LoadedPage[]
+  pagesEnabled: boolean
   refresh: () => Promise<void>
 }
 
 export function usePages(activeWorkspaceId: string | null | undefined): UsePagesResult {
   const pages = useAtomValue(pagesAtom)
   const setPages = useSetAtom(pagesAtom)
+  const [pagesEnabled, setPagesEnabled] = useState(false)
 
   const refresh = useCallback(async () => {
     if (!activeWorkspaceId) {
+      setPagesEnabled(false)
       setPages([])
       return
     }
     try {
+      const capabilities = await window.electronAPI.getPageShareCapabilities()
+      setPagesEnabled(capabilities.pagesEnabled)
+      if (!capabilities.pagesEnabled) {
+        setPages([])
+        return
+      }
       const result = await window.electronAPI.getPages(activeWorkspaceId)
       setPages(Array.isArray(result) ? result : [])
     } catch (err) {
-      console.error('[usePages] Failed to load pages:', err)
+      console.error('[usePages] Failed to load Pages capability:', err)
+      setPagesEnabled(false)
       setPages([])
     }
   }, [activeWorkspaceId, setPages])
@@ -43,7 +53,7 @@ export function usePages(activeWorkspaceId: string | null | undefined): UsePages
   }, [refresh])
 
   useEffect(() => {
-    if (!activeWorkspaceId) return
+    if (!activeWorkspaceId || !pagesEnabled) return
     const off = window.electronAPI.onPagesChanged((wsId, list) => {
       // Watcher-driven pushes carry the CONFIG workspace id, but the WebUI
       // identifies its workspace by slug — those pushes still target this
@@ -58,7 +68,7 @@ export function usePages(activeWorkspaceId: string | null | undefined): UsePages
     return () => {
       if (typeof off === 'function') off()
     }
-  }, [activeWorkspaceId, setPages, refresh])
+  }, [activeWorkspaceId, pagesEnabled, setPages, refresh])
 
-  return { pages, refresh }
+  return { pages, pagesEnabled, refresh }
 }

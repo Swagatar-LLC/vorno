@@ -37,6 +37,7 @@ import {
   isPagesNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
+import { usePages } from '@/hooks/usePages'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
 import { extractLabelId } from '@craft-agent/shared/labels'
 import type { SessionStatusId } from '@/config/session-status-config'
@@ -92,6 +93,7 @@ export function MainContentPanel({
     getAutomationHistory,
     activeSessionWorkingDirectory,
   } = useAppShellContext()
+  const { pagesEnabled } = usePages(activeWorkspaceId)
 
   // Session multi-select state
   const isMultiSelectActive = useIsMultiSelectActive()
@@ -365,8 +367,12 @@ export function MainContentPanel({
     )
   }
 
-  // Pages navigator - full-width library grid, or one page's embedded render
+  // Pages navigator - host capability is authoritative; a manually entered
+  // route cannot render the unavailable feature before SUV-0058's workspace gate.
   if (isPagesNavigation(navState)) {
+    if (!pagesEnabled) {
+      return wrapWithStoplight(<Panel variant="grow" className={className}>{null}</Panel>)
+    }
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
         {navState.details ? (

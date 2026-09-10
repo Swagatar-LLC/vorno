@@ -14,6 +14,7 @@
  */
 
 import type { AutomationMatcher } from '../automations/types.ts';
+import { isPagesEnabled } from '../feature-flags.ts';
 import { loadWorkspacePages } from './storage.ts';
 
 /** Matcher-id prefix marking synthetic page-refresh matchers (also the history key) */
@@ -34,6 +35,8 @@ export function isPageRefreshMatcherId(matcherId: string): boolean {
  * refresh spec. Pure read — no caching; callers decide when to rebuild.
  */
 export function buildPageRefreshMatchers(workspaceRootPath: string): AutomationMatcher[] {
+  if (!isPagesEnabled()) return [];
+
   const matchers: AutomationMatcher[] = [];
 
   for (const page of loadWorkspacePages(workspaceRootPath)) {

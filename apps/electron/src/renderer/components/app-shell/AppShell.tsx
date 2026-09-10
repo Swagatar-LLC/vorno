@@ -934,7 +934,7 @@ function AppShellContent({
   } = useAutomations(activeWorkspaceId)
 
   const { projects } = useProjects(activeWorkspaceId)
-  const { pages } = usePages(activeWorkspaceId)
+  const { pages, pagesEnabled } = usePages(activeWorkspaceId)
   const projectMenuOptions = useMemo(
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
     [projects],
@@ -2189,13 +2189,13 @@ function AppShellContent({
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
     result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
-    result.push({ id: 'nav:pages', type: 'nav', action: handlePagesClick })
+    if (pagesEnabled) result.push({ id: 'nav:pages', type: 'nav', action: handlePagesClick })
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handlePagesClick, handleAutomationsClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handlePagesClick, pagesEnabled, handleAutomationsClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2691,13 +2691,13 @@ function AppShellContent({
                         onClick: () => handleJumpToProjectSessions(p.config.id),
                       })),
                     },
-                    {
+                    ...(pagesEnabled ? [{
                       id: "nav:pages",
                       title: t("sidebar.pages"),
                       label: String(pages.length),
                       icon: PanelsTopLeft,
                       // Highlight on the library grid only, not when a page is open (mirrors Projects)
-                      variant: (isPagesNavigation(navState) && !navState.details) ? "default" : "ghost",
+                      variant: (isPagesNavigation(navState) && !navState.details) ? "default" as const : "ghost" as const,
                       onClick: handlePagesClick,
                       expandable: pages.length > 0,
                       expanded: isExpanded('nav:pages'),
@@ -2709,13 +2709,13 @@ function AppShellContent({
                         variant: (isPagesNavigation(navState) && navState.details?.pageSlug === p.config.slug) ? "default" as const : "ghost" as const,
                         onClick: () => navigate(routes.view.pages(p.config.slug)),
                       })),
-                    },
+                    }] : []),
                     {
                       id: "nav:automations",
                       title: t("sidebar.automations"),
                       label: String(automations.length),
                       icon: ListTodo,
-                      variant: (isAutomationsNavigation(navState) && !automationFilter) ? "default" : "ghost",
+                      variant: (isAutomationsNavigation(navState) && !automationFilter) ? "default" as const : "ghost" as const,
                       onClick: handleAutomationsClick,
                       expandable: true,
                       expanded: isExpanded('nav:automations'),
@@ -2781,13 +2781,13 @@ function AppShellContent({
                       onClick: handleArtifactsClick,
                     }] : []),
                     // --- Separator ---
-                    { id: "separator:skills-settings", type: "separator" },
+                    { id: "separator:skills-settings", type: "separator" as const },
                     // --- Settings ---
                     {
                       id: "nav:settings",
                       title: t("sidebar.settings"),
                       icon: Settings,
-                      variant: isSettingsNavigation(navState) ? "default" : "ghost",
+                      variant: isSettingsNavigation(navState) ? "default" as const : "ghost" as const,
                       onClick: () => handleSettingsClick(),
                     },
                     // --- What's New ---

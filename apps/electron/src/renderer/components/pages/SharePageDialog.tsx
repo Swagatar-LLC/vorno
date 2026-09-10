@@ -23,7 +23,7 @@ import { describeGrantAction, useGrantRemoval } from './grant-visuals'
  * Share dialog: publish / republish / password management / unpublish.
  *
  * Server-side gating is authoritative (the publish RPCs re-check the
- * CRAFT_FEATURE_PAGES_SHARING flag); `sharingEnabled` only controls what the
+ * Pages and CRAFT_FEATURE_PAGES_SHARING gates); `sharingEnabled` only controls what the
  * dialog offers. Unpublish is always offered for a published page so a
  * disabled flag can never strand a public copy (design §12).
  */
@@ -47,7 +47,7 @@ function displayShareError(err: unknown): string {
 }
 
 // Module-level cache: the flag is server-evaluated and process-stable.
-let capabilitiesPromise: Promise<{ sharingEnabled: boolean }> | null = null
+let capabilitiesPromise: Promise<{ pagesEnabled: boolean; sharingEnabled: boolean }> | null = null
 
 export function usePageShareCapabilities(): { sharingEnabled: boolean; loaded: boolean } {
   const [state, setState] = React.useState<{ sharingEnabled: boolean; loaded: boolean }>({
@@ -59,7 +59,7 @@ export function usePageShareCapabilities(): { sharingEnabled: boolean; loaded: b
     if (!capabilitiesPromise) {
       capabilitiesPromise = window.electronAPI.getPageShareCapabilities().catch(() => {
         capabilitiesPromise = null
-        return { sharingEnabled: false }
+        return { pagesEnabled: false, sharingEnabled: false }
       })
     }
     void capabilitiesPromise.then(caps => {
