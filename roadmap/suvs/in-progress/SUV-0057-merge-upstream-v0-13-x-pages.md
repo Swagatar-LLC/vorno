@@ -1,7 +1,7 @@
 ---
 id: SUV-0057
 title: Merge upstream v0.13.x Pages
-status: planned
+status: in-progress
 plan: PLAN-052
 direction: DIR-04
 owner: jh
@@ -55,3 +55,4 @@ preserving fork behavior and leaving Pages unavailable until SUV-0058.
 
 - `2026-09-10` — created in `planned/`; follows the decision/roadmap PR and
   precedes all Pages feature lanes.
+- `2026-09-10` — moved from `planned` to `in-progress`: beginning canonical upstream v0.13.x merge and conflict audit.
