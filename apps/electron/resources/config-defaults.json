@@ -21,6 +21,9 @@
     "cyclablePermissionModes": ["safe", "allow-all"],
     "idleAgentTtlMinutes": 60,
     "idleBrowserTtlMinutes": 60,
+    "pages": {
+      "enabled": false
+    },
     "localMcpServers": {
       "enabled": true
     }

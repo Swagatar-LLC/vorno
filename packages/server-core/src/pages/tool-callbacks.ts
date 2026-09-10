@@ -147,7 +147,7 @@ export function buildPagesToolCallbacks(deps: PagesToolCallbacksDeps): PagesTool
   }
 
   function assertAvailable(): void {
-    assertPagesEnabled()
+    assertPagesEnabled(workspaceRootPath)
   }
 
   async function mutated(pageSlug: string): Promise<void> {

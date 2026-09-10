@@ -126,6 +126,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       idleAgentTtlMinutes: config?.defaults?.idleAgentTtlMinutes,
       idleBrowserTtlMinutes: config?.defaults?.idleBrowserTtlMinutes,
       workbenchEnabled: config?.defaults?.workbenchEnabled ?? false,
+      pagesEnabled: config?.defaults?.pages?.enabled === true,
       artifactsEnabled: config?.defaults?.artifactsEnabled ?? false,
       artifactRoots: config?.defaults?.artifactRoots ?? {},
       // fork(PLAN-040, SUV-0017): the writable override layer, plus the
@@ -153,9 +154,13 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'idleAgentTtlMinutes', 'idleBrowserTtlMinutes', 'workbenchEnabled', 'artifactsEnabled', 'artifactRoots', 'headroom', 'memory']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'idleAgentTtlMinutes', 'idleBrowserTtlMinutes', 'workbenchEnabled', 'pagesEnabled', 'artifactsEnabled', 'artifactRoots', 'headroom', 'memory']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
+    }
+
+    if (key === 'pagesEnabled' && typeof normalizedValue !== 'boolean') {
+      throw new Error('pagesEnabled must be a boolean')
     }
 
     // Validate artifactRoots (ADR-0016 §2, ADR-0019). The value is a map of
@@ -306,6 +311,11 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       // Store in localMcpServers.enabled (top-level, not in defaults)
       config.localMcpServers = config.localMcpServers || { enabled: true }
       config.localMcpServers.enabled = Boolean(normalizedValue)
+    } else if (key === 'pagesEnabled') {
+      // The transport uses a flat boolean; persistence stays in the existing
+      // workspace defaults schema at `defaults.pages.enabled`.
+      config.defaults = config.defaults || {}
+      config.defaults.pages = { enabled: normalizedValue as boolean }
     } else {
       // Update the setting in defaults
       config.defaults = config.defaults || {}

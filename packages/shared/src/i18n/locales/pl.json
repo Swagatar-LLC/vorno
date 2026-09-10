@@ -1505,6 +1505,8 @@
   "settings.workspace.noArtifactRoots": "Nie skonfigurowano dodatkowych katalogów.",
   "settings.workspace.noSourcesConfigured": "Brak źródeł skonfigurowanych w tym Workspace.",
   "settings.workspace.noWorkspaceSelected": "Nie wybrano Workspace",
+  "settings.workspace.pages": "Strony",
+  "settings.workspace.pagesDesc": "Twórz i używaj lokalnych stron w tym obszarze roboczym. Udostępnianie pozostaje osobno wyłączone, dopóki nie będzie dostępna zweryfikowana funkcja publikowania.",
   "settings.workspace.permissionsSection": "Uprawnienia",
   "settings.workspace.renameWorkspace": "Zmień nazwę Workspace",
   "settings.workspace.rootHealthMissing": "Nie znaleziono",

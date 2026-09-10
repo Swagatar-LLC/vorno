@@ -32,7 +32,7 @@ describe('Pages sharing default gate', () => {
     expect(isPagesEnabled()).toBe(false);
     expect(isPagesSharingEnabled()).toBe(false);
     expect(resolvePagesShareApiBaseUrl()).toBeUndefined();
-    expect(isPagesSharingAvailable()).toBe(false);
+    expect(isPagesSharingAvailable(undefined)).toBe(false);
   });
 
   test('refuses a Craft endpoint override before any request can be sent', async () => {

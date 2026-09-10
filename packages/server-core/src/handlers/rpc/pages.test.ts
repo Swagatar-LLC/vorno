@@ -47,7 +47,7 @@ describe('Pages RPC availability gate', () => {
     delete process.env.CRAFT_FEATURE_PAGES
     const invoke = createHarness()
 
-    await expect(invoke(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES)).resolves.toEqual({
+    await expect(invoke(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES, 'workspace')).resolves.toEqual({
       pagesEnabled: false,
       sharingEnabled: false,
     })

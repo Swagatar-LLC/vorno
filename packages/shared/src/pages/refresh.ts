@@ -35,7 +35,7 @@ export function isPageRefreshMatcherId(matcherId: string): boolean {
  * refresh spec. Pure read — no caching; callers decide when to rebuild.
  */
 export function buildPageRefreshMatchers(workspaceRootPath: string): AutomationMatcher[] {
-  if (!isPagesEnabled()) return [];
+  if (!isPagesEnabled(workspaceRootPath)) return [];
 
   const matchers: AutomationMatcher[] = [];
 

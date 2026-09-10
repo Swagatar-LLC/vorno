@@ -41,8 +41,11 @@ export function resolvePagesShareApiBaseUrl(): string | undefined {
 }
 
 /** The publisher and capability RPC must agree on this exact predicate. */
-export function isPagesSharingAvailable(apiBaseUrl = resolvePagesShareApiBaseUrl()): boolean {
-  return isPagesEnabled() && isPagesSharingEnabled() && apiBaseUrl !== undefined;
+export function isPagesSharingAvailable(
+  workspaceRootPath: string | undefined,
+  apiBaseUrl = resolvePagesShareApiBaseUrl(),
+): boolean {
+  return isPagesEnabled(workspaceRootPath) && isPagesSharingEnabled() && apiBaseUrl !== undefined;
 }
 
 /**
@@ -170,7 +173,7 @@ export class PagePublisher {
     pageSlug: string,
     options: PublishPageOptions,
   ): Promise<PageConfig> {
-    this.assertExistingPublicationEnabled();
+    this.assertExistingPublicationEnabled(workspaceRootPath);
 
     const config = this.requirePage(workspaceRootPath, pageSlug);
     const bundle = buildPageShareBundle(workspaceRootPath, pageSlug, {
@@ -191,7 +194,7 @@ export class PagePublisher {
     }
 
     // Create a fresh publication only through the configured approved endpoint.
-    this.assertFreshPublishingAvailable();
+    this.assertFreshPublishingAvailable(workspaceRootPath);
     const form = new FormData();
     form.set('manifest', JSON.stringify(bundle.manifest));
     form.set('content', new Blob([bundle.content], { type: 'text/html' }), 'index.html');
@@ -248,7 +251,7 @@ export class PagePublisher {
     pageSlug: string,
     password: string | null,
   ): Promise<PageConfig> {
-    this.assertExistingPublicationEnabled();
+    this.assertExistingPublicationEnabled(workspaceRootPath);
 
     const config = this.requirePage(workspaceRootPath, pageSlug);
     const share = this.requireShare(config);
@@ -362,8 +365,8 @@ export class PagePublisher {
     return updated;
   }
 
-  private assertExistingPublicationEnabled(): void {
-    if (!isPagesEnabled() || !isPagesSharingEnabled()) {
+  private assertExistingPublicationEnabled(workspaceRootPath: string): void {
+    if (!isPagesEnabled(workspaceRootPath) || !isPagesSharingEnabled()) {
       throw new PageShareError(
         'PAGE_SHARING_DISABLED',
         'Pages sharing is unavailable until this workspace has a verified Vorno publication capability.',
@@ -371,8 +374,8 @@ export class PagePublisher {
     }
   }
 
-  private assertFreshPublishingAvailable(): void {
-    if (!isPagesSharingAvailable(this.publishApiBaseUrl)) {
+  private assertFreshPublishingAvailable(workspaceRootPath: string): void {
+    if (!isPagesSharingAvailable(workspaceRootPath, this.publishApiBaseUrl)) {
       throw new PageShareError(
         'PAGE_SHARING_DISABLED',
         'Pages sharing is unavailable until this workspace has a verified Vorno publication capability.',

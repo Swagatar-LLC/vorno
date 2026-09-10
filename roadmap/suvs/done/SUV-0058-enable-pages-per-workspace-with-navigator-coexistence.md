@@ -1,7 +1,7 @@
 ---
 id: SUV-0058
 title: Enable Pages per workspace with navigator coexistence
-status: planned
+status: done
 plan: PLAN-052
 direction: DIR-04
 owner: jh
@@ -31,19 +31,24 @@ Projects, Workbench, Artifacts, or existing session navigation.
 
 ## Acceptance
 
-- [ ] Existing and new workspaces resolve Pages as disabled until their own
+- [x] Existing and new workspaces resolve Pages as disabled until their own
       persisted setting is enabled.
-- [ ] Settings changes persist and every locale has the required Pages-setting
+- [x] Settings changes persist and every locale has the required Pages-setting
       labels; disabled UI does not advertise authoring or navigation.
-- [ ] RPC, tool, scheduler, and broker tests prove that disabled Pages cannot
+- [x] RPC, tool, scheduler, and broker tests prove that disabled Pages cannot
       author, refresh, lease, or perform privileged work in desktop or WebUI.
-- [ ] Delete, unpublish, and revoke remain available while disabled and are
+- [x] Delete, unpublish, and revoke remain available while disabled and are
       covered by cleanup-path tests.
-- [ ] Projects, Pages, Workbench, Artifacts, sessions, route parsing, and
+- [x] Projects, Pages, Workbench, Artifacts, sessions, route parsing, and
       mobile/desktop navigation coexist in focused tests.
-- [ ] No path defaults to Craft sharing infrastructure when Pages is disabled.
+- [x] No path defaults to Craft sharing infrastructure when Pages is disabled.
 
 ## Status log
 
 - `2026-09-10` — created in `planned/`; starts only after the upstream merge
   establishes the actual Pages surface.
+- `2026-09-10` — moved from `planned` to `in-progress`: implementation began on
+  the persisted per-workspace Pages availability boundary.
+- `2026-09-10` — moved from `in-progress` to `done`: persisted workspace
+  capability, host gates, Settings/i18n, watcher refresh, and focused
+  regression coverage are complete.

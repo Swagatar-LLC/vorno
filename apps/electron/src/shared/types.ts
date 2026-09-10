@@ -1010,7 +1010,7 @@ export interface ElectronAPI {
   releasePageLease(workspaceId: string, leaseId: string): Promise<void>
   executePageAction(workspaceId: string, request: import('@craft-agent/shared/pages/types').PageActionRequest): Promise<import('@craft-agent/shared/pages/types').PageActionResult>
   cancelPageAction(workspaceId: string, requestId: string): Promise<boolean>
-  getPageShareCapabilities(): Promise<{ pagesEnabled: boolean; sharingEnabled: boolean }>
+  getPageShareCapabilities(workspaceId: string): Promise<{ pagesEnabled: boolean; sharingEnabled: boolean }>
   /** What `includeData` would publish + key paths that look credential-bearing (warn-only). */
   getPageShareDataScan(workspaceId: string, pageSlug: string): Promise<{ snapshotBytes: number | null; secretCandidates: string[] }>
   publishPage(workspaceId: string, pageSlug: string, options: { includeData: boolean; password?: string; viewOnlyAcknowledged?: boolean }): Promise<import('@craft-agent/shared/pages/types').PageConfig>

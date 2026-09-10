@@ -33,7 +33,7 @@ export function usePages(activeWorkspaceId: string | null | undefined): UsePages
       return
     }
     try {
-      const capabilities = await window.electronAPI.getPageShareCapabilities()
+      const capabilities = await window.electronAPI.getPageShareCapabilities(activeWorkspaceId)
       setPagesEnabled(capabilities.pagesEnabled)
       if (!capabilities.pagesEnabled) {
         setPages([])
@@ -52,18 +52,23 @@ export function usePages(activeWorkspaceId: string | null | undefined): UsePages
     refresh()
   }, [refresh])
 
+  // The Settings toggle is persisted by the host; this event merely prompts
+  // presentation consumers to re-read that authority immediately.
   useEffect(() => {
-    if (!activeWorkspaceId || !pagesEnabled) return
-    const off = window.electronAPI.onPagesChanged((wsId, list) => {
-      // Watcher-driven pushes carry the CONFIG workspace id, but the WebUI
-      // identifies its workspace by slug — those pushes still target this
-      // client (routing is handshake-based), so on an id-form mismatch we
-      // re-read instead of dropping (mirrors useAutomations' refetch shape).
-      if (wsId === activeWorkspaceId) {
-        setPages(Array.isArray(list) ? list : [])
-      } else {
-        void refresh()
-      }
+    const onFlagChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ workspaceId?: string }>).detail
+      if (detail?.workspaceId === activeWorkspaceId) void refresh()
+    }
+    window.addEventListener('pages:flag-changed', onFlagChanged)
+    return () => window.removeEventListener('pages:flag-changed', onFlagChanged)
+  }, [activeWorkspaceId, refresh])
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return
+    const off = window.electronAPI.onPagesChanged((_wsId, _list) => {
+      // Root config changes use this same push so every client re-resolves the
+      // persisted workspace capability. Never trust a stale renderer flag.
+      void refresh()
     })
     return () => {
       if (typeof off === 'function') off()

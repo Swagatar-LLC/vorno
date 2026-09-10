@@ -796,6 +796,8 @@ export interface WorkspaceSettings {
   idleBrowserTtlMinutes?: number
   /** Feature flag for the Workbench surface (ADR-0014, PLAN-024). Default off. */
   workbenchEnabled?: boolean
+  /** Pages capability (ADR-0033, PLAN-052). Default off per workspace. */
+  pagesEnabled?: boolean
   /** Feature flag for the Artifact Home surface (ADR-0016, PLAN-025). Default off. */
   artifactsEnabled?: boolean
   /**

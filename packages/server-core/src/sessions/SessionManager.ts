@@ -82,6 +82,7 @@ import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable
 import { listTaskSlugs, loadTaskSpec, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
 import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
 import { buildPagesToolCallbacks } from '../pages/tool-callbacks'
+import { isPagesEnabled } from '@craft-agent/shared/feature-flags'
 import { buildServersFromSources as buildServersFromSourcesShared } from '../sources/build-servers'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
@@ -1311,6 +1312,7 @@ export class SessionManager implements ISessionManager {
    * (which broadcasts pages:changed). No-op when no capturer is injected.
    */
   enqueuePageThumbnail(workspaceId: string, workspaceRootPath: string, slug: string): void {
+    if (!isPagesEnabled(workspaceRootPath)) return
     this.enqueuePageThumbnailFn?.({ workspaceId, workspaceRootPath, slug })
   }
 
@@ -1647,6 +1649,15 @@ export class SessionManager implements ISessionManager {
         }
         // Notify renderer to re-read automations.json
         this.broadcastAutomationsChanged(workspaceId)
+      },
+      onWorkspaceConfigChange: () => {
+        // Pages availability resolves from workspace config on every host gate.
+        // Rebuild refresh matchers and notify all clients so disabled→enabled
+        // and enabled→disabled nav state cannot remain stale.
+        this.automationSystems.get(workspaceRootPath)?.reloadPageRefreshMatchers()
+        void import('@craft-agent/shared/pages')
+          .then(({ loadWorkspacePages }) => this.broadcastPagesChanged(workspaceId, loadWorkspacePages(workspaceRootPath)))
+          .catch((error) => sessionLog.warn(`Failed to broadcast Pages capability change: ${error instanceof Error ? error.message : String(error)}`))
       },
       onPagesListChange: (pages) => {
         sessionLog.info(`Pages changed in ${workspaceId} (${pages.length} pages)`)

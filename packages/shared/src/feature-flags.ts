@@ -2,6 +2,8 @@
  * Feature flags for controlling experimental or in-development features.
  */
 
+import { loadWorkspaceConfig } from './workspaces/storage.ts';
+
 /** Safe accessor for process.env — returns undefined in browser/renderer contexts. */
 function getEnv(key: string): string | undefined {
   if (typeof process !== 'undefined' && process.env) return process.env[key];
@@ -73,18 +75,28 @@ export function isEmbeddedServerEnabled(): boolean {
 /**
  * Host-authoritative Pages availability gate.
  *
- * Defaults to disabled until SUV-0058 replaces this temporary global switch
- * with the persisted per-workspace setting. Hosts must enforce it; renderer
- * state is presentation only.
+ * `defaults.pages.enabled` in the selected workspace config is the source of
+ * truth. Missing, malformed, or unreachable workspace config is deliberately
+ * disabled so upgrades cannot silently expose existing Pages. The temporary
+ * `CRAFT_FEATURE_PAGES` variable remains an explicit development/test override
+ * only; it never creates persisted state and wins solely while present.
  */
-export function isPagesEnabled(): boolean {
+export function isPagesEnabled(workspaceRootPath?: string): boolean {
   const override = parseBooleanEnv(getEnv('CRAFT_FEATURE_PAGES'));
   if (override !== undefined) return override;
-  return false;
+  if (!workspaceRootPath) return false;
+
+  try {
+    // Keep this dependency here rather than giving renderers their own flag:
+    // every host boundary resolves the same persisted workspace capability.
+    return loadWorkspaceConfig(workspaceRootPath)?.defaults?.pages?.enabled === true;
+  } catch {
+    return false;
+  }
 }
 
-export function assertPagesEnabled(): void {
-  if (!isPagesEnabled()) {
+export function assertPagesEnabled(workspaceRootPath?: string): void {
+  if (!isPagesEnabled(workspaceRootPath)) {
     throw new Error('PAGES_DISABLED: Pages are unavailable until enabled for this workspace.');
   }
 }
