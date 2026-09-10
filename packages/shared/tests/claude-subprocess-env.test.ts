@@ -16,6 +16,7 @@ const TOUCHED_VARS = [
   'AWS_BEARER_TOKEN_BEDROCK',
   'ANTHROPIC_BEDROCK_BASE_URL',
   'DISABLE_GROWTHBOOK',
+  'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH',
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
@@ -61,5 +62,21 @@ describe('buildClaudeSubprocessEnv', () => {
     delete process.env.DISABLE_GROWTHBOOK;
     const env = buildClaudeSubprocessEnv({ DISABLE_GROWTHBOOK: 'override' });
     expect(env.DISABLE_GROWTHBOOK).toBe('override');
+  });
+
+  it('pins subagent depth to 5 by default', () => {
+    delete process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH;
+    expect(buildClaudeSubprocessEnv().CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH).toBe('5');
+  });
+
+  it('inherits an existing explicit subagent depth', () => {
+    process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH = '4';
+    expect(buildClaudeSubprocessEnv().CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH).toBe('4');
+  });
+
+  it('honors an explicit subagent depth override', () => {
+    delete process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH;
+    expect(buildClaudeSubprocessEnv({ CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '6' })
+      .CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH).toBe('6');
   });
 });

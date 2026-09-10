@@ -64,6 +64,23 @@ export const WebhookActionSchema = z.object({
   ]).optional(),
 });
 
+export const ScriptActionSchema = z.object({
+  type: z.literal('script'),
+  script: z.string().min(1, 'Script path cannot be empty').superRefine((script, ctx) => {
+    // Workspace-relative only; the executor re-validates with symlink resolution.
+    if (script.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(script)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Script path must be relative to the workspace root' });
+    }
+    if (script.split(/[\\/]/).includes('..')) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Script path must not contain ".." segments' });
+    }
+  }),
+  args: z.array(z.string()).optional(),
+  runtime: z.enum(['bun', 'node', 'python3']).optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  page: z.string().min(1).optional(),
+});
+
 // ============================================================================
 // Session Actions (fork(PLAN-014))
 // ============================================================================
@@ -137,6 +154,7 @@ export const ApplyContextActionSchema = z.object({
 export const KNOWN_ACTION_TYPES = [
   'prompt',
   'webhook',
+  'script',
   'set-status',
   'set-labels',
   'send-message',
@@ -158,6 +176,7 @@ export type KnownActionType = (typeof KNOWN_ACTION_TYPES)[number];
 export const KNOWN_ACTION_SCHEMAS: Record<KnownActionType, z.ZodType> = {
   'prompt': PromptActionSchema,
   'webhook': WebhookActionSchema,
+  'script': ScriptActionSchema,
   'set-status': SetStatusActionSchema,
   'set-labels': SetLabelsActionSchema,
   'send-message': SendMessageActionSchema,
@@ -179,6 +198,7 @@ export const KNOWN_ACTION_SCHEMAS: Record<KnownActionType, z.ZodType> = {
 export const ActionDefinitionSchema = z.union([
   PromptActionSchema,
   WebhookActionSchema,
+  ScriptActionSchema,
   SetStatusActionSchema,
   SetLabelsActionSchema,
   SendMessageActionSchema,

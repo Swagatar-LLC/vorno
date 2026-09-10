@@ -59,6 +59,23 @@ export function isEmbeddedServerEnabled(): boolean {
   return false;
 }
 
+/**
+ * Runtime-evaluated check for Pages sharing (Cloudflare publication).
+ *
+ * Server-evaluated: the renderer learns it via `pages:getShareCapabilities`,
+ * never from its own process.env. Gates publish/update only — unpublish stays
+ * available regardless, so disabling the flag never strands a published page.
+ *
+ * Defaults to disabled. SUV-0058 owns the persisted workspace gate and a
+ * verified Vorno publication capability; an environment flag alone is never a
+ * release default.
+ */
+export function isPagesSharingEnabled(): boolean {
+  const override = parseBooleanEnv(getEnv('CRAFT_FEATURE_PAGES_SHARING'));
+  if (override !== undefined) return override;
+  return false;
+}
+
 export const FEATURE_FLAGS = {
   /**
    * Enable agent developer feedback tool.
@@ -84,5 +101,13 @@ export const FEATURE_FLAGS = {
    */
   get embeddedServer(): boolean {
     return isEmbeddedServerEnabled();
+  },
+  /**
+   * Enable Pages sharing (publish to Cloudflare).
+   *
+   * Defaults to disabled; future enablement also requires a verified Vorno endpoint.
+   */
+  get pagesSharing(): boolean {
+    return isPagesSharingEnabled();
   },
 } as const;

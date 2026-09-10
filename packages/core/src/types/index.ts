@@ -98,6 +98,9 @@ export type {
   ArtifactRelation,
 } from './artifacts.ts';
 
+// Upstream Pages contract (additive).
+export type * from './page.ts';
+
 // Headroom integration config (fork: PLAN-040, SUV-0016)
 export type {
   HeadroomVerbosity,
