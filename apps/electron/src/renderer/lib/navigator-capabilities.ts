@@ -11,11 +11,6 @@ export interface NavigatorCapabilities {
 
 export type CapabilityNavigator = 'projects' | 'pages' | 'workbench' | 'artifacts'
 
-/** Pages callers that do not own the other optional-nav settings need only this authority. */
-export function isPagesNavigatorAvailable(pagesEnabled: boolean): boolean {
-  return pagesEnabled
-}
-
 export function isNavigatorAvailable(
   navigator: CapabilityNavigator,
   capabilities: NavigatorCapabilities,

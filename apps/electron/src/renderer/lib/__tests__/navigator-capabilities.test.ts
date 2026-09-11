@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'bun:test'
-import { isNavigatorAvailable, isPagesNavigatorAvailable } from '../navigator-capabilities'
+import { isNavigatorAvailable } from '../navigator-capabilities'
 
 describe('navigator capabilities', () => {
-  it('lets Pages-only callers rely on the single capability they own', () => {
-    expect(isPagesNavigatorAvailable(false)).toBe(false)
-    expect(isPagesNavigatorAvailable(true)).toBe(true)
-  })
-
   it('hides only Pages when its workspace capability is disabled', () => {
     const capabilities = {
       pagesEnabled: false,
