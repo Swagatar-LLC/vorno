@@ -816,6 +816,9 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   server.handle(RPC_CHANNELS.pages.UNPUBLISH, async (_ctx, workspaceId: string, pageSlug: string, options?: { forgetLocal?: boolean }) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    if (options?.forgetLocal && !await deps.confirmForgetPagePublication?.({ workspaceName: workspace.name, pageSlug })) {
+      throw new Error('Local publication recovery requires trusted host confirmation')
+    }
     const publisher = await buildPublisher()
     const result = options?.forgetLocal
       ? { config: await publisher.forgetLocalPublication(workspace.rootPath, workspace.id, pageSlug), warning: undefined }

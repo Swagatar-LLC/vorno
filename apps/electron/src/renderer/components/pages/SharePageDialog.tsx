@@ -184,12 +184,9 @@ export function SharePageDialog({
         toast.warning(t('toast.pageUnpublished'), { description: t('toast.pageRemoteCleanupPending') })
       } else if (result.warning === 'remote-copy-may-remain') {
         toast.warning(t('toast.pageUnpublishFailed'), { description: t('toast.pagePublicCopyMayRemain') })
-        // Native confirmation is intentionally the only escape: it clears local
-        // recovery state and never claims the remote copy was revoked.
-        if (window.confirm(`${t('pages.share.forgetLocalTitle')}\n\n${t('pages.share.forgetLocalBody')}`)) {
-          await window.electronAPI.unpublishPage(workspaceId, config.slug, { forgetLocal: true })
-          toast.warning(t('toast.pageUnpublishFailed'), { description: t('toast.pagePublicCopyMayRemain') })
-        }
+        // The host, not the renderer, owns the irreversible confirmation.
+        await window.electronAPI.unpublishPage(workspaceId, config.slug, { forgetLocal: true })
+        toast.warning(t('toast.pageUnpublishFailed'), { description: t('toast.pagePublicCopyMayRemain') })
       } else {
         toast.success(t('toast.pageUnpublished'))
       }

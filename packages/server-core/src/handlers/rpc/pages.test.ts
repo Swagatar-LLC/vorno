@@ -65,7 +65,11 @@ type GrantHarness = ((channel: string, ...args: unknown[]) => Promise<unknown>) 
   invokeTransportWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
 }
 
-function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirmation?: () => void): GrantHarness {
+function createHarness(
+  confirm: GrantConfirmation = 'unavailable',
+  duringConfirmation?: () => void,
+  confirmForgetPagePublication?: HandlerDeps['confirmForgetPagePublication'],
+): GrantHarness {
   const handlers = new Map<string, HandlerFn>()
   const confirmations: PageGrantConfirmationSpec[] = []
   const requesters: PageGrantRequester[] = []
@@ -142,6 +146,7 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
     registerPageGrantInvalidator: (invalidate: (requester: PageGrantRequester) => void) => { invalidateRequester = invalidate },
     confirmPageGrant,
     ...(confirm === 'no-answer' ? { pageGrantConfirmationTimeoutMs: 1 } : {}),
+    confirmForgetPagePublication,
   } as unknown as HandlerDeps)
   const invokeTransportWithContext = async (ctx: RequestContext, channel: string, ...args: unknown[]) => {
     const handler = handlers.get(channel)
@@ -224,6 +229,28 @@ describe('Pages RPC workspace capability gate', () => {
       .resolves.toMatchObject({ pagesEnabled: true })
     await expect(invoke(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES, WORKSPACE_B))
       .resolves.toEqual({ pagesEnabled: false, sharingEnabled: false })
+  })
+
+  test('refuses direct local-forget RPC without a trusted host confirmation seam', async () => {
+    const invoke = createHarness()
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Keep pointer', content: '<p>keep</p>' }) as { slug: string }
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true }))
+      .rejects.toThrow('trusted host confirmation')
+  })
+
+  test('honors trusted-host decline and calls the approval seam before local forget', async () => {
+    let calls = 0
+    const invoke = createHarness('unavailable', undefined, async () => { calls++; return false })
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Decline pointer', content: '<p>keep</p>' }) as { slug: string }
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true }))
+      .rejects.toThrow('trusted host confirmation')
+    expect(calls).toBe(1)
+  })
+
+  test('allows an explicit trusted-host approval to perform local-only recovery', async () => {
+    const invoke = createHarness('unavailable', undefined, async () => true)
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Approved recovery', content: '<p>keep</p>' }) as { slug: string }
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true })).resolves.toMatchObject({ warning: undefined })
   })
 
   test('allows enabled workspace A through the broker and rejects every productive path in disabled workspace B', async () => {
