@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   createRenderGenerationTracker,
+  formatPageGrantDescriptor,
   handlePageGrantIpc,
   isRequesterCurrent,
   type RenderIdentity,
@@ -60,6 +61,20 @@ function fakeWebContents(id: number) {
 }
 
 const DOCUMENT_REPLACED: NavDetails = { isMainFrame: true, isSameDocument: false }
+
+describe('host grant descriptor rendering', () => {
+  test('escapes controls, preserves spaced argument boundaries, and fills script defaults', () => {
+    const rendered = formatPageGrantDescriptor({
+      kind: 'script', script: 'scripts/run.ts', args: ['--label', 'two words', 'line\nbreak', '\u0000control'],
+    })
+    expect(rendered).toContain('"runtime": "bun"')
+    expect(rendered).toContain('"args": [')
+    expect(rendered).toContain('"two words"')
+    expect(rendered).toContain('"line\\nbreak"')
+    expect(rendered).toContain('"\\u0000control"')
+    expect(rendered).not.toContain('line\nbreak')
+  })
+})
 
 describe('render generation tracking', () => {
   test('a tracked render starts current and stays current until something replaces it', () => {

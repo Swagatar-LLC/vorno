@@ -77,6 +77,17 @@ export interface RenderIdentity {
   renderGeneration: number
 }
 
+/** Exact, escaped host-dialog representation of a consented action descriptor. */
+export function formatPageGrantDescriptor(action: import('@craft-agent/core').PageActionDescriptor): string {
+  return JSON.stringify(
+    action.kind === 'script'
+      ? { ...action, runtime: action.runtime ?? 'bun', args: action.args ?? [] }
+      : action,
+    null,
+    2,
+  )
+}
+
 export interface RenderGenerationTracker {
   /**
    * Begin tracking `contents` if it is not already tracked, and return its

@@ -94,6 +94,7 @@ import type { HandlerDeps } from './handlers/handler-deps'
 import type { PageGrantHostRequest } from '@craft-agent/server-core/handlers'
 import {
   createRenderGenerationTracker,
+  formatPageGrantDescriptor,
   handlePageGrantIpc,
   isRequesterCurrent,
   type RenderIdentity,
@@ -832,13 +833,7 @@ app.whenReady().then(async () => {
               // Render the exact descriptor as escaped structured data. Never
               // concatenate page-authored fields: spaces and controls in script
               // args/path/tool names must remain visible and unambiguous.
-              const action = JSON.stringify(
-                spec.action.kind === 'script'
-                  ? { ...spec.action, runtime: spec.action.runtime ?? 'bun', args: spec.action.args ?? [] }
-                  : spec.action,
-                null,
-                2,
-              )
+              const action = formatPageGrantDescriptor(spec.action)
               // The host, rather than the requesting transport client, renders
               // every security-relevant identity and descriptor.
               //
