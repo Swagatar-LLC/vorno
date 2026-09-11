@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   createRenderGenerationTracker,
   handlePageGrantIpc,
+  isRequesterCurrent,
   type RenderIdentity,
   type TrackableWebContents,
 } from '../page-grant-identity'
@@ -205,6 +206,58 @@ describe('render generation tracking', () => {
   })
 })
 
+describe('requester currency predicate', () => {
+  const WORKSPACE = 'ws_a'
+
+  function scenario(overrides: { destroyed?: boolean; missingWindow?: boolean; workspace?: string | null } = {}) {
+    const tracker = createRenderGenerationTracker()
+    const win = fakeWebContents(101)
+    tracker.track(win.contents)
+    const windows = {
+      getWindowByWebContentsId: () => overrides.missingWindow
+        ? null
+        : { isDestroyed: () => overrides.destroyed === true },
+      getWorkspaceForWindow: () => overrides.workspace === undefined ? WORKSPACE : overrides.workspace,
+    }
+    return { tracker, win, windows, live: { webContentsId: 101, renderGeneration: 1 } }
+  }
+
+  test('accepts the live render of a live window showing that workspace', () => {
+    const { tracker, windows, live } = scenario()
+    expect(isRequesterCurrent(windows, tracker, live, WORKSPACE)).toBe(true)
+  })
+
+  test('each condition is independently required', () => {
+    // None of these implies another, so each is checked on its own: a live
+    // window can hold a replaced document, a current generation can sit in a
+    // window that switched workspace, and a destroyed window stays mapped.
+    const missing = scenario({ missingWindow: true })
+    expect(isRequesterCurrent(missing.windows, missing.tracker, missing.live, WORKSPACE)).toBe(false)
+
+    const destroyed = scenario({ destroyed: true })
+    expect(isRequesterCurrent(destroyed.windows, destroyed.tracker, destroyed.live, WORKSPACE)).toBe(false)
+
+    const replaced = scenario()
+    replaced.win.navigate(DOCUMENT_REPLACED)
+    expect(isRequesterCurrent(replaced.windows, replaced.tracker, replaced.live, WORKSPACE)).toBe(false)
+    // ...and the successor is accepted, so this is staleness, not a lockout.
+    expect(isRequesterCurrent(replaced.windows, replaced.tracker,
+      { webContentsId: 101, renderGeneration: 2 }, WORKSPACE)).toBe(true)
+
+    const moved = scenario({ workspace: 'ws_other' })
+    expect(isRequesterCurrent(moved.windows, moved.tracker, moved.live, WORKSPACE)).toBe(false)
+
+    const unmapped = scenario({ workspace: null })
+    expect(isRequesterCurrent(unmapped.windows, unmapped.tracker, unmapped.live, WORKSPACE)).toBe(false)
+  })
+
+  test('a host with no window manager can never be current', () => {
+    // Headless and early-startup both land here; absent must fail closed.
+    const { tracker, live } = scenario()
+    expect(isRequesterCurrent(undefined, tracker, live, WORKSPACE)).toBe(false)
+  })
+})
+
 describe('page grant IPC sender derivation', () => {
   type Call = { requester: RenderIdentity; workspaceId: string; pageSlug: string; input: unknown; leaseId: unknown }
 
@@ -289,6 +342,54 @@ describe('page grant IPC sender derivation', () => {
       { webContentsId: 101, renderGeneration: 1 },
       { webContentsId: 101, renderGeneration: 2 },
     ])
+  })
+
+  test('a payload shaped like a requester cannot forge identity', async () => {
+    const { host, calls } = ipcHost()
+    const win = fakeWebContents(101)
+
+    // The transport-side attack, replayed at this seam: a caller that reaches
+    // the IPC path sends values deliberately shaped like the identity it wants
+    // to be. Every one of them is opaque payload here — only `sender` and the
+    // host's own window map can produce a requester or a workspace.
+    await handlePageGrantIpc(host, win.contents, 'dash', {
+      webContentsId: 999, renderGeneration: 99, workspaceId: 'ws_attacker',
+      requester: { webContentsId: 999, renderGeneration: 99 },
+    }, { webContentsId: 999, renderGeneration: 99, workspaceId: 'ws_attacker' })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.requester).toEqual({ webContentsId: 101, renderGeneration: 1 })
+    expect(calls[0]!.workspaceId).toBe('ws_a')
+  })
+
+  test('forwards slug, input, and lease verbatim — this layer validates none of them', async () => {
+    const { host, calls } = ipcHost()
+    const win = fakeWebContents(101)
+    const input = { action: { kind: 'script', script: '../escape.ts' } }
+
+    await handlePageGrantIpc(host, win.contents, 'dash', input, 'lease-1')
+
+    // Deliberate: the grant handler re-parses input against the schema and
+    // re-checks the lease. Sanitizing here would create a second, weaker
+    // validator that the real one could silently drift away from.
+    expect(calls[0]!.input).toBe(input)
+    expect(calls[0]!.leaseId).toBe('lease-1')
+    expect(calls[0]!.pageSlug).toBe('dash')
+  })
+
+  test('refuses once the sender window stops mapping to a workspace', async () => {
+    const windows: Record<number, string | null> = { 101: 'ws_a' }
+    const { host, calls } = ipcHost({ windows })
+    const win = fakeWebContents(101)
+    await handlePageGrantIpc(host, win.contents, 'dash', {}, 'lease-1')
+    expect(calls).toHaveLength(1)
+
+    // The window closed or stopped being an app window between requests.
+    windows[101] = null
+
+    await expect(handlePageGrantIpc(host, win.contents, 'dash', {}, 'lease-2'))
+      .rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+    expect(calls).toHaveLength(1)
   })
 
   test('the workspace follows the window, not the request', async () => {

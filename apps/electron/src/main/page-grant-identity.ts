@@ -142,6 +142,36 @@ export function createRenderGenerationTracker(
   }
 }
 
+/** The window-state questions the requester predicate asks, and nothing more. */
+export interface RequesterWindows {
+  getWindowByWebContentsId(webContentsId: number): { isDestroyed(): boolean } | null | undefined
+  getWorkspaceForWindow(webContentsId: number): string | null | undefined
+}
+
+/**
+ * Whether this exact requester is still the live render of a live window
+ * showing this exact workspace — the predicate that decides whether a trusted
+ * native prompt may open and whether its answer may be persisted.
+ *
+ * All three conjuncts are load-bearing and none implies another: a window can
+ * be alive with a replaced document, a generation can be current in a window
+ * that has since switched workspace, and a destroyed window can still be
+ * mapped. Dropping any one admits a grant the user did not give for the thing
+ * it would apply to, so this is stated once, here, rather than inline.
+ */
+export function isRequesterCurrent(
+  windows: RequesterWindows | undefined,
+  tracker: RenderGenerationTracker,
+  requester: RenderIdentity,
+  workspaceId: string,
+): boolean {
+  if (!windows) return false
+  const win = windows.getWindowByWebContentsId(requester.webContentsId)
+  return !!win && !win.isDestroyed() &&
+    tracker.isCurrent(requester) &&
+    windows.getWorkspaceForWindow(requester.webContentsId) === workspaceId
+}
+
 /** What the grant IPC handler needs from the host, and nothing more. */
 export interface PageGrantIpcHost {
   /** Workspace shown by that window, or null/undefined if it is not an app window. */

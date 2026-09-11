@@ -95,6 +95,7 @@ import type { PageGrantHostRequest } from '@craft-agent/server-core/handlers'
 import {
   createRenderGenerationTracker,
   handlePageGrantIpc,
+  isRequesterCurrent,
   type RenderIdentity,
 } from './page-grant-identity'
 import { bootstrapServer, releaseServerLock } from '@craft-agent/server-core/bootstrap'
@@ -814,13 +815,8 @@ app.whenReady().then(async () => {
             // Native Electron chrome is the only currently trusted Page grant
             // consent surface. The IPC handler below derives this requester
             // from event.sender; transport envelope fields never enter here.
-            isPageGrantRequesterCurrent: isHeadless ? undefined : (requester, workspaceId) => {
-              if (!windowManager) return false
-              const win = windowManager.getWindowByWebContentsId(requester.webContentsId)
-              return !!win && !win.isDestroyed() &&
-                renderGenerations.isCurrent(requester) &&
-                windowManager.getWorkspaceForWindow(requester.webContentsId) === workspaceId
-            },
+            isPageGrantRequesterCurrent: isHeadless ? undefined : (requester, workspaceId) =>
+              isRequesterCurrent(windowManager ?? undefined, renderGenerations, requester, workspaceId),
             registerPageGrantHostRequest: isHeadless ? undefined : (request) => {
               pageGrantHostRequest = request
             },
