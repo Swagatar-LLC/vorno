@@ -659,6 +659,10 @@ app.whenReady().then(async () => {
 
       // Client ID tracking for Electron IPC bridge (webContentsId → clientId)
       const clientMap = new Map<number, string>()
+      // A reconnect can retain its transport client ID. This epoch changes on
+      // every connection so in-flight native consent cannot survive a renderer
+      // disconnect/rebind, even for the same window and client ID.
+      const clientConnectionEpochs = new Map<number, string>()
       const resolveClientId = (wcId: number) => clientMap.get(wcId)
 
       // Read embedded server config (Server settings page)
@@ -791,7 +795,9 @@ app.whenReady().then(async () => {
                 windowManager?.getWorkspaceForWindow(webContentsId) !== workspaceId ||
                 windowManager.getClientIdForWindow(webContentsId) !== ctx.clientId
               ) return undefined
-              return { webContentsId }
+              const connectionId = clientConnectionEpochs.get(webContentsId)
+              if (!connectionId) return undefined
+              return { webContentsId, connectionId }
             },
             confirmPageGrant: isHeadless ? undefined : async (requester, spec) => {
               const win = windowManager?.getWindowByWebContentsId(requester.webContentsId)
@@ -844,11 +850,18 @@ app.whenReady().then(async () => {
           }
         }),
         onClientConnected: ({ clientId, webContentsId }) => {
-          if (webContentsId != null) clientMap.set(webContentsId, clientId)
+          if (webContentsId != null) {
+            clientMap.set(webContentsId, clientId)
+            clientConnectionEpochs.set(webContentsId, randomUUID())
+          }
         },
         cleanupClientResources: (clientId) => {
           for (const [wcId, cId] of clientMap) {
-            if (cId === clientId) { clientMap.delete(wcId); break }
+            if (cId === clientId) {
+              clientMap.delete(wcId)
+              clientConnectionEpochs.delete(wcId)
+              break
+            }
           }
           cleanupSessionFileWatchForClient(clientId)
         },

@@ -47,6 +47,7 @@ type GrantHarness = ((channel: string, ...args: unknown[]) => Promise<unknown>) 
   requesters: PageGrantRequester[]
   clientConsentCalls: () => number
   resolvePending: () => void
+  setTrustedRequester: (requester: Pick<RequestContext, 'clientId' | 'workspaceId' | 'webContentsId'> | undefined) => void
   invokeWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
 }
 
@@ -55,6 +56,10 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
   const confirmations: PageGrantConfirmationSpec[] = []
   const requesters: PageGrantRequester[] = []
   let clientConsentCallCount = 0
+  let requesterEpoch = 1
+  let trustedRequester: (Pick<RequestContext, 'clientId' | 'workspaceId' | 'webContentsId'> & { connectionId: string }) | undefined = {
+    clientId: 'trusted-client', workspaceId: WORKSPACE_A, webContentsId: 101, connectionId: `epoch-${requesterEpoch}`,
+  }
   const pendingResolvers: Array<(accepted: boolean) => void> = []
   const server: RpcServer = {
     handle(channel, handler) { handlers.set(channel, handler) },
@@ -80,10 +85,12 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
       enqueuePageThumbnail() {},
     },
     getPageGrantRequester: (ctx: RequestContext, workspaceId: string) => (
-      ctx.clientId === 'trusted-client' &&
+      trustedRequester &&
+      ctx.clientId === trustedRequester.clientId &&
       ctx.workspaceId === workspaceId &&
-      ctx.webContentsId === 101
-        ? { webContentsId: 101 }
+      ctx.webContentsId === trustedRequester.webContentsId &&
+      typeof trustedRequester.webContentsId === 'number'
+        ? { webContentsId: trustedRequester.webContentsId, connectionId: trustedRequester.connectionId }
         : undefined
     ),
     confirmPageGrant,
@@ -111,6 +118,9 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
     requesters,
     clientConsentCalls: () => clientConsentCallCount,
     resolvePending: () => pendingResolvers.shift()?.(true),
+    setTrustedRequester: (requester: Pick<RequestContext, 'clientId' | 'workspaceId' | 'webContentsId'> | undefined) => {
+      trustedRequester = requester && { ...requester, connectionId: `epoch-${++requesterEpoch}` }
+    },
     invokeWithContext,
   })
 }
@@ -203,7 +213,7 @@ describe('Pages RPC workspace capability gate', () => {
     expect(invoke.confirmations[0]?.pageMessage).toStartWith('first line second line')
     expect(invoke.confirmations[0]?.pageMessage).not.toContain('\n')
     expect(invoke.confirmations[0]?.pageMessage?.length).toBe(200)
-    expect(invoke.requesters).toEqual([{ webContentsId: 101 }])
+    expect(invoke.requesters).toEqual([{ webContentsId: 101, connectionId: 'epoch-1' }])
   })
 
   test('sanitizes multiline and oversized server-resolved identities before host display', async () => {
@@ -276,6 +286,43 @@ describe('Pages RPC workspace capability gate', () => {
     }, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_B, otherPage.slug, input)).rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
 
     expect(invoke.confirmations).toEqual([])
+  })
+
+  test('does not persist a grant when the requester reconnects with the same client and window during confirmation', async () => {
+    let invoke!: GrantHarness
+    invoke = createHarness('approve', () => {
+      // A valid transport reconnect retains these identifiers, but receives a
+      // new server-held connection epoch. That must still invalidate consent.
+      invoke.setTrustedRequester({ clientId: 'trusted-client', workspaceId: WORKSPACE_A, webContentsId: 101 })
+    })
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Rebound requester', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    }, lease.leaseId)).resolves.toBeNull()
+
+    expect(invoke.confirmations).toHaveLength(1)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+  })
+
+  test('refuses a stale requester-bound lease before prompting a replacement Electron window', async () => {
+    const invoke = createHarness('approve')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Stale requester lease', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    const replacement = { clientId: 'replacement-client', workspaceId: WORKSPACE_A, webContentsId: 202 }
+    invoke.setTrustedRequester(replacement)
+
+    await expect(invoke.invokeWithContext(replacement, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    }, lease.leaseId)).rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+
+    expect(invoke.confirmations).toEqual([])
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
   })
 
   test('rejects malformed descriptors before inspecting action kind or prompting', async () => {

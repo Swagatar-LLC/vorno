@@ -23,6 +23,8 @@ export interface PageGrantConfirmationSpec {
 /** Server-held identity of the Electron window that requested a Page grant. */
 export interface PageGrantRequester {
   webContentsId: number
+  /** Opaque server-held epoch, replaced on every Electron connection. */
+  connectionId: string
 }
 
 /**

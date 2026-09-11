@@ -128,6 +128,7 @@ export {
 // Mediated source-action bridge
 export {
   PageActionBroker,
+  MAX_LIVE_LEASES,
   appendPageActionAudit,
   type PageActionBrokerOptions,
   type PageActionExecutors,
