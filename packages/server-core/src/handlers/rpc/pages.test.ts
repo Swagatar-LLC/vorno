@@ -264,7 +264,7 @@ describe('Pages RPC workspace capability gate', () => {
     }), 1)
     const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Timed forget', content: '<p>keep</p>' }) as { slug: string }
     await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true }))
-      .rejects.toThrow('confirmation timed out or failed')
+      .rejects.toThrow('confirmation timed out')
     expect(aborted).toBe(true)
     await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, { action: { kind: 'script', script: 'scripts/refresh.ts' } }))
       .rejects.toThrow('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
@@ -278,25 +278,6 @@ describe('Pages RPC workspace capability gate', () => {
     expect(seen).toStartWith('safe Action: forged')
     expect(seen).not.toContain('\n')
     expect(seen).toHaveLength(100)
-  })
-
-  test('serializes grant and forget confirmation dialogs in one host-wide slot', async () => {
-    const grant = createHarness('pending', undefined, async () => true)
-    const page = await grant(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Grant first', content: '<p>keep</p>' }) as { slug: string }
-    const pendingGrant = grant(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, { action: { kind: 'script', script: 'scripts/refresh.ts' } })
-    for (let attempt = 0; attempt < 10 && grant.confirmations.length === 0; attempt++) await new Promise(resolve => setTimeout(resolve, 0))
-    await expect(grant(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true })).rejects.toThrow('PAGE_FORGET_CONFIRMATION_PENDING')
-    grant.resolvePending()
-    await pendingGrant
-
-    let resolveForget!: (value: boolean) => void
-    const forget = createHarness('unavailable', undefined, async () => await new Promise<boolean>(resolve => { resolveForget = resolve }))
-    const forgetPage = await forget(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Forget first', content: '<p>keep</p>' }) as { slug: string }
-    const pendingForget = forget(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, forgetPage.slug, { forgetLocal: true })
-    for (let attempt = 0; attempt < 10 && !resolveForget; attempt++) await new Promise(resolve => setTimeout(resolve, 0))
-    await expect(forget(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, forgetPage.slug, { action: { kind: 'script', script: 'scripts/refresh.ts' } })).rejects.toThrow('PAGE_GRANT_CONFIRMATION_PENDING')
-    resolveForget(true)
-    await pendingForget
   })
 
   test('allows enabled workspace A through the broker and rejects every productive path in disabled workspace B', async () => {

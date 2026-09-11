@@ -829,19 +829,22 @@ app.whenReady().then(async () => {
                 !win || win.isDestroyed() || signal.aborted ||
                 !renderGenerations.isCurrent(requester)
               ) return false
-              const action = spec.action.kind === 'api'
-                ? i18n.t('pages.grants.confirm.actionApi', { method: spec.action.method, source: spec.action.sourceSlug, path: spec.action.pathPattern })
-                : spec.action.kind === 'mcp'
-                  ? i18n.t('pages.grants.confirm.actionMcp', { source: spec.action.sourceSlug, tool: spec.action.toolName })
-                  : i18n.t('pages.grants.confirm.actionScript', { runtime: spec.action.runtime ?? 'bun', script: spec.action.script, args: spec.action.args?.length ? ` ${spec.action.args.join(' ')}` : '' })
+              // Render the exact descriptor as escaped structured data. Never
+              // concatenate page-authored fields: spaces and controls in script
+              // args/path/tool names must remain visible and unambiguous.
+              const action = JSON.stringify(
+                spec.action.kind === 'script'
+                  ? { ...spec.action, runtime: spec.action.runtime ?? 'bun', args: spec.action.args ?? [] }
+                  : spec.action,
+                null,
+                2,
+              )
               // The host, rather than the requesting transport client, renders
               // every security-relevant identity and descriptor.
               //
-              // `win` is both the trusted parent and the reason `signal` works:
-              // Electron only honours an abort for a message box shown AS A
-              // SHEET, i.e. one with a parent window. Detaching this dialog
-              // (or parenting it to the focused window) would make the host's
-              // timeout unenforceable — the modal would outlive its request.
+              // On macOS Electron only honors dialog abort with a parent window;
+              // a parentless fallback would let this native surface outlive the
+              // server deadline. `win` is the requester’s trusted parent.
               return (await dialog.showMessageBox(win, {
                 type: spec.action.kind === 'script' ? 'warning' : 'question',
                 title: i18n.t('pages.grants.confirm.title'),
@@ -859,6 +862,18 @@ app.whenReady().then(async () => {
                 cancelId: 0,
                 signal,
               })).response === 1
+            },
+            confirmForgetPagePublication: isHeadless ? undefined : async ({ workspaceName, pageSlug, signal }) => {
+              const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+              if (!parent || parent.isDestroyed()) return false
+              const result = await dialog.showMessageBox(parent, {
+                type: 'warning', title: i18n.t('pages.share.forgetLocalTitle'),
+                message: `${i18n.t('pages.share.forgetLocalTitle')}: “${pageSlug}” (${workspaceName})`,
+                detail: i18n.t('pages.share.forgetLocalBody'),
+                buttons: [i18n.t('pages.share.cancel'), i18n.t('pages.share.forgetLocalButton')],
+                defaultId: 0, cancelId: 0, noLink: true, signal,
+              })
+              return result.response === 1
             },
           }
         },

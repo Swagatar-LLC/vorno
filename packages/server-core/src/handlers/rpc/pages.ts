@@ -223,6 +223,33 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     })()
   }
 
+  /** Queue a destructive local-recovery prompt behind the same host surface as grants. */
+  async function confirmForgetPublication(workspaceName: string, pageSlug: string): Promise<boolean> {
+    if (!deps.confirmForgetPagePublication) throw new Error('Local publication recovery requires trusted host confirmation')
+    return await new Promise<boolean>((resolve, reject) => {
+      grantConfirmationQueue.push(async () => {
+        const deadline = new AbortController()
+        try {
+          const confirmation = deps.confirmForgetPagePublication!({ workspaceName, pageSlug, signal: deadline.signal })
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            const timeout = new Promise<never>((_resolve, rejectTimeout) => {
+              timer = setTimeout(() => { deadline.abort(); rejectTimeout(new Error('confirmation timed out')) }, deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
+            })
+            resolve(await Promise.race([confirmation, timeout]))
+          } finally {
+            if (timer) clearTimeout(timer)
+          }
+        } catch (error) {
+          reject(error)
+        } finally {
+          deadline.abort()
+        }
+      })
+      drainGrantConfirmationQueue()
+    })
+  }
+
   /**
    * API executor for the action bridge. Resolves the source + credential
    * lazily per call (same seams sessions use), so tokens refresh correctly
@@ -816,8 +843,12 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   server.handle(RPC_CHANNELS.pages.UNPUBLISH, async (_ctx, workspaceId: string, pageSlug: string, options?: { forgetLocal?: boolean }) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
-    if (options?.forgetLocal && !await deps.confirmForgetPagePublication?.({ workspaceName: workspace.name, pageSlug })) {
-      throw new Error('Local publication recovery requires trusted host confirmation')
+    if (options?.forgetLocal) {
+      const confirmed = await confirmForgetPublication(
+        sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
+        sanitizePageGrantIdentity(pageSlug, 'Unnamed page'),
+      )
+      if (!confirmed) throw new Error('PAGE_FORGET_CONFIRMATION_CANCELLED')
     }
     const publisher = await buildPublisher()
     const result = options?.forgetLocal
