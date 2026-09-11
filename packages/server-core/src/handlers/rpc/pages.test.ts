@@ -28,11 +28,11 @@ describe('Pages RPC availability gate', () => {
   test('rejects direct productive RPC calls while Pages is disabled', async () => {
     const invoke = createHarness()
 
-    await expect(invoke(RPC_CHANNELS.pages.CREATE, 'workspace', { name: 'blocked' })).rejects.toThrow('PAGES_DISABLED')
-    await expect(invoke(RPC_CHANNELS.pages.SET_CONTENT, 'workspace', 'page', '<p>x</p>')).rejects.toThrow('PAGES_DISABLED')
-    await expect(invoke(RPC_CHANNELS.pages.ISSUE_GRANT, 'workspace', 'page', {})).rejects.toThrow('PAGES_DISABLED')
-    await expect(invoke(RPC_CHANNELS.pages.CREATE_LEASE, 'workspace', 'page')).rejects.toThrow('PAGES_DISABLED')
-    await expect(invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, 'workspace', {})).rejects.toThrow('PAGES_DISABLED')
+    await expect(invoke(RPC_CHANNELS.pages.CREATE, 'workspace', { name: 'blocked' })).rejects.toThrow('Workspace not found')
+    await expect(invoke(RPC_CHANNELS.pages.SET_CONTENT, 'workspace', 'page', '<p>x</p>')).rejects.toThrow('Workspace not found')
+    await expect(invoke(RPC_CHANNELS.pages.ISSUE_GRANT, 'workspace', 'page', {})).rejects.toThrow('Workspace not found')
+    await expect(invoke(RPC_CHANNELS.pages.CREATE_LEASE, 'workspace', 'page')).rejects.toThrow('Workspace not found')
+    await expect(invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, 'workspace', {})).rejects.toThrow('Workspace not found')
   })
 
   test('reports the same disabled state to desktop capability consumers', async () => {
