@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
-import { savePageContent } from '@craft-agent/shared/pages'
+import { MAX_LIVE_LEASES, savePageContent } from '@craft-agent/shared/pages'
 import type { HandlerDeps, PageGrantConfirmationSpec, PageGrantRequester } from '../handler-deps'
 import type { HandlerFn, RequestContext, RpcServer } from '../../transport/types'
 import { registerPagesHandlers } from './pages'
@@ -323,6 +323,30 @@ describe('Pages RPC workspace capability gate', () => {
 
     expect(invoke.confirmations).toEqual([])
     await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+  })
+
+  test('keeps a grant binding when other workspaces reach their independent lease caps', async () => {
+    const invoke = createHarness('approve')
+    const pageA = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Workspace A leases', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease: firstLease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, pageA.slug) as { lease: { leaseId: string } }
+    for (let i = 1; i < MAX_LIVE_LEASES; i++) {
+      await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, pageA.slug)
+    }
+
+    writeWorkspace(ROOT_B, WORKSPACE_B, true)
+    const pageB = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_B, {
+      name: 'Workspace B leases', content: '<p>content</p>',
+    }) as { slug: string }
+    const workspaceBContext = { clientId: 'trusted-client', workspaceId: WORKSPACE_B, webContentsId: 101 }
+    for (let i = 0; i < MAX_LIVE_LEASES; i++) {
+      await invoke.invokeWithContext(workspaceBContext, RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_B, pageB.slug)
+    }
+
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, pageA.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    }, firstLease.leaseId)).resolves.toMatchObject({ id: expect.any(String) })
   })
 
   test('rejects malformed descriptors before inspecting action kind or prompting', async () => {

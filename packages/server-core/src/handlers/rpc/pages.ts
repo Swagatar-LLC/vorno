@@ -78,14 +78,14 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // Server-only binding for grant-capable render leases. Do not put this in
   // PageRenderLease: the iframe receives that object and must never choose or
   // forge the Electron client/window authority behind its render.
-  const leaseRequesters = new Map<string, {
+  const leaseRequesters = new Map<string, Map<string, {
     clientId: string
     webContentsId: number
     connectionId: string
     workspaceId: string
     pageSlug: string
     contentDigest: string
-  }>()
+  }>>()
   const grantConfirmationQueue: Array<() => Promise<void>> = []
   let drainingGrantConfirmationQueue = false
 
@@ -104,15 +104,23 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     })
   }
 
+  function deleteLeaseRequester(workspaceRootPath: string, leaseId: string): void {
+    const requesters = leaseRequesters.get(workspaceRootPath)
+    if (!requesters) return
+    requesters.delete(leaseId)
+    if (requesters.size === 0) leaseRequesters.delete(workspaceRootPath)
+  }
+
   function isLeaseRequesterCurrent(
-    leaseKey: string,
+    workspaceRootPath: string,
+    leaseId: string,
     ctx: RequestContext,
     workspaceId: string,
     pageSlug: string,
     contentDigest: string,
     requester: PageGrantRequester | undefined,
   ): requester is PageGrantRequester {
-    const bound = leaseRequesters.get(leaseKey)
+    const bound = leaseRequesters.get(workspaceRootPath)?.get(leaseId)
     return requester !== undefined &&
       bound?.clientId === ctx.clientId &&
       bound.webContentsId === requester.webContentsId &&
@@ -410,7 +418,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     // A Page may unmount between bridge dispatch and this async handler. It
     // owns no surviving consent work, so quietly decline without host chrome.
     if (!broker.hasActiveLease(leaseId, pageSlug, expectedContentDigest)) {
-      leaseRequesters.delete(leaseKey)
+      deleteLeaseRequester(workspace.rootPath, leaseId)
       return null
     }
 
@@ -424,7 +432,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     // Re-resolving the original ctx alone is insufficient: a window can
     // disconnect, crash, or be rebound while native chrome is awaiting input.
     if (!isLeaseRequesterCurrent(
-      pendingLeaseKey, ctx, workspace.id, pageSlug, expectedContentDigest, requester,
+      workspace.rootPath, leaseId, ctx, workspace.id, pageSlug, expectedContentDigest, requester,
     )) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
     if (pendingGrantLeases.has(pendingLeaseKey)) throw new Error('PAGE_GRANT_CONFIRMATION_ALREADY_PENDING')
     if (pendingGrantRequests.size >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) {
@@ -461,7 +469,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         // the server-held window/workspace binding before showing this one.
         const currentRequester = deps.getPageGrantRequester?.(ctx, workspace.id)
         if (!isLeaseRequesterCurrent(
-          pendingLeaseKey, ctx, workspace.id, pageSlug, expectedContentDigest, currentRequester,
+          workspace.rootPath, leaseId, ctx, workspace.id, pageSlug, expectedContentDigest, currentRequester,
         )) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
 
         let accepted = false
@@ -509,7 +517,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         // client/window/workspace/lease/digest binding remains live.
         const requesterAfterConfirmation = deps.getPageGrantRequester?.(ctx, workspace.id)
         if (!isLeaseRequesterCurrent(
-          pendingLeaseKey, ctx, workspace.id, pageSlug, expectedContentDigest, requesterAfterConfirmation,
+          workspace.rootPath, leaseId, ctx, workspace.id, pageSlug, expectedContentDigest, requesterAfterConfirmation,
         )) {
           await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
           resolveIssue(null)
@@ -572,10 +580,13 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const lease = broker.createLease({ pageSlug, contentDigest })
     const requester = deps.getPageGrantRequester?.(ctx, workspace.id)
     if (requester) {
-      if (leaseRequesters.size >= MAX_LIVE_LEASES) {
-        leaseRequesters.delete(leaseRequesters.keys().next().value!)
+      const workspaceRequesters = leaseRequesters.get(workspace.rootPath) ?? new Map()
+      // One broker is retained per workspace and evicts its oldest lease at
+      // this same cap. Keep the paired, server-only binding at that scope.
+      if (workspaceRequesters.size >= MAX_LIVE_LEASES) {
+        workspaceRequesters.delete(workspaceRequesters.keys().next().value!)
       }
-      leaseRequesters.set(`${workspace.rootPath}\u0000${lease.leaseId}`, {
+      workspaceRequesters.set(lease.leaseId, {
         clientId: ctx.clientId,
         webContentsId: requester.webContentsId,
         connectionId: requester.connectionId,
@@ -583,6 +594,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         pageSlug,
         contentDigest,
       })
+      leaseRequesters.set(workspace.rootPath, workspaceRequesters)
     }
     return { lease, content }
   })
@@ -593,7 +605,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return
     brokers.get(workspace.rootPath)?.releaseLease(leaseId)
-    leaseRequesters.delete(`${workspace.rootPath}\u0000${leaseId}`)
+    deleteLeaseRequester(workspace.rootPath, leaseId)
   })
 
   // Execute a granted source action. Page config is re-read from disk per
