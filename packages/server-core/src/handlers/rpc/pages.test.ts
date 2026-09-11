@@ -69,6 +69,7 @@ function createHarness(
   confirm: GrantConfirmation = 'unavailable',
   duringConfirmation?: () => void,
   confirmForgetPagePublication?: HandlerDeps['confirmForgetPagePublication'],
+  confirmationTimeoutMs?: number,
 ): GrantHarness {
   const handlers = new Map<string, HandlerFn>()
   const confirmations: PageGrantConfirmationSpec[] = []
@@ -145,7 +146,7 @@ function createHarness(
     registerPageGrantHostRequest: (request: import('../handler-deps').PageGrantHostRequest) => { hostRequest = request },
     registerPageGrantInvalidator: (invalidate: (requester: PageGrantRequester) => void) => { invalidateRequester = invalidate },
     confirmPageGrant,
-    ...(confirm === 'no-answer' ? { pageGrantConfirmationTimeoutMs: 1 } : {}),
+    ...((confirm === 'no-answer' || confirmationTimeoutMs !== undefined) ? { pageGrantConfirmationTimeoutMs: confirmationTimeoutMs ?? 1 } : {}),
     confirmForgetPagePublication,
   } as unknown as HandlerDeps)
   const invokeTransportWithContext = async (ctx: RequestContext, channel: string, ...args: unknown[]) => {
@@ -243,7 +244,7 @@ describe('Pages RPC workspace capability gate', () => {
     const invoke = createHarness('unavailable', undefined, async () => { calls++; return false })
     const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Decline pointer', content: '<p>keep</p>' }) as { slug: string }
     await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true }))
-      .rejects.toThrow('trusted host confirmation')
+      .rejects.toThrow('PAGE_FORGET_CONFIRMATION_CANCELLED')
     expect(calls).toBe(1)
   })
 
@@ -254,6 +255,15 @@ describe('Pages RPC workspace capability gate', () => {
     const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Approved recovery', content: '<p>keep</p>' }) as { slug: string }
     await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true })).resolves.toMatchObject({ warning: undefined })
     expect(seen).toBe('Workspace Forged control text')
+  })
+
+  test('times out a never-settling forget confirmation and releases the host-wide slot', async () => {
+    const invoke = createHarness('unavailable', undefined, async () => await new Promise<boolean>(() => {}), 1)
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Timed forget', content: '<p>keep</p>' }) as { slug: string }
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true }))
+      .rejects.toThrow('confirmation timed out or failed')
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, { action: { kind: 'script', script: 'scripts/refresh.ts' } }))
+      .rejects.toThrow('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
   })
 
   test('sanitizes a hostile caller-provided slug before native forget display', async () => {

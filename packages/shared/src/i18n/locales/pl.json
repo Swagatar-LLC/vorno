@@ -830,6 +830,7 @@
   "pages.share.publishDescription": "Publikuje kopię tej strony tylko do odczytu w sieci. Dane strony pozostają lokalne, chyba że je dołączysz.",
   "pages.share.removePassword": "Usuń hasło",
   "pages.share.republish": "Opublikuj najnowsze",
+  "pages.share.retryCleanup": "Ponów czyszczenie",
   "pages.share.savePassword": "Zapisz",
   "pages.share.scriptBlocked": "Strona może uruchamiać skrypt na Twoim komputerze. Usuń to zatwierdzenie, aby opublikować kopię tylko do odczytu.",
   "pages.share.scriptBlockedTitle": "Tej strony nie można opublikować",

@@ -830,6 +830,7 @@
   "pages.share.publishDescription": "Közzétesz egy csak olvasható másolatot erről az oldalról a weben. Az oldal adatai helyben maradnak, hacsak nem adod hozzá őket.",
   "pages.share.removePassword": "Jelszó eltávolítása",
   "pages.share.republish": "Legfrissebb közzététele",
+  "pages.share.retryCleanup": "Tisztítás újrapróbálása",
   "pages.share.savePassword": "Mentés",
   "pages.share.scriptBlocked": "Szkriptet futtathat a számítógépeden. Távolítsd el ezt a jóváhagyást a csak megtekinthető másolat közzétételéhez.",
   "pages.share.scriptBlockedTitle": "Ez az oldal nem tehető közzé",

@@ -830,6 +830,7 @@
   "pages.share.publishDescription": "Veröffentlicht eine schreibgeschützte Kopie dieser Seite im Web. Seitendaten bleiben lokal, sofern nicht eingeschlossen.",
   "pages.share.removePassword": "Passwort entfernen",
   "pages.share.republish": "Neueste Version veröffentlichen",
+  "pages.share.retryCleanup": "Bereinigung erneut versuchen",
   "pages.share.savePassword": "Speichern",
   "pages.share.scriptBlocked": "Sie darf ein Skript auf deinem Computer ausführen. Entferne diese Genehmigung, um eine schreibgeschützte Kopie zu veröffentlichen.",
   "pages.share.scriptBlockedTitle": "Diese Seite kann nicht veröffentlicht werden",

@@ -830,6 +830,7 @@
   "pages.share.publishDescription": "Publish a read-only copy of this page to the web. Page data stays local unless you include it.",
   "pages.share.removePassword": "Remove password",
   "pages.share.republish": "Publish latest",
+  "pages.share.retryCleanup": "Retry cleanup",
   "pages.share.savePassword": "Save",
   "pages.share.scriptBlocked": "It's allowed to run a script on your computer. Remove that approval to publish a view-only copy.",
   "pages.share.scriptBlockedTitle": "This page can't be published",

@@ -830,6 +830,7 @@
   "pages.share.publishDescription": "Publica una copia de solo lectura de esta página en la web. Los datos permanecen locales salvo que los incluyas.",
   "pages.share.removePassword": "Quitar contraseña",
   "pages.share.republish": "Publicar lo último",
+  "pages.share.retryCleanup": "Reintentar limpieza",
   "pages.share.savePassword": "Guardar",
   "pages.share.scriptBlocked": "Puede ejecutar un script en tu ordenador. Quita esa aprobación para publicar una copia de solo lectura.",
   "pages.share.scriptBlockedTitle": "Esta página no se puede publicar",

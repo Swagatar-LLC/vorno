@@ -830,6 +830,7 @@
   "pages.share.publishDescription": "このページの閲覧専用コピーをウェブに公開します。データは含めない限りローカルに残ります。",
   "pages.share.removePassword": "パスワードを削除",
   "pages.share.republish": "最新の内容を公開",
+  "pages.share.retryCleanup": "クリーンアップを再試行",
   "pages.share.savePassword": "保存",
   "pages.share.scriptBlocked": "このページはコンピューター上でスクリプトを実行できます。閲覧専用コピーを公開するには、その承認を削除してください。",
   "pages.share.scriptBlockedTitle": "このページは公開できません",

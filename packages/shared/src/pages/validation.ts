@@ -194,6 +194,8 @@ export const PageShareInfoSchema = z.object({
   publishedAt: z.number(),
   updatedAt: z.number(),
   passwordProtected: z.boolean(),
+  /** Public routes are revoked; retain capability only to retry physical cleanup. */
+  cleanupPending: z.boolean().optional(),
   lastPublishError: z.string().max(2000).optional(),
 });
 

@@ -830,6 +830,7 @@
   "pages.share.publishDescription": "将此页面的只读副本发布到网络。除非你选择包含，页面数据将保留在本地。",
   "pages.share.removePassword": "移除密码",
   "pages.share.republish": "发布最新内容",
+  "pages.share.retryCleanup": "重试清理",
   "pages.share.savePassword": "保存",
   "pages.share.scriptBlocked": "该页面可以在你的计算机上运行脚本。移除该批准后才能发布只读副本。",
   "pages.share.scriptBlockedTitle": "此页面无法发布",

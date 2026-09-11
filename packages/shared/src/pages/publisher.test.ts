@@ -220,6 +220,9 @@ describe('Pages sharing default gate', () => {
     });
     try {
       expect((await publisher.unpublish(workspace, 'workspace', page.slug)).warning).toBe('remote-cleanup-pending');
+      // loadPageConfig validates a fresh disk reload, so this proves the retained
+      // physical-cleanup capability survives persistence rather than being stripped.
+      expect(loadPageConfig(workspace, page.slug)?.share?.cleanupPending).toBe(true);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }

@@ -182,6 +182,7 @@ export function SharePageDialog({
       const result = await window.electronAPI.unpublishPage(workspaceId, config.slug)
       if (result.warning === 'remote-cleanup-pending') {
         toast.warning(t('toast.pageUnpublished'), { description: t('toast.pageRemoteCleanupPending') })
+        return
       } else if (result.warning === 'remote-copy-may-remain') {
         toast.warning(t('toast.pageUnpublishFailed'), { description: t('toast.pagePublicCopyMayRemain') })
         // The host, not the renderer, owns the irreversible confirmation.
@@ -192,6 +193,7 @@ export function SharePageDialog({
       }
       onOpenChange(false)
     } catch (err) {
+      if (err instanceof Error && err.message.includes('PAGE_FORGET_CONFIRMATION_CANCELLED')) return
       toast.error(t('toast.pageUnpublishFailed'), {
         description: displayShareError(err),
       })
@@ -213,7 +215,8 @@ export function SharePageDialog({
     }
   }, [share, t])
 
-  const contentDrifted = Boolean(share && config.contentDigest && share.publishedContentDigest !== config.contentDigest)
+  const cleanupPending = share?.cleanupPending === true
+  const contentDrifted = Boolean(share && !cleanupPending && config.contentDigest && share.publishedContentDigest !== config.contentDigest)
   const publishBlocked = scriptGrants.length > 0 || (hasUsableActionGrants && !ackViewOnly)
 
   return (
@@ -280,7 +283,12 @@ export function SharePageDialog({
           // Published
           // ------------------------------------------------------------
           <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
+            {cleanupPending ? (
+              <Info_Alert variant="warning" inline icon={<AlertTriangle className="h-4 w-4" />}>
+                <Info_Alert.Title>{t('toast.pageUnpublished')}</Info_Alert.Title>
+                <Info_Alert.Description>{t('toast.pageRemoteCleanupPending')}</Info_Alert.Description>
+              </Info_Alert>
+            ) : <div className="flex flex-col gap-1.5">
               <span className="text-sm">{t('pages.share.linkLabel')}</span>
               <div className="flex items-center gap-2">
                 <Input readOnly value={share.url} onFocus={e => e.currentTarget.select()} className="font-mono text-xs" />
@@ -294,7 +302,7 @@ export function SharePageDialog({
                   ? <><Lock className="h-3 w-3" /> {t('pages.share.passwordProtected')}</>
                   : <><Globe2 className="h-3 w-3" /> {t('pages.share.noPassword')}</>}
               </span>
-            </div>
+            </div>}
 
             {share.lastPublishError && (
               <Info_Alert variant="error" inline icon={<AlertTriangle className="h-4 w-4" />}>
@@ -303,7 +311,7 @@ export function SharePageDialog({
               </Info_Alert>
             )}
 
-            {sharingEnabled ? (
+            {sharingEnabled && !cleanupPending ? (
               <>
                 {/* A script approval added after publishing blocks republish too */}
                 {scriptGrants.length > 0 && (
@@ -390,11 +398,11 @@ export function SharePageDialog({
               {confirmingUnpublish ? (
                 <Button variant="destructive" onClick={runUnpublish} disabled={busy !== null}>
                   {busy === 'unpublish' && <Spinner className="text-xs" />}
-                  {t('pages.share.unpublish')}
+                  {cleanupPending ? t('pages.share.retryCleanup') : t('pages.share.unpublish')}
                 </Button>
               ) : (
                 <Button variant="outline" onClick={() => setConfirmingUnpublish(true)} disabled={busy !== null}>
-                  {t('pages.share.unpublish')}
+                  {cleanupPending ? t('pages.share.retryCleanup') : t('pages.share.unpublish')}
                 </Button>
               )}
             </>
