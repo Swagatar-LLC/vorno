@@ -362,22 +362,18 @@ async function updatePublication(request, env, id) {
     await Promise.allSettled([env.PAGES.delete(record.contentKey), env.PAGES.delete(record.snapshotKey)])
     return json({ error: saved === false ? 'conflict' : 'storage_failed' }, saved === false ? 409 : 503)
   }
-  await cleanupSupersededRevisions(env, record)
+  await cleanupSupersededRevisions(env, auth.record, record)
   return json(publicationDto(request, record))
 }
 
-async function cleanupSupersededRevisions(env, record) {
-  // Keep only the selected revision after a successful manifest switch. Any
-  // transient delete failure is retried by the next update and by unpublish.
-  try {
-    const listed = await env.PAGES.list({ prefix: `${record.id}/revisions/` })
-    await Promise.allSettled(listed.objects
-      .map(object => object.key)
-      .filter(key => key !== record.contentKey && key !== record.snapshotKey)
-      .map(key => env.PAGES.delete(key)))
-  } catch {
-    // The manifest selects exactly one revision; unpublish is the full-prefix backstop.
-  }
+async function cleanupSupersededRevisions(env, previous, current) {
+  // Capture only the revision made stale by THIS successful CAS. Listing after
+  // the switch could observe and delete a later concurrent live revision.
+  await Promise.allSettled(
+    [previous.contentKey, previous.snapshotKey]
+      .filter(key => key !== current.contentKey && key !== current.snapshotKey)
+      .map(key => env.PAGES.delete(key)),
+  )
 }
 
 async function cleanupPublication(env, record, etag) {
@@ -414,13 +410,15 @@ async function unpublishPublication(request, env, id) {
     if (auth.response) return auth.response
     if (auth.record.status === 'unpublished') break
     const revoked = { ...auth.record, status: 'unpublished', unpublishedAt: Date.now(), cleanup: { state: 'pending', attempts: 0 } }
-    if (await saveRecord(env, revoked, auth.etag)) {
+    let saved
+    try { saved = await saveRecord(env, revoked, auth.etag) } catch { return json({ error: 'storage_failed', retryable: true }, 503) }
+    if (saved) {
       auth = await authorize(request, env, id)
       break
     }
   }
-  if (!auth || auth.response) return json({ error: 'conflict' }, 409)
-  if (auth.record.status !== 'unpublished') return json({ error: 'conflict' }, 409)
+  if (!auth || auth.response) return json({ error: 'conflict', retryable: true }, 409)
+  if (auth.record.status !== 'unpublished') return json({ error: 'conflict', retryable: true }, 409)
   let record = auth.record
   try {
     record = await cleanupPublication(env, record, auth.etag)
@@ -496,7 +494,7 @@ async function serveSnapshot(request, env, id) {
 async function submitPassword(request, env, id) {
   const record = await publicRecord(env, id)
   if (!record || !record.password) return json({ error: 'not_found' }, 404)
-  if (await rateLimited(env, 'PAGE_PASSWORD_LIMIT', request, `password:${id}`)) return json({ error: 'rate_limited' }, 429)
+  if (await rateLimited(env, 'PAGE_PASSWORD_LIMIT', request, `password:${id}`, true)) return json({ error: 'rate_limited' }, 429)
   let form
   try { form = await request.formData() } catch { return json({ error: 'invalid_password' }, 400) }
   const password = form.get('password')

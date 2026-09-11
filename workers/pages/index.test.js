@@ -68,6 +68,7 @@ function makeEnv(overrides = {}) {
   return {
     PAGES: makeBucket(),
     PAGE_CREATE_LIMIT: { limit: async () => ({ success: true }) },
+    PAGE_PASSWORD_LIMIT: { limit: async () => ({ success: true }) },
     PASSWORD_TICKET_SECRET: 'test-only-ticket-secret',
     // Tests exercise ticket lifecycle, not PBKDF CPU cost; production uses the measured default.
     PBKDF2_ITERATIONS: 1,
@@ -293,6 +294,10 @@ describe('password protection', () => {
     const deniedCreate = await create(denied, { password: 'password-long-enough' })
     const deniedForm = new FormData(); deniedForm.set('password', 'password-long-enough')
     expect((await handle(req(`/p/${deniedCreate.data.id}/password`, { method: 'POST', body: deniedForm }), denied)).status).toBe(429)
+    const unavailable = makeEnv({ PAGE_PASSWORD_LIMIT: { limit: async () => { throw new Error('down') } } })
+    const unavailableCreate = await create(unavailable, { password: 'password-long-enough' })
+    const unavailableForm = new FormData(); unavailableForm.set('password', 'password-long-enough')
+    expect((await handle(req(`/p/${unavailableCreate.data.id}/password`, { method: 'POST', body: unavailableForm }), unavailable)).status).toBe(429)
   })
 
   test('clearing a password does not modify content and makes the public route immediately accessible', async () => {

@@ -529,7 +529,6 @@ export async function deletePageWithUnpublish(
   pageSlug: string,
   options?: { log?: (message: string) => void; tokenStore?: PagePublishTokenStore; fetchFn?: typeof fetch },
 ): Promise<DeletePageOutcome> {
-  let publicCopyMayRemain = false;
   const wasShared = Boolean(loadPageConfig(workspaceRootPath, pageSlug)?.share);
   if (wasShared) {
     let result: UnpublishResult | undefined;
@@ -541,11 +540,9 @@ export async function deletePageWithUnpublish(
       });
       result = await publisher.unpublish(workspaceRootPath, workspaceId, pageSlug);
     } catch (error) {
-      publicCopyMayRemain = true;
-      options?.log?.(
-        `Unpublish before delete failed for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      result = undefined;
+      const detail = error instanceof Error ? error.message : String(error);
+      options?.log?.(`Unpublish before delete failed for ${pageSlug}: ${detail}`);
+      throw new Error(`Could not confirm remote revocation; retry unpublish before deleting the local page: ${detail}`);
     }
     if (result?.warning) {
       throw new Error(
@@ -567,5 +564,5 @@ export async function deletePageWithUnpublish(
         : `Deleting the local page folder failed: ${detail}`,
     );
   }
-  return { publicCopyMayRemain };
+  return { publicCopyMayRemain: false };
 }
