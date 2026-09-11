@@ -59,7 +59,7 @@ Series are ascending by `t`, capped at the newest 1000 points per series. The st
 
 Rules that make pages work everywhere (local sandbox AND published copies):
 
-1. **One full standalone HTML document.** Inline ALL CSS and JS. No external requests of any kind — published copies are served with `connect-src 'none'` (all network egress blocked), so CDN scripts, fonts, or fetch() calls would break them. Render charts with inline SVG/canvas you draw yourself.
+1. **One full standalone HTML document.** Inline ALL CSS and JS. No external requests of any kind — published copies are served with `connect-src 'none'` (scripted network egress is blocked), so CDN scripts, fonts, or fetch() calls would break them. Frame self-navigation remains a documented residual. Render charts with inline SVG/canvas you draw yourself.
 2. **Data arrives via the bridge, not fetch.** The host injects the data snapshot through `postMessage`; `live` pages get replacement snapshots automatically whenever the data changes.
 3. **The iframe is opaque-origin** (`sandbox` without `allow-same-origin`): no cookies, no localStorage, no parent DOM access. Keep state in JS variables.
 
@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS timeseries (series TEXT NOT NULL, t INTEGER NOT NULL,
 
 ## Sharing
 
-Users publish pages from the page's **Share** button (feature-flagged): password-protectable public URL, opt-in data snapshot, instant revocation. You don't publish pages yourself — but remember: published copies block all network egress and disable source actions, which is why inline-everything authoring matters. `delete_page` unpublishes first and blocks deletion if revocation cannot be confirmed. Only the Electron desktop host can offer a separately confirmed local-state-forget recovery for a lost management capability; headless and WebUI paths deliberately have no such escape hatch.
+Users publish pages from the page's **Share** button (feature-flagged): password-protectable public URL, opt-in data snapshot, instant revocation. You don't publish pages yourself — but remember: published copies block scripted network egress and disable source actions; frame self-navigation remains a documented residual, which is why inline-everything authoring matters. `delete_page` unpublishes first and blocks deletion if revocation cannot be confirmed. Only the Electron desktop host can offer a separately confirmed local-state-forget recovery for a lost management capability; headless and WebUI paths deliberately have no such escape hatch.
 
 ## Starter template
 
