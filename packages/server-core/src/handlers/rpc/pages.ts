@@ -812,12 +812,14 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     return updated
   })
 
-  // Unpublish (revoke the public copy, clear the local pointer + vault token)
-  server.handle(RPC_CHANNELS.pages.UNPUBLISH, async (_ctx, workspaceId: string, pageSlug: string) => {
+  // Unpublish, or renderer-confirmed local-only recovery for an irretrievable admin capability.
+  server.handle(RPC_CHANNELS.pages.UNPUBLISH, async (_ctx, workspaceId: string, pageSlug: string, options?: { forgetLocal?: boolean }) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const publisher = await buildPublisher()
-    const result = await publisher.unpublish(workspace.rootPath, workspace.id, pageSlug)
+    const result = options?.forgetLocal
+      ? { config: await publisher.forgetLocalPublication(workspace.rootPath, workspace.id, pageSlug), warning: undefined }
+      : await publisher.unpublish(workspace.rootPath, workspace.id, pageSlug)
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
     await broadcastChanged(workspaceId, workspace.rootPath)
     return { config: result.config, warning: result.warning }

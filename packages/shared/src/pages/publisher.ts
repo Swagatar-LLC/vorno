@@ -333,6 +333,17 @@ export class PagePublisher {
     return { config: updated };
   }
 
+  /**
+   * Deliberately local-only escape hatch for a lost admin capability or stale
+   * development origin. The caller must obtain explicit human confirmation:
+   * this never contacts the remote service and the public copy may remain.
+   */
+  async forgetLocalPublication(workspaceRootPath: string, workspaceId: string, pageSlug: string): Promise<PageConfig> {
+    const config = this.requirePage(workspaceRootPath, pageSlug);
+    await this.tokenStore.delete(workspaceId, config.id);
+    return setPageShareState(workspaceRootPath, pageSlug, undefined);
+  }
+
   // --------------------------------------------------------------------
   // Internals
   // --------------------------------------------------------------------

@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const source = readFileSync('wrangler.jsonc', 'utf8')
-const placeholder = 'REPLACE_WITH_ISOLATED_PAGES_'
+const isolation = ['"name": "vorno-pages"', '"bucket_name": "vorno-pages"', '"pattern": "pages.vorno.ai"']
+if (!isolation.every(value => source.includes(value))) throw new Error('Pages Worker isolation invariant failed (name, bucket, or route changed)')
 if ((source.match(/REPLACE_WITH_ISOLATED_PAGES_[A-Z_]+/g) || []).length !== 2) throw new Error('Expected two isolated undeployed namespace placeholders')
 if (process.argv.includes('--deploy') || process.env.VORNO_PAGES_DEPLOY_APPROVED === '1') {
   throw new Error('Deployment is gated by SUV-0063 plus privacy/retention approval.')
