@@ -312,10 +312,17 @@ export class PagePublisher {
       );
     }
 
+    // Logical revocation is already complete when this flag is true: public
+    // routes 404, but the Worker recorded a physical-object cleanup retry.
+    // Reuse the existing conservative UI warning rather than hiding an
+    // operator-visible retention failure behind a successful HTTP status.
+    const warning = await hasPendingRemoteCleanup(response)
+      ? 'remote-copy-may-remain' as const
+      : undefined;
     const updated = setPageShareState(workspaceRootPath, pageSlug, undefined);
     await this.tokenStore.delete(workspaceId, config.id);
     this.log(`Unpublished page ${pageSlug} (${share.publicationId})`);
-    return { config: updated };
+    return { config: updated, ...(warning ? { warning } : {}) };
   }
 
   // --------------------------------------------------------------------
@@ -476,6 +483,17 @@ async function safeBodyExcerpt(response: Response): Promise<string> {
     return (await response.text()).slice(0, ERROR_BODY_MAX_CHARS);
   } catch {
     return '<unreadable body>';
+  }
+}
+
+/** Best-effort compatibility read: legacy delete endpoints may return an empty 204. */
+async function hasPendingRemoteCleanup(response: Response): Promise<boolean> {
+  if (response.status === 404 || !response.headers.get('content-type')?.includes('application/json')) return false;
+  try {
+    const body = await response.clone().json() as { cleanupPending?: unknown };
+    return body.cleanupPending === true;
+  } catch {
+    return false;
   }
 }
 

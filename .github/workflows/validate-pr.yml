@@ -51,6 +51,9 @@ jobs:
       - name: Typecheck packages/ui
         run: cd packages/ui && bunx tsc --noEmit
 
+      - name: Typecheck Pages Worker
+        run: cd workers/pages && bunx tsc --noEmit
+
       - name: Typecheck apps/server (HTTP trigger)
         run: cd apps/server && bunx tsc --noEmit 2>&1 | grep -v "TS6059" || true
         # TS6059 = test files outside rootDir (pre-existing, harmless)
@@ -172,6 +175,23 @@ jobs:
 
       - name: Run share Worker tests (strict — 0 failures allowed)
         run: cd apps/viewer && bun test worker/
+
+  # ---------------------------------------------------------------------------
+  # Pages Worker — isolated public HTML publication. Its tests must remain
+  # separate from vorno-share: that Worker is inert JSON by design.
+  # ---------------------------------------------------------------------------
+  test-pages-worker:
+    name: Test Pages Worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+      # No `bun install`: this Worker uses only Web platform globals and Bun's test runner.
+
+      - name: Run Pages Worker tests (strict — 0 failures allowed)
+        run: bun test workers/pages
 
   # ---------------------------------------------------------------------------
   # i18n gates — locale parity, alphabetical sort, and t()/Trans coverage

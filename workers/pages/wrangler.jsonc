@@ -1,0 +1,28 @@
+// SUV-0060: isolated from the inert-JSON vorno-share Worker by worker name,
+// host, R2 bucket, rate-limit namespaces, and password-ticket secret.
+// Do not deploy until SUV-0063 lands and Jeff has approved privacy + retention.
+{
+  "name": "vorno-pages",
+  "main": "index.js",
+  "compatibility_date": "2026-09-10",
+  "r2_buckets": [
+    { "binding": "PAGES", "bucket_name": "vorno-pages" }
+  ],
+  "ratelimits": [
+    {
+      "name": "PAGE_CREATE_LIMIT",
+      "namespace_id": "REPLACE_WITH_ISOLATED_PAGES_CREATE_NAMESPACE",
+      "simple": { "limit": 5, "period": 60 }
+    },
+    {
+      "name": "PAGE_PASSWORD_LIMIT",
+      "namespace_id": "REPLACE_WITH_ISOLATED_PAGES_PASSWORD_NAMESPACE",
+      "simple": { "limit": 10, "period": 60 }
+    }
+  ],
+  "vars": {
+    // Set only after the benchmark is rerun in the intended Workers plan/runtime.
+    "PBKDF2_ITERATIONS": "100000"
+  },
+  "routes": [{ "pattern": "pages.vorno.ai", "custom_domain": true }]
+}

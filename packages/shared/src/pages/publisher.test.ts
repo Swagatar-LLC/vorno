@@ -131,6 +131,32 @@ describe('Pages sharing default gate', () => {
     }
   });
 
+  test('surfaces a physical-cleanup warning after the Worker has logically revoked the publication', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'pages-publisher-cleanup-warning-'));
+    const page = createPage(workspace, { name: 'Cleanup warning', content: '<p>warning</p>' });
+    setPageShareState(workspace, page.slug, {
+      publicationId: 'publication-1',
+      url: 'https://pages.vorno.ai/p/publication-1',
+      publishedRevision: 'r1',
+      publishedContentDigest: page.contentDigest!,
+      includesData: false,
+      publishedAt: Date.now(),
+      updatedAt: Date.now(),
+      passwordProtected: false,
+    });
+    const publisher = new PagePublisher({
+      tokenStore: { get: async () => 'token', set: async () => {}, delete: async () => true },
+      fetchFn: (async () => new Response(JSON.stringify({ cleanupPending: true }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch,
+    });
+    try {
+      expect((await publisher.unpublish(workspace, 'workspace', page.slug)).warning).toBe('remote-copy-may-remain');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test('rejects a hostile edited stored URL before fetch', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'pages-publisher-hostile-'));
     const page = createPage(workspace, { name: 'Hostile copy', content: '<p>hostile</p>' });

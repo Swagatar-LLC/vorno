@@ -1,0 +1,262 @@
+/**
+ * SUV-0060 security regression tests. These run without Cloudflare credentials.
+ *
+ * Load-bearing claims: public HTML is contained; an admin capability—not a link—
+ * controls mutation; unpublish revokes before best-effort deletion; malformed or
+ * oversized multipart bodies never make a public object visible.
+ */
+import { describe, expect, test } from 'bun:test'
+import { handle, MAX_CONTENT_BYTES, PAGE_ID_RE, randomToken } from './index.js'
+
+function makeBucket({ failDeletes = new Map() } = {}) {
+  const objects = new Map()
+  let failNextPut
+  const drain = async value => {
+    if (value instanceof Blob) return new Uint8Array(await value.arrayBuffer())
+    if (value instanceof ReadableStream) return new Uint8Array(await new Response(value).arrayBuffer())
+    return new TextEncoder().encode(String(value))
+  }
+  return {
+    objects,
+    async put(key, value, options = {}) {
+      if (failNextPut?.(key)) {
+        failNextPut = undefined
+        throw new Error(`put failed for ${key}`)
+      }
+      const bytes = await drain(value)
+      objects.set(key, { bytes, customMetadata: options.customMetadata })
+    },
+    async get(key) {
+      const object = objects.get(key)
+      return object ? { body: new Blob([object.bytes]).stream(), customMetadata: object.customMetadata } : null
+    },
+    async list({ prefix = '' } = {}) {
+      return { objects: [...objects.keys()].filter(key => key.startsWith(prefix)).map(key => ({ key })), truncated: false }
+    },
+    failNextPut(predicate) { failNextPut = predicate },
+    async delete(key) {
+      const remaining = failDeletes.get(key) || 0
+      if (remaining) {
+        failDeletes.set(key, remaining - 1)
+        throw new Error(`delete failed for ${key}`)
+      }
+      objects.delete(key)
+    },
+  }
+}
+
+function makeEnv(overrides = {}) {
+  return {
+    PAGES: makeBucket(),
+    PASSWORD_TICKET_SECRET: 'test-only-ticket-secret',
+    // Tests exercise ticket lifecycle, not PBKDF CPU cost; production uses the measured default.
+    PBKDF2_ITERATIONS: 1,
+    ...overrides,
+  }
+}
+
+const req = (path, init) => new Request(`https://pages.vorno.ai${path}`, init)
+const digest = 'a'.repeat(64)
+
+function bundle({ content = '<!doctype html><script>fetch("https://evil.example")</script>', snapshot, password } = {}) {
+  const form = new FormData()
+  form.set('manifest', JSON.stringify({ version: 1, slug: 'report', title: 'Report', kind: 'interactive', contentDigest: digest, includesData: snapshot !== undefined }))
+  form.set('content', new Blob([content], { type: 'text/html' }), 'index.html')
+  if (snapshot !== undefined) form.set('snapshot', new Blob([JSON.stringify(snapshot)], { type: 'application/json' }), 'snapshot.json')
+  if (password !== undefined) form.set('password', password)
+  return form
+}
+
+async function create(env, options = {}) {
+  const response = await handle(req('/api/publications', { method: 'POST', body: bundle(options) }), env)
+  return { response, data: await response.json() }
+}
+
+function auth(token) {
+  return { authorization: `Bearer ${token}` }
+}
+
+async function content(env, id, headers = {}) {
+  return handle(req(`/p/${id}/content`, { headers }), env)
+}
+
+describe('publication capabilities', () => {
+  test('mints opaque IDs and one-time admin token while persisting only a hash', async () => {
+    const env = makeEnv()
+    const { response, data } = await create(env)
+    expect(response.status).toBe(201)
+    expect(data.id).toMatch(PAGE_ID_RE)
+    expect(data.url).toBe(`https://pages.vorno.ai/p/${data.id}`)
+    expect(data.adminToken).toHaveLength(43)
+    expect(data.url).not.toContain(data.adminToken)
+    const stored = new TextDecoder().decode(env.PAGES.objects.get(`${data.id}/manifest.json`).bytes)
+    expect(stored).toContain('adminTokenHash')
+    expect(stored).not.toContain(data.adminToken)
+    expect(new Set(Array.from({ length: 1000 }, () => randomToken(16))).size).toBe(1000)
+  })
+
+  test('rejects unauthenticated mutation without changing public content', async () => {
+    const env = makeEnv()
+    const { data } = await create(env, { content: '<p>original</p>' })
+    const update = await handle(req(`/api/publications/${data.id}`, { method: 'PUT', body: bundle({ content: '<p>evil</p>' }) }), env)
+    expect(update.status).toBe(401)
+    expect(await (await content(env, data.id)).text()).toBe('<p>original</p>')
+    const idToken = await handle(req(`/api/publications/${data.id}`, { method: 'DELETE', headers: auth(data.id) }), env)
+    expect(idToken.status).toBe(401)
+    expect((await content(env, data.id)).status).toBe(200)
+  })
+
+  test('leaves the current public revision unchanged and cleans staging keys when an update write fails', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { content: '<p>original</p>', snapshot: { version: 1 } })
+    bucket.failNextPut(key => key.endsWith('/snapshot.json'))
+    const response = await handle(req(`/api/publications/${data.id}`, {
+      method: 'PUT', headers: auth(data.adminToken), body: bundle({ content: '<p>new</p>', snapshot: { version: 2} }),
+    }), env)
+    expect(response.status).toBe(503)
+    expect(await (await content(env, data.id)).text()).toBe('<p>original</p>')
+    const keys = [...bucket.objects.keys()]
+    expect(keys.filter(key => key.includes('/revisions/')).length).toBe(2)
+  })
+
+  test('changes revision only for content updates, never a password-only update', async () => {
+    const env = makeEnv()
+    const { data } = await create(env)
+    const password = new FormData()
+    password.set('passwordAction', 'set')
+    password.set('password', 'password-long-enough')
+    const passwordResult = await handle(req(`/api/publications/${data.id}`, { method: 'PUT', headers: auth(data.adminToken), body: password }), env)
+    expect(passwordResult.status).toBe(200)
+    expect((await passwordResult.json()).revision).toBe(data.revision)
+    const contentResult = await handle(req(`/api/publications/${data.id}`, { method: 'PUT', headers: auth(data.adminToken), body: bundle({ content: '<p>revised</p>' }) }), env)
+    expect(contentResult.status).toBe(200)
+    expect((await contentResult.json()).revision).not.toBe(data.revision)
+  })
+})
+
+describe('multipart caps and rate brakes', () => {
+  test('rejects an oversized content body without Content-Length and leaves no partial object', async () => {
+    const env = makeEnv()
+    const form = bundle({ content: 'x'.repeat(MAX_CONTENT_BYTES + 1) })
+    const request = req('/api/publications', { method: 'POST', body: form })
+    expect(request.headers.get('content-length')).toBeNull()
+    const response = await handle(request, env)
+    expect(response.status).toBe(413)
+    expect(env.PAGES.objects.size).toBe(0)
+  })
+
+  test('rejects both oversized and understated dishonest Content-Length values without partial persistence', async () => {
+    const earlyEnv = makeEnv()
+    const early = await handle(req('/api/publications', {
+      method: 'POST',
+      headers: { 'content-length': String(11 * 1024 * 1024) },
+      body: 'not-even-multipart',
+    }), earlyEnv)
+    expect(early.status).toBe(413)
+    expect(earlyEnv.PAGES.objects.size).toBe(0)
+
+    const lowEnv = makeEnv()
+    const low = await handle(req('/api/publications', {
+      method: 'POST',
+      // The sender claims one byte but the multipart content itself exceeds the cap.
+      headers: { 'content-length': '1' },
+      body: bundle({ content: 'x'.repeat(MAX_CONTENT_BYTES + 1) }),
+    }), lowEnv)
+    expect(low.status).toBe(413)
+    expect(lowEnv.PAGES.objects.size).toBe(0)
+  })
+
+  test('fails closed when a create limiter denies and open only when the limiter itself is unavailable', async () => {
+    const denied = makeEnv({ PAGE_CREATE_LIMIT: { limit: async () => ({ success: false }) } })
+    expect((await create(denied)).response.status).toBe(429)
+    expect(denied.PAGES.objects.size).toBe(0)
+    const unavailable = makeEnv({ PAGE_CREATE_LIMIT: { limit: async () => { throw new Error('down') } } })
+    expect((await create(unavailable)).response.status).toBe(201)
+  })
+})
+
+describe('public containment and snapshot opt-in', () => {
+  test('serves HTML only in the opaque sandbox shell with strict no-egress CSP and no public bridge actions', async () => {
+    const env = makeEnv()
+    const { data } = await create(env)
+    const publicContent = await content(env, data.id)
+    expect(publicContent.headers.get('content-security-policy')).toContain("connect-src 'none'")
+    expect(publicContent.headers.get('content-security-policy')).toContain('frame-ancestors https://pages.vorno.ai')
+    expect(publicContent.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(publicContent.headers.get('cache-control')).toBe('no-store')
+    const shell = await handle(req(`/p/${data.id}`), env)
+    const html = await shell.text()
+    expect(html).toContain('Published by a Vorno user — not by Vorno')
+    expect(html).toContain('src="/p/')
+    expect(html).toContain('sandbox="allow-scripts allow-forms"')
+    expect(html).toContain('public-actions-disabled')
+    expect(html).toContain("grants:[]")
+    expect(html).not.toContain('window.open')
+  })
+
+  test('never exposes a snapshot unless the publisher explicitly included one', async () => {
+    const env = makeEnv()
+    const privateSnapshot = await create(env)
+    expect((await handle(req(`/p/${privateSnapshot.data.id}/snapshot`), env)).status).toBe(404)
+    const included = await create(env, { snapshot: { version: 1, kv: { count: 2 }, series: {} } })
+    const response = await handle(req(`/p/${included.data.id}/snapshot`), env)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8')
+    expect(await response.json()).toEqual({ version: 1, kv: { count: 2 }, series: {} })
+  })
+})
+
+describe('password protection', () => {
+  test('requires a correctly rate-limited password ticket for shell, content, and snapshot', async () => {
+    const env = makeEnv()
+    const { data } = await create(env, { password: 'password-long-enough', snapshot: { version: 1 } })
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(401)
+    expect((await content(env, data.id)).status).toBe(401)
+    expect((await handle(req(`/p/${data.id}/snapshot`), env)).status).toBe(401)
+
+    const wrong = new FormData(); wrong.set('password', 'wrong-password')
+    expect((await handle(req(`/p/${data.id}/password`, { method: 'POST', body: wrong }), env)).status).toBe(401)
+    const right = new FormData(); right.set('password', 'password-long-enough')
+    const ticketResponse = await handle(req(`/p/${data.id}/password`, { method: 'POST', body: right }), env)
+    expect(ticketResponse.status).toBe(303)
+    const cookie = ticketResponse.headers.get('set-cookie').split(';')[0]
+    expect((await content(env, data.id, { cookie })).status).toBe(200)
+
+    const denied = makeEnv({ PAGE_PASSWORD_LIMIT: { limit: async () => ({ success: false }) } })
+    const deniedCreate = await create(denied, { password: 'password-long-enough' })
+    const deniedForm = new FormData(); deniedForm.set('password', 'password-long-enough')
+    expect((await handle(req(`/p/${deniedCreate.data.id}/password`, { method: 'POST', body: deniedForm }), denied)).status).toBe(429)
+  })
+
+  test('clearing a password does not modify content and makes the public route immediately accessible', async () => {
+    const env = makeEnv()
+    const { data } = await create(env, { content: '<p>same</p>', password: 'password-long-enough' })
+    const clear = new FormData(); clear.set('passwordAction', 'clear')
+    expect((await handle(req(`/api/publications/${data.id}`, { method: 'PUT', headers: auth(data.adminToken), body: clear }), env)).status).toBe(200)
+    expect(await (await content(env, data.id)).text()).toBe('<p>same</p>')
+  })
+})
+
+describe('revocation and deletion recovery', () => {
+  test('logically revokes every public route before a physical deletion failure, records it, and retries with the same admin token', async () => {
+    const failures = new Map()
+    const bucket = makeBucket({ failDeletes: failures })
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { snapshot: { version: 1 } })
+    const activeRecord = JSON.parse(new TextDecoder().decode(bucket.objects.get(`${data.id}/manifest.json`).bytes))
+    failures.set(activeRecord.contentKey, 1)
+    const first = await handle(req(`/api/publications/${data.id}`, { method: 'DELETE', headers: auth(data.adminToken) }), env)
+    expect(first.status).toBe(200)
+    expect((await first.json()).cleanupPending).toBe(true)
+    for (const suffix of ['', '/content', '/snapshot']) {
+      expect((await handle(req(`/p/${data.id}${suffix}`), env)).status).toBe(404)
+    }
+    const audit = new TextDecoder().decode(bucket.objects.get(`${data.id}/manifest.json`).bytes)
+    expect(audit).toContain('"state":"pending"')
+    expect(audit).toContain('delete failed')
+    const retry = await handle(req(`/api/publications/${data.id}`, { method: 'DELETE', headers: auth(data.adminToken) }), env)
+    expect((await retry.json()).cleanupPending).toBe(false)
+    expect(bucket.objects.has(activeRecord.contentKey)).toBe(false)
+  })
+})
