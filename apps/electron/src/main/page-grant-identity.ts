@@ -79,12 +79,17 @@ export interface RenderIdentity {
 
 /** Exact, escaped host-dialog representation of a consented action descriptor. */
 export function formatPageGrantDescriptor(action: import('@craft-agent/core').PageActionDescriptor): string {
-  return JSON.stringify(
+  const serialized = JSON.stringify(
     action.kind === 'script'
       ? { ...action, runtime: action.runtime ?? 'bun', args: action.args ?? [] }
       : action,
     null,
     2,
+  )
+  // JSON only guarantees escaping C0; native chrome must also make C1,
+  // format/bidi, and Unicode line/paragraph separators visibly non-printing.
+  return serialized.replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g, char =>
+    `\\u${char.codePointAt(0)!.toString(16).padStart(4, '0')}`,
   )
 }
 

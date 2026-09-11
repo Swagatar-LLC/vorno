@@ -65,13 +65,17 @@ const DOCUMENT_REPLACED: NavDetails = { isMainFrame: true, isSameDocument: false
 describe('host grant descriptor rendering', () => {
   test('escapes controls, preserves spaced argument boundaries, and fills script defaults', () => {
     const rendered = formatPageGrantDescriptor({
-      kind: 'script', script: 'scripts/run.ts', args: ['--label', 'two words', 'line\nbreak', '\u0000control'],
+      kind: 'script', script: 'scripts/run.ts', args: ['--label', 'two words', 'line\nbreak', '\u0000control', '\u0085c1', '\u2028line', '\u202ebidi', '\u2066isolate'],
     })
     expect(rendered).toContain('"runtime": "bun"')
     expect(rendered).toContain('"args": [')
     expect(rendered).toContain('"two words"')
     expect(rendered).toContain('"line\\nbreak"')
     expect(rendered).toContain('"\\u0000control"')
+    expect(rendered).toContain('\\u0085c1')
+    expect(rendered).toContain('\\u2028line')
+    expect(rendered).toContain('\\u202ebidi')
+    expect(rendered).toContain('\\u2066isolate')
     expect(rendered).not.toContain('line\nbreak')
   })
 })
