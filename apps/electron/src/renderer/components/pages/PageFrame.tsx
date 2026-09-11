@@ -214,7 +214,12 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
           !current.some(g => descriptorEquals(g.action, req.action)) &&
           !deniedRef.current.has(descriptorSignature(req.action)),
       )
-      if (remaining.length === 0 || grantRequestInFlightRef.current) return
+      // Even a duplicate or concurrently suppressed bridge request needs a
+      // grants reply; otherwise the opaque frame can wait forever for a result.
+      if (remaining.length === 0 || grantRequestInFlightRef.current) {
+        postToFrame(buildPageGrantsMessage(current))
+        return
+      }
       grantRequestInFlightRef.current = true
       try {
         for (const entry of remaining) {
