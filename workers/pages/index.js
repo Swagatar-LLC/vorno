@@ -216,8 +216,6 @@ async function readUpload(request, { allowPasswordAction = false } = {}) {
   if (snapshot instanceof Blob) {
     try { JSON.parse(await snapshot.text()) } catch { return { error: 'invalid_snapshot', status: 400 } }
   }
-  const secretPattern = /-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}/
-  if (secretPattern.test(await content.text())) return { error: 'secret_candidate', status: 400 }
   return { manifest, content, snapshot: snapshot instanceof Blob ? snapshot : undefined, password: password || undefined }
 }
 

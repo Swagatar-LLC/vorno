@@ -188,7 +188,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.10"
-      # No `bun install`: this Worker uses only Web platform globals and Bun's test runner.
+      - name: Install Pages Worker validator
+        run: cd workers/pages && bun install --frozen-lockfile
 
       - name: Validate Pages Worker config / non-deploy dry run
         run: cd workers/pages && bun run check:config && bun run dry-run

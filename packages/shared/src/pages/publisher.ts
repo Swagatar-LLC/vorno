@@ -54,7 +54,7 @@ export function isPagesSharingAvailable(
  * Stored URLs are resource identities, not arbitrary fetch authorities: only
  * the legacy Craft and exact Vorno public URL shapes can recover an API base.
  */
-export function resolveStoredPagesShareApiBaseUrl(shareUrl: string): string | undefined {
+export function resolveStoredPagesShareApiBaseUrl(shareUrl: string, activeDevelopmentApiBaseUrl?: string): string | undefined {
   let url: URL;
   try { url = new URL(shareUrl); } catch { return undefined; }
   if (url.username || url.password || url.search || url.hash) return undefined;
@@ -62,7 +62,8 @@ export function resolveStoredPagesShareApiBaseUrl(shareUrl: string): string | un
   if (url.protocol === 'https:' && !url.port && url.hostname === 'thecraftagents.com') return 'https://thecraftagents.com/p/api';
   if (url.protocol === 'https:' && !url.port && url.hostname === 'pages.vorno.ai') return 'https://pages.vorno.ai/api';
   if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1') && url.port) {
-    return `${url.origin}/api`;
+    const candidate = `${url.origin}/api`;
+    return activeDevelopmentApiBaseUrl === candidate ? candidate : undefined;
   }
   return undefined;
 }
@@ -137,7 +138,7 @@ export interface UnpublishResult {
    * Set when local state was cleared without remote confirmation (vault token
    * missing) — the public copy may still exist until it is garbage-collected.
    */
-  warning?: 'remote-cleanup-pending';
+  warning?: 'remote-copy-may-remain' | 'remote-cleanup-pending';
 }
 
 interface WorkerPublicationResponse {
@@ -296,10 +297,10 @@ export class PagePublisher {
 
     const token = await this.tokenStore.get(workspaceId, config.id);
     if (!token) {
-      // Nothing we can do remotely without the capability; free the local page.
-      const updated = setPageShareState(workspaceRootPath, pageSlug, undefined);
-      this.log(`Unpublished ${pageSlug} locally only — admin token missing from vault`);
-      return { config: updated, warning: 'remote-cleanup-pending' };
+      // We cannot claim logical revocation without the capability. Keep the
+      // share pointer so a restored vault token can retry the real remote call.
+      this.log(`Unpublish not attempted for ${pageSlug}: admin token missing from vault`);
+      return { config, warning: 'remote-copy-may-remain' };
     }
 
     const response = await this.request(
@@ -419,7 +420,7 @@ export class PagePublisher {
   }
 
   private requireStoredApiBaseUrl(share: PageShareInfo): string {
-    const apiBaseUrl = resolveStoredPagesShareApiBaseUrl(share.url);
+    const apiBaseUrl = resolveStoredPagesShareApiBaseUrl(share.url, this.publishApiBaseUrl);
     if (!apiBaseUrl) {
       throw new PageShareError('PAGE_SHARE_REMOTE_ERROR', 'Published page has no valid HTTPS origin for cleanup.');
     }
@@ -526,24 +527,31 @@ export async function deletePageWithUnpublish(
   workspaceRootPath: string,
   workspaceId: string,
   pageSlug: string,
-  options?: { log?: (message: string) => void },
+  options?: { log?: (message: string) => void; tokenStore?: PagePublishTokenStore; fetchFn?: typeof fetch },
 ): Promise<DeletePageOutcome> {
   let publicCopyMayRemain = false;
   const wasShared = Boolean(loadPageConfig(workspaceRootPath, pageSlug)?.share);
   if (wasShared) {
+    let result: UnpublishResult | undefined;
     try {
       const publisher = new PagePublisher({
-        tokenStore: createCredentialPagePublishTokenStore(),
+        tokenStore: options?.tokenStore ?? createCredentialPagePublishTokenStore(),
+        fetchFn: options?.fetchFn,
         log: options?.log,
       });
-      const result = await publisher.unpublish(workspaceRootPath, workspaceId, pageSlug);
-      if (result.warning === 'remote-cleanup-pending') {
-        throw new Error('The page is no longer public, but remote data cleanup is pending. Retry unpublish before deleting the local page.');
-      }
+      result = await publisher.unpublish(workspaceRootPath, workspaceId, pageSlug);
     } catch (error) {
       publicCopyMayRemain = true;
       options?.log?.(
         `Unpublish before delete failed for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      result = undefined;
+    }
+    if (result?.warning) {
+      throw new Error(
+        result.warning === 'remote-cleanup-pending'
+          ? 'The page is no longer public, but remote data cleanup is pending. Retry unpublish before deleting the local page.'
+          : 'The page may still be public because its admin token is missing. Restore the token or republish before deleting the local page.',
       );
     }
   }

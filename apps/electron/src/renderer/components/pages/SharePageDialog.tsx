@@ -182,6 +182,8 @@ export function SharePageDialog({
       const result = await window.electronAPI.unpublishPage(workspaceId, config.slug)
       if (result.warning === 'remote-cleanup-pending') {
         toast.warning(t('toast.pageUnpublished'), { description: t('toast.pageRemoteCleanupPending') })
+      } else if (result.warning === 'remote-copy-may-remain') {
+        toast.warning(t('toast.pageUnpublished'), { description: t('toast.pagePublicCopyMayRemain') })
       } else {
         toast.success(t('toast.pageUnpublished'))
       }

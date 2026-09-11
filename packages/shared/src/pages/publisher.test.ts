@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isPagesSharingEnabled } from '../feature-flags.ts';
 import { isPagesEnabled } from './capability.ts';
-import { createPage, setPageShareState } from './storage.ts';
+import { createPage, loadPageConfig, setPageShareState } from './storage.ts';
 import {
+  deletePageWithUnpublish,
   PagePublisher,
   isPagesSharingAvailable,
   resolvePagesShareApiBaseUrl,
@@ -61,8 +62,9 @@ describe('Pages sharing default gate', () => {
   test('derives cleanup APIs only from recognized legacy and Vorno public URL shapes', () => {
     expect(resolveStoredPagesShareApiBaseUrl('https://thecraftagents.com/p/publication-1')).toBe('https://thecraftagents.com/p/api');
     expect(resolveStoredPagesShareApiBaseUrl('https://pages.vorno.ai/p/publication-1')).toBe('https://pages.vorno.ai/api');
-    expect(resolveStoredPagesShareApiBaseUrl('http://localhost:8787/p/publication-1')).toBe('http://localhost:8787/api');
-    expect(resolveStoredPagesShareApiBaseUrl('http://127.0.0.1:8787/p/publication-1')).toBe('http://127.0.0.1:8787/api');
+    expect(resolveStoredPagesShareApiBaseUrl('http://localhost:8787/p/publication-1')).toBeUndefined();
+    expect(resolveStoredPagesShareApiBaseUrl('http://localhost:8787/p/publication-1', 'http://localhost:8787/api')).toBe('http://localhost:8787/api');
+    expect(resolveStoredPagesShareApiBaseUrl('http://127.0.0.1:8787/p/publication-1', 'http://localhost:8787/api')).toBeUndefined();
     for (const hostile of [
       'https://evil.example/p/publication-1',
       'https://pages.vorno.ai:444/p/publication-1',
@@ -85,6 +87,34 @@ describe('Pages sharing default gate', () => {
       process.env.CRAFT_PAGES_SHARE_API_URL = invalid;
       expect(resolvePagesShareApiBaseUrl()).toBeUndefined();
     }
+  });
+
+  test('uses the exact active localhost origin through create, update, and unpublish', async () => {
+    process.env.CRAFT_FEATURE_PAGES_SHARING = '1';
+    process.env.CRAFT_PAGES_SHARE_API_URL = 'http://localhost:8787/api';
+    const workspace = mkdtempSync(join(tmpdir(), 'pages-publisher-localhost-'));
+    enablePages(workspace);
+    const page = createPage(workspace, { name: 'Local copy', content: '<p>local</p>' });
+    const requests: string[] = [];
+    const publisher = new PagePublisher({
+      tokenStore: { get: async () => 'local-token', set: async () => {}, delete: async () => true },
+      fetchFn: (async (url: string | URL, init?: RequestInit) => {
+        requests.push(`${init?.method} ${String(url)}`);
+        if (init?.method === 'POST') return new Response(JSON.stringify({ id: 'local-1', url: 'http://localhost:8787/p/local-1', revision: 'r1', adminToken: 'local-token', passwordProtected: false, status: 'published', updatedAt: Date.now() }), { status: 201, headers: { 'content-type': 'application/json' } });
+        if (init?.method === 'PUT') return new Response(JSON.stringify({ id: 'local-1', url: 'http://localhost:8787/p/local-1', revision: 'r2', passwordProtected: false, status: 'published', updatedAt: Date.now() }), { status: 200, headers: { 'content-type': 'application/json' } });
+        return new Response('', { status: 204 });
+      }) as unknown as typeof fetch,
+    });
+    try {
+      await publisher.publish(workspace, 'workspace', page.slug, { includeData: false });
+      await publisher.publish(workspace, 'workspace', page.slug, { includeData: false });
+      await publisher.unpublish(workspace, 'workspace', page.slug);
+      expect(requests).toEqual([
+        'POST http://localhost:8787/api/publications',
+        'PUT http://localhost:8787/api/publications/local-1',
+        'DELETE http://localhost:8787/api/publications/local-1',
+      ]);
+    } finally { rmSync(workspace, { recursive: true, force: true }); }
   });
 
   test('existing updates and unpublish target the stored HTTPS origin when no publish endpoint is configured', async () => {
@@ -130,6 +160,40 @@ describe('Pages sharing default gate', () => {
       ]);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the share pointer when a missing vault token prevents any remote revocation attempt', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'pages-publisher-token-missing-'));
+    const page = createPage(workspace, { name: 'Missing token', content: '<p>keep me</p>' });
+    setPageShareState(workspace, page.slug, {
+      publicationId: 'publication-1', url: 'https://pages.vorno.ai/p/publication-1', publishedRevision: 'r1',
+      publishedContentDigest: page.contentDigest!, includesData: false, publishedAt: Date.now(), updatedAt: Date.now(), passwordProtected: false,
+    });
+    const publisher = new PagePublisher({
+      tokenStore: { get: async () => null, set: async () => {}, delete: async () => false },
+      fetchFn: (async () => { throw new Error('must not fetch without token'); }) as unknown as typeof fetch,
+    });
+    try {
+      expect((await publisher.unpublish(workspace, 'workspace', page.slug)).warning).toBe('remote-copy-may-remain');
+      expect(loadPageConfig(workspace, page.slug)?.share?.publicationId).toBe('publication-1');
+    } finally { rmSync(workspace, { recursive: true, force: true }); }
+  });
+
+  test('delete aborts and preserves page/share state when token is missing or Worker cleanup is pending', async () => {
+    for (const scenario of ['missing', 'pending'] as const) {
+      const workspace = mkdtempSync(join(tmpdir(), `pages-delete-${scenario}-`));
+      const page = createPage(workspace, { name: `Delete ${scenario}`, content: '<p>keep</p>' });
+      setPageShareState(workspace, page.slug, {
+        publicationId: 'publication-1', url: 'https://pages.vorno.ai/p/publication-1', publishedRevision: 'r1',
+        publishedContentDigest: page.contentDigest!, includesData: false, publishedAt: Date.now(), updatedAt: Date.now(), passwordProtected: false,
+      });
+      const tokenStore = { get: async () => scenario === 'missing' ? null : 'token', set: async () => {}, delete: async () => false };
+      const fetchFn = (async () => new Response(JSON.stringify({ cleanupPending: true }), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+      try {
+        await expect(deletePageWithUnpublish(workspace, 'workspace', page.slug, { tokenStore, fetchFn })).rejects.toThrow(/Retry unpublish|Restore the token/);
+        expect(loadPageConfig(workspace, page.slug)?.share?.publicationId).toBe('publication-1');
+      } finally { rmSync(workspace, { recursive: true, force: true }); }
     }
   });
 

@@ -201,16 +201,13 @@ describe('multipart caps and rate brakes', () => {
     expect(lowEnv.PAGES.objects.size).toBe(0)
   })
 
-  test('rejects malformed snapshots and common HTML secret candidates before persistence', async () => {
+  test('rejects malformed opted-in snapshot JSON before persistence', async () => {
     const invalidSnapshot = makeEnv()
     const malformed = bundle({ snapshot: '{not-json' })
     // Replace the blob with malformed JSON without changing the opt-in manifest.
     malformed.set('snapshot', new Blob(['{not-json']), 'snapshot.json')
     expect((await handle(req('/api/publications', { method: 'POST', body: malformed }), invalidSnapshot)).status).toBe(400)
     expect(invalidSnapshot.PAGES.objects.size).toBe(0)
-    const secret = makeEnv()
-    expect((await create(secret, { content: '-----BEGIN PRIVATE KEY----- secret' })).response.status).toBe(400)
-    expect(secret.PAGES.objects.size).toBe(0)
   })
 
   test('caps raw multipart bytes before parsing unused chunked fields', async () => {
