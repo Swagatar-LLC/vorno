@@ -837,9 +837,11 @@ app.whenReady().then(async () => {
               // The host, rather than the requesting transport client, renders
               // every security-relevant identity and descriptor.
               //
-              // On macOS Electron only honors dialog abort with a parent window;
-              // a parentless fallback would let this native surface outlive the
-              // server deadline. `win` is the requester’s trusted parent.
+              // `win` is both the trusted parent and the reason `signal` works:
+              // Electron only honours an abort for a message box shown AS A
+              // SHEET, i.e. one with a parent window. Detaching this dialog
+              // (or parenting it to the focused window) would make the host's
+              // timeout unenforceable — the modal would outlive its request.
               return (await dialog.showMessageBox(win, {
                 type: spec.action.kind === 'script' ? 'warning' : 'question',
                 title: i18n.t('pages.grants.confirm.title'),
@@ -859,6 +861,8 @@ app.whenReady().then(async () => {
               })).response === 1
             },
             confirmForgetPagePublication: isHeadless ? undefined : async ({ workspaceName, pageSlug, signal }) => {
+              // Forget recovery has no render-bound requester; on macOS it must
+              // still use an existing trusted parent for AbortSignal to dismiss it.
               const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
               if (!parent || parent.isDestroyed()) return false
               const result = await dialog.showMessageBox(parent, {

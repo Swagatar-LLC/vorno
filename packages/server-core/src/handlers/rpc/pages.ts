@@ -87,6 +87,8 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   }>>()
   const grantConfirmationQueue: Array<() => Promise<void>> = []
   let drainingGrantConfirmationQueue = false
+  // Counts every queued or open native host confirmation, across grants and forget recovery.
+  let pendingHostConfirmationCount = 0
   /**
    * Confirmations whose host surface is open right now, keyed by lease.
    *
@@ -226,6 +228,8 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   /** Queue a destructive local-recovery prompt behind the same host surface as grants. */
   async function confirmForgetPublication(workspaceName: string, pageSlug: string): Promise<boolean> {
     if (!deps.confirmForgetPagePublication) throw new Error('Local publication recovery requires trusted host confirmation')
+    if (pendingHostConfirmationCount >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) throw new Error('PAGE_GRANT_CONFIRMATION_QUEUE_FULL')
+    pendingHostConfirmationCount++
     return await new Promise<boolean>((resolve, reject) => {
       grantConfirmationQueue.push(async () => {
         const deadline = new AbortController()
@@ -244,6 +248,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
           reject(error)
         } finally {
           deadline.abort()
+          pendingHostConfirmationCount--
         }
       })
       drainGrantConfirmationQueue()
@@ -556,7 +561,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       workspace.rootPath, leaseId, canonicalWorkspaceId, pageSlug, expectedContentDigest, requester,
     )) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
     if (pendingGrantLeases.has(pendingLeaseKey)) throw new Error('PAGE_GRANT_CONFIRMATION_ALREADY_PENDING')
-    if (pendingGrantRequests.size >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) {
+    if (pendingHostConfirmationCount >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) {
       throw new Error('PAGE_GRANT_CONFIRMATION_QUEUE_FULL')
     }
 
@@ -568,6 +573,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     })
     pendingGrantRequests.set(pendingKey, issue)
     pendingGrantLeases.set(pendingLeaseKey, issue)
+    pendingHostConfirmationCount++
     grantConfirmationQueue.push(async () => {
       try {
         // Do not show an obsolete request that waited behind another native
@@ -673,6 +679,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       } finally {
         if (pendingGrantRequests.get(pendingKey) === issue) pendingGrantRequests.delete(pendingKey)
         if (pendingGrantLeases.get(pendingLeaseKey) === issue) pendingGrantLeases.delete(pendingLeaseKey)
+        pendingHostConfirmationCount--
       }
     })
     drainGrantConfirmationQueue()

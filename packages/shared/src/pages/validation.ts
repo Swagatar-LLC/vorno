@@ -150,20 +150,20 @@ export const PageActionHttpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH',
 export const PageActionDescriptorSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('api'),
-    sourceSlug: z.string().min(1),
+    sourceSlug: z.string().min(1).max(200),
     method: PageActionHttpMethodSchema,
-    pathPattern: z.string().min(1, 'Path pattern cannot be empty'),
+    pathPattern: z.string().min(1, 'Path pattern cannot be empty').max(1000),
   }),
   z.object({
     kind: z.literal('mcp'),
-    sourceSlug: z.string().min(1),
-    toolName: z.string().min(1),
+    sourceSlug: z.string().min(1).max(200),
+    toolName: z.string().min(1).max(500),
   }),
   z.object({
     kind: z.literal('script'),
     script: WorkspaceRelativeScriptPathSchema,
     runtime: PageScriptRuntimeSchema.optional(),
-    args: z.array(z.string()).optional(),
+    args: z.array(z.string().max(500)).max(20).optional(),
   }),
 ]);
 
