@@ -23,9 +23,41 @@
 /** The subset of Electron's `WebContents` this tracker needs. */
 export interface TrackableWebContents {
   id: number
-  on(event: 'did-start-navigation', listener: (details: { isMainFrame: boolean; isSameDocument: boolean }) => void): unknown
+  on(event: 'did-start-navigation', listener: (...args: unknown[]) => void): unknown
   on(event: 'render-process-gone', listener: () => void): unknown
   once(event: 'destroyed', listener: () => void): unknown
+}
+
+/**
+ * Read a navigation's shape from the listener arguments, whichever form they
+ * take.
+ *
+ * Electron 39 passes `(details, ...deprecated positional args)`, where
+ * `Event<Params> = { preventDefault, defaultPrevented } & Params` — so
+ * `isMainFrame` and `isSameDocument` live on the first argument. Older
+ * Electron passed `(event, url, isInPlace, isMainFrame, …)` instead.
+ *
+ * Reading both, and treating an unrecognized shape as a document replacement,
+ * makes the asymmetry here safe: retiring a generation that did not really
+ * change only cancels in-flight consent, and the user is asked again. Failing
+ * to retire one that did change leaks an approval from a document the user was
+ * looking at to whatever replaced it. A misread must not be able to cause the
+ * second outcome, so the unknown case bumps.
+ */
+export function describeNavigation(args: unknown[]): { isMainFrame: boolean; isSameDocument: boolean } {
+  const details = args[0]
+  if (details !== null && typeof details === 'object') {
+    const { isMainFrame, isSameDocument } = details as Record<string, unknown>
+    if (typeof isMainFrame === 'boolean' && typeof isSameDocument === 'boolean') {
+      return { isMainFrame, isSameDocument }
+    }
+  }
+  // Legacy positional form; `isInPlace` is that era's same-document flag.
+  const [, , isInPlace, legacyIsMainFrame] = args
+  if (typeof legacyIsMainFrame === 'boolean' && typeof isInPlace === 'boolean') {
+    return { isMainFrame: legacyIsMainFrame, isSameDocument: isInPlace }
+  }
+  return { isMainFrame: true, isSameDocument: false }
 }
 
 /** A render, identified the way the grant handler compares it. */
@@ -81,12 +113,13 @@ export function createRenderGenerationTracker(
       if (existing !== undefined) return existing
       generations.set(contents.id, 1)
       const bump = () => retire(contents.id, (generations.get(contents.id) ?? 0) + 1)
-      contents.on('did-start-navigation', (details) => {
+      contents.on('did-start-navigation', (...args: unknown[]) => {
         // A fragment or history.pushState navigation does not replace the
         // document, so the render that opened a prompt is still the one that
         // would receive the grant. Bumping there would cancel live consent
         // every time a Page updated its own URL.
-        if (details.isMainFrame && !details.isSameDocument) bump()
+        const { isMainFrame, isSameDocument } = describeNavigation(args)
+        if (isMainFrame && !isSameDocument) bump()
       })
       contents.on('render-process-gone', bump)
       contents.once('destroyed', () => retire(contents.id, undefined))

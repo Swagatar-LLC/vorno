@@ -10,14 +10,14 @@ type NavDetails = { isMainFrame: boolean; isSameDocument: boolean }
 
 /** A WebContents stand-in that lets a test fire the lifecycle events Electron does. */
 function fakeWebContents(id: number) {
-  const navigation: Array<(details: NavDetails) => void> = []
+  const navigation: Array<(...args: unknown[]) => void> = []
   const processGone: Array<() => void> = []
   const destroyed: Array<() => void> = []
   const contents: TrackableWebContents = {
     id,
-    on(event: string, listener: (...args: never[]) => void) {
-      if (event === 'did-start-navigation') navigation.push(listener as (d: NavDetails) => void)
-      if (event === 'render-process-gone') processGone.push(listener as () => void)
+    on(event: string, listener: (...args: unknown[]) => void) {
+      if (event === 'did-start-navigation') navigation.push(listener)
+      if (event === 'render-process-gone') processGone.push(listener)
       return contents
     },
     once(event: string, listener: () => void) {
@@ -27,7 +27,22 @@ function fakeWebContents(id: number) {
   } as TrackableWebContents
   return {
     contents,
-    navigate: (details: NavDetails) => navigation.forEach(fn => fn(details)),
+    /**
+     * Electron 39's real shape: `Event<Params>` is
+     * `{ preventDefault, defaultPrevented } & Params`, so the flags are on the
+     * first argument and the positional ones trail it as deprecated.
+     */
+    navigate: (details: NavDetails) => navigation.forEach(fn => fn(
+      { preventDefault() {}, defaultPrevented: false, url: 'app://x', ...details },
+      'app://x', details.isSameDocument, details.isMainFrame, 1, 2,
+    )),
+    /** The pre-39 shape, where only the positional arguments carried the flags. */
+    navigateLegacy: (details: NavDetails) => navigation.forEach(fn => fn(
+      { preventDefault() {}, defaultPrevented: false },
+      'app://x', details.isSameDocument, details.isMainFrame, 1, 2,
+    )),
+    /** A shape this code does not recognize at all. */
+    navigateUnknown: () => navigation.forEach(fn => fn({ preventDefault() {}, defaultPrevented: false })),
     crash: () => processGone.forEach(fn => fn()),
     destroy: () => destroyed.forEach(fn => fn()),
     listenerCounts: () => ({ navigation: navigation.length, processGone: processGone.length, destroyed: destroyed.length }),
@@ -122,6 +137,37 @@ describe('render generation tracking', () => {
 
     expect(retired).toHaveLength(1)
     expect(tracker.current(101)).toBeUndefined()
+  })
+
+  test('retires on a document replacement in either Electron argument shape', () => {
+    for (const shape of ['navigate', 'navigateLegacy'] as const) {
+      const retired: RenderIdentity[] = []
+      const tracker = createRenderGenerationTracker(r => retired.push(r))
+      const win = fakeWebContents(101)
+      tracker.track(win.contents)
+
+      win[shape]({ isMainFrame: true, isSameDocument: true })
+      win[shape]({ isMainFrame: false, isSameDocument: false })
+      expect(retired).toEqual([])
+
+      win[shape](DOCUMENT_REPLACED)
+      expect(retired).toEqual([{ webContentsId: 101, renderGeneration: 1 }])
+    }
+  })
+
+  test('an unreadable navigation shape retires rather than silently keeping consent alive', () => {
+    const retired: RenderIdentity[] = []
+    const tracker = createRenderGenerationTracker(r => retired.push(r))
+    const win = fakeWebContents(101)
+    tracker.track(win.contents)
+
+    win.navigateUnknown()
+
+    // The asymmetry is deliberate. A needless retirement cancels in-flight
+    // consent and the user is asked again; a missed one hands the previous
+    // document's approval to whatever replaced it.
+    expect(retired).toEqual([{ webContentsId: 101, renderGeneration: 1 }])
+    expect(tracker.isCurrent({ webContentsId: 101, renderGeneration: 1 })).toBe(false)
   })
 
   test('an untracked window is never current', () => {
