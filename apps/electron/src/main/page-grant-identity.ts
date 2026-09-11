@@ -29,33 +29,44 @@ export interface TrackableWebContents {
 }
 
 /**
- * Read a navigation's shape from the listener arguments, whichever form they
- * take.
+ * Read a navigation's shape from the listener arguments without assuming where
+ * in them it lives.
  *
- * Electron 39 passes `(details, ...deprecated positional args)`, where
- * `Event<Params> = { preventDefault, defaultPrevented } & Params` — so
- * `isMainFrame` and `isSameDocument` live on the first argument. Older
- * Electron passed `(event, url, isInPlace, isMainFrame, …)` instead.
+ * Electron's `did-start-navigation` arguments have changed across versions —
+ * a details object (`Event<Params>` is `{ preventDefault, defaultPrevented } &
+ * Params`, so the flags sit on it), optionally behind a separate event object,
+ * with the pre-39 positional form `(…, url, isInPlace, isMainFrame, …)` still
+ * trailing as deprecated. Pinning an index makes correctness depend on being
+ * right about a shape upstream owns and has already changed once.
  *
- * Reading both, and treating an unrecognized shape as a document replacement,
- * makes the asymmetry here safe: retiring a generation that did not really
- * change only cancels in-flight consent, and the user is asked again. Failing
- * to retire one that did change leaks an approval from a document the user was
- * looking at to whatever replaced it. A misread must not be able to cause the
- * second outcome, so the unknown case bumps.
+ * So this searches instead of indexing: the flags are whichever argument
+ * actually carries them, and the legacy pair is located relative to the url
+ * rather than to the start of the list. Both readings are position-independent,
+ * which makes the question of whether an event precedes the details moot.
+ *
+ * Only if nothing is readable does it fall back, and it falls back to "the
+ * document was replaced" because the risk is not symmetric: retiring a
+ * generation that did not really change cancels in-flight consent and the user
+ * is asked again, while failing to retire one that did change hands the
+ * previous document's approval to whatever replaced it.
  */
 export function describeNavigation(args: unknown[]): { isMainFrame: boolean; isSameDocument: boolean } {
-  const details = args[0]
-  if (details !== null && typeof details === 'object') {
-    const { isMainFrame, isSameDocument } = details as Record<string, unknown>
+  for (const arg of args) {
+    if (arg === null || typeof arg !== 'object') continue
+    const { isMainFrame, isSameDocument } = arg as Record<string, unknown>
     if (typeof isMainFrame === 'boolean' && typeof isSameDocument === 'boolean') {
       return { isMainFrame, isSameDocument }
     }
   }
-  // Legacy positional form; `isInPlace` is that era's same-document flag.
-  const [, , isInPlace, legacyIsMainFrame] = args
-  if (typeof legacyIsMainFrame === 'boolean' && typeof isInPlace === 'boolean') {
-    return { isMainFrame: legacyIsMainFrame, isSameDocument: isInPlace }
+  // Legacy positional form. `isInPlace` is that era's same-document flag, and
+  // both booleans directly follow the url, wherever the url itself sits.
+  const url = args.findIndex(arg => typeof arg === 'string')
+  if (url !== -1) {
+    const isInPlace = args[url + 1]
+    const isMainFrame = args[url + 2]
+    if (typeof isInPlace === 'boolean' && typeof isMainFrame === 'boolean') {
+      return { isMainFrame, isSameDocument: isInPlace }
+    }
   }
   return { isMainFrame: true, isSameDocument: false }
 }

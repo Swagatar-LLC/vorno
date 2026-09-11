@@ -28,12 +28,21 @@ function fakeWebContents(id: number) {
   return {
     contents,
     /**
-     * Electron 39's real shape: `Event<Params>` is
-     * `{ preventDefault, defaultPrevented } & Params`, so the flags are on the
-     * first argument and the positional ones trail it as deprecated.
+     * `(details, ...deprecated)` — the shape Electron 39's own typings declare,
+     * where `Event<Params>` is `{ preventDefault, defaultPrevented } & Params`.
      */
     navigate: (details: NavDetails) => navigation.forEach(fn => fn(
-      { preventDefault() {}, defaultPrevented: false, url: 'app://x', ...details },
+      { preventDefault() {}, defaultPrevented: false, url: 'app://x', frame: null, ...details },
+      'app://x', details.isSameDocument, details.isMainFrame, 1, 2,
+    )),
+    /**
+     * `(event, details, ...deprecated)` — the shape review asserts is the real
+     * runtime order. The parser must be right under both, so both are driven
+     * here rather than picking a side.
+     */
+    navigateEventFirst: (details: NavDetails) => navigation.forEach(fn => fn(
+      { preventDefault() {}, defaultPrevented: false },
+      { preventDefault() {}, defaultPrevented: false, url: 'app://x', frame: null, ...details },
       'app://x', details.isSameDocument, details.isMainFrame, 1, 2,
     )),
     /** The pre-39 shape, where only the positional arguments carried the flags. */
@@ -139,8 +148,11 @@ describe('render generation tracking', () => {
     expect(tracker.current(101)).toBeUndefined()
   })
 
-  test('retires on a document replacement in either Electron argument shape', () => {
-    for (const shape of ['navigate', 'navigateLegacy'] as const) {
+  test('reads the navigation the same way wherever the details sit in the arguments', () => {
+    // Whether Electron emits (details, …), (event, details, …), or the pre-39
+    // positional form, an ordinary same-document or subframe navigation must
+    // NOT cancel live consent, and a document replacement must retire.
+    for (const shape of ['navigate', 'navigateEventFirst', 'navigateLegacy'] as const) {
       const retired: RenderIdentity[] = []
       const tracker = createRenderGenerationTracker(r => retired.push(r))
       const win = fakeWebContents(101)
@@ -148,7 +160,9 @@ describe('render generation tracking', () => {
 
       win[shape]({ isMainFrame: true, isSameDocument: true })
       win[shape]({ isMainFrame: false, isSameDocument: false })
+      win[shape]({ isMainFrame: false, isSameDocument: true })
       expect(retired).toEqual([])
+      expect(tracker.isCurrent({ webContentsId: 101, renderGeneration: 1 })).toBe(true)
 
       win[shape](DOCUMENT_REPLACED)
       expect(retired).toEqual([{ webContentsId: 101, renderGeneration: 1 }])
