@@ -87,6 +87,53 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   }>>()
   const grantConfirmationQueue: Array<() => Promise<void>> = []
   let drainingGrantConfirmationQueue = false
+  /**
+   * Confirmations whose host surface is open right now, keyed by lease.
+   *
+   * Revoking a request's authority — releasing its lease, replacing its render
+   * — makes its answer unusable, but refusing to persist that answer is only
+   * half the job: the sheet is still on the user's window, and the queue is
+   * drained serially, so every other Page and workspace waits behind a prompt
+   * that can no longer produce a grant. Holding the controller here is what
+   * lets a revocation close the surface instead of merely outliving it.
+   *
+   * Queued-but-unopened requests need no entry: they re-check lease, digest,
+   * and requester when they reach the head, and with the head unblocked that
+   * is immediate.
+   */
+  const activeConfirmations = new Map<string, {
+    deadline: AbortController
+    requester: PageGrantRequester
+  }>()
+
+  /**
+   * The one lease-key format. JSON encoding keeps the two parts unambiguous
+   * whatever a workspace path contains, and a single builder is what keeps the
+   * pending-consent map and the abort lookup addressing the same entry — two
+   * hand-written template literals silently stop matching.
+   */
+  const leaseKeyFor = (workspaceRootPath: string, leaseId: string) =>
+    JSON.stringify([workspaceRootPath, leaseId])
+
+  /** Close an open host surface whose authority has just been revoked. */
+  function abortActiveConfirmation(leaseKey: string): void {
+    activeConfirmations.get(leaseKey)?.deadline.abort()
+  }
+
+  /**
+   * Close any open surface belonging to a render that no longer exists. The
+   * host calls this on the generation it is retiring, so the abort lands on
+   * the prompt that render opened and not on its successor's.
+   */
+  function invalidatePageGrantRequester(requester: PageGrantRequester): void {
+    for (const active of activeConfirmations.values()) {
+      if (
+        active.requester.webContentsId === requester.webContentsId &&
+        active.requester.renderGeneration === requester.renderGeneration
+      ) active.deadline.abort()
+    }
+  }
+  deps.registerPageGrantInvalidator?.(invalidatePageGrantRequester)
 
   async function broadcastChanged(workspaceId: string, workspaceRootPath: string): Promise<void> {
     const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
@@ -451,7 +498,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved.`)
     }
     const broker = await getBroker(canonicalWorkspaceId, workspace.rootPath)
-    const leaseKey = `${workspace.rootPath}\u0000${leaseId}`
+    const leaseKey = leaseKeyFor(workspace.rootPath, leaseId)
     // A Page may unmount between bridge dispatch and this async handler. It
     // owns no surviving consent work, so quietly decline without host chrome.
     if (!broker.hasActiveLease(leaseId, pageSlug, expectedContentDigest)) {
@@ -525,6 +572,10 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         // answer. The host dismisses on abort; the race is the backstop for a
         // host that cannot.
         const deadline = new AbortController()
+        // Published for exactly as long as the surface is open, so a lease
+        // release or a retired render can close it instead of waiting out the
+        // full timeout with the whole queue stalled behind it.
+        activeConfirmations.set(pendingLeaseKey, { deadline, requester })
         try {
           const confirmation = deps.confirmPageGrant(requester, {
             workspace: {
@@ -555,6 +606,9 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         } finally {
           // A settled or failed confirmation releases the host surface too:
           // an un-aborted controller would strand a sheet on an error path.
+          if (activeConfirmations.get(pendingLeaseKey)?.deadline === deadline) {
+            activeConfirmations.delete(pendingLeaseKey)
+          }
           deadline.abort()
         }
 
@@ -655,6 +709,11 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     if (!workspace) return
     brokers.get(workspace.rootPath)?.releaseLease(leaseId)
     deleteLeaseRequester(workspace.rootPath, leaseId)
+    // Closing this lease's open prompt grants nothing and reveals nothing: the
+    // release already made any answer unusable, so an untrusted caller reaches
+    // the same denial it could always reach — it just stops holding the queue
+    // hostage while it does.
+    abortActiveConfirmation(leaseKeyFor(workspace.rootPath, leaseId))
   })
 
   // Execute a granted source action. Page config is re-read from disk per

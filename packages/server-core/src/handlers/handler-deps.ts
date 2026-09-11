@@ -80,6 +80,16 @@ export interface HandlerDeps<
   /** Registers the host-only grant entry point; transport RPC must not use it. */
   registerPageGrantHostRequest?: (request: PageGrantHostRequest) => void
   /**
+   * Receives a callback the host invokes when a render stops existing, passing
+   * the `{ webContentsId, renderGeneration }` it is retiring.
+   *
+   * Refusing to persist a dead render's approval is not enough on its own: its
+   * native surface is still open on the user's window, and consent is drained
+   * serially, so an un-closable prompt stalls every other Page and workspace
+   * until the timeout. This is how the host says "close it now".
+   */
+  registerPageGrantInvalidator?: (invalidate: (requester: PageGrantRequester) => void) => void
+  /**
    * A host-owned native consent surface. Absent hosts cannot issue Page grants.
    *
    * `signal` aborts when the request's deadline elapses or its render goes

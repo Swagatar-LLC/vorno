@@ -84,6 +84,7 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
     return 1
   }
   let hostRequest: import('../handler-deps').PageGrantHostRequest | undefined
+  let invalidateRequester: ((requester: PageGrantRequester) => void) | undefined
   const pendingResolvers: Array<(accepted: boolean) => void> = []
   const server: RpcServer = {
     handle(channel, handler) { handlers.set(channel, handler) },
@@ -104,8 +105,20 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
     if (confirm === 'approve') return true
     if (confirm === 'decline') return false
     if (confirm === 'disconnect') throw new Error('host dialog disconnected')
-    if (confirm === 'pending') return await new Promise<boolean>(resolve => { pendingResolvers.push(resolve) })
-    // A real native dialog only closes when the host acts on `signal`.
+    // A real native dialog closes on `signal` whether or not the user answers:
+    // aborting resolves it as a denial rather than leaving it on screen. A
+    // closed dialog also leaves the answerable queue — the user cannot click a
+    // sheet that is no longer there, so `resolvePending` must not reach it.
+    if (confirm === 'pending') {
+      return await new Promise<boolean>(resolve => {
+        pendingResolvers.push(resolve)
+        signal.addEventListener('abort', () => {
+          const queued = pendingResolvers.indexOf(resolve)
+          if (queued >= 0) pendingResolvers.splice(queued, 1)
+          resolve(false)
+        }, { once: true })
+      })
+    }
     return await new Promise<boolean>(resolve => {
       signal.addEventListener('abort', () => resolve(false), { once: true })
     })
@@ -126,6 +139,7 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
         renderGenerations.get(requester.webContentsId) === requester.renderGeneration
     },
     registerPageGrantHostRequest: (request: import('../handler-deps').PageGrantHostRequest) => { hostRequest = request },
+    registerPageGrantInvalidator: (invalidate: (requester: PageGrantRequester) => void) => { invalidateRequester = invalidate },
     confirmPageGrant,
     ...(confirm === 'no-answer' ? { pageGrantConfirmationTimeoutMs: 1 } : {}),
   } as unknown as HandlerDeps)
@@ -169,7 +183,11 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
       liveWindows = new Map(Object.entries(windows).map(([id, ws]) => [Number(id), ws]))
     },
     replaceRenderer: (webContentsId: number) => {
-      renderGenerations.set(webContentsId, (renderGenerations.get(webContentsId) ?? 0) + 1)
+      const retired = renderGenerations.get(webContentsId) ?? 0
+      renderGenerations.set(webContentsId, retired + 1)
+      // The host tells the handler which generation it just retired, exactly
+      // as Electron main does on navigation, reload, and renderer loss.
+      invalidateRequester?.({ webContentsId, renderGeneration: retired })
     },
     requestGrantAsHost: ((requester, workspaceId, pageSlug, input, leaseId) => {
       if (!hostRequest) throw new Error('missing host grant setup')
@@ -645,6 +663,79 @@ describe('Pages RPC workspace capability gate', () => {
     await expect(cancelled).resolves.toBeNull()
     expect(invoke.confirmations).toHaveLength(1)
     await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, cancelledPage.slug)).resolves.toEqual([])
+  })
+
+  test('closes an open prompt when its render lease is released, unblocking the queue', async () => {
+    const invoke = createHarness('pending')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Released prompt', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    const open = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/first' },
+    }, lease.leaseId)
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    expect(invoke.confirmationSignals[0]?.aborted).toBe(false)
+
+    await invoke(RPC_CHANNELS.pages.RELEASE_LEASE, WORKSPACE_A, lease.leaseId)
+
+    // Refusing to persist the answer is not enough — the surface itself has to
+    // close, or the serial queue waits behind a prompt that can no longer
+    // produce a grant.
+    expect(invoke.confirmationSignals[0]?.aborted).toBe(true)
+    await expect(open).resolves.toBeNull()
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+
+    // The next request reaches the host immediately rather than after the
+    // abandoned prompt's full timeout.
+    const { lease: next } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    const second = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/second' },
+    }, next.leaseId)
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length < 2; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    expect(invoke.confirmations).toHaveLength(2)
+    invoke.resolvePending()
+    await expect(second).resolves.toMatchObject({ id: expect.any(String) })
+  })
+
+  test('closes a stale prompt when the renderer generation is replaced, unblocking the queue', async () => {
+    const invoke = createHarness('pending')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Replaced prompt', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    const open = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/first' },
+    }, lease.leaseId)
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    expect(invoke.confirmationSignals[0]?.aborted).toBe(false)
+
+    // Same window, same workspace, still-active lease: only the generation
+    // changed, and the lease outlives the render because release is
+    // renderer-owned.
+    invoke.replaceRenderer(101)
+
+    expect(invoke.confirmationSignals[0]?.aborted).toBe(true)
+    await expect(open).resolves.toBeNull()
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+
+    // The replacement render is not stuck behind its predecessor's sheet.
+    const { lease: reloaded } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    const second = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/second' },
+    }, reloaded.leaseId)
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length < 2; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    expect(invoke.confirmations).toHaveLength(2)
+    invoke.resolvePending()
+    await expect(second).resolves.toMatchObject({ id: expect.any(String) })
   })
 
   test('does not coalesce a changed digest with stale pending consent', async () => {

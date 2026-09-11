@@ -682,22 +682,31 @@ app.whenReady().then(async () => {
       // document that asked for it.
       // ---------------------------------------------------------------------
       const renderGenerations = new Map<number, number>()
+      let invalidatePageGrantRequester: ((requester: { webContentsId: number; renderGeneration: number }) => void) | undefined
       const trackRenderGeneration = (contents: Electron.WebContents): number => {
         const wcId = contents.id
         const existing = renderGenerations.get(wcId)
         if (existing !== undefined) return existing
         renderGenerations.set(wcId, 1)
-        const bump = () => {
-          // Only bump a tracked id. Re-adding after 'destroyed' would resurrect
-          // a generation for a webContents that no longer exists.
+        // Retiring a generation must also close whatever that render left on
+        // screen. Skipping the notification would still refuse the grant, but
+        // the dead render's sheet would sit on the user's window holding the
+        // serial consent queue until it timed out.
+        const retire = (next: number | undefined) => {
           const current = renderGenerations.get(wcId)
-          if (current !== undefined) renderGenerations.set(wcId, current + 1)
+          // Only retire a tracked id. Re-adding after 'destroyed' would
+          // resurrect a generation for a webContents that no longer exists.
+          if (current === undefined) return
+          if (next === undefined) renderGenerations.delete(wcId)
+          else renderGenerations.set(wcId, next)
+          invalidatePageGrantRequester?.({ webContentsId: wcId, renderGeneration: current })
         }
+        const bump = () => retire((renderGenerations.get(wcId) ?? 0) + 1)
         contents.on('did-start-navigation', (details) => {
           if (details.isMainFrame && !details.isSameDocument) bump()
         })
         contents.on('render-process-gone', bump)
-        contents.once('destroyed', () => renderGenerations.delete(wcId))
+        contents.once('destroyed', () => retire(undefined))
         return 1
       }
       // A destroyed window's generation is absent, not stale, so an absent
@@ -837,6 +846,9 @@ app.whenReady().then(async () => {
             },
             registerPageGrantHostRequest: isHeadless ? undefined : (request) => {
               pageGrantHostRequest = request
+            },
+            registerPageGrantInvalidator: isHeadless ? undefined : (invalidate) => {
+              invalidatePageGrantRequester = invalidate
             },
             confirmPageGrant: isHeadless ? undefined : async (requester, spec, signal) => {
               const win = windowManager?.getWindowByWebContentsId(requester.webContentsId)
