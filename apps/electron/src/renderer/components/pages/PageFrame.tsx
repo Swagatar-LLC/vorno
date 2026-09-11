@@ -113,6 +113,8 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
   grantsRef.current = grants
 
   const deniedRef = useRef<Set<string>>(new Set())
+  /** One bridge request at a time: a page cannot stack OS consent prompts. */
+  const grantRequestInFlightRef = useRef(false)
   /** Approvals from this render the config watcher hasn't confirmed yet. */
   const locallyIssuedRef = useRef<Set<string>>(new Set())
 
@@ -212,28 +214,34 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
           !current.some(g => descriptorEquals(g.action, req.action)) &&
           !deniedRef.current.has(descriptorSignature(req.action)),
       )
-      for (const entry of remaining) {
-        try {
-          // The RPC host, not this renderer, owns consent and persistence.
-          const grant = await window.electronAPI.requestPageGrant(workspaceId, pageSlug, {
-            action: entry.action,
-            ...(entry.description !== undefined ? { description: entry.description } : {}),
-          })
-          if (!grant) {
+      if (remaining.length === 0 || grantRequestInFlightRef.current) return
+      grantRequestInFlightRef.current = true
+      try {
+        for (const entry of remaining) {
+          try {
+            // The RPC host, not this renderer, owns consent and persistence.
+            const grant = await window.electronAPI.requestPageGrant(workspaceId, pageSlug, {
+              action: entry.action,
+              ...(entry.description !== undefined ? { description: entry.description } : {}),
+            })
+            if (!grant) {
+              deniedRef.current.add(descriptorSignature(entry.action))
+              continue
+            }
+            locallyIssuedRef.current.add(grant.id)
+            postGrants([...grantsRef.current, toGrantSummary(grant)])
+            toast.success(t('toast.pageGrantsIssued'))
+          } catch (err) {
             deniedRef.current.add(descriptorSignature(entry.action))
-            continue
+            toast.error(t('toast.pageGrantFailed'), {
+              description: err instanceof Error ? err.message : String(err),
+            })
           }
-          locallyIssuedRef.current.add(grant.id)
-          postGrants([...grantsRef.current, toGrantSummary(grant)])
-          toast.success(t('toast.pageGrantsIssued'))
-        } catch (err) {
-          deniedRef.current.add(descriptorSignature(entry.action))
-          toast.error(t('toast.pageGrantFailed'), {
-            description: err instanceof Error ? err.message : String(err),
-          })
         }
+        postToFrame(buildPageGrantsMessage(grantsRef.current))
+      } finally {
+        grantRequestInFlightRef.current = false
       }
-      postToFrame(buildPageGrantsMessage(grantsRef.current))
     },
     [lease.nonce, workspaceId, pageSlug, postGrants, postToFrame, t],
   )

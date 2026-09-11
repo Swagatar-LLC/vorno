@@ -63,6 +63,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // Coalesce identical outstanding consent requests so a page cannot flood
   // host chrome while a user is deciding.
   const pendingGrantRequests = new Map<string, Promise<import('@craft-agent/shared/pages').PageActionGrant | null>>()
+  const pendingGrantPages = new Map<string, Promise<import('@craft-agent/shared/pages').PageActionGrant | null>>()
 
   async function broadcastChanged(workspaceId: string, workspaceRootPath: string): Promise<void> {
     const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
@@ -347,6 +348,12 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const pendingKey = JSON.stringify({ workspaceId, pageSlug, action: request.action })
     const pending = pendingGrantRequests.get(pendingKey)
     if (pending) return pending
+    const pendingPageKey = JSON.stringify({ workspaceId, pageSlug })
+    // One native decision per Page at a time. Exact duplicates coalesce above;
+    // different descriptors are refused rather than queued behind OS chrome.
+    if (pendingGrantPages.has(pendingPageKey)) {
+      throw new Error('PAGE_GRANT_CONFIRMATION_PENDING')
+    }
 
     const issue = (async () => {
       const page = loadPageConfig(workspace.rootPath, pageSlug)
@@ -396,10 +403,12 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       }
     })()
     pendingGrantRequests.set(pendingKey, issue)
+    pendingGrantPages.set(pendingPageKey, issue)
     try {
       return await issue
     } finally {
       if (pendingGrantRequests.get(pendingKey) === issue) pendingGrantRequests.delete(pendingKey)
+      if (pendingGrantPages.get(pendingPageKey) === issue) pendingGrantPages.delete(pendingPageKey)
     }
   })
 

@@ -233,6 +233,9 @@ describe('Pages RPC workspace capability gate', () => {
       ...input,
       description: 'A changed page-authored message must not create another prompt',
     })
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'mcp', sourceSlug: 'example', toolName: 'other_action' },
+    })).rejects.toThrow('PAGE_GRANT_CONFIRMATION_PENDING')
     expect(invoke.confirmations).toHaveLength(1)
     invoke.resolvePending()
     const [firstGrant, secondGrant] = await Promise.all([first, second]) as [{ id: string }, { id: string }]
