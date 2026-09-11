@@ -92,6 +92,11 @@ import type { PlatformServices } from '../runtime/platform'
 import { createElectronPlatform } from './platform'
 import type { HandlerDeps } from './handlers/handler-deps'
 import type { PageGrantHostRequest } from '@craft-agent/server-core/handlers'
+import {
+  createRenderGenerationTracker,
+  handlePageGrantIpc,
+  type RenderIdentity,
+} from './page-grant-identity'
 import { bootstrapServer, releaseServerLock } from '@craft-agent/server-core/bootstrap'
 import { createMessagingBootstrap, type MessagingBootstrapHandle } from '@craft-agent/messaging-gateway'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
@@ -681,38 +686,10 @@ app.whenReady().then(async () => {
       // the prompt and again before persistence, so consent dies with the
       // document that asked for it.
       // ---------------------------------------------------------------------
-      const renderGenerations = new Map<number, number>()
-      let invalidatePageGrantRequester: ((requester: { webContentsId: number; renderGeneration: number }) => void) | undefined
-      const trackRenderGeneration = (contents: Electron.WebContents): number => {
-        const wcId = contents.id
-        const existing = renderGenerations.get(wcId)
-        if (existing !== undefined) return existing
-        renderGenerations.set(wcId, 1)
-        // Retiring a generation must also close whatever that render left on
-        // screen. Skipping the notification would still refuse the grant, but
-        // the dead render's sheet would sit on the user's window holding the
-        // serial consent queue until it timed out.
-        const retire = (next: number | undefined) => {
-          const current = renderGenerations.get(wcId)
-          // Only retire a tracked id. Re-adding after 'destroyed' would
-          // resurrect a generation for a webContents that no longer exists.
-          if (current === undefined) return
-          if (next === undefined) renderGenerations.delete(wcId)
-          else renderGenerations.set(wcId, next)
-          invalidatePageGrantRequester?.({ webContentsId: wcId, renderGeneration: current })
-        }
-        const bump = () => retire((renderGenerations.get(wcId) ?? 0) + 1)
-        contents.on('did-start-navigation', (details) => {
-          if (details.isMainFrame && !details.isSameDocument) bump()
-        })
-        contents.on('render-process-gone', bump)
-        contents.once('destroyed', () => retire(undefined))
-        return 1
-      }
-      // A destroyed window's generation is absent, not stale, so an absent
-      // entry must read as "not current" rather than as a match.
-      const isRenderGenerationCurrent = (wcId: number, generation: number) =>
-        renderGenerations.get(wcId) === generation
+      let invalidatePageGrantRequester: ((requester: RenderIdentity) => void) | undefined
+      const renderGenerations = createRenderGenerationTracker(
+        (retired) => invalidatePageGrantRequester?.(retired),
+      )
 
       // Read embedded server config (Server settings page)
       const { getServerConfig } = await import('@craft-agent/shared/config')
@@ -841,7 +818,7 @@ app.whenReady().then(async () => {
               if (!windowManager) return false
               const win = windowManager.getWindowByWebContentsId(requester.webContentsId)
               return !!win && !win.isDestroyed() &&
-                isRenderGenerationCurrent(requester.webContentsId, requester.renderGeneration) &&
+                renderGenerations.isCurrent(requester) &&
                 windowManager.getWorkspaceForWindow(requester.webContentsId) === workspaceId
             },
             registerPageGrantHostRequest: isHeadless ? undefined : (request) => {
@@ -854,7 +831,7 @@ app.whenReady().then(async () => {
               const win = windowManager?.getWindowByWebContentsId(requester.webContentsId)
               if (
                 !win || win.isDestroyed() || signal.aborted ||
-                !isRenderGenerationCurrent(requester.webContentsId, requester.renderGeneration)
+                !renderGenerations.isCurrent(requester)
               ) return false
               const action = spec.action.kind === 'api'
                 ? i18n.t('pages.grants.confirm.actionApi', { method: spec.action.method, source: spec.action.sourceSlug, path: spec.action.pathPattern })
@@ -963,16 +940,12 @@ app.whenReady().then(async () => {
       // or render identity from preload: all three come from event.sender and
       // main-process state, so a renderer cannot name the workspace a trusted
       // prompt targets nor claim to be a document that has been replaced.
-      ipcMain.handle('__pages:request-grant', async (event, pageSlug: unknown, input: unknown, leaseId: unknown) => {
-        const webContentsId = event.sender.id
-        const workspaceId = windowManager?.getWorkspaceForWindow(webContentsId)
-        if (!workspaceId || !pageGrantHostRequest) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
-        if (typeof pageSlug !== 'string') throw new Error('PAGE_GRANT_INVALID_REQUEST')
-        // Tracking starts here because this is the only place a requester is
-        // minted. A reload before any request had nothing outstanding to void.
-        const renderGeneration = trackRenderGeneration(event.sender)
-        return pageGrantHostRequest({ webContentsId, renderGeneration }, workspaceId, pageSlug, input, leaseId)
-      })
+      ipcMain.handle('__pages:request-grant', async (event, pageSlug: unknown, input: unknown, leaseId: unknown) =>
+        handlePageGrantIpc({
+          getWorkspaceForWindow: (wcId) => windowManager?.getWorkspaceForWindow(wcId),
+          tracker: renderGenerations,
+          request: pageGrantHostRequest,
+        }, event.sender, pageSlug, input, leaseId))
 
       // Remove workspace from config (cleanup stale entries)
       ipcMain.handle('workspace:remove', async (_event, workspaceId: string) => {
