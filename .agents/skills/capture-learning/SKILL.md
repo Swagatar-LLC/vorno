@@ -1,11 +1,19 @@
 ---
 name: capture-learning
-description: Scaffold a debugging-insight entry in roadmap/learnings/ with auto-assigned ID and standard frontmatter, then update the index
+description: Scaffold a debugging-insight entry in the private vorno-internal learnings/ corpus with an allocated ID and standard frontmatter, then update the index
 ---
 
 # Skill: capture-learning
 
 After diagnosing a non-obvious bug, capture the insight as a `LEARNING-NNN` markdown so the next agent (or human) doesn't have to re-debug.
+
+## Where learnings live
+
+**The private `Swagatar-LLC/vorno-internal` repo, under `learnings/` — never the public `vorno` repo.** The public repository has no `roadmap/learnings/` directory; writing one there leaks internal material and lands it where nobody reads it. See the public/private split in the public repo's `roadmap/README.md`.
+
+Local clone: `~/dev/vorno-internal/` (`learnings/`, `learnings/_template.md`, `learnings/README.md`). If it is missing, clone it rather than falling back to the public repo.
+
+Because it is a **separate repository**, the learning is its own commit there. It cannot ride the PR that carries the fix, and the fix's PR will legitimately contain no `LEARNING-NNN` file — reference the entry from the PR as `vorno-internal:learnings/LEARNING-NNN-...` and cite the internal commit instead.
 
 ## Hard rule
 
@@ -39,8 +47,15 @@ Ask for or infer:
 
 ## Procedure
 
-1. **Find the next ID.** Glob `roadmap/learnings/LEARNING-*.md`, parse `LEARNING-NNN`, take max + 1. Format as zero-padded three digits.
-2. **Read** `roadmap/learnings/_template.md`.
+1. **Allocate the next ID — ask history, not the working tree.** In the `vorno-internal` clone:
+
+   ```bash
+   git log --all --pretty=format: --name-only -- learnings \
+     | grep -o 'LEARNING-[0-9]\{3\}' | sort -u | tail -1
+   ```
+
+   Take that + 1, zero-padded to three digits. **Never glob the directory** (ADR-0030): a glob sees only the branch you are standing on, so an id minted on an unmerged branch is invisible and you will reissue it. **Never add `--diff-filter=A`** either — git reports a renumber as a rename, so an add-filter misses ids that entered by being renamed into.
+2. **Read** `learnings/_template.md`.
 3. **Fill the frontmatter:**
    - `id`: new ID
    - `title`: user/inferred title
@@ -51,9 +66,9 @@ Ask for or infer:
 4. **Fill the body** — Signal, Root cause, Fix, Recurrence, Prevention, References.
    - **Signal section MUST quote the error verbatim** in a code block. Greppability is the point.
    - **Fix section MUST be runnable** — commands in code blocks, not prose.
-5. **Write** the file to `roadmap/learnings/LEARNING-NNN-<kebab-slug>.md`.
-6. **Update** `roadmap/learnings/README.md` — add a row to the index table.
-7. **Don't commit.** The user (or another skill) commits, usually as part of the same PR that contains the fix.
+5. **Write** the file to `learnings/LEARNING-NNN-<kebab-slug>.md` in the `vorno-internal` clone.
+6. **Update** `learnings/README.md` — add a row to the index table.
+7. **Commit in `vorno-internal`, on its own.** The fix's PR lives in the public repo and cannot carry this file. Commit and push the learning there, then quote the resulting commit SHA wherever the fix is reviewed.
 
 ## Constraints
 
@@ -64,7 +79,7 @@ Ask for or infer:
 
 ## Tools
 
-- `Glob` to find next ID
+- `Bash` (`git log --all`) to allocate the next ID — not `Glob`, which cannot see other refs
 - `Read` for the template
 - `Write` to create the entry
 - `Edit` to update the README index

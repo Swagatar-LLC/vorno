@@ -32,7 +32,9 @@ roadmap/
 > (`Swagatar-LLC/vorno`). Internal-only material lives in the private repo
 > **`Swagatar-LLC/vorno-internal`** (same subpaths):
 >
-> - `learnings/` — debugging insights (next id **030**; new LEARNINGs land there).
+> - `learnings/` — debugging insights; new LEARNINGs land there, never here. This
+>   repo has no `roadmap/learnings/` directory. Allocate the next id from history
+>   across all refs (ADR-0030), not from a hardcoded number or a directory glob.
 > - `upstream/HEAD.md`, `upstream/delta.md`, `upstream/contribution-candidates.md`
 >   — upstream sync logs and owned-diff tracking.
 > - A handful of internal plans and one discussion.
@@ -98,7 +100,7 @@ SUVs use this same graph verbatim, so one transition graph and one advance skill
 - **Plan** — a feature, moving through status folders. Decomposes into SUVs.
 - **SUV** — a shippable unit of value: one owning plan, one PR, at most one `task.yaml` definition. See [`suvs/README.md`](suvs/README.md).
 - **Discussion** — captured thinking. Never authoritative; references for plans/decisions to draw from.
-- **Learning** — a captured debugging insight: signal, root cause, fix, recurrence, prevention. Written *during the fix*, not after the project. Learnings now live in the private `vorno-internal` repo (`learnings/`, next id 030); see the hard rule in [`AGENTS.md`](../AGENTS.md).
+- **Learning** — a captured debugging insight: signal, root cause, fix, recurrence, prevention. Written *during the fix*, not after the project. Learnings live in the private `vorno-internal` repo (`learnings/`), never in this one; see the hard rule in [`AGENTS.md`](../AGENTS.md).
 
 ## Upstream relationship
 
