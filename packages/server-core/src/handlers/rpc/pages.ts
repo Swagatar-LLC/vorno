@@ -80,6 +80,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // forge the Electron client/window authority behind its render.
   const leaseRequesters = new Map<string, Map<string, {
     webContentsId: number
+    renderGeneration: number
     workspaceId: string
     pageSlug: string
     contentDigest: string
@@ -120,6 +121,10 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const bound = leaseRequesters.get(workspaceRootPath)?.get(leaseId)
     return deps.isPageGrantRequesterCurrent?.(requester, workspaceId) === true &&
       bound?.webContentsId === requester.webContentsId &&
+      // The binding belongs to one render, not one window. A reload keeps the
+      // webContents id and can leave this lease active, so an exact generation
+      // match is what stops a replacement renderer inheriting the approval.
+      bound.renderGeneration === requester.renderGeneration &&
       bound.workspaceId === workspaceId &&
       bound.pageSlug === pageSlug &&
       bound.contentDigest === contentDigest
@@ -136,13 +141,23 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     if (deps.isPageGrantRequesterCurrent?.(requester, workspaceId) !== true) return false
     const workspaceRequesters = leaseRequesters.get(workspaceRootPath) ?? new Map()
     const existing = workspaceRequesters.get(leaseId)
+    // A lease a previous render bound is not re-bindable. The replacement
+    // renderer takes a fresh lease; silently rebinding this one would hand it
+    // whatever consent state its predecessor left behind.
     if (existing) return existing.webContentsId === requester.webContentsId &&
+      existing.renderGeneration === requester.renderGeneration &&
       existing.workspaceId === workspaceId && existing.pageSlug === pageSlug &&
       existing.contentDigest === contentDigest
     if (workspaceRequesters.size >= MAX_LIVE_LEASES) {
       workspaceRequesters.delete(workspaceRequesters.keys().next().value!)
     }
-    workspaceRequesters.set(leaseId, { webContentsId: requester.webContentsId, workspaceId, pageSlug, contentDigest })
+    workspaceRequesters.set(leaseId, {
+      webContentsId: requester.webContentsId,
+      renderGeneration: requester.renderGeneration,
+      workspaceId,
+      pageSlug,
+      contentDigest,
+    })
     leaseRequesters.set(workspaceRootPath, workspaceRequesters)
     return true
   }

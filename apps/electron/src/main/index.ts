@@ -665,6 +665,46 @@ app.whenReady().then(async () => {
       const resolveClientId = (wcId: number) => clientMap.get(wcId)
       let pageGrantHostRequest: PageGrantHostRequest | undefined
 
+      // ---------------------------------------------------------------------
+      // Page grant render generations.
+      //
+      // A webContents id outlives the document inside it: a reload, a main-frame
+      // navigation, or a renderer crash-and-recover keeps the same id and the
+      // same workspace mapping, and lease release is renderer-owned so a
+      // renderer that dies before cleanup leaves its lease active. Window
+      // identity alone therefore cannot tell a replacement renderer from the
+      // one that opened a consent prompt — the approval a user gave to the
+      // previous document would persist for the new one.
+      //
+      // The generation is main-process-observed state, never an argument: it is
+      // stamped onto the requester at the IPC hop and compared exactly before
+      // the prompt and again before persistence, so consent dies with the
+      // document that asked for it.
+      // ---------------------------------------------------------------------
+      const renderGenerations = new Map<number, number>()
+      const trackRenderGeneration = (contents: Electron.WebContents): number => {
+        const wcId = contents.id
+        const existing = renderGenerations.get(wcId)
+        if (existing !== undefined) return existing
+        renderGenerations.set(wcId, 1)
+        const bump = () => {
+          // Only bump a tracked id. Re-adding after 'destroyed' would resurrect
+          // a generation for a webContents that no longer exists.
+          const current = renderGenerations.get(wcId)
+          if (current !== undefined) renderGenerations.set(wcId, current + 1)
+        }
+        contents.on('did-start-navigation', (details) => {
+          if (details.isMainFrame && !details.isSameDocument) bump()
+        })
+        contents.on('render-process-gone', bump)
+        contents.once('destroyed', () => renderGenerations.delete(wcId))
+        return 1
+      }
+      // A destroyed window's generation is absent, not stale, so an absent
+      // entry must read as "not current" rather than as a match.
+      const isRenderGenerationCurrent = (wcId: number, generation: number) =>
+        renderGenerations.get(wcId) === generation
+
       // Read embedded server config (Server settings page)
       const { getServerConfig } = await import('@craft-agent/shared/config')
       const embeddedServerConfig = getServerConfig()
@@ -792,6 +832,7 @@ app.whenReady().then(async () => {
               if (!windowManager) return false
               const win = windowManager.getWindowByWebContentsId(requester.webContentsId)
               return !!win && !win.isDestroyed() &&
+                isRenderGenerationCurrent(requester.webContentsId, requester.renderGeneration) &&
                 windowManager.getWorkspaceForWindow(requester.webContentsId) === workspaceId
             },
             registerPageGrantHostRequest: isHeadless ? undefined : (request) => {
@@ -799,7 +840,10 @@ app.whenReady().then(async () => {
             },
             confirmPageGrant: isHeadless ? undefined : async (requester, spec, signal) => {
               const win = windowManager?.getWindowByWebContentsId(requester.webContentsId)
-              if (!win || win.isDestroyed() || signal.aborted) return false
+              if (
+                !win || win.isDestroyed() || signal.aborted ||
+                !isRenderGenerationCurrent(requester.webContentsId, requester.renderGeneration)
+              ) return false
               const action = spec.action.kind === 'api'
                 ? i18n.t('pages.grants.confirm.actionApi', { method: spec.action.method, source: spec.action.sourceSlug, path: spec.action.pathPattern })
                 : spec.action.kind === 'mcp'
@@ -903,14 +947,19 @@ app.whenReady().then(async () => {
 
       // IPC handlers — preload uses sendSync to get WS connection details
 
-      // Consent is privileged main-process IPC. Do not accept workspace or
-      // window identity from preload: both come exclusively from event.sender.
+      // Consent is privileged main-process IPC. Do not accept workspace, window,
+      // or render identity from preload: all three come from event.sender and
+      // main-process state, so a renderer cannot name the workspace a trusted
+      // prompt targets nor claim to be a document that has been replaced.
       ipcMain.handle('__pages:request-grant', async (event, pageSlug: unknown, input: unknown, leaseId: unknown) => {
         const webContentsId = event.sender.id
         const workspaceId = windowManager?.getWorkspaceForWindow(webContentsId)
         if (!workspaceId || !pageGrantHostRequest) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
         if (typeof pageSlug !== 'string') throw new Error('PAGE_GRANT_INVALID_REQUEST')
-        return pageGrantHostRequest({ webContentsId }, workspaceId, pageSlug, input, leaseId)
+        // Tracking starts here because this is the only place a requester is
+        // minted. A reload before any request had nothing outstanding to void.
+        const renderGeneration = trackRenderGeneration(event.sender)
+        return pageGrantHostRequest({ webContentsId, renderGeneration }, workspaceId, pageSlug, input, leaseId)
       })
 
       // Remove workspace from config (cleanup stale entries)

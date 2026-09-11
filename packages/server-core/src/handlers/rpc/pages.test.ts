@@ -53,6 +53,12 @@ type GrantHarness = ((channel: string, ...args: unknown[]) => Promise<unknown>) 
   resolvePending: () => void
   /** Replace the live window→workspace map WindowManager would report. */
   setLiveWindows: (windows: Record<number, string>) => void
+  /**
+   * Replace the document inside a live window, as a reload, a main-frame
+   * navigation, or a renderer crash-and-recover does: same webContents id,
+   * same workspace, new render generation.
+   */
+  replaceRenderer: (webContentsId: number) => void
   /** The host entry point itself, for states the IPC hop cannot reproduce. */
   requestGrantAsHost: import('../handler-deps').PageGrantHostRequest
   invokeWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
@@ -68,6 +74,15 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
   // Exactly what Electron's WindowManager knows: which live app window shows
   // which workspace. Nothing here is transport-supplied.
   let liveWindows = new Map<number, string>([[101, WORKSPACE_A]])
+  // The main process's render generation per webContents. A window id survives
+  // a reload; the generation does not.
+  const renderGenerations = new Map<number, number>()
+  const trackRenderGeneration = (webContentsId: number) => {
+    const existing = renderGenerations.get(webContentsId)
+    if (existing !== undefined) return existing
+    renderGenerations.set(webContentsId, 1)
+    return 1
+  }
   let hostRequest: import('../handler-deps').PageGrantHostRequest | undefined
   const pendingResolvers: Array<(accepted: boolean) => void> = []
   const server: RpcServer = {
@@ -107,7 +122,8 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
     // WindowManager compares the id it stored.
     isPageGrantRequesterCurrent: (requester: PageGrantRequester, workspaceId: string) => {
       const shown = liveWindows.get(requester.webContentsId)
-      return shown !== undefined && getWorkspaceByNameOrId(shown)?.id === workspaceId
+      return shown !== undefined && getWorkspaceByNameOrId(shown)?.id === workspaceId &&
+        renderGenerations.get(requester.webContentsId) === requester.renderGeneration
     },
     registerPageGrantHostRequest: (request: import('../handler-deps').PageGrantHostRequest) => { hostRequest = request },
     confirmPageGrant,
@@ -127,7 +143,8 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
   const requestGrantOverHostIpc = async (senderWebContentsId: number, pageSlug: string, input: unknown, leaseId: unknown) => {
     const workspaceId = liveWindows.get(senderWebContentsId)
     if (!workspaceId || !hostRequest) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
-    return hostRequest({ webContentsId: senderWebContentsId }, workspaceId, pageSlug, input, leaseId)
+    const renderGeneration = trackRenderGeneration(senderWebContentsId)
+    return hostRequest({ webContentsId: senderWebContentsId, renderGeneration }, workspaceId, pageSlug, input, leaseId)
   }
   const invokeWithContext = async (ctx: RequestContext, channel: string, ...args: unknown[]) => {
     if (channel !== RPC_CHANNELS.pages.REQUEST_GRANT) return invokeTransportWithContext(ctx, channel, ...args)
@@ -151,8 +168,12 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
     setLiveWindows: (windows: Record<number, string>) => {
       liveWindows = new Map(Object.entries(windows).map(([id, ws]) => [Number(id), ws]))
     },
+    replaceRenderer: (webContentsId: number) => {
+      renderGenerations.set(webContentsId, (renderGenerations.get(webContentsId) ?? 0) + 1)
+    },
     requestGrantAsHost: ((requester, workspaceId, pageSlug, input, leaseId) => {
       if (!hostRequest) throw new Error('missing host grant setup')
+      trackRenderGeneration(requester.webContentsId)
       return hostRequest(requester, workspaceId, pageSlug, input, leaseId)
     }) as import('../handler-deps').PageGrantHostRequest,
     invokeWithContext,
@@ -248,7 +269,7 @@ describe('Pages RPC workspace capability gate', () => {
     expect(invoke.confirmations[0]?.pageMessage).toStartWith('first line second line')
     expect(invoke.confirmations[0]?.pageMessage).not.toContain('\n')
     expect(invoke.confirmations[0]?.pageMessage?.length).toBe(200)
-    expect(invoke.requesters).toEqual([{ webContentsId: 101 }])
+    expect(invoke.requesters).toEqual([{ webContentsId: 101, renderGeneration: 1 }])
   })
 
   test('sanitizes multiline and oversized server-resolved identities before host display', async () => {
@@ -337,8 +358,65 @@ describe('Pages RPC workspace capability gate', () => {
     const grant = await invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input, lease.leaseId) as { id: string }
     expect(grant.id).toStartWith('grant_')
     expect(invoke.confirmations).toHaveLength(1)
-    expect(invoke.requesters).toEqual([{ webContentsId: 101 }])
+    expect(invoke.requesters).toEqual([{ webContentsId: 101, renderGeneration: 1 }])
     await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
+  })
+
+  test('does not persist consent a reload replaced, and lets the new document ask again', async () => {
+    const invoke = createHarness('pending')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Reloaded render', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    const input = { action: { kind: 'api' as const, sourceSlug: 'example', method: 'GET' as const, pathPattern: '/items' } }
+    const pending = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input, lease.leaseId)
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+
+    // The document is replaced while its prompt is open. The window id, the
+    // workspace mapping, and — because release is renderer-owned — the lease
+    // all survive, so nothing but the render generation distinguishes the
+    // replacement from the document the user was answering for.
+    invoke.replaceRenderer(101)
+    invoke.resolvePending()
+
+    await expect(pending).resolves.toBeNull()
+    expect(invoke.confirmations).toHaveLength(1)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+
+    // The predecessor's lease is not inheritable either.
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input, lease.leaseId))
+      .rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+
+    // On its own fresh lease the replacement consents normally: the generation
+    // voids stale approvals, it does not lock the window out.
+    const { lease: reloaded } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    const granted = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input, reloaded.leaseId)
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length < 2; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    invoke.resolvePending()
+    await expect(granted).resolves.toMatchObject({ id: expect.any(String) })
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
+  })
+
+  test('does not persist consent a lost renderer process replaced', async () => {
+    let invoke!: GrantHarness
+    // A crash-and-recover keeps the webContents id, so it reaches the final
+    // persistence checks exactly as a reload does.
+    invoke = createHarness('approve', () => { invoke.replaceRenderer(101) })
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Lost renderer', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    }, lease.leaseId)).resolves.toBeNull()
+
+    expect(invoke.confirmations).toHaveLength(1)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
   })
 
   test('refuses a request whose window went away between the host IPC hop and the handler', async () => {
@@ -352,7 +430,7 @@ describe('Pages RPC workspace capability gate', () => {
     // resolution it was handed.
     invoke.setLiveWindows({})
 
-    await expect(invoke.requestGrantAsHost({ webContentsId: 101 }, WORKSPACE_A, page.slug, {
+    await expect(invoke.requestGrantAsHost({ webContentsId: 101, renderGeneration: 1 }, WORKSPACE_A, page.slug, {
       action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
     }, lease.leaseId)).rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
 
@@ -528,7 +606,7 @@ describe('Pages RPC workspace capability gate', () => {
     }) as { slug: string }
     rmSync(AUDIT_LOG, { force: true })
 
-    const grant = await invoke.requestGrantAsHost({ webContentsId: 101 }, 'Canonical Display', page.slug, {
+    const grant = await invoke.requestGrantAsHost({ webContentsId: 101, renderGeneration: 1 }, 'Canonical Display', page.slug, {
       action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
     }, ((await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug)) as { lease: { leaseId: string } }).lease.leaseId) as { id: string }
 

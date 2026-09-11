@@ -20,12 +20,19 @@ export interface PageGrantConfirmationSpec {
 }
 
 /**
- * Main-process-observed identity of the Electron window requesting consent.
- * Its only member is derived from `ipcMain` `event.sender`; nothing a client
- * can place on the wire belongs in this shape.
+ * Main-process-observed identity of the *document* requesting consent. Every
+ * member is derived from `ipcMain` `event.sender` and main-process state;
+ * nothing a client can place on the wire belongs in this shape.
  */
 export interface PageGrantRequester {
   webContentsId: number
+  /**
+   * Host-assigned generation of the render inside that webContents, changed on
+   * main-frame navigation, reload, and renderer loss. A webContents id outlives
+   * its document, and lease release is renderer-owned, so without this a
+   * replacement renderer inherits an approval given to its predecessor.
+   */
+  renderGeneration: number
 }
 
 /**
