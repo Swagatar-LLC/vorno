@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS timeseries (series TEXT NOT NULL, t INTEGER NOT NULL,
 
 ## Sharing
 
-Users publish pages from the page's **Share** button (feature-flagged): password-protectable public URL, opt-in data snapshot, instant revocation. You don't publish pages yourself — but remember: published copies block all network egress and disable source actions, which is why inline-everything authoring matters. `delete_page` unpublishes first (best effort) and reports `publicCopyMayRemain` if that could not be confirmed.
+Users publish pages from the page's **Share** button (feature-flagged): password-protectable public URL, opt-in data snapshot, instant revocation. You don't publish pages yourself — but remember: published copies block all network egress and disable source actions, which is why inline-everything authoring matters. `delete_page` unpublishes first and blocks deletion if revocation cannot be confirmed. Only the Electron desktop host can offer a separately confirmed local-state-forget recovery for a lost management capability; headless and WebUI paths deliberately have no such escape hatch.
 
 ## Starter template
 

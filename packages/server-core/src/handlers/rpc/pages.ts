@@ -402,8 +402,8 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   })
 
   // Delete a page (content, data, and grants go with the folder). A published
-  // page is unpublished first (best effort) so the public copy does not
-  // silently outlive the local page — deletePageWithUnpublish is shared
+  // page is unpublished first and deletion blocks on any unconfirmed revocation,
+  // so a public copy never silently outlives the local page — deletePageWithUnpublish is shared
   // verbatim with the delete_page session tool.
   server.handle(RPC_CHANNELS.pages.DELETE, async (_ctx, workspaceId: string, pageSlug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
@@ -812,7 +812,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     return updated
   })
 
-  // Unpublish, or renderer-confirmed local-only recovery for an irretrievable admin capability.
+  // Unpublish, or trusted-host-confirmed local-only recovery for an irretrievable admin capability.
   server.handle(RPC_CHANNELS.pages.UNPUBLISH, async (_ctx, workspaceId: string, pageSlug: string, options?: { forgetLocal?: boolean }) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)

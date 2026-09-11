@@ -521,7 +521,7 @@ async function hasPendingRemoteCleanup(response: Response): Promise<boolean> {
 // ============================================================================
 
 export interface DeletePageOutcome {
-  /** True when the page was published and the remote copy may still exist */
+  /** Always false when returned: unconfirmed revocation throws and blocks deletion. */
   publicCopyMayRemain: boolean;
 }
 
@@ -531,8 +531,8 @@ export interface DeletePageOutcome {
  * The single implementation behind BOTH the `pages:delete` RPC and the
  * `delete_page` session tool — keep it that way so the two paths cannot
  * drift (unpublish-before-delete is a policy, not a handler detail).
- * Unpublish failures are logged and folded into `publicCopyMayRemain`,
- * never blocking the local delete.
+ * Unpublish failures block the local delete; callers must retry revocation or,
+ * in Electron only, explicitly approve forgetting the local recovery state.
  */
 export async function deletePageWithUnpublish(
   workspaceRootPath: string,
