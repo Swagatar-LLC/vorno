@@ -290,6 +290,11 @@ describe('password protection', () => {
     const cookie = ticketResponse.headers.get('set-cookie').split(';')[0]
     expect((await content(env, data.id, { cookie })).status).toBe(200)
 
+    const oversized = new FormData(); oversized.set('password', 'password-long-enough'); oversized.set('ignored', new Blob(['x'.repeat(20 * 1024)]), 'ignored.txt')
+    expect((await handle(req(`/p/${data.id}/password`, { method: 'POST', body: oversized }), env)).status).toBe(413)
+    const understated = new FormData(); understated.set('password', 'password-long-enough'); understated.set('ignored', new Blob(['x'.repeat(20 * 1024)]), 'ignored.txt')
+    expect((await handle(req(`/p/${data.id}/password`, { method: 'POST', headers: { 'content-length': '1' }, body: understated }), env)).status).toBe(413)
+
     const denied = makeEnv({ PAGE_PASSWORD_LIMIT: { limit: async () => ({ success: false }) } })
     const deniedCreate = await create(denied, { password: 'password-long-enough' })
     const deniedForm = new FormData(); deniedForm.set('password', 'password-long-enough')

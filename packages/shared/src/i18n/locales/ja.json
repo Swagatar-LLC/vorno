@@ -811,6 +811,8 @@
   "pages.share.copyLink": "コピー",
   "pages.share.dataSecretWarning": "このデータには機密情報が含まれている可能性があります（{{keys}}）。リンクを知っている人は公開内容をすべて閲覧できます。",
   "pages.share.disabledNote": "このビルドでは公開が無効です。公開停止は引き続き利用できます。",
+  "pages.share.forgetLocalBody": "ローカルの管理キーとリンクを削除します。今後取り消しができなくなる可能性があり、リモートページはオンラインのまま残る場合があります。",
+  "pages.share.forgetLocalTitle": "ローカル公開状態を削除",
   "pages.share.includeData": "現在のデータスナップショットを含める",
   "pages.share.includeDataHint": "ページのデータスナップショットを公開し、訪問者に最新の値を表示します。",
   "pages.share.lastError": "前回の公開に失敗しました",

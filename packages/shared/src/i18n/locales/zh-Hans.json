@@ -811,6 +811,8 @@
   "pages.share.copyLink": "复制",
   "pages.share.dataSecretWarning": "这些数据可能包含机密信息（{{keys}}）。任何拥有链接的人都能读取全部已发布内容。",
   "pages.share.disabledNote": "此版本已禁用发布功能。仍可取消发布。",
+  "pages.share.forgetLocalBody": "这将删除本地管理密钥和链接。之后可能无法撤销发布，远程页面可能仍保持在线。",
+  "pages.share.forgetLocalTitle": "忘记本地发布状态",
   "pages.share.includeData": "包含当前数据快照",
   "pages.share.includeDataHint": "发布页面的数据快照，让访客看到最新数值。",
   "pages.share.lastError": "上次发布尝试失败",

@@ -811,6 +811,8 @@
   "pages.share.copyLink": "Copiar",
   "pages.share.dataSecretWarning": "Estos datos podrían contener secretos ({{keys}}). Cualquiera con el enlace puede leer todo lo publicado.",
   "pages.share.disabledNote": "La publicación está desactivada en esta versión. Retirar la publicación sigue funcionando.",
+  "pages.share.forgetLocalBody": "Esto elimina la clave y el enlace de administración locales. Es posible que ya no se pueda revocar la publicación y que la página remota siga en línea.",
+  "pages.share.forgetLocalTitle": "Olvidar el estado local de publicación",
   "pages.share.includeData": "Incluir la instantánea de datos actual",
   "pages.share.includeDataHint": "Publica la instantánea de datos de la página para que los visitantes vean valores actuales.",
   "pages.share.lastError": "El último intento de publicación falló",

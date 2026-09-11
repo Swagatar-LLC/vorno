@@ -811,6 +811,8 @@
   "pages.share.copyLink": "Másolás",
   "pages.share.dataSecretWarning": "Ezek az adatok titkokat tartalmazhatnak ({{keys}}). A linkkel bárki elolvashatja a közzétett tartalmat.",
   "pages.share.disabledNote": "A közzététel ebben a buildben le van tiltva. A visszavonás továbbra is működik.",
+  "pages.share.forgetLocalBody": "Ez törli a helyi kezelési kulcsot és hivatkozást. A későbbi visszavonás lehetetlenné válhat, és a távoli oldal online maradhat.",
+  "pages.share.forgetLocalTitle": "Helyi közzétételi állapot elfelejtése",
   "pages.share.includeData": "Aktuális adat-pillanatkép hozzáadása",
   "pages.share.includeDataHint": "Közzéteszi az oldal adat-pillanatképét, hogy a látogatók friss értékeket lássanak.",
   "pages.share.lastError": "Az utolsó közzétételi kísérlet sikertelen volt",

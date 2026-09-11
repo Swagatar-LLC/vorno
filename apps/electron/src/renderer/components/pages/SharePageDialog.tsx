@@ -186,7 +186,7 @@ export function SharePageDialog({
         toast.warning(t('toast.pageUnpublishFailed'), { description: t('toast.pagePublicCopyMayRemain') })
         // Native confirmation is intentionally the only escape: it clears local
         // recovery state and never claims the remote copy was revoked.
-        if (window.confirm(t('toast.pagePublicCopyMayRemain'))) {
+        if (window.confirm(`${t('pages.share.forgetLocalTitle')}\n\n${t('pages.share.forgetLocalBody')}`)) {
           await window.electronAPI.unpublishPage(workspaceId, config.slug, { forgetLocal: true })
           toast.warning(t('toast.pageUnpublishFailed'), { description: t('toast.pagePublicCopyMayRemain') })
         }

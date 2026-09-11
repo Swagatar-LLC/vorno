@@ -177,6 +177,8 @@ describe('Pages sharing default gate', () => {
     try {
       expect((await publisher.unpublish(workspace, 'workspace', page.slug)).warning).toBe('remote-copy-may-remain');
       expect(loadPageConfig(workspace, page.slug)?.share?.publicationId).toBe('publication-1');
+      await publisher.forgetLocalPublication(workspace, 'workspace', page.slug);
+      expect(loadPageConfig(workspace, page.slug)?.share).toBeUndefined();
     } finally { rmSync(workspace, { recursive: true, force: true }); }
   });
 

@@ -14,6 +14,7 @@ export const MAX_BUNDLE_BYTES = 10 * 1024 * 1024
 const MAX_UPLOAD_REQUEST_BYTES = MAX_BUNDLE_BYTES + 128 * 1024
 const PASSWORD_MIN_CHARS = 8
 const PASSWORD_MAX_CHARS = 1024
+const MAX_PASSWORD_REQUEST_BYTES = 16 * 1024
 const PASSWORD_TICKET_TTL_SECONDS = 60 * 60 * 12
 // Measured locally with bench-password.js; deploy verification must remeasure on Workers.
 const DEFAULT_PBKDF2_ITERATIONS = 100_000
@@ -495,8 +496,13 @@ async function submitPassword(request, env, id) {
   const record = await publicRecord(env, id)
   if (!record || !record.password) return json({ error: 'not_found' }, 404)
   if (await rateLimited(env, 'PAGE_PASSWORD_LIMIT', request, `password:${id}`, true)) return json({ error: 'rate_limited' }, 429)
+  const declared = declaredLength(request)
+  if (declared !== null && declared > MAX_PASSWORD_REQUEST_BYTES) return json({ error: 'too_large' }, 413)
   let form
-  try { form = await request.formData() } catch { return json({ error: 'invalid_password' }, 400) }
+  try {
+    const cappedRequest = new Request(request.url, { method: request.method, headers: request.headers, body: cappedBody(request.body, MAX_PASSWORD_REQUEST_BYTES), duplex: 'half' })
+    form = await cappedRequest.formData()
+  } catch (error) { return json({ error: error instanceof Error && error.message === 'too_large' ? 'too_large' : 'invalid_password' }, error instanceof Error && error.message === 'too_large' ? 413 : 400) }
   const password = form.get('password')
   if (typeof password !== 'string') return json({ error: 'invalid_password' }, 400)
   const candidate = await hashPassword(password, record.password.salt, record.password.iterations)

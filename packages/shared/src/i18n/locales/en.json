@@ -811,6 +811,8 @@
   "pages.share.copyLink": "Copy",
   "pages.share.dataSecretWarning": "This data may contain secrets ({{keys}}). Anyone with the link can read everything that gets published.",
   "pages.share.disabledNote": "Publishing is disabled in this build. Unpublishing still works.",
+  "pages.share.forgetLocalBody": "This deletes the local management key and link. Future revocation may be impossible, and the remote page may remain online.",
+  "pages.share.forgetLocalTitle": "Forget local publication state",
   "pages.share.includeData": "Include current data snapshot",
   "pages.share.includeDataHint": "Publishes the page's data snapshot so visitors see current values.",
   "pages.share.lastError": "Last publish attempt failed",

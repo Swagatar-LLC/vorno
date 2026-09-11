@@ -811,6 +811,8 @@
   "pages.share.copyLink": "Kopieren",
   "pages.share.dataSecretWarning": "Diese Daten könnten Geheimnisse enthalten ({{keys}}). Alle mit dem Link können alles Veröffentlichte lesen.",
   "pages.share.disabledNote": "Veröffentlichen ist in diesem Build deaktiviert. Zurückziehen funktioniert weiterhin.",
+  "pages.share.forgetLocalBody": "Dadurch werden der lokale Verwaltungsschlüssel und Link gelöscht. Ein späterer Widerruf kann unmöglich sein, und die Remote-Seite kann online bleiben.",
+  "pages.share.forgetLocalTitle": "Lokalen Veröffentlichungsstatus vergessen",
   "pages.share.includeData": "Aktuellen Daten-Snapshot einschließen",
   "pages.share.includeDataHint": "Veröffentlicht den Daten-Snapshot der Seite, damit Besucher aktuelle Werte sehen.",
   "pages.share.lastError": "Letzter Veröffentlichungsversuch fehlgeschlagen",

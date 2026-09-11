@@ -811,6 +811,8 @@
   "pages.share.copyLink": "Kopiuj",
   "pages.share.dataSecretWarning": "Te dane mogą zawierać sekrety ({{keys}}). Każdy, kto ma link, może odczytać wszystko, co zostanie opublikowane.",
   "pages.share.disabledNote": "Publikowanie jest wyłączone w tej wersji. Cofanie publikacji nadal działa.",
+  "pages.share.forgetLocalBody": "Spowoduje to usunięcie lokalnego klucza zarządzania i linku. Późniejsze cofnięcie publikacji może być niemożliwe, a zdalna strona może pozostać online.",
+  "pages.share.forgetLocalTitle": "Zapomnij lokalny stan publikacji",
   "pages.share.includeData": "Dołącz bieżącą migawkę danych",
   "pages.share.includeDataHint": "Publikuje migawkę danych strony, aby odwiedzający widzieli aktualne wartości.",
   "pages.share.lastError": "Ostatnia próba publikacji nie powiodła się",
