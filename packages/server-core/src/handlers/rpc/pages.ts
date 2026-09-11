@@ -1,5 +1,9 @@
+import { appendFile, mkdir } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
+import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
+import { requestClientConfirmDialog } from '../../transport/capabilities'
 import { assertPagesEnabled, isPagesEnabled } from '@craft-agent/shared/pages/capability'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -17,6 +21,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.pages.SET_CONTENT,
   RPC_CHANNELS.pages.GET_DATA,
   RPC_CHANNELS.pages.LIST_GRANTS,
+  RPC_CHANNELS.pages.REQUEST_GRANT,
   RPC_CHANNELS.pages.ISSUE_GRANT,
   RPC_CHANNELS.pages.REVOKE_GRANT,
   RPC_CHANNELS.pages.CREATE_LEASE,
@@ -34,6 +39,14 @@ export const HANDLED_CHANNELS = [
 
 /** Cap on action response bodies returned to the renderer */
 const ACTION_BODY_MAX_CHARS = 512 * 1024
+/** An unanswered prompt must not leave a request hanging or mint a grant later. */
+const PAGE_GRANT_CONFIRM_TIMEOUT_MS = 30_000
+
+function describeGrantForConfirmation(action: import('@craft-agent/shared/pages').PageActionDescriptor): string {
+  if (action.kind === 'api') return `${action.method} ${action.sourceSlug}${action.pathPattern}`
+  if (action.kind === 'mcp') return `${action.sourceSlug}:${action.toolName}`
+  return `${action.runtime ?? 'bun'} ${action.script}${action.args?.length ? ` ${action.args.join(' ')}` : ''}`
+}
 
 export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): void {
   const log = deps.platform.logger
@@ -52,6 +65,18 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
     const pages = loadWorkspacePages(workspaceRootPath)
     pushTyped(server, RPC_CHANNELS.pages.CHANGED, { to: 'workspace', workspaceId }, workspaceId, pages)
+  }
+
+  // Lifecycle audit is deliberately metadata-only: never record the descriptor,
+  // source values, or user-supplied description alongside an approval decision.
+  async function auditGrantDecision(event: 'page_grant_approved' | 'page_grant_rejected', pageSlug: string, actionKind: string): Promise<void> {
+    try {
+      const path = join(CONFIG_DIR, 'logs', 'page-actions.jsonl')
+      await mkdir(dirname(path), { recursive: true })
+      await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), event, pageSlug, actionKind })}\n`, 'utf8')
+    } catch (error) {
+      log.warn(`Failed to audit page grant decision: ${error}`)
+    }
   }
 
   /**
@@ -293,9 +318,11 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     return loadPageConfig(workspace.rootPath, pageSlug)?.grants ?? []
   })
 
-  // Persist a user-approved grant (approval UX happens in the caller)
-  server.handle(RPC_CHANNELS.pages.ISSUE_GRANT, async (
-    _ctx,
+  // Additive, host-authoritative grant issuance. The server owns the decision
+  // branch; a disconnected client, declined dialog, or failed response returns
+  // without calling storage and therefore leaves no persisted capability.
+  server.handle(RPC_CHANNELS.pages.REQUEST_GRANT, async (
+    ctx,
     workspaceId: string,
     pageSlug: string,
     input: import('@craft-agent/shared/pages').AddPageGrantInput,
@@ -303,13 +330,53 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     assertAvailable(workspace.rootPath)
+
+    let accepted = false
+    try {
+      const confirmation = requestClientConfirmDialog(server, ctx.clientId, {
+        type: input.action.kind === 'script' ? 'warning' : 'question',
+        title: 'Approve Page action',
+        message: `Allow this page to use: ${describeGrantForConfirmation(input.action)}?`,
+        detail: input.description ?? 'This permission is bound to the current page content and expires automatically.',
+        buttons: ['Deny', 'Approve'],
+        defaultId: 0,
+        cancelId: 0,
+      })
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const timeout = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('confirmation timed out')), PAGE_GRANT_CONFIRM_TIMEOUT_MS)
+        })
+        const result = await Promise.race([confirmation, timeout])
+        accepted = result.response === 1
+      } finally {
+        if (timer) clearTimeout(timer)
+      }
+    } catch (error) {
+      log.info(`Page grant confirmation unavailable for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
+    if (!accepted) {
+      await auditGrantDecision('page_grant_rejected', pageSlug, input.action.kind)
+      return null
+    }
+
     const { addPageGrant } = await import('@craft-agent/shared/pages')
     const grant = addPageGrant(workspace.rootPath, pageSlug, input)
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
     await broadcastChanged(workspaceId, workspace.rootPath)
-    const target = grant.action.kind === 'script' ? grant.action.script : grant.action.sourceSlug
-    log.info(`Issued page grant ${grant.id} on ${pageSlug} (${grant.action.kind}:${target})`)
+    await auditGrantDecision('page_grant_approved', pageSlug, grant.action.kind)
+    log.info(`Approved page grant ${grant.id} on ${pageSlug} (${grant.action.kind})`)
     return grant
+  })
+
+  // ADR-0033's intentional wire divergence: direct RPC cannot mint grants.
+  // It remains registered so old clients get a stable actionable refusal.
+  server.handle(RPC_CHANNELS.pages.ISSUE_GRANT, async (_ctx, workspaceId: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    assertAvailable(workspace.rootPath)
+    throw new Error('PAGE_GRANT_HOST_CONSENT_REQUIRED: use pages:requestGrant')
   })
 
   // Revoke a grant

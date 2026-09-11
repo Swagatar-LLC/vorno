@@ -39,12 +39,17 @@ function registerTestWorkspaces(): void {
   }))
 }
 
-function createHarness() {
+function createHarness(confirm: 'approve' | 'decline' | 'disconnect' | 'no-answer' = 'no-answer') {
   const handlers = new Map<string, HandlerFn>()
   const server: RpcServer = {
     handle(channel, handler) { handlers.set(channel, handler) },
     push() {},
-    async invokeClient() { return undefined },
+    async invokeClient() {
+      if (confirm === 'approve') return { response: 1 }
+      if (confirm === 'decline') return { response: 0 }
+      if (confirm === 'disconnect') throw new Error('client disconnected')
+      return undefined
+    },
     hasClientCapability() { return false },
     findClientsWithCapability() { return [] },
   }
@@ -58,7 +63,7 @@ function createHarness() {
   return async (channel: string, ...args: unknown[]) => {
     const handler = handlers.get(channel)
     if (!handler) throw new Error(`handler not registered: ${channel}`)
-    return handler({ workspaceId: WORKSPACE_A } as RequestContext, ...args)
+    return handler({ workspaceId: WORKSPACE_A, clientId: 'test-client' } as RequestContext, ...args)
   }
 }
 
@@ -111,6 +116,38 @@ describe('Pages RPC workspace capability gate', () => {
       .rejects.toThrow('PAGES_DISABLED')
     await expect(invoke(RPC_CHANNELS.pages.PUBLISH, WORKSPACE_B, 'missing', { includeData: false }))
       .rejects.toThrow('PAGES_DISABLED')
+  })
+
+  test('refuses direct issuance and persists only a host-confirmed request', async () => {
+    const direct = createHarness()
+    const page = await direct(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Grant page', content: '<p>content</p>',
+    }) as { slug: string }
+    const input = { action: { kind: 'script' as const, script: 'scripts/refresh.ts' } }
+
+    await expect(direct(RPC_CHANNELS.pages.ISSUE_GRANT, WORKSPACE_A, page.slug, input))
+      .rejects.toThrow('PAGE_GRANT_HOST_CONSENT_REQUIRED')
+    await expect(direct(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+
+    const approved = createHarness('approve')
+    const granted = await approved(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input) as { id: string; contentDigest: string }
+    expect(granted.id).toStartWith('grant_')
+    expect(granted.contentDigest).toHaveLength(64)
+    await expect(approved(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
+  })
+
+  test('declined, disconnected, and unanswered confirmations leave no grant', async () => {
+    for (const outcome of ['decline', 'disconnect', 'no-answer'] as const) {
+      const invoke = createHarness(outcome)
+      const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+        name: `Grant ${outcome}`, content: '<p>content</p>',
+      }) as { slug: string }
+      const result = await invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+        action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+      })
+      expect(result).toBeNull()
+      await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+    }
   })
 
   test('resolves unknown workspaces before Pages availability checks', async () => {

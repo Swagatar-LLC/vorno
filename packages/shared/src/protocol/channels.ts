@@ -476,6 +476,9 @@ export const RPC_CHANNELS = {
     SET_CONTENT: 'pages:setContent',
     GET_DATA: 'pages:getData',
     LIST_GRANTS: 'pages:listGrants',
+    /** Host-consented issuance; the server owns the approve/decline branch. */
+    REQUEST_GRANT: 'pages:requestGrant',
+    /** Compatibility channel retained but always refused by the host. */
     ISSUE_GRANT: 'pages:issueGrant',
     REVOKE_GRANT: 'pages:revokeGrant',
     CREATE_LEASE: 'pages:createLease',

@@ -15,6 +15,8 @@ import { WsRpcClient } from '../../../electron/src/transport/client'
 import { buildClientApi } from '../../../electron/src/transport/build-api'
 import { CHANNEL_MAP } from '../../../electron/src/transport/channel-map'
 import type { ElectronAPI, TransportConnectionState } from '../../../electron/src/shared/types'
+import { CLIENT_CONFIRM_DIALOG } from '@craft-agent/server-core/transport'
+import type { ConfirmDialogSpec } from '@craft-agent/server-core/transport'
 
 // ---------------------------------------------------------------------------
 // Web file picker (replaces native Electron dialog)
@@ -73,8 +75,14 @@ export function createWebApi(options: WebApiOptions): {
     workspaceId,
     autoReconnect: true,
     mode: 'remote',
+    clientCapabilities: [CLIENT_CONFIRM_DIALOG],
     // No token — auth is via session cookie sent on WebSocket upgrade
   })
+
+  // The server owns the branch; WebUI supplies only the visible confirmation.
+  client.handleCapability(CLIENT_CONFIRM_DIALOG, (spec: ConfirmDialogSpec) => Promise.resolve({
+    response: window.confirm([spec.message, spec.detail].filter(Boolean).join('\n\n')) ? 1 : 0,
+  }))
 
   // Build the API proxy from the same channel map the Electron app uses
   const baseApi = buildClientApi(

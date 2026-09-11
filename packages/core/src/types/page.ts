@@ -60,6 +60,12 @@ export interface PageRefreshSpec {
   timeoutMs?: number;
   /** Set to false to pause scheduling without deleting the spec */
   enabled?: boolean;
+  /**
+   * User-approved script grant that pins this recurring execution. The refresh
+   * may persist and materialize only while this exact descriptor remains
+   * digest-bound and unexpired.
+   */
+  grantId: string;
 }
 
 /** Outcome of the most recent refresh run (written by the executor, not the script) */

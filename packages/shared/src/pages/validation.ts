@@ -134,6 +134,7 @@ export const PageRefreshSpecSchema = z
     runtime: PageScriptRuntimeSchema.optional(),
     timeoutMs: z.number().int().positive().optional(),
     enabled: z.boolean().optional(),
+    grantId: z.string().min(1, 'Refresh requires a user-approved grant'),
   })
   .superRefine(validateRefreshCron);
 

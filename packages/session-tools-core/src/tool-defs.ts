@@ -232,6 +232,7 @@ const PageRefreshSpecInputSchema = z.object({
   timezone: z.string().optional().describe('IANA timezone for cron evaluation (system local when omitted)'),
   timeoutMs: z.number().optional().describe('Per-run timeout in ms (default 60000, clamped to 1s–15min)'),
   enabled: z.boolean().optional().describe('Set false to pause scheduling without deleting the spec'),
+  grantId: z.string().describe('ID of the user-approved script grant that exactly pins this recurring refresh. Create the page and obtain approval before adding refresh.'),
 });
 
 export const ListPagesSchema = z.object({
