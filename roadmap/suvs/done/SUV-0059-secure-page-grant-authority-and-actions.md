@@ -1,7 +1,7 @@
 ---
 id: SUV-0059
 title: Manage host-consented Page grants
-status: planned
+status: done
 plan: PLAN-052
 direction: DIR-04
 owner: jh
@@ -35,17 +35,17 @@ owned by SUV-0065; session callbacks remain SUV-0064.
 
 ## Acceptance
 
-- [ ] `pages:requestGrant` persists a grant only after host-rendered consent;
+- [x] `pages:requestGrant` persists a grant only after host-rendered consent;
       direct `pages:issueGrant`, decline, disconnect, and no response leave no
       privileged grant.
-- [ ] Persisted grants bind their approved descriptor and page digest, use
+- [x] Persisted grants bind their approved descriptor and page digest, use
       type-specific TTL policy within the 30-day ceiling, and invalidate on
       bound-content change.
-- [ ] Users can list, inspect, and immediately revoke grants, with regression
+- [x] Users can list, inspect, and immediately revoke grants, with regression
       coverage for revocation and digest invalidation.
-- [ ] A scheduled refresh names a user-approved declared grant before it can be
+- [x] A scheduled refresh names a user-approved declared grant before it can be
       persisted or recur; unapproved refresh residual is refused.
-- [ ] Grant lifecycle storage/management tests do not own runtime action,
+- [x] Grant lifecycle storage/management tests do not own runtime action,
       activation, replay, or audit enforcement, which belongs to SUV-0065.
 
 ## Status log
@@ -54,3 +54,6 @@ owned by SUV-0065; session callbacks remain SUV-0064.
   ADR-0033 host-authority contract.
 - `2026-09-10` — narrowed: consented grant lifecycle and refresh approval
   remain here; runtime action hardening splits to reserved SUV-0065.
+
+- `2026-09-10` — moved from planned to in-progress: host-authoritative consent and refresh-grant lifecycle implementation began.
+- `2026-09-10` — moved from in-progress to done: host-held consent, direct-issue refusal, TTL/digest/revocation lifecycle, and declared refresh grants landed; runtime action authority remains SUV-0065.

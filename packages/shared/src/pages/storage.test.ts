@@ -124,7 +124,6 @@ describe('pages/storage', () => {
         name: 'Revenue Dashboard',
         description: 'KPIs',
         content: '<html><body>hi</body></html>',
-        refresh: { cron: '*/5 * * * *', script: 'scripts/refresh.ts' },
       });
 
       expect(config.slug).toBe('revenue-dashboard');
@@ -166,7 +165,6 @@ describe('pages/storage', () => {
         kind: 'live',
         description: 'desc',
         projectId: 'proj_1',
-        refresh: { cron: '*/10 * * * *', script: 'scripts/refresh.ts' },
       });
 
       // A patch WITHOUT the keys must not touch them.
@@ -175,7 +173,7 @@ describe('pages/storage', () => {
       expect(cfg.name).toBe('Renamed');
       expect(cfg.projectId).toBe('proj_1');
       expect(cfg.description).toBe('desc');
-      expect(cfg.refresh?.cron).toBe('*/10 * * * *');
+      expect(cfg.refresh).toBeUndefined();
 
       // Explicit null clears — the literal value the pages:update RPC and the
       // update_page tool forward over JSON (undefined never survives transport).
@@ -304,7 +302,7 @@ describe('pages/storage', () => {
       ).toThrow(/no content/);
     });
 
-    it('issues digest-bound expiring grants and revokes them', () => {
+    it('clamps type-specific TTLs, expires, and revokes grants', () => {
       const created = createPage(workspaceDir, { name: 'Dash', content: 'v1' });
       const grant = addPageGrant(workspaceDir, created.slug, {
         action: { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '/issues' },
@@ -314,9 +312,52 @@ describe('pages/storage', () => {
       expect(grant.contentDigest).toBe(computePageContentDigest('v1'));
       expect(grant.expiresAt - grant.createdAt).toBe(60_000);
 
+      const scriptGrant = addPageGrant(workspaceDir, created.slug, {
+        action: { kind: 'script', script: 'scripts/refresh.ts' },
+        ttlMs: Number.MAX_SAFE_INTEGER,
+      });
+      expect(scriptGrant.expiresAt - scriptGrant.createdAt).toBe(7 * 24 * 60 * 60 * 1000);
+
       expect(revokePageGrant(workspaceDir, created.slug, grant.id)).toBe(true);
       expect(revokePageGrant(workspaceDir, created.slug, grant.id)).toBe(false);
+      expect(loadPageConfig(workspaceDir, created.slug)?.grants).toHaveLength(1);
+      expect(revokePageGrant(workspaceDir, created.slug, scriptGrant.id)).toBe(true);
       expect(loadPageConfig(workspaceDir, created.slug)?.grants).toEqual([]);
+    });
+
+    it('allows unrelated updates after a configured refresh grant expires', () => {
+      const created = createPage(workspaceDir, { name: 'Expired refresh', content: 'v1' });
+      const grant = addPageGrant(workspaceDir, created.slug, {
+        action: { kind: 'script', script: 'scripts/refresh.ts' },
+      });
+      const refresh = { cron: '*/5 * * * *', script: 'scripts/refresh.ts', grantId: grant.id };
+      updatePage(workspaceDir, created.slug, { refresh });
+      const config = loadPageConfig(workspaceDir, created.slug)!;
+      savePageConfig(workspaceDir, {
+        ...config,
+        grants: config.grants!.map(candidate => candidate.id === grant.id ? { ...candidate, expiresAt: Date.now() - 1 } : candidate),
+      });
+
+      expect(updatePage(workspaceDir, created.slug, { description: 'Metadata remains editable' }).description)
+        .toBe('Metadata remains editable');
+      expect(() => updatePage(workspaceDir, created.slug, { refresh })).toThrow(/stale or expired/);
+    });
+
+    it('persists a refresh only for an exact usable script grant', () => {
+      const created = createPage(workspaceDir, { name: 'Refresh', content: 'v1' });
+      const grant = addPageGrant(workspaceDir, created.slug, {
+        action: { kind: 'script', script: 'scripts/refresh.ts', runtime: 'bun', args: ['--once'] },
+      });
+      const refresh = { cron: '*/5 * * * *', script: 'scripts/refresh.ts', runtime: 'bun' as const, args: ['--once'], grantId: grant.id };
+      expect(updatePage(workspaceDir, created.slug, { refresh }).refresh).toEqual(refresh);
+      expect(() => updatePage(workspaceDir, created.slug, { refresh: { ...refresh, args: ['--different'] } })).toThrow(/exactly match/);
+      expect(() => updatePage(workspaceDir, created.slug, { refresh: { ...refresh, grantId: 'unknown' } })).toThrow(/user-approved script grant/);
+      expect(revokePageGrant(workspaceDir, created.slug, grant.id)).toBe(true);
+      expect(loadPageConfig(workspaceDir, created.slug)?.refresh).toBeUndefined();
+      const reapproved = addPageGrant(workspaceDir, created.slug, { action: grant.action });
+      updatePage(workspaceDir, created.slug, { refresh: { ...refresh, grantId: reapproved.id } });
+      expect(savePageContent(workspaceDir, created.slug, 'v2').refresh).toBeUndefined();
+      expect(() => updatePage(workspaceDir, created.slug, { refresh: { ...refresh, grantId: reapproved.id } })).toThrow(/stale or expired/);
     });
   });
 

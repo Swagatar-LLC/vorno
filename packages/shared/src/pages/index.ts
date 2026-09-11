@@ -90,6 +90,7 @@ export {
   PageKindSchema,
   PageRefreshSpecSchema,
   PageActionDescriptorSchema,
+  AddPageGrantInputSchema,
   PageActionGrantSchema,
   PageShareInfoSchema,
   PageThumbnailInfoSchema,

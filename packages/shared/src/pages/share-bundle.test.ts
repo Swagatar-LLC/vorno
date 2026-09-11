@@ -46,7 +46,6 @@ describe('buildPageShareBundle', () => {
       kind: 'live',
       projectId: 'proj_secret',
       content: HTML,
-      refresh: { cron: '*/5 * * * *', script: 'pages/leak-test/scripts/refresh.ts' },
     });
     addPageGrant(root, page.slug, {
       action: { kind: 'api', sourceSlug: 'gmail-secret-slug', method: 'GET', pathPattern: '/x' },
@@ -64,7 +63,7 @@ describe('buildPageShareBundle', () => {
     const serialized = JSON.stringify(bundle);
     expect(serialized).not.toContain('proj_secret');
     expect(serialized).not.toContain('gmail-secret-slug');
-    expect(serialized).not.toContain('refresh.ts');
+    expect(serialized).not.toContain('refresh');
     expect(serialized).not.toContain(root); // no local paths
   });
 

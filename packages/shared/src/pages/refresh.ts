@@ -15,7 +15,7 @@
 
 import type { AutomationMatcher } from '../automations/types.ts';
 import { isPagesEnabled } from './capability.ts';
-import { loadWorkspacePages } from './storage.ts';
+import { assertPageRefreshGrant, loadWorkspacePages } from './storage.ts';
 
 /** Matcher-id prefix marking synthetic page-refresh matchers (also the history key) */
 export const PAGE_REFRESH_MATCHER_PREFIX = 'page:';
@@ -43,6 +43,13 @@ export function buildPageRefreshMatchers(workspaceRootPath: string): AutomationM
     const refresh = page.config.refresh;
     if (!refresh || refresh.enabled === false) continue;
     if (!refresh.cron || !refresh.script) continue;
+    try {
+      assertPageRefreshGrant(page.config, refresh);
+    } catch {
+      // A stale/expired/revoked grant must stop recurrence even if an older
+      // config was already on disk before the persistence gate landed.
+      continue;
+    }
 
     matchers.push({
       id: pageRefreshMatcherId(page.config.slug),
@@ -58,6 +65,7 @@ export function buildPageRefreshMatchers(workspaceRootPath: string): AutomationM
           runtime: refresh.runtime,
           timeoutMs: refresh.timeoutMs,
           page: page.config.slug,
+          grantId: refresh.grantId,
         },
       ],
     });

@@ -781,6 +781,33 @@ app.whenReady().then(async () => {
             browserPaneManager: browserPaneManager ?? undefined,
             oauthFlowStore: ofs,
             messagingRegistry: messagingHandle.registry,
+            // Native Electron chrome is the only currently trusted Page grant
+            // consent surface. WebUI/headless hosts intentionally omit this.
+            confirmPageGrant: isHeadless ? undefined : async (spec) => {
+              const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+              if (!win) return false
+              const action = spec.action.kind === 'api'
+                ? `${spec.action.method} ${spec.action.sourceSlug}${spec.action.pathPattern}`
+                : spec.action.kind === 'mcp'
+                  ? `${spec.action.sourceSlug}:${spec.action.toolName}`
+                  : `${spec.action.runtime ?? 'bun'} ${spec.action.script}${spec.action.args?.length ? ` ${spec.action.args.join(' ')}` : ''}`
+              // The host, rather than the requesting transport client, renders
+              // every security-relevant identity and descriptor.
+              return (await dialog.showMessageBox(win, {
+                type: spec.action.kind === 'script' ? 'warning' : 'question',
+                title: 'Approve Page action',
+                message: `Allow page "${spec.page.name}" in workspace "${spec.workspace.name}" to use ${action}?`,
+                detail: [
+                  `Workspace: ${spec.workspace.name} (${spec.workspace.id})`,
+                  `Page: ${spec.page.name} (${spec.page.slug})`,
+                  `Action: ${action}`,
+                  spec.pageMessage,
+                ].filter(Boolean).join('\n'),
+                buttons: ['Deny', 'Approve'],
+                defaultId: 0,
+                cancelId: 0,
+              })).response === 1
+            },
           }
         },
         // Headless: register only core handlers (no GUI handlers for browser, settings, etc.)

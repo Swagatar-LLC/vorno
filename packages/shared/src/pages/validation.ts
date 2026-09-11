@@ -134,6 +134,7 @@ export const PageRefreshSpecSchema = z
     runtime: PageScriptRuntimeSchema.optional(),
     timeoutMs: z.number().int().positive().optional(),
     enabled: z.boolean().optional(),
+    grantId: z.string().min(1, 'Refresh requires a user-approved grant'),
   })
   .superRefine(validateRefreshCron);
 
@@ -165,6 +166,13 @@ export const PageActionDescriptorSchema = z.discriminatedUnion('kind', [
     args: z.array(z.string()).optional(),
   }),
 ]);
+
+/** Client-facing request shape. The host adds the expected content digest after consent. */
+export const AddPageGrantInputSchema = z.object({
+  action: PageActionDescriptorSchema,
+  description: z.string().optional(),
+  ttlMs: z.number().finite().positive().optional(),
+}).strict();
 
 export const PageActionGrantSchema = z.object({
   id: z.string().min(1),

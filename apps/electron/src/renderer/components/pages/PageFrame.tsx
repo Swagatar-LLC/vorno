@@ -26,10 +26,8 @@ import {
   reconcileGrantSummaries,
   toGrantSummary,
   type PageBridgeIncoming,
-  type PageGrantRequestEntry,
   type PageGrantSummary,
 } from '../../../shared/page-bridge'
-import { PageGrantRequestDialog } from './PageGrantRequestDialog'
 
 /**
  * The dedicated sandboxed Page renderer + trusted bridge host.
@@ -47,10 +45,10 @@ import { PageGrantRequestDialog } from './PageGrantRequestDialog'
  *   opaque origin and parse against the strict schema in shared/page-bridge.
  * - Mutating actions (api non-GET) additionally require fresh user activation,
  *   which real clicks inside the frame propagate to this window.
- * - Grant requests never mint anything by themselves: the approval dialog in
- *   THIS window is the user consent, and `pages:issueGrant` binds the grant to
- *   the current content digest server-side. Denied descriptors are remembered
- *   per render so a page cannot re-prompt in a loop.
+ * - Grant requests never mint anything by themselves: `pages:requestGrant`
+ *   reaches the Electron-main host's native confirmation surface, then the
+ *   host binds an accepted descriptor to the current content digest. Denied
+ *   descriptors are remembered per render so a page cannot re-prompt in a loop.
  * - Per-frame budget: bounded in-flight actions and a 30/minute window. The
  *   server-side PageActionBroker independently re-validates lease, nonce,
  *   replay, grant, and timeout — this component is the first gate, not the
@@ -114,9 +112,9 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
   const grantsRef = useRef(grants)
   grantsRef.current = grants
 
-  const [pendingRequest, setPendingRequest] = useState<PageGrantRequestEntry[] | null>(null)
-  const [issueBusy, setIssueBusy] = useState(false)
   const deniedRef = useRef<Set<string>>(new Set())
+  /** One bridge request at a time: a page cannot stack OS consent prompts. */
+  const grantRequestInFlightRef = useRef(false)
   /** Approvals from this render the config watcher hasn't confirmed yet. */
   const locallyIssuedRef = useRef<Set<string>>(new Set())
 
@@ -208,7 +206,7 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
   )
 
   const handleGrantRequest = useCallback(
-    (msg: Extract<PageBridgeIncoming, { type: 'grant-request' }>) => {
+    async (msg: Extract<PageBridgeIncoming, { type: 'grant-request' }>) => {
       if (msg.nonce !== lease.nonce) return
       const current = grantsRef.current
       const remaining = msg.requests.filter(
@@ -216,56 +214,42 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
           !current.some(g => descriptorEquals(g.action, req.action)) &&
           !deniedRef.current.has(descriptorSignature(req.action)),
       )
-      // Nothing new to ask (all satisfied or already denied this render), or a
-      // dialog is already up: answer with the current state instead of stacking
-      // prompts — the page reconciles by descriptor.
-      if (remaining.length === 0 || pendingRequest !== null) {
+      // Even a duplicate or concurrently suppressed bridge request needs a
+      // grants reply; otherwise the opaque frame can wait forever for a result.
+      if (remaining.length === 0 || grantRequestInFlightRef.current) {
         postToFrame(buildPageGrantsMessage(current))
         return
       }
-      setPendingRequest(remaining)
-    },
-    [lease.nonce, pendingRequest, postToFrame],
-  )
-
-  const handleApprove = useCallback(async () => {
-    if (!pendingRequest) return
-    setIssueBusy(true)
-    const issued: PageGrantSummary[] = []
-    let failed = false
-    for (const entry of pendingRequest) {
+      grantRequestInFlightRef.current = true
       try {
-        const grant = await window.electronAPI.issuePageGrant(workspaceId, pageSlug, {
-          action: entry.action,
-          ...(entry.description !== undefined ? { description: entry.description } : {}),
-        })
-        issued.push(toGrantSummary(grant))
-        locallyIssuedRef.current.add(grant.id)
-      } catch (err) {
-        failed = true
-        toast.error(t('toast.pageGrantFailed'), {
-          description: err instanceof Error ? err.message : String(err),
-        })
-        break
+        for (const entry of remaining) {
+          try {
+            // The RPC host, not this renderer, owns consent and persistence.
+            const grant = await window.electronAPI.requestPageGrant(workspaceId, pageSlug, {
+              action: entry.action,
+              ...(entry.description !== undefined ? { description: entry.description } : {}),
+            })
+            if (!grant) {
+              deniedRef.current.add(descriptorSignature(entry.action))
+              continue
+            }
+            locallyIssuedRef.current.add(grant.id)
+            postGrants([...grantsRef.current, toGrantSummary(grant)])
+            toast.success(t('toast.pageGrantsIssued'))
+          } catch (err) {
+            deniedRef.current.add(descriptorSignature(entry.action))
+            toast.error(t('toast.pageGrantFailed'), {
+              description: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }
+        postToFrame(buildPageGrantsMessage(grantsRef.current))
+      } finally {
+        grantRequestInFlightRef.current = false
       }
-    }
-    if (issued.length > 0 && !failed) {
-      toast.success(t('toast.pageGrantsIssued'))
-    }
-    postGrants([...grantsRef.current, ...issued])
-    setPendingRequest(null)
-    setIssueBusy(false)
-  }, [pendingRequest, workspaceId, pageSlug, postGrants, t])
-
-  const handleDeny = useCallback(() => {
-    if (pendingRequest) {
-      for (const entry of pendingRequest) {
-        deniedRef.current.add(descriptorSignature(entry.action))
-      }
-    }
-    setPendingRequest(null)
-    postGrants(grantsRef.current)
-  }, [pendingRequest, postGrants])
+    },
+    [lease.nonce, workspaceId, pageSlug, postGrants, postToFrame, t],
+  )
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
@@ -295,7 +279,7 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
           }
           break
         case 'grant-request':
-          handleGrantRequest(msg)
+          void handleGrantRequest(msg)
           break
       }
     }
@@ -324,13 +308,6 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
         srcDoc={content}
         onLoad={postInit}
         className={className ?? 'h-full w-full border-0 bg-white'}
-      />
-      <PageGrantRequestDialog
-        pageName={page.config.name}
-        requests={pendingRequest}
-        busy={issueBusy}
-        onApprove={handleApprove}
-        onDeny={handleDeny}
       />
     </>
   )

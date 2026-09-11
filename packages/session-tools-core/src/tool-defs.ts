@@ -232,6 +232,7 @@ const PageRefreshSpecInputSchema = z.object({
   timezone: z.string().optional().describe('IANA timezone for cron evaluation (system local when omitted)'),
   timeoutMs: z.number().optional().describe('Per-run timeout in ms (default 60000, clamped to 1s–15min)'),
   enabled: z.boolean().optional().describe('Set false to pause scheduling without deleting the spec'),
+  grantId: z.string().describe('ID of the user-approved script grant that exactly pins this recurring refresh. Create the page and obtain approval before adding refresh.'),
 });
 
 export const ListPagesSchema = z.object({
@@ -251,7 +252,6 @@ export const CreatePageSchema = z.object({
     .describe('Runtime capability class: static = no JS, interactive = JS allowed, live = JS + receives data snapshot updates while open. Default: interactive.'),
   projectId: z.string().optional().describe('Stable Project ID to bind the page to'),
   content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read ~/.craft-agent/docs/pages.md for the authoring guide and data-bridge snippet BEFORE writing page HTML.'),
-  refresh: PageRefreshSpecInputSchema.optional().describe('Scheduled data refresh: cron + workspace-relative Bun script that updates the page data store'),
 });
 
 export const UpdatePageSchema = z.object({

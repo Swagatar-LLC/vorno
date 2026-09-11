@@ -26,6 +26,7 @@ import type {
   PageActionGrant,
   PageConfig,
   PageDataSnapshot,
+  PageRefreshSpec,
   PageRefreshStatus,
   PageShareInfo,
   PageThumbnailInfo,
@@ -51,8 +52,11 @@ export const PAGE_STORE_FILENAME = 'store.sqlite';
  */
 export const PAGE_THUMBNAIL_FILENAME = 'thumbnail.jpg';
 
-/** Default grant lifetime: 30 days (grants are re-approved, never auto-renewed) */
-export const DEFAULT_PAGE_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** Grant policy is deliberately local and changeable within ADR-0033's 30-day ceiling. */
+export const PAGE_GRANT_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+export const DEFAULT_PAGE_GRANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const DEFAULT_PAGE_SCRIPT_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
+export const PAGE_SCRIPT_GRANT_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Max stored length for lastRefresh.error */
 const REFRESH_ERROR_MAX_LENGTH = 2000;
@@ -293,7 +297,6 @@ export function createPage(
     description: input.description,
     kind: input.kind ?? 'interactive',
     projectId: input.projectId,
-    refresh: input.refresh,
     createdAt: now,
     updatedAt: now,
   };
@@ -358,6 +361,13 @@ export function updatePage(
   const normalized = { ...patch } as Partial<PageConfig>;
   for (const field of NULL_CLEARABLE_PAGE_FIELDS) {
     if (patch[field] === null) (normalized as Record<string, unknown>)[field] = undefined;
+  }
+
+  // Existing refreshes may later expire or be revoked. That must not prevent
+  // unrelated metadata edits; validate only when this write creates or changes
+  // the refresh configuration itself.
+  if (Object.hasOwn(normalized, 'refresh') && normalized.refresh) {
+    assertPageRefreshGrant(existing, normalized.refresh);
   }
 
   const updated: PageConfig = {
@@ -454,8 +464,11 @@ export function savePageContent(
 
   atomicWriteFileSync(getPageContentPath(workspaceRootPath, pageSlug), content);
 
+  // Content changes invalidate every grant; a refresh tied to one must not
+  // remain configured as if it could recur under the new content.
+  const { refresh: _refresh, ...withoutRefresh } = existing;
   const updated: PageConfig = {
-    ...existing,
+    ...withoutRefresh,
     contentDigest: computePageContentDigest(content),
     updatedAt: Date.now(),
   };
@@ -523,16 +536,24 @@ export function recordPageRefresh(
 export interface AddPageGrantInput {
   action: PageActionDescriptor;
   description?: string;
-  /** Grant lifetime in ms (default DEFAULT_PAGE_GRANT_TTL_MS) */
+  /** Requested lifetime in ms; storage clamps it to the descriptor's policy. */
   ttlMs?: number;
+  /** Digest observed before consent; mismatch rejects a changed page. */
+  expectedContentDigest?: string;
+}
+
+export function pageGrantTtlMs(action: PageActionDescriptor, requestedTtlMs?: number): number {
+  const isScript = action.kind === 'script';
+  const defaultTtl = isScript ? DEFAULT_PAGE_SCRIPT_GRANT_TTL_MS : DEFAULT_PAGE_GRANT_TTL_MS;
+  const maxTtl = isScript ? PAGE_SCRIPT_GRANT_MAX_TTL_MS : PAGE_GRANT_MAX_TTL_MS;
+  const requested = Number.isFinite(requestedTtlMs) ? requestedTtlMs! : defaultTtl;
+  return Math.min(requested, maxTtl);
 }
 
 /**
- * Persist a user-approved grant on a page, bound to the current content
- * digest. Approval UX happens upstream — by the time this is called the
- * user has already consented.
- *
- * @throws Error if the page is missing or has no content yet (nothing to bind to)
+ * Persist a grant only after the host consent handler has approved it. The
+ * exported helper stays storage-only so desktop, WebUI, and headless hosts all
+ * share the exact digest and TTL policy.
  */
 export function addPageGrant(
   workspaceRootPath: string,
@@ -546,6 +567,9 @@ export function addPageGrant(
   if (!existing.contentDigest) {
     throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved. Add content to the page first.`);
   }
+  if (input.expectedContentDigest !== undefined && input.expectedContentDigest !== existing.contentDigest) {
+    throw new Error('Page content changed while approval was pending; request approval again');
+  }
 
   const now = Date.now();
   const grant: PageActionGrant = {
@@ -554,7 +578,7 @@ export function addPageGrant(
     action: input.action,
     contentDigest: existing.contentDigest,
     createdAt: now,
-    expiresAt: now + (input.ttlMs ?? DEFAULT_PAGE_GRANT_TTL_MS),
+    expiresAt: now + pageGrantTtlMs(input.action, input.ttlMs),
   };
 
   savePageConfig(workspaceRootPath, {
@@ -562,6 +586,30 @@ export function addPageGrant(
     grants: [...(existing.grants ?? []), grant],
   });
   return grant;
+}
+
+/** Refresh descriptors must be exactly the still-usable approved script grant. */
+export function assertPageRefreshGrant(config: PageConfig, refresh: PageRefreshSpec): void {
+  const grant = config.grants?.find(candidate => candidate.id === refresh.grantId);
+  if (!grant || grant.action.kind !== 'script') {
+    throw new Error('Scheduled refresh requires a user-approved script grant');
+  }
+  if (!config.contentDigest || grant.contentDigest !== config.contentDigest || grant.expiresAt <= Date.now()) {
+    throw new Error('Scheduled refresh grant is stale or expired; re-approval is required');
+  }
+  if (
+    grant.action.script !== refresh.script ||
+    (grant.action.runtime ?? 'bun') !== (refresh.runtime ?? 'bun') ||
+    !stringArraysEqual(grant.action.args, refresh.args)
+  ) {
+    throw new Error('Scheduled refresh must exactly match its approved script grant');
+  }
+}
+
+function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 // ============================================================
@@ -653,6 +701,12 @@ export function revokePageGrant(
   const remaining = grants.filter((g) => g.id !== grantId);
   if (remaining.length === grants.length) return false;
 
-  savePageConfig(workspaceRootPath, { ...existing, grants: remaining });
+  const refresh = existing.refresh?.grantId === grantId ? undefined : existing.refresh;
+  const { refresh: _previousRefresh, ...withoutRefresh } = existing;
+  savePageConfig(workspaceRootPath, {
+    ...withoutRefresh,
+    grants: remaining,
+    ...(refresh ? { refresh } : {}),
+  });
   return true;
 }

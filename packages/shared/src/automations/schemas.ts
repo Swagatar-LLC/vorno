@@ -79,6 +79,7 @@ export const ScriptActionSchema = z.object({
   runtime: z.enum(['bun', 'node', 'python3']).optional(),
   timeoutMs: z.number().int().positive().optional(),
   page: z.string().min(1).optional(),
+  grantId: z.string().min(1).optional(),
 });
 
 // ============================================================================

@@ -77,7 +77,6 @@ export interface CreatePageInput {
   projectId?: string;
   /** Initial index.html content (sets contentDigest when provided) */
   content?: string;
-  refresh?: PageRefreshSpec;
 }
 
 /**

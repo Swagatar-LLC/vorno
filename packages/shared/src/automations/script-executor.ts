@@ -25,7 +25,7 @@ import {
   isPathWithinDirectory,
 } from '@craft-agent/session-tools-core';
 import { createLogger } from '../utils/debug.ts';
-import { recordPageRefresh } from '../pages/storage.ts';
+import { assertPageRefreshGrant, loadPageConfig, recordPageRefresh } from '../pages/storage.ts';
 import { HISTORY_FIELD_MAX_LENGTH } from './constants.ts';
 import type { ScriptAction, ScriptActionResult } from './types.ts';
 
@@ -109,6 +109,28 @@ export async function executeScriptAction(
     argsPrefix = runtime.argsPrefix;
   } catch (e) {
     return blockedResult(action, e instanceof Error ? e.message : 'Script runtime unavailable');
+  }
+
+  // A cached synthetic matcher is not authority: reread the page grant at the
+  // last possible moment so expiry, revocation, and a digest change all stop
+  // the process before it starts.
+  if (action.page) {
+    const page = loadPageConfig(ctx.workspaceRootPath, action.page);
+    if (!page?.refresh || !action.grantId || page.refresh.grantId !== action.grantId) {
+      return blockedResult(action, 'Page refresh grant is missing, revoked, or no longer current');
+    }
+    try {
+      assertPageRefreshGrant(page, page.refresh);
+      if (
+        page.refresh.script !== action.script ||
+        (page.refresh.runtime ?? 'bun') !== (action.runtime ?? 'bun') ||
+        !stringArraysEqual(page.refresh.args, action.args)
+      ) {
+        return blockedResult(action, 'Cached page refresh no longer matches its approved grant');
+      }
+    } catch (error) {
+      return blockedResult(action, error instanceof Error ? error.message : 'Page refresh grant is no longer usable');
+    }
   }
 
   // --- Spawn (argv, no shell) ---
@@ -223,6 +245,12 @@ export async function executeScriptAction(
  * Create a script-action history entry for automations-history.jsonl.
  * Mirrors createWebhookHistoryEntry / createPromptHistoryEntry in webhook-utils.ts.
  */
+function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export function createScriptHistoryEntry(opts: {
   matcherId: string;
   result: ScriptActionResult;

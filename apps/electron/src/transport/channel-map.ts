@@ -456,6 +456,7 @@ export const CHANNEL_MAP = {
   setPageContent: invoke(RPC_CHANNELS.pages.SET_CONTENT),
   getPageData: invoke(RPC_CHANNELS.pages.GET_DATA),
   listPageGrants: invoke(RPC_CHANNELS.pages.LIST_GRANTS),
+  requestPageGrant: invoke(RPC_CHANNELS.pages.REQUEST_GRANT),
   issuePageGrant: invoke(RPC_CHANNELS.pages.ISSUE_GRANT),
   revokePageGrant: invoke(RPC_CHANNELS.pages.REVOKE_GRANT),
   createPageLease: invoke(RPC_CHANNELS.pages.CREATE_LEASE),

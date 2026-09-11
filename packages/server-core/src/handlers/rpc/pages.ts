@@ -1,5 +1,8 @@
+import { appendFile, mkdir } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
+import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { assertPagesEnabled, isPagesEnabled } from '@craft-agent/shared/pages/capability'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -17,6 +20,7 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.pages.SET_CONTENT,
   RPC_CHANNELS.pages.GET_DATA,
   RPC_CHANNELS.pages.LIST_GRANTS,
+  RPC_CHANNELS.pages.REQUEST_GRANT,
   RPC_CHANNELS.pages.ISSUE_GRANT,
   RPC_CHANNELS.pages.REVOKE_GRANT,
   RPC_CHANNELS.pages.CREATE_LEASE,
@@ -34,6 +38,26 @@ export const HANDLED_CHANNELS = [
 
 /** Cap on action response bodies returned to the renderer */
 const ACTION_BODY_MAX_CHARS = 512 * 1024
+/** An unanswered prompt must not leave a request hanging or mint a grant later. */
+const PAGE_GRANT_CONFIRM_TIMEOUT_MS = 30_000
+const PAGE_GRANT_MESSAGE_MAX_CHARS = 200
+const PAGE_GRANT_IDENTITY_MAX_CHARS = 100
+
+/** Keep page-authored prose visibly distinct from host-rendered identity/action. */
+function sanitizePageGrantMessage(description: string | undefined): string | undefined {
+  if (!description) return undefined
+  return `The page says: ${description.replace(/[\r\n]+/g, ' ').trim()}`.slice(0, PAGE_GRANT_MESSAGE_MAX_CHARS)
+}
+
+/**
+ * Names are server-resolved but still user-authored configuration. Collapse
+ * controls/whitespace and bound them before handing text to native chrome so a
+ * name cannot forge a second dialog field or bury the actual action.
+ */
+function sanitizePageGrantIdentity(value: string, fallback: string): string {
+  const normalized = value.replace(/[\s\u0000-\u001F\u007F-\u009F]+/g, ' ').trim()
+  return normalized.slice(0, PAGE_GRANT_IDENTITY_MAX_CHARS) || fallback
+}
 
 export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): void {
   const log = deps.platform.logger
@@ -47,11 +71,29 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // independent of session pools. Clients live until the process exits
   // (same lifetime as the brokers above).
   const mcpPools = new Map<string, import('@craft-agent/shared/mcp').McpClientPool>()
+  // Coalesce identical outstanding consent requests so a page cannot flood
+  // host chrome while a user is deciding.
+  const pendingGrantRequests = new Map<string, Promise<import('@craft-agent/shared/pages').PageActionGrant | null>>()
+  // Electron exposes one native dialog host, so grants must serialize across
+  // every workspace and page — not merely within one Page.
+  let pendingGrantConfirmation: Promise<import('@craft-agent/shared/pages').PageActionGrant | null> | undefined
 
   async function broadcastChanged(workspaceId: string, workspaceRootPath: string): Promise<void> {
     const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
     const pages = loadWorkspacePages(workspaceRootPath)
     pushTyped(server, RPC_CHANNELS.pages.CHANGED, { to: 'workspace', workspaceId }, workspaceId, pages)
+  }
+
+  // Lifecycle audit is deliberately metadata-only: never record the descriptor,
+  // source values, or user-supplied description alongside an approval decision.
+  async function auditGrantDecision(event: 'page_grant_approved' | 'page_grant_rejected', workspaceId: string, pageSlug: string, actionKind: string): Promise<void> {
+    try {
+      const path = join(CONFIG_DIR, 'logs', 'page-actions.jsonl')
+      await mkdir(dirname(path), { recursive: true })
+      await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), event, workspaceId, pageSlug, actionKind })}\n`, 'utf8')
+    } catch (error) {
+      log.warn(`Failed to audit page grant decision: ${error}`)
+    }
   }
 
   /**
@@ -204,7 +246,6 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       kind: input.kind,
       projectId: input.projectId,
       content: input.content,
-      refresh: input.refresh,
     })
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${page.slug}/page.json`)
     await broadcastChanged(workspaceId, workspace.rootPath)
@@ -293,23 +334,109 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     return loadPageConfig(workspace.rootPath, pageSlug)?.grants ?? []
   })
 
-  // Persist a user-approved grant (approval UX happens in the caller)
-  server.handle(RPC_CHANNELS.pages.ISSUE_GRANT, async (
+  // Additive, host-authoritative grant issuance. The server owns the decision
+  // branch; unavailable, declined, timed-out, or failed native confirmation
+  // never reaches storage and therefore leaves no persisted capability.
+  server.handle(RPC_CHANNELS.pages.REQUEST_GRANT, async (
     _ctx,
     workspaceId: string,
     pageSlug: string,
-    input: import('@craft-agent/shared/pages').AddPageGrantInput,
+    input: unknown,
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     assertAvailable(workspace.rootPath)
-    const { addPageGrant } = await import('@craft-agent/shared/pages')
-    const grant = addPageGrant(workspace.rootPath, pageSlug, input)
-    deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
-    await broadcastChanged(workspaceId, workspace.rootPath)
-    const target = grant.action.kind === 'script' ? grant.action.script : grant.action.sourceSlug
-    log.info(`Issued page grant ${grant.id} on ${pageSlug} (${grant.action.kind}:${target})`)
-    return grant
+
+    // Treat every transport request as hostile. In particular, do not inspect
+    // `kind` until the existing discriminated-union schema has accepted it.
+    const { AddPageGrantInputSchema, loadPageConfig, addPageGrant } = await import('@craft-agent/shared/pages')
+    const parsed = AddPageGrantInputSchema.safeParse(input)
+    if (!parsed.success) {
+      await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, 'invalid')
+      throw new Error('PAGE_GRANT_INVALID_REQUEST')
+    }
+    const request = parsed.data
+    // Page-authored description and requested lifetime must not bypass this
+    // guard; the security identity is the page plus the action descriptor.
+    const pendingKey = JSON.stringify({ workspaceId, pageSlug, action: request.action })
+    const pending = pendingGrantRequests.get(pendingKey)
+    if (pending) return pending
+    // One native decision for this host at a time. Exact duplicates coalesce
+    // above; every other workspace/page/descriptor is refused, never queued.
+    if (pendingGrantConfirmation) {
+      throw new Error('PAGE_GRANT_CONFIRMATION_PENDING')
+    }
+
+    const issue = (async () => {
+      const page = loadPageConfig(workspace.rootPath, pageSlug)
+      const expectedContentDigest = page?.contentDigest
+      if (!page || !expectedContentDigest) throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved.`)
+      if (!deps.confirmPageGrant) {
+        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
+        throw new Error('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
+      }
+
+      let accepted = false
+      try {
+        const confirmation = deps.confirmPageGrant({
+          workspace: {
+            id: workspace.id,
+            name: sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
+          },
+          page: {
+            slug: page.slug,
+            name: sanitizePageGrantIdentity(page.name, 'Unnamed page'),
+          },
+          action: request.action,
+          pageMessage: sanitizePageGrantMessage(request.description),
+        })
+        let timer: ReturnType<typeof setTimeout> | undefined
+        try {
+          const timeout = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('confirmation timed out')), deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
+          })
+          accepted = await Promise.race([confirmation, timeout])
+        } finally {
+          if (timer) clearTimeout(timer)
+        }
+      } catch (error) {
+        log.info(`Page grant confirmation unavailable for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+
+      if (!accepted) {
+        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
+        return null
+      }
+
+      try {
+        const grant = addPageGrant(workspace.rootPath, pageSlug, { ...request, expectedContentDigest })
+        deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
+        await broadcastChanged(workspaceId, workspace.rootPath)
+        await auditGrantDecision('page_grant_approved', workspaceId, pageSlug, grant.action.kind)
+        log.info(`Approved page grant ${grant.id} on ${pageSlug} (${grant.action.kind})`)
+        return grant
+      } catch (error) {
+        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
+        throw error
+      }
+    })()
+    pendingGrantRequests.set(pendingKey, issue)
+    pendingGrantConfirmation = issue
+    try {
+      return await issue
+    } finally {
+      if (pendingGrantRequests.get(pendingKey) === issue) pendingGrantRequests.delete(pendingKey)
+      if (pendingGrantConfirmation === issue) pendingGrantConfirmation = undefined
+    }
+  })
+
+  // ADR-0033's intentional wire divergence: direct RPC cannot mint grants.
+  // It remains registered so old clients get a stable actionable refusal.
+  server.handle(RPC_CHANNELS.pages.ISSUE_GRANT, async (_ctx, workspaceId: string) => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    assertAvailable(workspace.rootPath)
+    throw new Error('PAGE_GRANT_HOST_CONSENT_REQUIRED: use pages:requestGrant')
   })
 
   // Revoke a grant

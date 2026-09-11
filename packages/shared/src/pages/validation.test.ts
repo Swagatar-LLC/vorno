@@ -13,7 +13,7 @@ import {
 } from './validation.ts';
 
 function refreshSpec(cron: string, timezone?: string) {
-  return { cron, script: 'scripts/refresh.ts', ...(timezone ? { timezone } : {}) };
+  return { cron, script: 'scripts/refresh.ts', grantId: 'grant_refresh', ...(timezone ? { timezone } : {}) };
 }
 
 describe('PageRefreshSpecSchema cron validation', () => {
@@ -52,6 +52,11 @@ describe('PageRefreshSpecSchema cron validation', () => {
       expect(result.success).toBe(false);
       expect(result.error!.issues[0]!.message).toContain('too frequently');
     }
+  });
+
+  it('requires a declared grant before a refresh can persist', () => {
+    const { grantId: _grantId, ...withoutGrant } = refreshSpec('*/10 * * * *');
+    expect(PageRefreshSpecSchema.safeParse(withoutGrant).success).toBe(false);
   });
 
   it('surfaces cron issues through validatePageConfig at refresh.cron', () => {
