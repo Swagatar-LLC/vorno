@@ -4,7 +4,6 @@ import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import type {
   LoadedPage,
-  PageActionDescriptor,
   PageActionRequest,
   PageActionResult,
   PageDataSnapshot,
@@ -18,7 +17,7 @@ import {
   buildPageDataMessage,
   buildPageGrantsMessage,
   buildPageInitMessage,
-  descriptorEquals,
+  descriptorSignature,
   grantIdsEqual,
   isMutatingInvocation,
   isSafeExternalUrl,
@@ -80,14 +79,14 @@ function hasUserActivation(): boolean {
   return nav.userActivation?.isActive === true
 }
 
-/** Stable identity for deny-memory and dedupe. */
-function descriptorSignature(d: PageActionDescriptor): string {
-  // JSON array encoding preserves script argument boundaries, unlike joining
-  // with a delimiter that a valid argument could itself contain.
-  if (d.kind === 'mcp') return JSON.stringify(['mcp', d.sourceSlug, d.toolName])
-  if (d.kind === 'script') return JSON.stringify(['script', d.script, d.runtime ?? 'bun', d.args ?? []])
-  return JSON.stringify(['api', d.sourceSlug, d.method, d.pathPattern])
-}
+/**
+ * A render may hold at most this many distinct descriptors awaiting consent.
+ * Each one costs a native prompt the user has to answer in order, so a page
+ * that asks for a hundred capabilities at once gets a bounded prefix rather
+ * than a hundred-deep modal queue. Dropping is not denial: once the queue
+ * drains, a later request for the same descriptor is accepted normally.
+ */
+const MAX_QUEUED_GRANT_REQUESTS_PER_RENDER = 8
 
 export function PageFrame({ workspaceId, page, lease, content, snapshot, className }: PageFrameProps) {
   const { t } = useTranslation()
@@ -120,6 +119,15 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
   const grantRequestQueueRef = useRef<PageGrantRequestEntry[]>([])
   const pendingGrantSignaturesRef = useRef<Set<string>>(new Set())
   const grantRequestInFlightRef = useRef(false)
+  /**
+   * Which render the queue currently belongs to. A consent round trip outlives
+   * the render that started it, so every queue decision reads this instead of
+   * a value captured in a closure.
+   */
+  const renderGenerationRef = useRef(0)
+  /** The live lease, so a drain still running after a re-render uses the new one. */
+  const leaseRef = useRef(lease)
+  leaseRef.current = lease
   /** Approvals from this render the config watcher hasn't confirmed yet. */
   const locallyIssuedRef = useRef<Set<string>>(new Set())
 
@@ -158,11 +166,16 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
 
   // A denial belongs only to the rendered content. New content gets a fresh
   // digest-bound grant request rather than inheriting the old deny-memory.
+  // Bumping the generation is what makes that true: a request still in flight
+  // from the previous render resolves into a cleared state, and without a
+  // generation its denial would be written into THIS render's deny-memory —
+  // silently suppressing the first request the new content ever makes.
   useEffect(() => {
+    renderGenerationRef.current += 1
     deniedRef.current.clear()
     grantRequestQueueRef.current = []
     pendingGrantSignaturesRef.current.clear()
-  }, [lease.contentDigest])
+  }, [lease.leaseId, lease.contentDigest])
 
   // Live pages get replacement snapshots; interactive pages keep their
   // init-time snapshot (per the kind contract).
@@ -224,13 +237,23 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
     try {
       while (grantRequestQueueRef.current.length > 0) {
         const entry = grantRequestQueueRef.current.shift()!
+        // Bind the entry to the render it is being sent for. Anything still
+        // queued after a digest change was enqueued by the new render, so the
+        // live lease — not a closure-captured one — is the correct lease.
+        const generation = renderGenerationRef.current
+        const leaseId = leaseRef.current.leaseId
+        const isCurrentRender = () => renderGenerationRef.current === generation
         const signature = descriptorSignature(entry.action)
         try {
           // The RPC host, not this renderer, owns consent and persistence.
           const grant = await window.electronAPI.requestPageGrant(workspaceId, pageSlug, {
             action: entry.action,
             ...(entry.description !== undefined ? { description: entry.description } : {}),
-          }, lease.leaseId)
+          }, leaseId)
+          // The answer belongs to the render that asked. Applying a replaced
+          // render's denial, grant, or toast here would speak for content the
+          // user is no longer looking at.
+          if (!isCurrentRender()) continue
           if (!grant) {
             deniedRef.current.add(signature)
             continue
@@ -241,29 +264,33 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
         } catch (err) {
           // A transient host failure is never deny-memory. The page may make
           // a later request, while this bounded queue releases the descriptor.
+          if (!isCurrentRender()) continue
           toast.error(t('toast.pageGrantFailed'), {
             description: err instanceof Error ? err.message : String(err),
           })
         } finally {
-          pendingGrantSignaturesRef.current.delete(signature)
+          // Only release a signature this render actually reserved; the new
+          // render's pending set is not this entry's to edit.
+          if (isCurrentRender()) pendingGrantSignaturesRef.current.delete(signature)
         }
       }
     } finally {
       grantRequestInFlightRef.current = false
       postToFrame(buildPageGrantsMessage(grantsRef.current))
     }
-  }, [lease.leaseId, workspaceId, pageSlug, postGrants, postToFrame, t])
+  }, [workspaceId, pageSlug, postGrants, postToFrame, t])
 
   const handleGrantRequest = useCallback(
     (msg: Extract<PageBridgeIncoming, { type: 'grant-request' }>) => {
       if (msg.nonce !== lease.nonce) return
       const current = grantsRef.current
+      const grantedSignatures = new Set(current.map(g => descriptorSignature(g.action)))
       const batchSignatures = new Set<string>()
       const remaining = msg.requests.filter(req => {
         const signature = descriptorSignature(req.action)
         if (batchSignatures.has(signature)) return false
         batchSignatures.add(signature)
-        return !current.some(g => descriptorEquals(g.action, req.action)) &&
+        return !grantedSignatures.has(signature) &&
           !deniedRef.current.has(signature) &&
           !pendingGrantSignaturesRef.current.has(signature)
       })
@@ -274,7 +301,18 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
         postToFrame(buildPageGrantsMessage(current))
         return
       }
-      for (const entry of remaining) {
+      // The queue is a user-attention budget, not a buffer: admit up to the
+      // per-render cap and let the rest go unqueued. They are neither denied
+      // nor remembered, so the page can ask again once the queue drains.
+      // The pending set holds queued AND in-flight signatures (the drain
+      // releases one only after its decision), so it is the whole outstanding
+      // count — adding the queue length again would double-count.
+      const capacity = MAX_QUEUED_GRANT_REQUESTS_PER_RENDER - pendingGrantSignaturesRef.current.size
+      if (capacity <= 0) {
+        postToFrame(buildPageGrantsMessage(current))
+        return
+      }
+      for (const entry of remaining.slice(0, capacity)) {
         pendingGrantSignaturesRef.current.add(descriptorSignature(entry.action))
         grantRequestQueueRef.current.push(entry)
       }

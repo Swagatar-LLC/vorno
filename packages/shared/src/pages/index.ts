@@ -29,7 +29,7 @@ export type {
   CreatePageInput,
   LoadedPage,
 } from './types.ts';
-export { isPageGrantUsable } from './types.ts';
+export { isPageGrantUsable, pageActionDescriptorSignature } from './types.ts';
 
 // Storage
 export {

@@ -8,7 +8,13 @@
  * File structure: see the docblock in @craft-agent/core types/page.ts.
  */
 
-import type { PageActionGrant, PageConfig, PageKind, PageRefreshSpec } from '@craft-agent/core';
+import type {
+  PageActionDescriptor,
+  PageActionGrant,
+  PageConfig,
+  PageKind,
+  PageRefreshSpec,
+} from '@craft-agent/core';
 
 // Re-export the core page types so consumers can import everything from
 // '@craft-agent/shared/pages' (mirrors how sources/projects expose types).
@@ -43,6 +49,46 @@ export function isPageGrantUsable(
   now: number,
 ): boolean {
   return contentDigest !== undefined && grant.contentDigest === contentDigest && grant.expiresAt > now;
+}
+
+/**
+ * The single canonical identity of a grant descriptor.
+ *
+ * Consent coalescing, renderer dedupe, and deny-memory all mean "the same
+ * capability", so they must all agree on what "same" is. Two properties matter
+ * and neither comes free from `JSON.stringify(descriptor)`:
+ *
+ *  - **Field order is not identity.** A page-supplied object preserves its own
+ *    key order through schema parsing, so `{kind,method,…}` and `{method,kind,…}`
+ *    would otherwise be two identities for one capability — two native prompts
+ *    and two persisted grants. Fields are emitted here in a fixed order.
+ *  - **Optional fields are normalized the way execution reads them.** A script
+ *    with no `runtime` runs as `bun`, and absent `args` runs as `[]`, exactly
+ *    as `descriptorEquals` compares them. Omitting that normalization would
+ *    split one approved command into several identities.
+ *
+ * Arrays are JSON-encoded rather than delimiter-joined so a script argument
+ * that itself contains the delimiter cannot forge a colliding identity.
+ * Pure and browser-safe: the renderer and the RPC host both call it.
+ */
+export function pageActionDescriptorSignature(descriptor: PageActionDescriptor): string {
+  if (descriptor.kind === 'mcp') {
+    return JSON.stringify(['mcp', descriptor.sourceSlug, descriptor.toolName]);
+  }
+  if (descriptor.kind === 'script') {
+    return JSON.stringify([
+      'script',
+      descriptor.script,
+      descriptor.runtime ?? 'bun',
+      descriptor.args ?? [],
+    ]);
+  }
+  return JSON.stringify([
+    'api',
+    descriptor.sourceSlug,
+    descriptor.method,
+    descriptor.pathPattern,
+  ]);
 }
 
 /**

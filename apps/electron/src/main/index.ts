@@ -91,6 +91,7 @@ import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient } from '@craf
 import type { PlatformServices } from '../runtime/platform'
 import { createElectronPlatform } from './platform'
 import type { HandlerDeps } from './handlers/handler-deps'
+import type { PageGrantHostRequest } from '@craft-agent/server-core/handlers'
 import { bootstrapServer, releaseServerLock } from '@craft-agent/server-core/bootstrap'
 import { createMessagingBootstrap, type MessagingBootstrapHandle } from '@craft-agent/messaging-gateway'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
@@ -657,13 +658,12 @@ app.whenReady().then(async () => {
       // Pre-import power manager (async import needed for applyPlatformToSubsystems)
       const { onSessionStarted, onSessionStopped } = await import('./power-manager')
 
-      // Client ID tracking for Electron IPC bridge (webContentsId → clientId)
+      // Client ID tracking for Electron IPC bridge (webContentsId → clientId).
+      // This is routing metadata only: Page grant authority comes from
+      // ipcMain's event.sender, never this client-asserted transport mapping.
       const clientMap = new Map<number, string>()
-      // A reconnect can retain its transport client ID. This epoch changes on
-      // every connection so in-flight native consent cannot survive a renderer
-      // disconnect/rebind, even for the same window and client ID.
-      const clientConnectionEpochs = new Map<number, string>()
       const resolveClientId = (wcId: number) => clientMap.get(wcId)
+      let pageGrantHostRequest: PageGrantHostRequest | undefined
 
       // Read embedded server config (Server settings page)
       const { getServerConfig } = await import('@craft-agent/shared/config')
@@ -786,22 +786,20 @@ app.whenReady().then(async () => {
             oauthFlowStore: ofs,
             messagingRegistry: messagingHandle.registry,
             // Native Electron chrome is the only currently trusted Page grant
-            // consent surface. WebUI/headless hosts intentionally omit this.
-            getPageGrantRequester: isHeadless ? undefined : (ctx, workspaceId) => {
-              const webContentsId = ctx.webContentsId
-              if (
-                webContentsId === null ||
-                ctx.workspaceId !== workspaceId ||
-                windowManager?.getWorkspaceForWindow(webContentsId) !== workspaceId ||
-                windowManager.getClientIdForWindow(webContentsId) !== ctx.clientId
-              ) return undefined
-              const connectionId = clientConnectionEpochs.get(webContentsId)
-              if (!connectionId) return undefined
-              return { webContentsId, connectionId }
+            // consent surface. The IPC handler below derives this requester
+            // from event.sender; transport envelope fields never enter here.
+            isPageGrantRequesterCurrent: isHeadless ? undefined : (requester, workspaceId) => {
+              if (!windowManager) return false
+              const win = windowManager.getWindowByWebContentsId(requester.webContentsId)
+              return !!win && !win.isDestroyed() &&
+                windowManager.getWorkspaceForWindow(requester.webContentsId) === workspaceId
             },
-            confirmPageGrant: isHeadless ? undefined : async (requester, spec) => {
+            registerPageGrantHostRequest: isHeadless ? undefined : (request) => {
+              pageGrantHostRequest = request
+            },
+            confirmPageGrant: isHeadless ? undefined : async (requester, spec, signal) => {
               const win = windowManager?.getWindowByWebContentsId(requester.webContentsId)
-              if (!win || win.isDestroyed()) return false
+              if (!win || win.isDestroyed() || signal.aborted) return false
               const action = spec.action.kind === 'api'
                 ? i18n.t('pages.grants.confirm.actionApi', { method: spec.action.method, source: spec.action.sourceSlug, path: spec.action.pathPattern })
                 : spec.action.kind === 'mcp'
@@ -809,6 +807,12 @@ app.whenReady().then(async () => {
                   : i18n.t('pages.grants.confirm.actionScript', { runtime: spec.action.runtime ?? 'bun', script: spec.action.script, args: spec.action.args?.length ? ` ${spec.action.args.join(' ')}` : '' })
               // The host, rather than the requesting transport client, renders
               // every security-relevant identity and descriptor.
+              //
+              // `win` is both the trusted parent and the reason `signal` works:
+              // Electron only honours an abort for a message box shown AS A
+              // SHEET, i.e. one with a parent window. Detaching this dialog
+              // (or parenting it to the focused window) would make the host's
+              // timeout unenforceable — the modal would outlive its request.
               return (await dialog.showMessageBox(win, {
                 type: spec.action.kind === 'script' ? 'warning' : 'question',
                 title: i18n.t('pages.grants.confirm.title'),
@@ -824,6 +828,7 @@ app.whenReady().then(async () => {
                 buttons: [i18n.t('pages.grants.confirm.deny'), i18n.t('pages.grants.confirm.approve')],
                 defaultId: 0,
                 cancelId: 0,
+                signal,
               })).response === 1
             },
           }
@@ -850,18 +855,11 @@ app.whenReady().then(async () => {
           }
         }),
         onClientConnected: ({ clientId, webContentsId }) => {
-          if (webContentsId != null) {
-            clientMap.set(webContentsId, clientId)
-            clientConnectionEpochs.set(webContentsId, randomUUID())
-          }
+          if (webContentsId != null) clientMap.set(webContentsId, clientId)
         },
         cleanupClientResources: (clientId) => {
           for (const [wcId, cId] of clientMap) {
-            if (cId === clientId) {
-              clientMap.delete(wcId)
-              clientConnectionEpochs.delete(wcId)
-              break
-            }
+            if (cId === clientId) { clientMap.delete(wcId); break }
           }
           cleanupSessionFileWatchForClient(clientId)
         },
@@ -904,6 +902,16 @@ app.whenReady().then(async () => {
       }
 
       // IPC handlers — preload uses sendSync to get WS connection details
+
+      // Consent is privileged main-process IPC. Do not accept workspace or
+      // window identity from preload: both come exclusively from event.sender.
+      ipcMain.handle('__pages:request-grant', async (event, pageSlug: unknown, input: unknown, leaseId: unknown) => {
+        const webContentsId = event.sender.id
+        const workspaceId = windowManager?.getWorkspaceForWindow(webContentsId)
+        if (!workspaceId || !pageGrantHostRequest) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+        if (typeof pageSlug !== 'string') throw new Error('PAGE_GRANT_INVALID_REQUEST')
+        return pageGrantHostRequest({ webContentsId }, workspaceId, pageSlug, input, leaseId)
+      })
 
       // Remove workspace from config (cleanup stale entries)
       ipcMain.handle('workspace:remove', async (_event, workspaceId: string) => {

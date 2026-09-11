@@ -191,6 +191,21 @@ client.handleCapability(CLIENT_BROWSER_INVOKE, async (req: BrowserCapabilityRequ
 
 const api = buildClientApi(client, CHANNEL_MAP, (ch) => client.isChannelAvailable(ch))
 
+// Page consent must cross Electron main IPC, not the RPC transport: only
+// `ipcMain` can observe which WebContents actually sent the request, and only
+// the main process can say which workspace that window is showing. Every
+// transport handshake field is client-asserted, so the server-side channel
+// refuses outright. `workspaceId` stays in the renderer API shape for
+// compatibility with the WebUI build, but is deliberately NOT forwarded — a
+// caller that could name the workspace could aim a trusted native prompt at
+// one its window does not show.
+;(api as ElectronAPI).requestPageGrant = (
+  _workspaceId,
+  pageSlug,
+  input,
+  leaseId,
+) => ipcRenderer.invoke('__pages:request-grant', pageSlug, input, leaseId)
+
 ;(api as any).getRuntimeEnvironment = (): 'electron' | 'web' => 'electron'
 
 // ---------------------------------------------------------------------------

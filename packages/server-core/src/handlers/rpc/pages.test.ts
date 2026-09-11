@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
+import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { MAX_LIVE_LEASES, savePageContent } from '@craft-agent/shared/pages'
 import type { HandlerDeps, PageGrantConfirmationSpec, PageGrantRequester } from '../handler-deps'
@@ -13,6 +14,8 @@ const WORKSPACE_B = 'ws_pages_disabled'
 const ROOT_A = join(CONFIG_DIR, 'workspaces', 'pages-rpc-enabled')
 const ROOT_B = join(CONFIG_DIR, 'workspaces', 'pages-rpc-disabled')
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
+/** Where `appendPageActionAudit` lands under the hermetic test config dir. */
+const AUDIT_LOG = join(CONFIG_DIR, 'logs', 'page-actions.jsonl')
 let originalConfig: string | null = null
 
 function writeWorkspace(rootPath: string, id: string, enabled: boolean, name = id): void {
@@ -45,21 +48,27 @@ type GrantConfirmation = 'approve' | 'decline' | 'disconnect' | 'no-answer' | 'p
 type GrantHarness = ((channel: string, ...args: unknown[]) => Promise<unknown>) & {
   confirmations: PageGrantConfirmationSpec[]
   requesters: PageGrantRequester[]
+  confirmationSignals: AbortSignal[]
   clientConsentCalls: () => number
   resolvePending: () => void
-  setTrustedRequester: (requester: Pick<RequestContext, 'clientId' | 'workspaceId' | 'webContentsId'> | undefined) => void
+  /** Replace the live window→workspace map WindowManager would report. */
+  setLiveWindows: (windows: Record<number, string>) => void
+  /** The host entry point itself, for states the IPC hop cannot reproduce. */
+  requestGrantAsHost: import('../handler-deps').PageGrantHostRequest
   invokeWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
+  invokeTransportWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
 }
 
 function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirmation?: () => void): GrantHarness {
   const handlers = new Map<string, HandlerFn>()
   const confirmations: PageGrantConfirmationSpec[] = []
   const requesters: PageGrantRequester[] = []
+  const confirmationSignals: AbortSignal[] = []
   let clientConsentCallCount = 0
-  let requesterEpoch = 1
-  let trustedRequester: (Pick<RequestContext, 'clientId' | 'workspaceId' | 'webContentsId'> & { connectionId: string }) | undefined = {
-    clientId: 'trusted-client', workspaceId: WORKSPACE_A, webContentsId: 101, connectionId: `epoch-${requesterEpoch}`,
-  }
+  // Exactly what Electron's WindowManager knows: which live app window shows
+  // which workspace. Nothing here is transport-supplied.
+  let liveWindows = new Map<number, string>([[101, WORKSPACE_A]])
+  let hostRequest: import('../handler-deps').PageGrantHostRequest | undefined
   const pendingResolvers: Array<(accepted: boolean) => void> = []
   const server: RpcServer = {
     handle(channel, handler) { handlers.set(channel, handler) },
@@ -68,15 +77,23 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
     hasClientCapability() { return true },
     findClientsWithCapability() { return ['hostile-client'] },
   }
-  const confirmPageGrant = confirm === 'unavailable' ? undefined : async (requester: PageGrantRequester, spec: PageGrantConfirmationSpec) => {
+  const confirmPageGrant = confirm === 'unavailable' ? undefined : async (
+    requester: PageGrantRequester,
+    spec: PageGrantConfirmationSpec,
+    signal: AbortSignal,
+  ) => {
     requesters.push(requester)
     confirmations.push(spec)
+    confirmationSignals.push(signal)
     duringConfirmation?.()
     if (confirm === 'approve') return true
     if (confirm === 'decline') return false
     if (confirm === 'disconnect') throw new Error('host dialog disconnected')
     if (confirm === 'pending') return await new Promise<boolean>(resolve => { pendingResolvers.push(resolve) })
-    return await new Promise<boolean>(() => {})
+    // A real native dialog only closes when the host acts on `signal`.
+    return await new Promise<boolean>(resolve => {
+      signal.addEventListener('abort', () => resolve(false), { once: true })
+    })
   }
   registerPagesHandlers(server, {
     platform: { logger: { info() {}, warn() {}, error() {}, debug() {} } },
@@ -84,29 +101,41 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
       notifyConfigFileChange() {},
       enqueuePageThumbnail() {},
     },
-    getPageGrantRequester: (ctx: RequestContext, workspaceId: string) => (
-      trustedRequester &&
-      ctx.clientId === trustedRequester.clientId &&
-      ctx.workspaceId === workspaceId &&
-      ctx.webContentsId === trustedRequester.webContentsId &&
-      typeof trustedRequester.webContentsId === 'number'
-        ? { webContentsId: trustedRequester.webContentsId, connectionId: trustedRequester.connectionId }
-        : undefined
-    ),
+    // A host answers about its own window's workspace. It receives the
+    // resolved id and is free to hold that workspace under any name it knows
+    // it by, so it resolves before comparing — exactly as Electron's
+    // WindowManager compares the id it stored.
+    isPageGrantRequesterCurrent: (requester: PageGrantRequester, workspaceId: string) => {
+      const shown = liveWindows.get(requester.webContentsId)
+      return shown !== undefined && getWorkspaceByNameOrId(shown)?.id === workspaceId
+    },
+    registerPageGrantHostRequest: (request: import('../handler-deps').PageGrantHostRequest) => { hostRequest = request },
     confirmPageGrant,
     ...(confirm === 'no-answer' ? { pageGrantConfirmationTimeoutMs: 1 } : {}),
   } as unknown as HandlerDeps)
-  const invokeWithContext = async (ctx: RequestContext, channel: string, ...args: unknown[]) => {
+  const invokeTransportWithContext = async (ctx: RequestContext, channel: string, ...args: unknown[]) => {
     const handler = handlers.get(channel)
     if (!handler) throw new Error(`handler not registered: ${channel}`)
-    if (channel === RPC_CHANNELS.pages.REQUEST_GRANT && args.length === 3) {
-      const [workspaceId, pageSlug] = args as [string, string, unknown]
-      const createLease = handlers.get(RPC_CHANNELS.pages.CREATE_LEASE)
-      if (!createLease) throw new Error('missing create-lease handler')
-      const { lease } = await createLease(ctx, workspaceId, pageSlug) as { lease: { leaseId: string } }
-      return handler(ctx, ...args, lease.leaseId)
-    }
     return handler(ctx, ...args)
+  }
+  /**
+   * The Electron main-process `__pages:request-grant` handler, modelled
+   * faithfully: the sender's WebContents id is observed (never received) and
+   * the workspace is resolved from the live window map, so a caller cannot
+   * name either one.
+   */
+  const requestGrantOverHostIpc = async (senderWebContentsId: number, pageSlug: string, input: unknown, leaseId: unknown) => {
+    const workspaceId = liveWindows.get(senderWebContentsId)
+    if (!workspaceId || !hostRequest) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+    return hostRequest({ webContentsId: senderWebContentsId }, workspaceId, pageSlug, input, leaseId)
+  }
+  const invokeWithContext = async (ctx: RequestContext, channel: string, ...args: unknown[]) => {
+    if (channel !== RPC_CHANNELS.pages.REQUEST_GRANT) return invokeTransportWithContext(ctx, channel, ...args)
+    const [workspaceId, pageSlug, input, suppliedLeaseId] = args as [string, string, unknown, string | undefined]
+    const createLease = handlers.get(RPC_CHANNELS.pages.CREATE_LEASE)
+    if (!createLease || ctx.webContentsId == null) throw new Error('missing host grant setup')
+    const leaseId = suppliedLeaseId ?? (await createLease(ctx, workspaceId, pageSlug) as { lease: { leaseId: string } }).lease.leaseId
+    return requestGrantOverHostIpc(ctx.webContentsId, pageSlug, input, leaseId)
   }
   const invoke = async (channel: string, ...args: unknown[]) => invokeWithContext({
     workspaceId: WORKSPACE_A,
@@ -116,12 +145,18 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
   return Object.assign(invoke, {
     confirmations,
     requesters,
+    confirmationSignals,
     clientConsentCalls: () => clientConsentCallCount,
     resolvePending: () => pendingResolvers.shift()?.(true),
-    setTrustedRequester: (requester: Pick<RequestContext, 'clientId' | 'workspaceId' | 'webContentsId'> | undefined) => {
-      trustedRequester = requester && { ...requester, connectionId: `epoch-${++requesterEpoch}` }
+    setLiveWindows: (windows: Record<number, string>) => {
+      liveWindows = new Map(Object.entries(windows).map(([id, ws]) => [Number(id), ws]))
     },
+    requestGrantAsHost: ((requester, workspaceId, pageSlug, input, leaseId) => {
+      if (!hostRequest) throw new Error('missing host grant setup')
+      return hostRequest(requester, workspaceId, pageSlug, input, leaseId)
+    }) as import('../handler-deps').PageGrantHostRequest,
     invokeWithContext,
+    invokeTransportWithContext,
   })
 }
 
@@ -213,7 +248,7 @@ describe('Pages RPC workspace capability gate', () => {
     expect(invoke.confirmations[0]?.pageMessage).toStartWith('first line second line')
     expect(invoke.confirmations[0]?.pageMessage).not.toContain('\n')
     expect(invoke.confirmations[0]?.pageMessage?.length).toBe(200)
-    expect(invoke.requesters).toEqual([{ webContentsId: 101, connectionId: 'epoch-1' }])
+    expect(invoke.requesters).toEqual([{ webContentsId: 101 }])
   })
 
   test('sanitizes multiline and oversized server-resolved identities before host display', async () => {
@@ -266,34 +301,98 @@ describe('Pages RPC workspace capability gate', () => {
     expect(invoke.clientConsentCalls()).toBe(0)
   })
 
-  test('requires a matching trusted Electron request context before opening native consent', async () => {
+  test('refuses hostile transport assertions even when they claim the real Electron window and workspace', async () => {
     const invoke = createHarness('approve')
     const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
-      name: 'Trusted context', content: '<p>content</p>',
+      name: 'IPC-only context', content: '<p>content</p>',
     }) as { slug: string }
-    const input = { action: { kind: 'api' as const, sourceSlug: 'example', method: 'GET' as const, pathPattern: '/items' } }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    // Every field a WebSocket client controls is set to the truth: the real
+    // live window id, its real workspace, a real active lease for a real page.
+    const hostileTransport = { clientId: 'attacker', workspaceId: WORKSPACE_A, webContentsId: 101 }
 
-    await expect(invoke.invokeWithContext({
-      clientId: 'token-client', workspaceId: WORKSPACE_A, webContentsId: null,
-    }, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input)).rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
-
-    writeWorkspace(ROOT_B, WORKSPACE_B, true)
-    const otherPage = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_B, {
-      name: 'Wrong workspace', content: '<p>content</p>',
-    }) as { slug: string }
-    await expect(invoke.invokeWithContext({
-      clientId: 'trusted-client', workspaceId: WORKSPACE_A, webContentsId: 101,
-    }, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_B, otherPage.slug, input)).rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+    await expect(invoke.invokeTransportWithContext(hostileTransport, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    }, lease.leaseId)).rejects.toThrow('PAGE_GRANT_IPC_REQUIRED')
 
     expect(invoke.confirmations).toEqual([])
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
   })
 
-  test('does not persist a grant when the requester reconnects with the same client and window during confirmation', async () => {
+  test('issues a grant for a legitimate Electron host IPC request on the same lease the transport refused', async () => {
+    const invoke = createHarness('approve')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Host IPC grant', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    const input = { action: { kind: 'api' as const, sourceSlug: 'example', method: 'GET' as const, pathPattern: '/items' } }
+
+    await expect(invoke.invokeTransportWithContext({
+      clientId: 'attacker', workspaceId: WORKSPACE_A, webContentsId: 101,
+    }, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input, lease.leaseId))
+      .rejects.toThrow('PAGE_GRANT_IPC_REQUIRED')
+
+    // Same window, same workspace, same lease — but arriving through the host
+    // IPC entry point, which observes the sender rather than being told it.
+    const grant = await invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input, lease.leaseId) as { id: string }
+    expect(grant.id).toStartWith('grant_')
+    expect(invoke.confirmations).toHaveLength(1)
+    expect(invoke.requesters).toEqual([{ webContentsId: 101 }])
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
+  })
+
+  test('refuses a request whose window went away between the host IPC hop and the handler', async () => {
+    const invoke = createHarness('approve')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Vanished sender', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    // The host resolved a live window and dispatched; the window closed before
+    // the async handler ran. The handler re-checks rather than trusting the
+    // resolution it was handed.
+    invoke.setLiveWindows({})
+
+    await expect(invoke.requestGrantAsHost({ webContentsId: 101 }, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    }, lease.leaseId)).rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+
+    expect(invoke.confirmations).toEqual([])
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+  })
+
+  test('aborts the host confirmation surface when the request deadline elapses', async () => {
+    const invoke = createHarness('no-answer')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Unanswered prompt', content: '<p>content</p>',
+    }) as { slug: string }
+
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    })).resolves.toBeNull()
+
+    // Abandoning the race is not enough: without a delivered abort the OS
+    // modal stays on the user's window and blocks every later request.
+    expect(invoke.confirmationSignals).toHaveLength(1)
+    expect(invoke.confirmationSignals[0]?.aborted).toBe(true)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+  })
+
+  test('releases the host confirmation surface after an answered prompt', async () => {
+    const invoke = createHarness('approve')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Answered prompt', content: '<p>content</p>',
+    }) as { slug: string }
+    await invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    })
+
+    expect(invoke.confirmationSignals[0]?.aborted).toBe(true)
+  })
+
+  test('does not persist a grant when the requesting Electron window disappears during confirmation', async () => {
     let invoke!: GrantHarness
     invoke = createHarness('approve', () => {
-      // A valid transport reconnect retains these identifiers, but receives a
-      // new server-held connection epoch. That must still invalidate consent.
-      invoke.setTrustedRequester({ clientId: 'trusted-client', workspaceId: WORKSPACE_A, webContentsId: 101 })
+      invoke.setLiveWindows({})
     })
     const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
       name: 'Rebound requester', content: '<p>content</p>',
@@ -314,15 +413,18 @@ describe('Pages RPC workspace capability gate', () => {
       name: 'Stale requester lease', content: '<p>content</p>',
     }) as { slug: string }
     const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    await invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/first' },
+    }, lease.leaseId)
     const replacement = { clientId: 'replacement-client', workspaceId: WORKSPACE_A, webContentsId: 202 }
-    invoke.setTrustedRequester(replacement)
+    invoke.setLiveWindows({ 202: WORKSPACE_A })
 
     await expect(invoke.invokeWithContext(replacement, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
       action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
     }, lease.leaseId)).rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
 
-    expect(invoke.confirmations).toEqual([])
-    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+    expect(invoke.confirmations).toHaveLength(1)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
   })
 
   test('keeps a grant binding when other workspaces reach their independent lease caps', async () => {
@@ -379,31 +481,63 @@ describe('Pages RPC workspace capability gate', () => {
       action: { kind: 'mcp', sourceSlug: 'example', toolName: 'other_action' },
     }, lease.leaseId)).rejects.toThrow('PAGE_GRANT_CONFIRMATION_ALREADY_PENDING')
 
-    writeWorkspace(ROOT_B, WORKSPACE_B, true)
-    const otherPage = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_B, {
-      name: 'Second page', content: '<p>content</p>',
-    }) as { slug: string }
-    const otherContext = { clientId: 'trusted-client', workspaceId: WORKSPACE_B, webContentsId: 101 }
-    const { lease: otherLease } = await invoke.invokeWithContext(otherContext, RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_B, otherPage.slug) as { lease: { leaseId: string } }
-    const secondPage = invoke.invokeWithContext(otherContext, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_B, otherPage.slug, {
-      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/other' },
-    }, otherLease.leaseId)
-
-    for (let prompt = 0; prompt < 2; prompt++) {
-      for (let attempt = 0; attempt < 10 && invoke.confirmations.length <= prompt; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 0))
-      }
-      expect(invoke.confirmations).toHaveLength(prompt + 1)
-      invoke.resolvePending()
-    }
-    const [firstGrant, duplicateGrant, secondPageGrant] = await Promise.all([
-      first, duplicate, secondPage,
-    ]) as [{ id: string }, { id: string }, { id: string }]
+    expect(invoke.confirmations).toHaveLength(1)
+    invoke.resolvePending()
+    const [firstGrant, duplicateGrant] = await Promise.all([first, duplicate]) as [{ id: string }, { id: string }]
     expect(firstGrant.id).toBe(duplicateGrant.id)
-    expect(secondPageGrant.id).not.toBe(firstGrant.id)
-    expect(invoke.confirmations).toHaveLength(2)
     await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
-    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_B, otherPage.slug)).resolves.toHaveLength(1)
+  })
+
+  test('coalesces an equivalent descriptor spelled differently into one prompt and one grant', async () => {
+    const invoke = createHarness('pending')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Descriptor identity', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    const first = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'script', script: 'scripts/refresh.ts' },
+    }, lease.leaseId)
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+
+    // Same capability, three ways a page can restate it: reordered keys, the
+    // runtime written out as the default it already had, and `args` written
+    // out as the empty list it already was. None of these is a new request.
+    const restated = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { args: [], script: 'scripts/refresh.ts', runtime: 'bun', kind: 'script' },
+    }, lease.leaseId)
+
+    expect(invoke.confirmations).toHaveLength(1)
+    invoke.resolvePending()
+    const [firstGrant, restatedGrant] = await Promise.all([first, restated]) as [{ id: string }, { id: string }]
+    expect(restatedGrant.id).toBe(firstGrant.id)
+    expect(invoke.confirmations).toHaveLength(1)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
+  })
+
+  test('records the resolved workspace id when the request arrives under a workspace name alias', async () => {
+    // `getWorkspaceByNameOrId` resolves an id, a name, or a differently-cased
+    // name. Only the id is an identity: audit lines and consent coalescing
+    // must not fork just because a caller spelled the workspace another way.
+    writeWorkspace(ROOT_A, WORKSPACE_A, true, 'Canonical Display')
+    const invoke = createHarness('approve')
+    invoke.setLiveWindows({ 101: 'canonical display' })
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Canonical workspace', content: '<p>content</p>',
+    }) as { slug: string }
+    rmSync(AUDIT_LOG, { force: true })
+
+    const grant = await invoke.requestGrantAsHost({ webContentsId: 101 }, 'Canonical Display', page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    }, ((await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug)) as { lease: { leaseId: string } }).lease.leaseId) as { id: string }
+
+    expect(grant.id).toStartWith('grant_')
+    expect(invoke.confirmations[0]?.workspace.id).toBe(WORKSPACE_A)
+    const audited = readFileSync(AUDIT_LOG, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { event: string; workspaceId: string })
+    const decisions = audited.filter(entry => entry.event.startsWith('page_grant_'))
+    expect(decisions).toHaveLength(1)
+    expect(decisions[0]).toMatchObject({ event: 'page_grant_approved', workspaceId: WORKSPACE_A })
   })
 
   test('cancels queued consent when its Page render lease is released', async () => {

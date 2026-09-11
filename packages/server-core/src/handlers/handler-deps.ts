@@ -4,8 +4,7 @@ import type { IOAuthFlowStore } from './oauth-flow-store-interface'
 import type { IBrowserPaneManager } from './browser-pane-manager-interface'
 import type { IWindowManager } from './window-manager-interface'
 import type { IMessagingGatewayRegistry } from './messaging-registry-interface'
-import type { PageActionDescriptor } from '@craft-agent/core'
-import type { RequestContext } from '../transport/types'
+import type { PageActionDescriptor, PageActionGrant } from '@craft-agent/core'
 
 /**
  * Server-resolved identity and descriptor rendered by a trusted host surface.
@@ -20,12 +19,29 @@ export interface PageGrantConfirmationSpec {
   pageMessage?: string
 }
 
-/** Server-held identity of the Electron window that requested a Page grant. */
+/**
+ * Main-process-observed identity of the Electron window requesting consent.
+ * Its only member is derived from `ipcMain` `event.sender`; nothing a client
+ * can place on the wire belongs in this shape.
+ */
 export interface PageGrantRequester {
   webContentsId: number
-  /** Opaque server-held epoch, replaced on every Electron connection. */
-  connectionId: string
 }
+
+/**
+ * The host-only entry point for Page grant consent.
+ *
+ * `workspaceId` is supplied by the host from its own window→workspace
+ * mapping, not by the caller: a renderer that could name the workspace could
+ * aim a trusted prompt at a workspace its window does not show.
+ */
+export type PageGrantHostRequest = (
+  requester: PageGrantRequester,
+  workspaceId: string,
+  pageSlug: string,
+  input: unknown,
+  leaseId: unknown,
+) => Promise<PageActionGrant | null>
 
 /**
  * Generic handler dependency bag.
@@ -50,12 +66,25 @@ export interface HandlerDeps<
   oauthFlowStore: TOAuthFlowStore
   messagingRegistry?: IMessagingGatewayRegistry
   /**
-   * Resolves a trusted Electron requester from server-held connection/window
-   * state. Remote and token clients must never receive one.
+   * Main-process check that the IPC sender still owns this live workspace
+   * window. It must not consult transport-envelope identity.
    */
-  getPageGrantRequester?: (ctx: RequestContext, workspaceId: string) => PageGrantRequester | undefined
-  /** A host-owned native consent surface. Absent hosts cannot issue Page grants. */
-  confirmPageGrant?: (requester: PageGrantRequester, spec: PageGrantConfirmationSpec) => Promise<boolean>
+  isPageGrantRequesterCurrent?: (requester: PageGrantRequester, workspaceId: string) => boolean
+  /** Registers the host-only grant entry point; transport RPC must not use it. */
+  registerPageGrantHostRequest?: (request: PageGrantHostRequest) => void
+  /**
+   * A host-owned native consent surface. Absent hosts cannot issue Page grants.
+   *
+   * `signal` aborts when the request's deadline elapses or its render goes
+   * away. Racing a timeout alone only abandons the promise — the OS modal
+   * stays on screen, still attached to the user's window — so a host that
+   * renders real chrome must dismiss it on abort and resolve `false`.
+   */
+  confirmPageGrant?: (
+    requester: PageGrantRequester,
+    spec: PageGrantConfirmationSpec,
+    signal: AbortSignal,
+  ) => Promise<boolean>
   /** Testable bound for a host confirmation that never settles. */
   pageGrantConfirmationTimeoutMs?: number
 }
