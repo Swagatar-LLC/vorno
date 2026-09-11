@@ -252,7 +252,6 @@ export const CreatePageSchema = z.object({
     .describe('Runtime capability class: static = no JS, interactive = JS allowed, live = JS + receives data snapshot updates while open. Default: interactive.'),
   projectId: z.string().optional().describe('Stable Project ID to bind the page to'),
   content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read ~/.craft-agent/docs/pages.md for the authoring guide and data-bridge snippet BEFORE writing page HTML.'),
-  refresh: PageRefreshSpecInputSchema.optional().describe('Scheduled data refresh: cron + workspace-relative Bun script that updates the page data store'),
 });
 
 export const UpdatePageSchema = z.object({

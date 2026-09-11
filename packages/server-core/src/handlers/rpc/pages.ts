@@ -3,7 +3,6 @@ import { dirname, join } from 'node:path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
-import { requestClientConfirmDialog } from '../../transport/capabilities'
 import { assertPagesEnabled, isPagesEnabled } from '@craft-agent/shared/pages/capability'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -229,7 +228,6 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       kind: input.kind,
       projectId: input.projectId,
       content: input.content,
-      refresh: input.refresh,
     })
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${page.slug}/page.json`)
     await broadcastChanged(workspaceId, workspace.rootPath)
@@ -319,10 +317,10 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   })
 
   // Additive, host-authoritative grant issuance. The server owns the decision
-  // branch; a disconnected client, declined dialog, or failed response returns
-  // without calling storage and therefore leaves no persisted capability.
+  // branch; unavailable, declined, timed-out, or failed native confirmation
+  // never reaches storage and therefore leaves no persisted capability.
   server.handle(RPC_CHANNELS.pages.REQUEST_GRANT, async (
-    ctx,
+    _ctx,
     workspaceId: string,
     pageSlug: string,
     input: import('@craft-agent/shared/pages').AddPageGrantInput,
@@ -331,9 +329,17 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     assertAvailable(workspace.rootPath)
 
+    const { loadPageConfig, addPageGrant } = await import('@craft-agent/shared/pages')
+    const expectedContentDigest = loadPageConfig(workspace.rootPath, pageSlug)?.contentDigest
+    if (!expectedContentDigest) throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved.`)
+    if (!deps.confirmPageGrant) {
+      await auditGrantDecision('page_grant_rejected', pageSlug, input.action.kind)
+      throw new Error('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
+    }
+
     let accepted = false
     try {
-      const confirmation = requestClientConfirmDialog(server, ctx.clientId, {
+      const confirmation = deps.confirmPageGrant({
         type: input.action.kind === 'script' ? 'warning' : 'question',
         title: 'Approve Page action',
         message: `Allow this page to use: ${describeGrantForConfirmation(input.action)}?`,
@@ -345,10 +351,9 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       let timer: ReturnType<typeof setTimeout> | undefined
       try {
         const timeout = new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error('confirmation timed out')), PAGE_GRANT_CONFIRM_TIMEOUT_MS)
+          timer = setTimeout(() => reject(new Error('confirmation timed out')), deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
         })
-        const result = await Promise.race([confirmation, timeout])
-        accepted = result.response === 1
+        accepted = await Promise.race([confirmation, timeout])
       } finally {
         if (timer) clearTimeout(timer)
       }
@@ -361,13 +366,17 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       return null
     }
 
-    const { addPageGrant } = await import('@craft-agent/shared/pages')
-    const grant = addPageGrant(workspace.rootPath, pageSlug, input)
-    deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
-    await broadcastChanged(workspaceId, workspace.rootPath)
-    await auditGrantDecision('page_grant_approved', pageSlug, grant.action.kind)
-    log.info(`Approved page grant ${grant.id} on ${pageSlug} (${grant.action.kind})`)
-    return grant
+    try {
+      const grant = addPageGrant(workspace.rootPath, pageSlug, { ...input, expectedContentDigest })
+      deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
+      await broadcastChanged(workspaceId, workspace.rootPath)
+      await auditGrantDecision('page_grant_approved', pageSlug, grant.action.kind)
+      log.info(`Approved page grant ${grant.id} on ${pageSlug} (${grant.action.kind})`)
+      return grant
+    } catch (error) {
+      await auditGrantDecision('page_grant_rejected', pageSlug, input.action.kind)
+      throw error
+    }
   })
 
   // ADR-0033's intentional wire divergence: direct RPC cannot mint grants.

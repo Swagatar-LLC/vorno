@@ -179,7 +179,6 @@ export function buildPagesToolCallbacks(deps: PagesToolCallbacksDeps): PagesTool
         kind: assertKind(input.kind),
         projectId: input.projectId,
         content: input.content,
-        refresh: input.refresh as PageRefreshSpec | undefined,
       })
       await mutated(config.slug)
       if (input.content !== undefined) deps.onContentChanged?.(config.slug)

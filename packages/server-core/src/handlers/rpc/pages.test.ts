@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
+import { savePageContent } from '@craft-agent/shared/pages'
 import type { HandlerDeps } from '../handler-deps'
 import type { HandlerFn, RequestContext, RpcServer } from '../../transport/types'
 import { registerPagesHandlers } from './pages'
@@ -39,19 +40,23 @@ function registerTestWorkspaces(): void {
   }))
 }
 
-function createHarness(confirm: 'approve' | 'decline' | 'disconnect' | 'no-answer' = 'no-answer') {
+type GrantConfirmation = 'approve' | 'decline' | 'disconnect' | 'no-answer' | 'unavailable'
+
+function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirmation?: () => void) {
   const handlers = new Map<string, HandlerFn>()
   const server: RpcServer = {
     handle(channel, handler) { handlers.set(channel, handler) },
     push() {},
-    async invokeClient() {
-      if (confirm === 'approve') return { response: 1 }
-      if (confirm === 'decline') return { response: 0 }
-      if (confirm === 'disconnect') throw new Error('client disconnected')
-      return undefined
-    },
+    async invokeClient() { return undefined },
     hasClientCapability() { return false },
     findClientsWithCapability() { return [] },
+  }
+  const confirmPageGrant = confirm === 'unavailable' ? undefined : async () => {
+    duringConfirmation?.()
+    if (confirm === 'approve') return true
+    if (confirm === 'decline') return false
+    if (confirm === 'disconnect') throw new Error('host dialog disconnected')
+    return await new Promise<boolean>(() => {})
   }
   registerPagesHandlers(server, {
     platform: { logger: { info() {}, warn() {}, error() {}, debug() {} } },
@@ -59,6 +64,8 @@ function createHarness(confirm: 'approve' | 'decline' | 'disconnect' | 'no-answe
       notifyConfigFileChange() {},
       enqueuePageThumbnail() {},
     },
+    confirmPageGrant,
+    ...(confirm === 'no-answer' ? { pageGrantConfirmationTimeoutMs: 1 } : {}),
   } as unknown as HandlerDeps)
   return async (channel: string, ...args: unknown[]) => {
     const handler = handlers.get(channel)
@@ -136,7 +143,7 @@ describe('Pages RPC workspace capability gate', () => {
     await expect(approved(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
   })
 
-  test('declined, disconnected, and unanswered confirmations leave no grant', async () => {
+  test('declined, disconnected, and timed-out confirmations leave no grant', async () => {
     for (const outcome of ['decline', 'disconnect', 'no-answer'] as const) {
       const invoke = createHarness(outcome)
       const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
@@ -148,6 +155,30 @@ describe('Pages RPC workspace capability gate', () => {
       expect(result).toBeNull()
       await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
     }
+  })
+
+  test('refuses a remote host without a trusted confirmation surface', async () => {
+    const invoke = createHarness()
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Untrusted grant', content: '<p>content</p>',
+    }) as { slug: string }
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    })).rejects.toThrow('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+  })
+
+  test('refuses a grant when content changes while the host prompt is pending', async () => {
+    let pageSlug = ''
+    const invoke = createHarness('approve', () => savePageContent(ROOT_A, pageSlug, '<p>changed</p>'))
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'TOCTOU grant', content: '<p>original</p>',
+    }) as { slug: string }
+    pageSlug = page.slug
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'script', script: 'scripts/refresh.ts' },
+    })).rejects.toThrow('content changed while approval was pending')
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
   })
 
   test('resolves unknown workspaces before Pages availability checks', async () => {

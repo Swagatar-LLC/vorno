@@ -65,6 +65,7 @@ export function buildPageRefreshMatchers(workspaceRootPath: string): AutomationM
           runtime: refresh.runtime,
           timeoutMs: refresh.timeoutMs,
           page: page.config.slug,
+          grantId: refresh.grantId,
         },
       ],
     });

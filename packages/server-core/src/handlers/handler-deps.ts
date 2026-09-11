@@ -4,6 +4,7 @@ import type { IOAuthFlowStore } from './oauth-flow-store-interface'
 import type { IBrowserPaneManager } from './browser-pane-manager-interface'
 import type { IWindowManager } from './window-manager-interface'
 import type { IMessagingGatewayRegistry } from './messaging-registry-interface'
+import type { ConfirmDialogSpec } from '../transport/capabilities'
 
 /**
  * Generic handler dependency bag.
@@ -27,4 +28,8 @@ export interface HandlerDeps<
   browserPaneManager?: TBrowserPaneManager
   oauthFlowStore: TOAuthFlowStore
   messagingRegistry?: IMessagingGatewayRegistry
+  /** A host-owned native consent surface. Absent hosts cannot issue Page grants. */
+  confirmPageGrant?: (spec: ConfirmDialogSpec) => Promise<boolean>
+  /** Testable bound for a host confirmation that never settles. */
+  pageGrantConfirmationTimeoutMs?: number
 }

@@ -519,6 +519,8 @@ export interface PageToolRefreshSpec {
   timeoutMs?: number;
   /** false pauses scheduling without deleting the spec */
   enabled?: boolean;
+  /** User-approved script grant that exactly pins this recurring refresh. */
+  grantId: string;
 }
 
 /** Compact page entry (returned by list_pages). */
@@ -590,7 +592,6 @@ export interface CreatePageToolInput {
   projectId?: string;
   /** Full self-contained HTML document for index.html */
   content?: string;
-  refresh?: PageToolRefreshSpec;
 }
 
 /** Patch for update_page — only provided fields change; null clears a field. */

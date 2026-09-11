@@ -24,7 +24,8 @@ describe('Page refresh availability gate', () => {
       writeFileSync(join(workspace, 'config.json'), JSON.stringify({
         id: 'ws_refresh', name: 'Refresh', slug: 'refresh', defaults: { pages: { enabled: true } }, createdAt: 1, updatedAt: 2,
       }))
-      expect(buildPageRefreshMatchers(workspace)).toHaveLength(1)
+      const [matcher] = buildPageRefreshMatchers(workspace)
+      expect(matcher?.actions[0]).toMatchObject({ type: 'script', page: page.slug, grantId: grant.id })
       expect(revokePageGrant(workspace, page.slug, grant.id)).toBe(true)
       expect(buildPageRefreshMatchers(workspace)).toEqual([])
     } finally {

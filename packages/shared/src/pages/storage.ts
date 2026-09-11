@@ -289,10 +289,6 @@ export function createPage(
   const slug = generatePageSlug(workspaceRootPath, input.name);
   const now = Date.now();
 
-  if (input.refresh) {
-    throw new Error('A scheduled refresh requires an existing user-approved script grant');
-  }
-
   let config: PageConfig = {
     schemaVersion: 1,
     id: `page_${randomUUID().slice(0, 8)}`,
@@ -301,7 +297,6 @@ export function createPage(
     description: input.description,
     kind: input.kind ?? 'interactive',
     projectId: input.projectId,
-    refresh: input.refresh,
     createdAt: now,
     updatedAt: now,
   };
@@ -539,6 +534,8 @@ export interface AddPageGrantInput {
   description?: string;
   /** Requested lifetime in ms; storage clamps it to the descriptor's policy. */
   ttlMs?: number;
+  /** Digest observed before consent; mismatch rejects a changed page. */
+  expectedContentDigest?: string;
 }
 
 export function pageGrantTtlMs(action: PageActionDescriptor, requestedTtlMs?: number): number {
@@ -565,6 +562,9 @@ export function addPageGrant(
   }
   if (!existing.contentDigest) {
     throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved. Add content to the page first.`);
+  }
+  if (input.expectedContentDigest !== undefined && input.expectedContentDigest !== existing.contentDigest) {
+    throw new Error('Page content changed while approval was pending; request approval again');
   }
 
   const now = Date.now();

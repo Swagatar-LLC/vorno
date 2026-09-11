@@ -13,7 +13,7 @@ import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { executeScriptAction, clampScriptTimeout, createScriptHistoryEntry, DEFAULT_SCRIPT_TIMEOUT_MS, MAX_SCRIPT_TIMEOUT_MS } from './script-executor.ts';
 import { buildScriptEnv } from './utils.ts';
-import { loadPageConfig, savePageConfig } from '../pages/storage.ts';
+import { addPageGrant, createPage, loadPageConfig, savePageConfig, updatePage } from '../pages/storage.ts';
 import type { ScriptAction } from './types.ts';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -35,6 +35,17 @@ describe('script-executor', () => {
 
   function ctx(env: Record<string, string> = {}) {
     return { workspaceRootPath: workspaceDir, env };
+  }
+
+  function configureRefresh(script: string, args?: string[]): string {
+    const page = createPage(workspaceDir, { name: 'Dash', content: '<p>dash</p>' });
+    const grant = addPageGrant(workspaceDir, page.slug, {
+      action: { kind: 'script', script, ...(args ? { args } : {}) },
+    });
+    updatePage(workspaceDir, page.slug, {
+      refresh: { cron: '*/5 * * * *', script, ...(args ? { args } : {}), grantId: grant.id },
+    });
+    return grant.id;
   }
 
   describe('path containment', () => {
@@ -158,21 +169,11 @@ describe('script-executor', () => {
 
   describe('page refresh recording', () => {
     it('records the outcome on page.json after the run', async () => {
-      const pageDir = join(workspaceDir, 'pages', 'dash');
-      mkdirSync(pageDir, { recursive: true });
-      savePageConfig(workspaceDir, {
-        schemaVersion: 1,
-        id: 'page_test0001',
-        slug: 'dash',
-        name: 'Dash',
-        kind: 'interactive',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
       writeFileSync(join(workspaceDir, 'refresh.ts'), 'console.log("refreshed")');
+      const grantId = configureRefresh('refresh.ts');
 
       const result = await executeScriptAction(
-        action({ script: 'refresh.ts', page: 'dash' }),
+        action({ script: 'refresh.ts', page: 'dash', grantId }),
         ctx(),
       );
       expect(result.success).toBe(true);
@@ -184,20 +185,11 @@ describe('script-executor', () => {
     });
 
     it('records failures with the captured stderr', async () => {
-      mkdirSync(join(workspaceDir, 'pages', 'dash'), { recursive: true });
-      savePageConfig(workspaceDir, {
-        schemaVersion: 1,
-        id: 'page_test0002',
-        slug: 'dash',
-        name: 'Dash',
-        kind: 'interactive',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
       writeFileSync(join(workspaceDir, 'bad.ts'), 'console.error("kaput"); process.exit(1)');
+      const grantId = configureRefresh('bad.ts');
 
       const result = await executeScriptAction(
-        action({ script: 'bad.ts', page: 'dash' }),
+        action({ script: 'bad.ts', page: 'dash', grantId }),
         ctx(),
       );
       expect(result.success).toBe(false);
@@ -205,6 +197,21 @@ describe('script-executor', () => {
       const config = loadPageConfig(workspaceDir, 'dash');
       expect(config?.lastRefresh?.ok).toBe(false);
       expect(config?.lastRefresh?.error).toContain('kaput');
+    });
+
+    it('rechecks a cached refresh grant immediately before spawning', async () => {
+      writeFileSync(join(workspaceDir, 'refresh.ts'), 'console.log("must not run")');
+      const grantId = configureRefresh('refresh.ts');
+      const config = loadPageConfig(workspaceDir, 'dash')!;
+      savePageConfig(workspaceDir, {
+        ...config,
+        grants: config.grants!.map(grant => grant.id === grantId ? { ...grant, expiresAt: Date.now() - 1 } : grant),
+      });
+
+      const result = await executeScriptAction(action({ script: 'refresh.ts', page: 'dash', grantId }), ctx());
+      expect(result.success).toBe(false);
+      expect(result.blocked).toBe(true);
+      expect(result.stderr).toContain('expired');
     });
   });
 

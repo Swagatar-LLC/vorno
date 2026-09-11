@@ -46,7 +46,7 @@ import {
  * - Mutating actions (api non-GET) additionally require fresh user activation,
  *   which real clicks inside the frame propagate to this window.
  * - Grant requests never mint anything by themselves: `pages:requestGrant`
- *   asks this client through the host-held confirmation capability, then the
+ *   reaches the Electron-main host's native confirmation surface, then the
  *   host binds an accepted descriptor to the current content digest. Denied
  *   descriptors are remembered per render so a page cannot re-prompt in a loop.
  * - Per-frame budget: bounded in-flight actions and a 30/minute window. The

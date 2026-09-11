@@ -139,6 +139,8 @@ export interface ScriptAction {
    * (the completion marker the config watcher turns into `pages:changed`).
    */
   page?: string;
+  /** Digest-bound Page grant required by a synthetic scheduled refresh. */
+  grantId?: string;
 }
 
 // ============================================================================

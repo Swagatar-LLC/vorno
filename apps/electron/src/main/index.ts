@@ -781,6 +781,13 @@ app.whenReady().then(async () => {
             browserPaneManager: browserPaneManager ?? undefined,
             oauthFlowStore: ofs,
             messagingRegistry: messagingHandle.registry,
+            // Native Electron chrome is the only currently trusted Page grant
+            // consent surface. WebUI/headless hosts intentionally omit this.
+            confirmPageGrant: isHeadless ? undefined : async (spec) => {
+              const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+              if (!win) return false
+              return (await dialog.showMessageBox(win, spec)).response === 1
+            },
           }
         },
         // Headless: register only core handlers (no GUI handlers for browser, settings, etc.)
