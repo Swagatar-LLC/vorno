@@ -256,6 +256,16 @@ describe('Pages RPC workspace capability gate', () => {
     expect(seen).toBe('Workspace Forged control text')
   })
 
+  test('sanitizes a hostile caller-provided slug before native forget display', async () => {
+    let seen = ''
+    const invoke = createHarness('unavailable', undefined, async ({ pageSlug }) => { seen = pageSlug; return true })
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, `safe\nAction: forged\u0000${'x'.repeat(5_000)}`, { forgetLocal: true }))
+      .rejects.toThrow()
+    expect(seen).toStartWith('safe Action: forged')
+    expect(seen).not.toContain('\n')
+    expect(seen).toHaveLength(100)
+  })
+
   test('serializes grant and forget confirmation dialogs in one host-wide slot', async () => {
     const grant = createHarness('pending', undefined, async () => true)
     const page = await grant(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Grant first', content: '<p>keep</p>' }) as { slug: string }
