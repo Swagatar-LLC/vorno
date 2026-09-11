@@ -11,6 +11,11 @@ import { cn } from '@/lib/utils'
 import { shortTimeLocale } from '@/utils/session'
 import type { PageConfig, PageKind } from '@craft-agent/shared/pages/types'
 
+/** A cleanup-pending publication is already logically revoked (public routes 404). */
+export function isPagePublic(share: PageConfig['share']): boolean {
+  return Boolean(share && !share.cleanupPending)
+}
+
 export const PAGE_KIND_ICONS: Record<PageKind, LucideIcon> = {
   static: FileText,
   interactive: MousePointerClick,
