@@ -113,6 +113,8 @@ export interface UserPreferences {
 export interface ConfigWatcherCallbacks {
   /** Called when config.json changes */
   onConfigChange?: (config: StoredConfig) => void;
+  /** Called when this workspace's root config.json changes. */
+  onWorkspaceConfigChange?: (workspaceId: string) => void;
   /** Called when preferences.json changes */
   onPreferencesChange?: (prefs: UserPreferences) => void;
   /** Called when LLM connections array changes (add/remove/update connections) */
@@ -425,6 +427,12 @@ export class ConfigWatcher {
   private handleWorkspaceFileChange(relativePath: string, eventType: string): void {
     const parts = relativePath.split('/');
 
+    // Workspace root config is the persisted capability/settings surface.
+    if (relativePath === 'config.json') {
+      this.debounce('workspace-config', () => this.handleWorkspaceConfigChange());
+      return;
+    }
+
     // Workspace-level permissions.json
     if (relativePath === 'permissions.json') {
       this.debounce('workspace-permissions', () => this.handleWorkspacePermissionsChange());
@@ -557,6 +565,11 @@ export class ConfigWatcher {
     }, delayMs);
 
     this.debounceTimers.set(key, timer);
+  }
+
+  private handleWorkspaceConfigChange(): void {
+    debug('[ConfigWatcher] workspace config changed:', this.workspaceId);
+    this.callbacks.onWorkspaceConfigChange?.(this.workspaceId);
   }
 
   // ============================================================

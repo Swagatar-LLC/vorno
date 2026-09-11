@@ -1505,6 +1505,8 @@
   "settings.workspace.noArtifactRoots": "追加のルートは設定されていません。",
   "settings.workspace.noSourcesConfigured": "このWorkspaceにはソースが設定されていません。",
   "settings.workspace.noWorkspaceSelected": "Workspaceが選択されていません",
+  "settings.workspace.pages": "ページ",
+  "settings.workspace.pagesDesc": "このワークスペースでローカルページを作成・使用します。共有は検証済みの公開機能が利用可能になるまで別途無効のままです。",
   "settings.workspace.permissionsSection": "権限",
   "settings.workspace.renameWorkspace": "Workspaceの名前を変更",
   "settings.workspace.rootHealthMissing": "見つかりません",

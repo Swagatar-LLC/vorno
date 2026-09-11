@@ -25,7 +25,7 @@ import type {
 } from '@craft-agent/session-tools-core'
 import type { LoadedPage, PageConfig, PageDataSnapshot, PageKind, PageRefreshSpec, UpdatePagePatch } from '@craft-agent/shared/pages'
 import { isPageGrantUsable } from '@craft-agent/shared/pages/types'
-import { assertPagesEnabled } from '@craft-agent/shared/feature-flags'
+import { assertPagesEnabled } from '@craft-agent/shared/pages/capability'
 
 export interface PagesToolCallbacksDeps {
   workspaceId: string
@@ -147,7 +147,7 @@ export function buildPagesToolCallbacks(deps: PagesToolCallbacksDeps): PagesTool
   }
 
   function assertAvailable(): void {
-    assertPagesEnabled()
+    assertPagesEnabled(workspaceRootPath)
   }
 
   async function mutated(pageSlug: string): Promise<void> {

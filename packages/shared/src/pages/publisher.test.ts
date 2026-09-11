@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isPagesEnabled, isPagesSharingEnabled } from '../feature-flags.ts';
+import { isPagesSharingEnabled } from '../feature-flags.ts';
+import { isPagesEnabled } from './capability.ts';
 import { createPage, setPageShareState } from './storage.ts';
 import {
   PagePublisher,
@@ -11,38 +12,38 @@ import {
   resolveStoredPagesShareApiBaseUrl,
 } from './publisher.ts';
 
-const originalPages = process.env.CRAFT_FEATURE_PAGES;
 const originalSharing = process.env.CRAFT_FEATURE_PAGES_SHARING;
 const originalApi = process.env.CRAFT_PAGES_SHARE_API_URL;
 
 afterEach(() => {
-  if (originalPages === undefined) delete process.env.CRAFT_FEATURE_PAGES;
-  else process.env.CRAFT_FEATURE_PAGES = originalPages;
   if (originalSharing === undefined) delete process.env.CRAFT_FEATURE_PAGES_SHARING;
   else process.env.CRAFT_FEATURE_PAGES_SHARING = originalSharing;
   if (originalApi === undefined) delete process.env.CRAFT_PAGES_SHARE_API_URL;
   else process.env.CRAFT_PAGES_SHARE_API_URL = originalApi;
 });
 
+function enablePages(workspace: string): void {
+  writeFileSync(join(workspace, 'config.json'), JSON.stringify({ id: 'workspace', name: 'Workspace', slug: 'workspace', defaults: { pages: { enabled: true } }, createdAt: 1, updatedAt: 1 }));
+}
+
 describe('Pages sharing default gate', () => {
   test('is disabled and has no implicit publication endpoint', () => {
-    delete process.env.CRAFT_FEATURE_PAGES;
     delete process.env.CRAFT_FEATURE_PAGES_SHARING;
     delete process.env.CRAFT_PAGES_SHARE_API_URL;
-    expect(isPagesEnabled()).toBe(false);
+    expect(isPagesEnabled(undefined)).toBe(false);
     expect(isPagesSharingEnabled()).toBe(false);
     expect(resolvePagesShareApiBaseUrl()).toBeUndefined();
-    expect(isPagesSharingAvailable()).toBe(false);
+    expect(isPagesSharingAvailable(undefined)).toBe(false);
   });
 
   test('refuses a Craft endpoint override before any request can be sent', async () => {
-    process.env.CRAFT_FEATURE_PAGES = '1';
     process.env.CRAFT_FEATURE_PAGES_SHARING = '1';
     process.env.CRAFT_PAGES_SHARE_API_URL = 'https://thecraftagents.com/p/api';
     const fetchFn = (() => {
       throw new Error('publish must not send to Craft');
     }) as unknown as typeof fetch;
     const workspace = mkdtempSync(join(tmpdir(), 'pages-publisher-craft-'));
+    enablePages(workspace);
     const page = createPage(workspace, { name: 'Blocked', content: '<p>blocked</p>' });
     const publisher = new PagePublisher({
       tokenStore: { get: async () => null, set: async () => {}, delete: async () => false },
@@ -85,10 +86,10 @@ describe('Pages sharing default gate', () => {
   });
 
   test('existing updates and unpublish target the stored HTTPS origin when no publish endpoint is configured', async () => {
-    process.env.CRAFT_FEATURE_PAGES = '1';
     process.env.CRAFT_FEATURE_PAGES_SHARING = '1';
     delete process.env.CRAFT_PAGES_SHARE_API_URL;
     const workspace = mkdtempSync(join(tmpdir(), 'pages-publisher-cleanup-'));
+    enablePages(workspace);
     const page = createPage(workspace, { name: 'Legacy copy', content: '<p>legacy</p>' });
     setPageShareState(workspace, page.slug, {
       publicationId: 'publication-1',

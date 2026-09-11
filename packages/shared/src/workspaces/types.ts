@@ -100,6 +100,13 @@ export interface WorkspaceConfig {
     /** Feature flag for the Workbench surface (ADR-0014, PLAN-024). Default off. */
     workbenchEnabled?: boolean;
 
+    /**
+     * Pages capability (ADR-0033, PLAN-052). This is the sole persisted
+     * authority for Pages availability: absent or malformed legacy config is
+     * disabled. Sharing remains a separate capability gate.
+     */
+    pages?: { enabled?: boolean };
+
     /** Feature flag for the Artifact Home surface (ADR-0016, PLAN-025). Default off. */
     artifactsEnabled?: boolean;
 

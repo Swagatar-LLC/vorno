@@ -1505,6 +1505,8 @@
   "settings.workspace.noArtifactRoots": "未配置其他根目录。",
   "settings.workspace.noSourcesConfigured": "此 Workspace 未配置数据源。",
   "settings.workspace.noWorkspaceSelected": "未选择 Workspace",
+  "settings.workspace.pages": "页面",
+  "settings.workspace.pagesDesc": "在此工作区中创建和使用本地页面。共享功能会保持单独关闭，直到验证过的发布功能可用。",
   "settings.workspace.permissionsSection": "权限",
   "settings.workspace.renameWorkspace": "重命名 Workspace",
   "settings.workspace.rootHealthMissing": "未找到",

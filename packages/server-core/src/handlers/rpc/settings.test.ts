@@ -90,6 +90,19 @@ afterAll(() => {
   }
 })
 
+describe('workspace settings: Pages capability (SUV-0058)', () => {
+  it('persists defaults.pages.enabled and rejects non-boolean updates', async () => {
+    const { get, update } = createHarness()
+
+    expect((await get(ctx(), WORKSPACE_ID) as { pagesEnabled?: boolean }).pagesEnabled).toBe(false)
+    await update(ctx(), WORKSPACE_ID, 'pagesEnabled', true)
+    expect((await get(ctx(), WORKSPACE_ID) as { pagesEnabled?: boolean }).pagesEnabled).toBe(true)
+
+    await expect(update(ctx(), WORKSPACE_ID, 'pagesEnabled', 'true'))
+      .rejects.toThrow('pagesEnabled must be a boolean')
+  })
+})
+
 // Table-driven over both idle-TTL keys: idleAgentTtlMinutes (PLAN-038) and
 // idleBrowserTtlMinutes (PLAN-047, SUV-0044) share semantics and validation.
 for (const key of ['idleAgentTtlMinutes', 'idleBrowserTtlMinutes'] as const) {

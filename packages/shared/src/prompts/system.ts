@@ -7,6 +7,7 @@ import { join, relative, basename } from 'path';
 import { DOC_REFS, APP_ROOT } from '../docs/index.ts';
 import { PERMISSION_MODE_CONFIG } from '../agent/mode-types.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
+import { isPagesEnabled } from '../pages/capability.ts';
 import { APP_VERSION } from '../version/index.ts';
 import { readPluginName } from '../utils/workspace.ts';
 import { formatBytes } from '../utils/binary-detection.ts';
@@ -1000,7 +1001,7 @@ Setting labels or status triggers the corresponding automation events (\`LabelAd
 2. Agent completes work
 3. Agent calls \`set_session_status\` with "needs-review" → triggers downstream webhook/notification (closing the task into "done"/"cancelled" remains the user's call)
 
-${FEATURE_FLAGS.pages ? `
+${isPagesEnabled(workspaceRootPath) ? `
 ## Pages
 
 Pages are persistent, self-hosted HTML mini apps you can create for the user: dashboards, reports, trackers, tools. They live in the workspace at \`pages/{slug}/\`, appear as tiles in the app's **Pages** sidebar section (filterable by Project), and render inside the app in a sandboxed iframe. Unlike chat previews (\`html-preview\`, \`datatable\`), Pages persist across sessions, can be auto-refreshed by schedules, and can be shared as password-protected public links.

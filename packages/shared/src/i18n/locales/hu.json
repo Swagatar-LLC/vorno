@@ -1505,6 +1505,8 @@
   "settings.workspace.noArtifactRoots": "Nincsenek további gyökerek beállítva.",
   "settings.workspace.noSourcesConfigured": "Nincsenek beállított források ebben a munkaterületen.",
   "settings.workspace.noWorkspaceSelected": "Nincs kiválasztott munkaterület",
+  "settings.workspace.pages": "Oldalak",
+  "settings.workspace.pagesDesc": "Helyi oldalak létrehozása és használata ebben a munkaterületen. A megosztás külön letiltva marad, amíg nem érhető el ellenőrzött közzétételi képesség.",
   "settings.workspace.permissionsSection": "Engedélyek",
   "settings.workspace.renameWorkspace": "Munkaterület átnevezése",
   "settings.workspace.rootHealthMissing": "Nem található",

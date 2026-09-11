@@ -21,6 +21,7 @@ import {
   type NavigationState,
 } from '../types'
 import { routes } from '../routes'
+import { isDetailNavState } from '../../renderer/lib/nav-helpers'
 
 describe('pages routes', () => {
   test('route builders emit the pages prefix', () => {
@@ -99,5 +100,12 @@ describe('pages routes', () => {
     }
     expect(isWorkbenchNavigation(cases[1]![1])).toBe(true)
     expect(isArtifactsNavigation(cases[2]![1])).toBe(true)
+  })
+
+  test('compact/mobile navigation treats Pages as content while preserving the other navigator semantics', () => {
+    expect(isDetailNavState({ navigator: 'pages', details: null })).toBe(true)
+    expect(isDetailNavState({ navigator: 'projects', details: null })).toBe(false)
+    expect(isDetailNavState({ navigator: 'workbench', details: null })).toBe(false)
+    expect(isDetailNavState({ navigator: 'artifacts', details: null })).toBe(false)
   })
 })

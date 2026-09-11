@@ -70,25 +70,6 @@ export function isEmbeddedServerEnabled(): boolean {
  * verified Vorno publication capability; an environment flag alone is never a
  * release default.
  */
-/**
- * Host-authoritative Pages availability gate.
- *
- * Defaults to disabled until SUV-0058 replaces this temporary global switch
- * with the persisted per-workspace setting. Hosts must enforce it; renderer
- * state is presentation only.
- */
-export function isPagesEnabled(): boolean {
-  const override = parseBooleanEnv(getEnv('CRAFT_FEATURE_PAGES'));
-  if (override !== undefined) return override;
-  return false;
-}
-
-export function assertPagesEnabled(): void {
-  if (!isPagesEnabled()) {
-    throw new Error('PAGES_DISABLED: Pages are unavailable until enabled for this workspace.');
-  }
-}
-
 export function isPagesSharingEnabled(): boolean {
   const override = parseBooleanEnv(getEnv('CRAFT_FEATURE_PAGES_SHARING'));
   if (override !== undefined) return override;
@@ -120,10 +101,6 @@ export const FEATURE_FLAGS = {
    */
   get embeddedServer(): boolean {
     return isEmbeddedServerEnabled();
-  },
-  /** Enable host-authoritative Pages availability (temporary global pre-SUV-0058 gate). */
-  get pages(): boolean {
-    return isPagesEnabled();
   },
   /**
    * Enable Pages sharing (publish to Cloudflare).

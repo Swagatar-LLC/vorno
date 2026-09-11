@@ -1505,6 +1505,8 @@
   "settings.workspace.noArtifactRoots": "No hay raíces adicionales configuradas.",
   "settings.workspace.noSourcesConfigured": "No hay fuentes configuradas en este Workspace.",
   "settings.workspace.noWorkspaceSelected": "Ningún Workspace seleccionado",
+  "settings.workspace.pages": "Páginas",
+  "settings.workspace.pagesDesc": "Crea y usa páginas locales en este espacio de trabajo. Compartir sigue desactivado por separado hasta que haya una capacidad de publicación verificada.",
   "settings.workspace.permissionsSection": "Permisos",
   "settings.workspace.renameWorkspace": "Renombrar Workspace",
   "settings.workspace.rootHealthMissing": "No encontrada",

@@ -139,7 +139,7 @@ export function PageView({ pageSlug }: PageViewProps) {
   const [confirmingDelete, setConfirmingDelete] = React.useState(false)
   const [shareOpen, setShareOpen] = React.useState(false)
   const [grantsOpen, setGrantsOpen] = React.useState(false)
-  const { sharingEnabled } = usePageShareCapabilities()
+  const { sharingEnabled } = usePageShareCapabilities(activeWorkspaceId)
   const { projects } = useProjects(activeWorkspaceId)
 
   // Inline rename: null = display mode, string = the draft being edited.

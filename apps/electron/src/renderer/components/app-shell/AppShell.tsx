@@ -112,6 +112,7 @@ import { resolveEntityColor } from "@craft-agent/shared/colors"
 import * as storage from "@/lib/local-storage"
 import { toast } from "sonner"
 import { navigate, routes } from "@/lib/navigate"
+import { isNavigatorAvailable } from "@/lib/navigator-capabilities"
 import {
   useNavigation,
   useNavigationState,
@@ -956,6 +957,10 @@ function AppShellContent({
 
   // fork(PLAN-025 C1): Artifact plane feature flag — gates the sidebar entry.
   const [artifactsEnabled, setArtifactsEnabled] = React.useState(false)
+  const navigatorCapabilities = { pagesEnabled, workbenchEnabled, artifactsEnabled }
+  const pagesNavigatorAvailable = isNavigatorAvailable('pages', navigatorCapabilities)
+  const workbenchNavigatorAvailable = isNavigatorAvailable('workbench', navigatorCapabilities)
+  const artifactsNavigatorAvailable = isNavigatorAvailable('artifacts', navigatorCapabilities)
 
   // Enabled permission modes for Shift+Tab cycling (min 2 modes)
   const [enabledModes, setEnabledModes] = React.useState<PermissionMode[]>(['safe', 'ask', 'allow-all'])
@@ -2189,13 +2194,13 @@ function AppShellContent({
     result.push({ id: 'nav:sources', type: 'nav', action: handleSourcesClick })
     result.push({ id: 'nav:skills', type: 'nav', action: handleSkillsClick })
     result.push({ id: 'nav:projects', type: 'nav', action: handleProjectsClick })
-    if (pagesEnabled) result.push({ id: 'nav:pages', type: 'nav', action: handlePagesClick })
+    if (pagesNavigatorAvailable) result.push({ id: 'nav:pages', type: 'nav', action: handlePagesClick })
     result.push({ id: 'nav:automations', type: 'nav', action: handleAutomationsClick })
     result.push({ id: 'nav:settings', type: 'nav', action: () => handleSettingsClick() })
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handlePagesClick, pagesEnabled, handleAutomationsClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleProjectsClick, handlePagesClick, pagesNavigatorAvailable, handleAutomationsClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2691,7 +2696,7 @@ function AppShellContent({
                         onClick: () => handleJumpToProjectSessions(p.config.id),
                       })),
                     },
-                    ...(pagesEnabled ? [{
+                    ...(pagesNavigatorAvailable ? [{
                       id: "nav:pages",
                       title: t("sidebar.pages"),
                       label: String(pages.length),
@@ -2765,7 +2770,7 @@ function AppShellContent({
                       ],
                     },
                     // --- Review Workbench (feature-flagged). fork(PLAN-024) ---
-                    ...(workbenchEnabled ? [{
+                    ...(workbenchNavigatorAvailable ? [{
                       id: "nav:workbench",
                       title: t("sidebar.workbench"),
                       icon: ClipboardCheck,
@@ -2773,7 +2778,7 @@ function AppShellContent({
                       onClick: handleWorkbenchClick,
                     }] : []),
                     // --- Artifact Home (feature-flagged). fork(PLAN-025 C1) ---
-                    ...(artifactsEnabled ? [{
+                    ...(artifactsNavigatorAvailable ? [{
                       id: "nav:artifacts",
                       title: t("sidebar.artifacts"),
                       icon: Library,

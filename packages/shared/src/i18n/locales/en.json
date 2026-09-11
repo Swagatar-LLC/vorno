@@ -1505,6 +1505,8 @@
   "settings.workspace.noArtifactRoots": "No additional roots configured.",
   "settings.workspace.noSourcesConfigured": "No sources configured in this workspace.",
   "settings.workspace.noWorkspaceSelected": "No workspace selected",
+  "settings.workspace.pages": "Pages",
+  "settings.workspace.pagesDesc": "Create and use local Pages in this workspace. Sharing remains separately disabled until a verified publication capability is available.",
   "settings.workspace.permissionsSection": "Permissions",
   "settings.workspace.renameWorkspace": "Rename workspace",
   "settings.workspace.rootHealthMissing": "Not found",

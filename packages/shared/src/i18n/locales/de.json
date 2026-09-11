@@ -1505,6 +1505,8 @@
   "settings.workspace.noArtifactRoots": "Keine zusätzlichen Wurzeln konfiguriert.",
   "settings.workspace.noSourcesConfigured": "Keine Quellen in diesem Workspace konfiguriert.",
   "settings.workspace.noWorkspaceSelected": "Kein Workspace ausgewählt",
+  "settings.workspace.pages": "Seiten",
+  "settings.workspace.pagesDesc": "Lokale Seiten in diesem Workspace erstellen und verwenden. Teilen bleibt separat deaktiviert, bis eine geprüfte Veröffentlichungsfunktion verfügbar ist.",
   "settings.workspace.permissionsSection": "Berechtigungen",
   "settings.workspace.renameWorkspace": "Workspace umbenennen",
   "settings.workspace.rootHealthMissing": "Nicht gefunden",

@@ -1,4 +1,7 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test'
+import { describe, it, expect, mock, beforeEach } from 'bun:test'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 // Stub the preferences module so we can toggle `getCoAuthorPreference` per test
 // without touching disk. `formatPreferencesForPrompt` is stubbed to '' because
@@ -17,12 +20,13 @@ const GIT_CONVENTIONS_HEADING = '## Git Conventions'
 // Derive from branding so the trailer assertion survives rebrands (matches the
 // `Co-Authored-By: ${GIT_COAUTHOR}` line emitted by getSystemPrompt).
 const CO_AUTHOR_TRAILER = `Co-Authored-By: ${GIT_COAUTHOR}`
-const originalPages = process.env.CRAFT_FEATURE_PAGES
-
-afterEach(() => {
-  if (originalPages === undefined) delete process.env.CRAFT_FEATURE_PAGES
-  else process.env.CRAFT_FEATURE_PAGES = originalPages
-})
+function pagesWorkspace(enabled: boolean): string {
+  const root = mkdtempSync(join(tmpdir(), 'pages-prompt-'))
+  writeFileSync(join(root, 'config.json'), JSON.stringify({
+    id: 'ws_prompt', name: 'Prompt', slug: 'prompt', defaults: { pages: { enabled } }, createdAt: 1, updatedAt: 1,
+  }))
+  return root
+}
 
 describe('system prompt guidance', () => {
   it('uses backend-neutral debug log querying guidance (rg/grep via Bash)', () => {
@@ -49,13 +53,13 @@ describe('system prompt guidance', () => {
 
 describe('Pages prompt availability', () => {
   it('omits the complete Pages section while Pages is disabled', () => {
-    delete process.env.CRAFT_FEATURE_PAGES
-    expect(getSystemPrompt(undefined, undefined, '/tmp/workspace', '/tmp/workspace')).not.toContain('## Pages')
+    const root = pagesWorkspace(false)
+    expect(getSystemPrompt(undefined, undefined, root, root)).not.toContain('## Pages')
   })
 
-  it('includes the Pages section only when the host gate is enabled', () => {
-    process.env.CRAFT_FEATURE_PAGES = '1'
-    expect(getSystemPrompt(undefined, undefined, '/tmp/workspace', '/tmp/workspace')).toContain('## Pages')
+  it('includes the Pages section only when its persisted workspace setting is enabled', () => {
+    const root = pagesWorkspace(true)
+    expect(getSystemPrompt(undefined, undefined, root, root)).toContain('## Pages')
   })
 })
 

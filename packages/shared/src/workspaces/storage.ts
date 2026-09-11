@@ -131,6 +131,16 @@ export function loadWorkspaceConfig(rootPath: string): WorkspaceConfig | null {
       config.defaults.thinkingLevel = normalizeThinkingLevel(config.defaults.thinkingLevel);
     }
 
+    // PLAN-052 / SUV-0058 migration: old workspaces predate the Pages
+    // capability. Normalize their in-memory view to the explicit safe default;
+    // an untouched legacy config never becomes enabled merely by upgrading.
+    if (config.defaults) {
+      const pages = config.defaults.pages;
+      if (!pages || typeof pages.enabled !== 'boolean') {
+        config.defaults.pages = { enabled: false };
+      }
+    }
+
     return config;
   } catch {
     return null;
@@ -311,6 +321,7 @@ export function createWorkspaceAtPath(
     cyclablePermissionModes: globalDefaults.workspaceDefaults.cyclablePermissionModes,
     idleAgentTtlMinutes: globalDefaults.workspaceDefaults.idleAgentTtlMinutes,
     idleBrowserTtlMinutes: globalDefaults.workspaceDefaults.idleBrowserTtlMinutes,
+    pages: { enabled: false },
     enabledSourceSlugs: [],
     workingDirectory: undefined,
     ...defaults, // User-provided defaults override global defaults

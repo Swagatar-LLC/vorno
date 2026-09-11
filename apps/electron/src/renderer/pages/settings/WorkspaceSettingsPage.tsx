@@ -92,6 +92,8 @@ export default function WorkspaceSettingsPage() {
   const [idleBrowserTtlMinutes, setIdleBrowserTtlMinutes] = useState(60)
   // fork(PLAN-024): Review Workbench feature flag
   const [workbenchEnabled, setWorkbenchEnabled] = useState(false)
+  // fork(PLAN-052, SUV-0058): Pages stays disabled until this workspace opts in.
+  const [pagesEnabled, setPagesEnabled] = useState(false)
   // fork(PLAN-025 C1): Artifact plane feature flag + registered roots
   const [artifactsEnabled, setArtifactsEnabled] = useState(false)
   const [artifactRoots, setArtifactRoots] = useState<Record<string, string | RootBindingConfig>>({})
@@ -135,6 +137,7 @@ export default function WorkspaceSettingsPage() {
           setIdleAgentTtlMinutes(settings.idleAgentTtlMinutes ?? 60)
           setIdleBrowserTtlMinutes(settings.idleBrowserTtlMinutes ?? 60)
           setWorkbenchEnabled(settings.workbenchEnabled ?? false)
+          setPagesEnabled(settings.pagesEnabled ?? false)
           setArtifactsEnabled(settings.artifactsEnabled ?? false)
           setArtifactRoots(settings.artifactRoots ?? {})
           setHeadroomView(settings.headroomView)
@@ -358,6 +361,28 @@ export default function WorkspaceSettingsPage() {
       await updateWorkspaceSetting('workbenchEnabled', enabled)
       window.dispatchEvent(
         new CustomEvent('workbench:flag-changed', {
+          detail: { workspaceId: activeWorkspaceId, enabled },
+        })
+      )
+    },
+    [updateWorkspaceSetting, activeWorkspaceId]
+  )
+
+  // fork(PLAN-052, SUV-0058): Pages is a workspace capability, not a global
+  // renderer flag. Notify Page consumers so the sidebar, routes, and tool UI
+  // re-resolve without a workspace re-focus.
+  const handlePagesEnabledChange = useCallback(
+    async (enabled: boolean) => {
+      setPagesEnabled(enabled)
+      const saved = await updateWorkspaceSetting('pagesEnabled', enabled)
+      if (!saved) {
+        // A later toggle may already have won; only undo this failed optimistic
+        // write, never overwrite the newer visible value.
+        setPagesEnabled(current => current === enabled ? !enabled : current)
+        return
+      }
+      window.dispatchEvent(
+        new CustomEvent('pages:flag-changed', {
           detail: { workspaceId: activeWorkspaceId, enabled },
         })
       )
@@ -767,6 +792,13 @@ export default function WorkspaceSettingsPage() {
                   description={t("settings.workspace.workbenchDesc")}
                   checked={workbenchEnabled}
                   onCheckedChange={handleWorkbenchEnabledChange}
+                />
+                {/* fork(PLAN-052, SUV-0058): Pages per-workspace capability */}
+                <SettingsToggle
+                  label={t("settings.workspace.pages")}
+                  description={t("settings.workspace.pagesDesc")}
+                  checked={pagesEnabled}
+                  onCheckedChange={handlePagesEnabledChange}
                 />
                 {/* fork(PLAN-025 C1): Artifact plane feature flag */}
                 <SettingsToggle

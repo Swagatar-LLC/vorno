@@ -35,6 +35,7 @@ import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
 import { createBrowserTools, type BrowserPaneFns } from './browser-tools.ts';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
+import { isPagesEnabled } from '../pages/capability.ts';
 import { getBrowserToolEnabled } from '../config/storage.ts';
 
 // Re-export types for backward compatibility
@@ -263,7 +264,7 @@ export function getSessionScopedTools(
     // Tool visibility is centrally filtered in session-tools-core to avoid backend drift.
     tools = getSessionToolDefs({
       includeDeveloperFeedback: FEATURE_FLAGS.developerFeedback,
-      includePages: FEATURE_FLAGS.pages,
+      includePages: isPagesEnabled(workspaceRootPath),
     })
       .filter(def => def.handler !== null) // Skip backend-specific tools (call_llm)
       .map(def => registryTool(def.name, def.inputSchema.shape));
