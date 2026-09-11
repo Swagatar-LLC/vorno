@@ -1,8 +1,5 @@
-import { appendFile, mkdir } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
-import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { assertPagesEnabled, isPagesEnabled } from '@craft-agent/shared/pages/capability'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
@@ -42,11 +39,13 @@ const ACTION_BODY_MAX_CHARS = 512 * 1024
 const PAGE_GRANT_CONFIRM_TIMEOUT_MS = 30_000
 const PAGE_GRANT_MESSAGE_MAX_CHARS = 200
 const PAGE_GRANT_IDENTITY_MAX_CHARS = 100
+/** Bound queued consent work while an OS-native modal serializes requests. */
+const MAX_PENDING_PAGE_GRANT_CONFIRMATIONS = 32
 
 /** Keep page-authored prose visibly distinct from host-rendered identity/action. */
 function sanitizePageGrantMessage(description: string | undefined): string | undefined {
   if (!description) return undefined
-  return `The page says: ${description.replace(/[\r\n]+/g, ' ').trim()}`.slice(0, PAGE_GRANT_MESSAGE_MAX_CHARS)
+  return description.replace(/[\r\n]+/g, ' ').trim().slice(0, PAGE_GRANT_MESSAGE_MAX_CHARS)
 }
 
 /**
@@ -71,12 +70,11 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // independent of session pools. Clients live until the process exits
   // (same lifetime as the brokers above).
   const mcpPools = new Map<string, import('@craft-agent/shared/mcp').McpClientPool>()
-  // Coalesce identical outstanding consent requests so a page cannot flood
-  // host chrome while a user is deciding.
+  // Coalesce exact outstanding consent requests. The content digest belongs in
+  // the key: a changed page must receive a fresh confirmation, never stale work.
   const pendingGrantRequests = new Map<string, Promise<import('@craft-agent/shared/pages').PageActionGrant | null>>()
-  // Electron exposes one native dialog host, so grants must serialize across
-  // every workspace and page — not merely within one Page.
-  let pendingGrantConfirmation: Promise<import('@craft-agent/shared/pages').PageActionGrant | null> | undefined
+  const grantConfirmationQueue: Array<() => Promise<void>> = []
+  let drainingGrantConfirmationQueue = false
 
   async function broadcastChanged(workspaceId: string, workspaceRootPath: string): Promise<void> {
     const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
@@ -87,13 +85,24 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // Lifecycle audit is deliberately metadata-only: never record the descriptor,
   // source values, or user-supplied description alongside an approval decision.
   async function auditGrantDecision(event: 'page_grant_approved' | 'page_grant_rejected', workspaceId: string, pageSlug: string, actionKind: string): Promise<void> {
-    try {
-      const path = join(CONFIG_DIR, 'logs', 'page-actions.jsonl')
-      await mkdir(dirname(path), { recursive: true })
-      await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), event, workspaceId, pageSlug, actionKind })}\n`, 'utf8')
-    } catch (error) {
-      log.warn(`Failed to audit page grant decision: ${error}`)
-    }
+    const { appendPageActionAudit } = await import('@craft-agent/shared/pages')
+    await appendPageActionAudit({ event, workspaceId, pageSlug, actionKind }, {
+      onError: (error) => log.warn(`Failed to audit page grant decision: ${error}`),
+    })
+  }
+
+  function drainGrantConfirmationQueue(): void {
+    if (drainingGrantConfirmationQueue) return
+    drainingGrantConfirmationQueue = true
+    void (async () => {
+      try {
+        while (grantConfirmationQueue.length > 0) {
+          await grantConfirmationQueue.shift()!()
+        }
+      } finally {
+        drainingGrantConfirmationQueue = false
+      }
+    })()
   }
 
   /**
@@ -334,11 +343,11 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     return loadPageConfig(workspace.rootPath, pageSlug)?.grants ?? []
   })
 
-  // Additive, host-authoritative grant issuance. The server owns the decision
-  // branch; unavailable, declined, timed-out, or failed native confirmation
-  // never reaches storage and therefore leaves no persisted capability.
+  // Additive, host-authoritative grant issuance. Only a server-verified local
+  // Electron window may request native consent; token and remote clients cannot
+  // select a workspace or surface a trusted approval prompt.
   server.handle(RPC_CHANNELS.pages.REQUEST_GRANT, async (
-    _ctx,
+    ctx,
     workspaceId: string,
     pageSlug: string,
     input: unknown,
@@ -346,6 +355,8 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     assertAvailable(workspace.rootPath)
+    const requester = deps.getPageGrantRequester?.(ctx, workspace.id)
+    if (!requester) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
 
     // Treat every transport request as hostile. In particular, do not inspect
     // `kind` until the existing discriminated-union schema has accepted it.
@@ -356,78 +367,95 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       throw new Error('PAGE_GRANT_INVALID_REQUEST')
     }
     const request = parsed.data
-    // Page-authored description and requested lifetime must not bypass this
-    // guard; the security identity is the page plus the action descriptor.
-    const pendingKey = JSON.stringify({ workspaceId, pageSlug, action: request.action })
-    const pending = pendingGrantRequests.get(pendingKey)
-    if (pending) return pending
-    // One native decision for this host at a time. Exact duplicates coalesce
-    // above; every other workspace/page/descriptor is refused, never queued.
-    if (pendingGrantConfirmation) {
-      throw new Error('PAGE_GRANT_CONFIRMATION_PENDING')
+    const pageAtRequest = loadPageConfig(workspace.rootPath, pageSlug)
+    const expectedContentDigest = pageAtRequest?.contentDigest
+    if (!pageAtRequest || !expectedContentDigest) {
+      throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved.`)
     }
 
-    const issue = (async () => {
-      const page = loadPageConfig(workspace.rootPath, pageSlug)
-      const expectedContentDigest = page?.contentDigest
-      if (!page || !expectedContentDigest) throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved.`)
-      if (!deps.confirmPageGrant) {
-        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
-        throw new Error('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
-      }
+    // The digest is part of identity: changed content starts a new request
+    // instead of coalescing behind a stale confirmation.
+    const pendingKey = JSON.stringify({ workspaceId, pageSlug, contentDigest: expectedContentDigest, action: request.action })
+    const pending = pendingGrantRequests.get(pendingKey)
+    if (pending) return pending
+    if (pendingGrantRequests.size >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) {
+      throw new Error('PAGE_GRANT_CONFIRMATION_QUEUE_FULL')
+    }
 
-      let accepted = false
+    let resolveIssue!: (value: import('@craft-agent/shared/pages').PageActionGrant | null) => void
+    let rejectIssue!: (reason?: unknown) => void
+    const issue = new Promise<import('@craft-agent/shared/pages').PageActionGrant | null>((resolve, reject) => {
+      resolveIssue = resolve
+      rejectIssue = reject
+    })
+    pendingGrantRequests.set(pendingKey, issue)
+    grantConfirmationQueue.push(async () => {
       try {
-        const confirmation = deps.confirmPageGrant({
-          workspace: {
-            id: workspace.id,
-            name: sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
-          },
-          page: {
-            slug: page.slug,
-            name: sanitizePageGrantIdentity(page.name, 'Unnamed page'),
-          },
-          action: request.action,
-          pageMessage: sanitizePageGrantMessage(request.description),
-        })
-        let timer: ReturnType<typeof setTimeout> | undefined
-        try {
-          const timeout = new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => reject(new Error('confirmation timed out')), deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
-          })
-          accepted = await Promise.race([confirmation, timeout])
-        } finally {
-          if (timer) clearTimeout(timer)
+        // Do not show an obsolete request that waited behind another native
+        // prompt. A request from the new digest is separately queued above.
+        const page = loadPageConfig(workspace.rootPath, pageSlug)
+        if (!page || page.contentDigest !== expectedContentDigest) {
+          await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
+          throw new Error('PAGE_GRANT_CONTENT_CHANGED')
         }
-      } catch (error) {
-        log.info(`Page grant confirmation unavailable for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`)
-      }
+        if (!deps.confirmPageGrant) {
+          await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
+          throw new Error('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
+        }
+        // The request may have waited behind another native prompt; re-check
+        // the server-held window/workspace binding before showing this one.
+        const currentRequester = deps.getPageGrantRequester?.(ctx, workspace.id)
+        if (!currentRequester || currentRequester.webContentsId !== requester.webContentsId) {
+          throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+        }
 
-      if (!accepted) {
-        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
-        return null
-      }
+        let accepted = false
+        try {
+          const confirmation = deps.confirmPageGrant(currentRequester, {
+            workspace: {
+              id: workspace.id,
+              name: sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
+            },
+            page: {
+              slug: page.slug,
+              name: sanitizePageGrantIdentity(page.name, 'Unnamed page'),
+            },
+            action: request.action,
+            pageMessage: sanitizePageGrantMessage(request.description),
+          })
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            const timeout = new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error('confirmation timed out')), deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
+            })
+            accepted = await Promise.race([confirmation, timeout])
+          } finally {
+            if (timer) clearTimeout(timer)
+          }
+        } catch (error) {
+          log.info(`Page grant confirmation unavailable for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`)
+        }
 
-      try {
+        if (!accepted) {
+          await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
+          resolveIssue(null)
+          return
+        }
+
         const grant = addPageGrant(workspace.rootPath, pageSlug, { ...request, expectedContentDigest })
         deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
         await broadcastChanged(workspaceId, workspace.rootPath)
         await auditGrantDecision('page_grant_approved', workspaceId, pageSlug, grant.action.kind)
         log.info(`Approved page grant ${grant.id} on ${pageSlug} (${grant.action.kind})`)
-        return grant
+        resolveIssue(grant)
       } catch (error) {
-        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
-        throw error
+        rejectIssue(error)
+      } finally {
+        if (pendingGrantRequests.get(pendingKey) === issue) pendingGrantRequests.delete(pendingKey)
       }
-    })()
-    pendingGrantRequests.set(pendingKey, issue)
-    pendingGrantConfirmation = issue
-    try {
-      return await issue
-    } finally {
-      if (pendingGrantRequests.get(pendingKey) === issue) pendingGrantRequests.delete(pendingKey)
-      if (pendingGrantConfirmation === issue) pendingGrantConfirmation = undefined
-    }
+    })
+    drainGrantConfirmationQueue()
+    return issue
   })
 
   // ADR-0033's intentional wire divergence: direct RPC cannot mint grants.

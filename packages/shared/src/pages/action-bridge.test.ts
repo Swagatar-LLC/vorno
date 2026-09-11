@@ -14,6 +14,7 @@ import {
   PAGE_ACTION_MAX_IN_FLIGHT_PER_LEASE,
   PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_LEASE,
   PageActionBroker,
+  appendPageActionAudit,
   type PageActionExecutors,
 } from './action-bridge.ts';
 
@@ -87,6 +88,23 @@ describe('pages/action-bridge', () => {
     if (!existsSync(auditPath)) return [];
     return readFileSync(auditPath, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
   }
+
+  describe('shared audit append path', () => {
+    it('redacts lifecycle metadata before appending it to the Page action log', async () => {
+      await appendPageActionAudit({
+        event: 'page_grant_rejected',
+        workspaceId: 'workspace',
+        pageSlug: 'dash',
+        actionKind: 'api',
+        metadata: { apiKey: 'secret-value' },
+      }, { auditLogPath: auditPath });
+
+      const audit = await readAudit();
+      expect(audit).toHaveLength(1);
+      expect(JSON.stringify(audit[0])).not.toContain('secret-value');
+      expect((audit[0]?.metadata as { apiKey: string }).apiKey).toBe('[REDACTED]');
+    });
+  });
 
   describe('happy path', () => {
     it('executes a granted api action through the injected executor', async () => {

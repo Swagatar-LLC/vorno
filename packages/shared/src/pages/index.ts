@@ -128,6 +128,7 @@ export {
 // Mediated source-action bridge
 export {
   PageActionBroker,
+  appendPageActionAudit,
   type PageActionBrokerOptions,
   type PageActionExecutors,
   type PageActionValidationErrorCode,

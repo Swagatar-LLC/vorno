@@ -5,6 +5,7 @@ import type { IBrowserPaneManager } from './browser-pane-manager-interface'
 import type { IWindowManager } from './window-manager-interface'
 import type { IMessagingGatewayRegistry } from './messaging-registry-interface'
 import type { PageActionDescriptor } from '@craft-agent/core'
+import type { RequestContext } from '../transport/types'
 
 /**
  * Server-resolved identity and descriptor rendered by a trusted host surface.
@@ -17,6 +18,11 @@ export interface PageGrantConfirmationSpec {
   action: PageActionDescriptor
   /** Sanitized, bounded optional prose supplied by the page author. */
   pageMessage?: string
+}
+
+/** Server-held identity of the Electron window that requested a Page grant. */
+export interface PageGrantRequester {
+  webContentsId: number
 }
 
 /**
@@ -41,8 +47,13 @@ export interface HandlerDeps<
   browserPaneManager?: TBrowserPaneManager
   oauthFlowStore: TOAuthFlowStore
   messagingRegistry?: IMessagingGatewayRegistry
+  /**
+   * Resolves a trusted Electron requester from server-held connection/window
+   * state. Remote and token clients must never receive one.
+   */
+  getPageGrantRequester?: (ctx: RequestContext, workspaceId: string) => PageGrantRequester | undefined
   /** A host-owned native consent surface. Absent hosts cannot issue Page grants. */
-  confirmPageGrant?: (spec: PageGrantConfirmationSpec) => Promise<boolean>
+  confirmPageGrant?: (requester: PageGrantRequester, spec: PageGrantConfirmationSpec) => Promise<boolean>
   /** Testable bound for a host confirmation that never settles. */
   pageGrantConfirmationTimeoutMs?: number
 }

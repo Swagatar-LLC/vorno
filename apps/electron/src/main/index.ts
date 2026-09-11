@@ -783,27 +783,39 @@ app.whenReady().then(async () => {
             messagingRegistry: messagingHandle.registry,
             // Native Electron chrome is the only currently trusted Page grant
             // consent surface. WebUI/headless hosts intentionally omit this.
-            confirmPageGrant: isHeadless ? undefined : async (spec) => {
-              const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-              if (!win) return false
+            getPageGrantRequester: isHeadless ? undefined : (ctx, workspaceId) => {
+              const webContentsId = ctx.webContentsId
+              if (
+                webContentsId === null ||
+                ctx.workspaceId !== workspaceId ||
+                windowManager?.getWorkspaceForWindow(webContentsId) !== workspaceId ||
+                windowManager.getClientIdForWindow(webContentsId) !== ctx.clientId
+              ) return undefined
+              return { webContentsId }
+            },
+            confirmPageGrant: isHeadless ? undefined : async (requester, spec) => {
+              const win = windowManager?.getWindowByWebContentsId(requester.webContentsId)
+              if (!win || win.isDestroyed()) return false
               const action = spec.action.kind === 'api'
-                ? `${spec.action.method} ${spec.action.sourceSlug}${spec.action.pathPattern}`
+                ? i18n.t('pages.grants.confirm.actionApi', { method: spec.action.method, source: spec.action.sourceSlug, path: spec.action.pathPattern })
                 : spec.action.kind === 'mcp'
-                  ? `${spec.action.sourceSlug}:${spec.action.toolName}`
-                  : `${spec.action.runtime ?? 'bun'} ${spec.action.script}${spec.action.args?.length ? ` ${spec.action.args.join(' ')}` : ''}`
+                  ? i18n.t('pages.grants.confirm.actionMcp', { source: spec.action.sourceSlug, tool: spec.action.toolName })
+                  : i18n.t('pages.grants.confirm.actionScript', { runtime: spec.action.runtime ?? 'bun', script: spec.action.script, args: spec.action.args?.length ? ` ${spec.action.args.join(' ')}` : '' })
               // The host, rather than the requesting transport client, renders
               // every security-relevant identity and descriptor.
               return (await dialog.showMessageBox(win, {
                 type: spec.action.kind === 'script' ? 'warning' : 'question',
-                title: 'Approve Page action',
-                message: `Allow page "${spec.page.name}" in workspace "${spec.workspace.name}" to use ${action}?`,
-                detail: [
-                  `Workspace: ${spec.workspace.name} (${spec.workspace.id})`,
-                  `Page: ${spec.page.name} (${spec.page.slug})`,
-                  `Action: ${action}`,
-                  spec.pageMessage,
-                ].filter(Boolean).join('\n'),
-                buttons: ['Deny', 'Approve'],
+                title: i18n.t('pages.grants.confirm.title'),
+                message: i18n.t('pages.grants.confirm.message', { page: spec.page.name, workspace: spec.workspace.name, action }),
+                detail: i18n.t('pages.grants.confirm.detail', {
+                  workspace: spec.workspace.name,
+                  workspaceId: spec.workspace.id,
+                  page: spec.page.name,
+                  pageSlug: spec.page.slug,
+                  action,
+                  pageMessage: spec.pageMessage ?? i18n.t('pages.grants.confirm.noPageMessage'),
+                }),
+                buttons: [i18n.t('pages.grants.confirm.deny'), i18n.t('pages.grants.confirm.approve')],
                 defaultId: 0,
                 cancelId: 0,
               })).response === 1

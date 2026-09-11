@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { savePageContent } from '@craft-agent/shared/pages'
-import type { HandlerDeps, PageGrantConfirmationSpec } from '../handler-deps'
+import type { HandlerDeps, PageGrantConfirmationSpec, PageGrantRequester } from '../handler-deps'
 import type { HandlerFn, RequestContext, RpcServer } from '../../transport/types'
 import { registerPagesHandlers } from './pages'
 
@@ -44,15 +44,18 @@ type GrantConfirmation = 'approve' | 'decline' | 'disconnect' | 'no-answer' | 'p
 
 type GrantHarness = ((channel: string, ...args: unknown[]) => Promise<unknown>) & {
   confirmations: PageGrantConfirmationSpec[]
+  requesters: PageGrantRequester[]
   clientConsentCalls: () => number
   resolvePending: () => void
+  invokeWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
 }
 
 function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirmation?: () => void): GrantHarness {
   const handlers = new Map<string, HandlerFn>()
   const confirmations: PageGrantConfirmationSpec[] = []
+  const requesters: PageGrantRequester[] = []
   let clientConsentCallCount = 0
-  let resolvePendingConfirmation: ((accepted: boolean) => void) | undefined
+  const pendingResolvers: Array<(accepted: boolean) => void> = []
   const server: RpcServer = {
     handle(channel, handler) { handlers.set(channel, handler) },
     push() {},
@@ -60,13 +63,14 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
     hasClientCapability() { return true },
     findClientsWithCapability() { return ['hostile-client'] },
   }
-  const confirmPageGrant = confirm === 'unavailable' ? undefined : async (spec: PageGrantConfirmationSpec) => {
+  const confirmPageGrant = confirm === 'unavailable' ? undefined : async (requester: PageGrantRequester, spec: PageGrantConfirmationSpec) => {
+    requesters.push(requester)
     confirmations.push(spec)
     duringConfirmation?.()
     if (confirm === 'approve') return true
     if (confirm === 'decline') return false
     if (confirm === 'disconnect') throw new Error('host dialog disconnected')
-    if (confirm === 'pending') return await new Promise<boolean>(resolve => { resolvePendingConfirmation = resolve })
+    if (confirm === 'pending') return await new Promise<boolean>(resolve => { pendingResolvers.push(resolve) })
     return await new Promise<boolean>(() => {})
   }
   registerPagesHandlers(server, {
@@ -75,18 +79,32 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
       notifyConfigFileChange() {},
       enqueuePageThumbnail() {},
     },
+    getPageGrantRequester: (ctx: RequestContext, workspaceId: string) => (
+      ctx.clientId === 'trusted-client' &&
+      ctx.workspaceId === workspaceId &&
+      ctx.webContentsId === 101
+        ? { webContentsId: 101 }
+        : undefined
+    ),
     confirmPageGrant,
     ...(confirm === 'no-answer' ? { pageGrantConfirmationTimeoutMs: 1 } : {}),
   } as unknown as HandlerDeps)
-  const invoke = async (channel: string, ...args: unknown[]) => {
+  const invokeWithContext = async (ctx: RequestContext, channel: string, ...args: unknown[]) => {
     const handler = handlers.get(channel)
     if (!handler) throw new Error(`handler not registered: ${channel}`)
-    return handler({ workspaceId: WORKSPACE_A, clientId: 'hostile-client' } as RequestContext, ...args)
+    return handler(ctx, ...args)
   }
+  const invoke = async (channel: string, ...args: unknown[]) => invokeWithContext({
+    workspaceId: WORKSPACE_A,
+    clientId: 'trusted-client',
+    webContentsId: 101,
+  }, channel, ...args)
   return Object.assign(invoke, {
     confirmations,
+    requesters,
     clientConsentCalls: () => clientConsentCallCount,
-    resolvePending: () => resolvePendingConfirmation?.(true),
+    resolvePending: () => pendingResolvers.shift()?.(true),
+    invokeWithContext,
   })
 }
 
@@ -175,9 +193,10 @@ describe('Pages RPC workspace capability gate', () => {
       page: { slug: page.slug, name: 'Human readable Page' },
       action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
     })
-    expect(invoke.confirmations[0]?.pageMessage).toStartWith('The page says: first line second line')
+    expect(invoke.confirmations[0]?.pageMessage).toStartWith('first line second line')
     expect(invoke.confirmations[0]?.pageMessage).not.toContain('\n')
     expect(invoke.confirmations[0]?.pageMessage?.length).toBe(200)
+    expect(invoke.requesters).toEqual([{ webContentsId: 101 }])
   })
 
   test('sanitizes multiline and oversized server-resolved identities before host display', async () => {
@@ -230,6 +249,28 @@ describe('Pages RPC workspace capability gate', () => {
     expect(invoke.clientConsentCalls()).toBe(0)
   })
 
+  test('requires a matching trusted Electron request context before opening native consent', async () => {
+    const invoke = createHarness('approve')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Trusted context', content: '<p>content</p>',
+    }) as { slug: string }
+    const input = { action: { kind: 'api' as const, sourceSlug: 'example', method: 'GET' as const, pathPattern: '/items' } }
+
+    await expect(invoke.invokeWithContext({
+      clientId: 'token-client', workspaceId: WORKSPACE_A, webContentsId: null,
+    }, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input)).rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+
+    writeWorkspace(ROOT_B, WORKSPACE_B, true)
+    const otherPage = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_B, {
+      name: 'Wrong workspace', content: '<p>content</p>',
+    }) as { slug: string }
+    await expect(invoke.invokeWithContext({
+      clientId: 'trusted-client', workspaceId: WORKSPACE_A, webContentsId: 101,
+    }, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_B, otherPage.slug, input)).rejects.toThrow('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+
+    expect(invoke.confirmations).toEqual([])
+  })
+
   test('rejects malformed descriptors before inspecting action kind or prompting', async () => {
     const invoke = createHarness('approve')
     const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
@@ -241,7 +282,7 @@ describe('Pages RPC workspace capability gate', () => {
     expect(invoke.confirmations).toEqual([])
   })
 
-  test('coalesces identical pending consent requests into one host prompt', async () => {
+  test('coalesces duplicate consent and queues distinct descriptors and pages behind one native prompt', async () => {
     const invoke = createHarness('pending')
     const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
       name: 'Coalesced grant', content: '<p>content</p>',
@@ -251,48 +292,62 @@ describe('Pages RPC workspace capability gate', () => {
     for (let attempt = 0; attempt < 10 && invoke.confirmations.length === 0; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 0))
     }
-    const second = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+    const duplicate = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
       ...input,
       description: 'A changed page-authored message must not create another prompt',
     })
-    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+    const secondDescriptor = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
       action: { kind: 'mcp', sourceSlug: 'example', toolName: 'other_action' },
-    })).rejects.toThrow('PAGE_GRANT_CONFIRMATION_PENDING')
-    // The native host is global: another enabled workspace/page cannot open a
-    // second modal while this request is pending.
+    })
     writeWorkspace(ROOT_B, WORKSPACE_B, true)
     const otherPage = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_B, {
       name: 'Second page', content: '<p>content</p>',
     }) as { slug: string }
-    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_B, otherPage.slug, {
+    const secondPage = invoke.invokeWithContext({
+      clientId: 'trusted-client', workspaceId: WORKSPACE_B, webContentsId: 101,
+    }, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_B, otherPage.slug, {
       action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/other' },
-    })).rejects.toThrow('PAGE_GRANT_CONFIRMATION_PENDING')
-    for (let index = 0; index < 50; index++) {
-      const blockedPage = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
-        name: `Blocked page ${index}`, content: '<p>content</p>',
-      }) as { slug: string }
-      await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, blockedPage.slug, {
-        action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: `/blocked/${index}` },
-      })).rejects.toThrow('PAGE_GRANT_CONFIRMATION_PENDING')
+    })
+
+    for (let prompt = 0; prompt < 3; prompt++) {
+      for (let attempt = 0; attempt < 10 && invoke.confirmations.length <= prompt; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      expect(invoke.confirmations).toHaveLength(prompt + 1)
+      invoke.resolvePending()
     }
-    expect(invoke.confirmations).toHaveLength(1)
-    invoke.resolvePending()
-    const [firstGrant, secondGrant] = await Promise.all([first, second]) as [{ id: string }, { id: string }]
-    expect(firstGrant.id).toBe(secondGrant.id)
-    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
+    const [firstGrant, duplicateGrant, secondDescriptorGrant, secondPageGrant] = await Promise.all([
+      first, duplicate, secondDescriptor, secondPage,
+    ]) as [{ id: string }, { id: string }, { id: string }, { id: string }]
+    expect(firstGrant.id).toBe(duplicateGrant.id)
+    expect(secondDescriptorGrant.id).not.toBe(firstGrant.id)
+    expect(secondPageGrant.id).not.toBe(firstGrant.id)
+    expect(invoke.confirmations).toHaveLength(3)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(2)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_B, otherPage.slug)).resolves.toHaveLength(1)
   })
 
-  test('refuses a grant when content changes while the host prompt is pending', async () => {
-    let pageSlug = ''
-    const invoke = createHarness('approve', () => savePageContent(ROOT_A, pageSlug, '<p>changed</p>'))
+  test('does not coalesce a changed digest with stale pending consent', async () => {
+    const invoke = createHarness('pending')
     const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
-      name: 'TOCTOU grant', content: '<p>original</p>',
+      name: 'Digest queue', content: '<p>original</p>',
     }) as { slug: string }
-    pageSlug = page.slug
-    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
-      action: { kind: 'script', script: 'scripts/refresh.ts' },
-    })).rejects.toThrow('content changed while approval was pending')
-    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+    const input = { action: { kind: 'script' as const, script: 'scripts/refresh.ts' } }
+    const stale = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input)
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    savePageContent(ROOT_A, page.slug, '<p>changed</p>')
+    const current = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input)
+    invoke.resolvePending()
+    await expect(stale).rejects.toThrow('content changed while approval was pending')
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length < 2; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    invoke.resolvePending()
+    await expect(current).resolves.toMatchObject({ contentDigest: expect.any(String) })
+    expect(invoke.confirmations).toHaveLength(2)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
   })
 
   test('resolves unknown workspaces before Pages availability checks', async () => {
