@@ -73,7 +73,7 @@ export function usePages(activeWorkspaceId: string | null | undefined): UsePages
     return () => {
       if (typeof off === 'function') off()
     }
-  }, [activeWorkspaceId, pagesEnabled, setPages, refresh])
+  }, [activeWorkspaceId, setPages, refresh])
 
   return { pages, pagesEnabled, refresh }
 }

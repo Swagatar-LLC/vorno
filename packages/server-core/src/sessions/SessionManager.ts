@@ -1161,6 +1161,8 @@ export class SessionManager implements ISessionManager {
   // every root-config write, so only a real boolean transition may rebuild
   // matchers, broadcast UI state, or recreate agent runtimes.
   private pagesCapabilityByWorkspace: Map<string, boolean> = new Map()
+  /** Sessions whose static Pages prompt/tool shape must be rebuilt after their turn safely ends. */
+  private pendingPagesRuntimeRefreshes: Set<string> = new Set()
   // Pending credential request resolvers (keyed by requestId)
   private pendingCredentialResolvers: Map<string, (response: import('@craft-agent/shared/protocol').CredentialResponse) => void> = new Map()
   // Permission request metadata tracking (keyed by requestId)
@@ -3628,21 +3630,73 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Recreate idle workspace agents after the Pages capability changes so their
-   * static system prompt and registered Claude/Pi tool definitions cannot
-   * advertise the prior state. Productive calls are still host-gated while a
-   * running turn finishes; its next lazy acquisition receives the new shape.
+   * A Pages capability change replaces the static system prompt and the tool
+   * registration, so it cannot use updateRuntimeConfig. Queued user messages
+   * are safe to hold while this runs; running work, auth handoffs, retries, and
+   * background agents are not safe to tear down.
    */
+  private isPagesRuntimeRefreshable(managed: ManagedSession): boolean {
+    if (!managed.agent) return false
+    if (managed.isProcessing || managed.agent.isProcessing()) return false
+    if (managed.stopRequested || managed.pendingAuthRequestId || managed.autoRetryPending) return false
+    for (const task of managed.backgroundTaskRegistry.values()) {
+      if (task.status === 'running') return false
+    }
+    return true
+  }
+
+  /**
+   * Dispose and immediately reacquire an existing session runtime after a Pages
+   * capability change. Claude caches its tools and prompt in-process; Pi sends
+   * both at subprocess startup, so rebuilding is the one behavior that keeps
+   * the two backends in sync. The per-session lock spans both halves so a send
+   * cannot acquire a stale runtime between disposal and recreation.
+   */
+  private async refreshManagedPagesRuntime(managed: ManagedSession): Promise<void> {
+    const inflight = this.agentRefreshLocks.get(managed.id)
+    if (inflight) await inflight.catch(() => undefined)
+
+    if (!managed.agent) {
+      this.pendingPagesRuntimeRefreshes.delete(managed.id)
+      return
+    }
+    if (!this.isPagesRuntimeRefreshable(managed)) {
+      this.pendingPagesRuntimeRefreshes.add(managed.id)
+      sessionLog.info(`Deferring Pages runtime refresh for active session ${managed.id}`)
+      return
+    }
+
+    let releaseLock!: () => void
+    const tracked = new Promise<void>(resolve => { releaseLock = resolve })
+    this.agentRefreshLocks.set(managed.id, tracked)
+    try {
+      // Recheck after waiting for a previous refresh: a send or handoff may
+      // have started while this call was queued behind it.
+      if (!this.isPagesRuntimeRefreshable(managed)) {
+        this.pendingPagesRuntimeRefreshes.add(managed.id)
+        return
+      }
+      await this.disposeManagedAgentRuntime(managed, 'Pages capability changed')
+      await this.getOrCreateAgent(managed, true)
+      this.pendingPagesRuntimeRefreshes.delete(managed.id)
+    } finally {
+      releaseLock()
+      if (this.agentRefreshLocks.get(managed.id) === tracked) {
+        this.agentRefreshLocks.delete(managed.id)
+      }
+    }
+  }
+
+  /** Rebuild every existing runtime in the workspace, or defer it until safe. */
   private async refreshWorkspacePagesRuntime(workspaceRootPath: string): Promise<void> {
     for (const managed of this.sessions.values()) {
       if (managed.workspace.rootPath !== workspaceRootPath || !managed.agent) continue
-      if (managed.agent.isProcessing()) {
-        sessionLog.info(`Deferring Pages runtime refresh for active session ${managed.id}`)
-        continue
-      }
       try {
-        await this.disposeManagedAgentRuntime(managed, 'Pages capability changed')
+        await this.refreshManagedPagesRuntime(managed)
       } catch (error) {
+        // A disposed runtime still recreates with fresh Pages tools on the next
+        // send. Keep the pending marker so a completed active turn retries.
+        this.pendingPagesRuntimeRefreshes.add(managed.id)
         sessionLog.warn(`Pages runtime refresh failed for ${managed.id}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
@@ -3658,11 +3712,13 @@ export class SessionManager implements ISessionManager {
    * 3. global defaultLlmConnection
    * 4. fallback: no connection configured
    */
-  private async getOrCreateAgent(managed: ManagedSession): Promise<AgentInstance> {
+  private async getOrCreateAgent(managed: ManagedSession, skipRuntimeRefresh = false): Promise<AgentInstance> {
     // Refresh runtime config in-place when the connection has drifted since
     // the agent was created. May null out `managed.agent` if the in-place
-    // refresh fails, in which case the create branch below rebuilds it.
-    await this.tryRefreshAgentRuntime(managed, 'send-path refresh')
+    // refresh fails, in which case the create branch below rebuilds it. Pages
+    // reconstruction already owns this session's refresh lock, so it skips the
+    // nested check to avoid waiting on itself.
+    if (!skipRuntimeRefresh) await this.tryRefreshAgentRuntime(managed, 'send-path refresh')
 
     const workspaceConfig = loadWorkspaceConfig(managed.workspace.rootPath)
     const backendContext = resolveBackendContext({
@@ -7144,6 +7200,17 @@ export class SessionManager implements ISessionManager {
       managed.pendingExternalMetadata = undefined
       sessionLog.info(`Applying deferred external metadata for session ${sessionId} after processing stop`)
       this.applyExternalSessionMetadata(managed, pendingHeader)
+    }
+
+    // A Pages toggle that landed mid-turn must rebuild the static Claude/Pi
+    // prompt and tool registration before an already-queued follow-up starts.
+    // The refresh deliberately allows a queue but still refuses live work.
+    if (this.pendingPagesRuntimeRefreshes.has(managed.id)) {
+      try {
+        await this.refreshManagedPagesRuntime(managed)
+      } catch (error) {
+        sessionLog.warn(`Deferred Pages runtime refresh failed for ${managed.id}: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
 
     // 5. Check queue and process or complete

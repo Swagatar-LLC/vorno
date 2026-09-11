@@ -1,8 +1,43 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import type { HandlerDeps } from '../handler-deps'
 import type { HandlerFn, RequestContext, RpcServer } from '../../transport/types'
 import { registerPagesHandlers } from './pages'
+
+const WORKSPACE_A = 'ws_pages_enabled'
+const WORKSPACE_B = 'ws_pages_disabled'
+const ROOT_A = join(CONFIG_DIR, 'workspaces', 'pages-rpc-enabled')
+const ROOT_B = join(CONFIG_DIR, 'workspaces', 'pages-rpc-disabled')
+const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
+let originalConfig: string | null = null
+
+function writeWorkspace(rootPath: string, id: string, enabled: boolean): void {
+  mkdirSync(rootPath, { recursive: true })
+  writeFileSync(join(rootPath, 'config.json'), JSON.stringify({
+    id,
+    name: id,
+    slug: id,
+    defaults: { pages: { enabled } },
+    createdAt: 1,
+    updatedAt: 1,
+  }))
+}
+
+function registerTestWorkspaces(): void {
+  writeWorkspace(ROOT_A, WORKSPACE_A, true)
+  writeWorkspace(ROOT_B, WORKSPACE_B, false)
+  writeFileSync(CONFIG_FILE, JSON.stringify({
+    workspaces: [
+      { id: WORKSPACE_A, name: 'Pages enabled', rootPath: ROOT_A, createdAt: 1 },
+      { id: WORKSPACE_B, name: 'Pages disabled', rootPath: ROOT_B, createdAt: 1 },
+    ],
+    activeWorkspaceId: WORKSPACE_A,
+    activeSessionId: null,
+  }))
+}
 
 function createHarness() {
   const handlers = new Map<string, HandlerFn>()
@@ -15,32 +50,91 @@ function createHarness() {
   }
   registerPagesHandlers(server, {
     platform: { logger: { info() {}, warn() {}, error() {}, debug() {} } },
-    sessionManager: {},
+    sessionManager: {
+      notifyConfigFileChange() {},
+      enqueuePageThumbnail() {},
+    },
   } as unknown as HandlerDeps)
   return async (channel: string, ...args: unknown[]) => {
     const handler = handlers.get(channel)
     if (!handler) throw new Error(`handler not registered: ${channel}`)
-    return handler({} as RequestContext, ...args)
+    return handler({ workspaceId: WORKSPACE_A } as RequestContext, ...args)
   }
 }
 
-describe('Pages RPC availability gate', () => {
-  test('rejects direct productive RPC calls while Pages is disabled', async () => {
+beforeAll(() => {
+  originalConfig = existsSync(CONFIG_FILE) ? readFileSync(CONFIG_FILE, 'utf8') : null
+})
+
+beforeEach(() => {
+  rmSync(ROOT_A, { recursive: true, force: true })
+  rmSync(ROOT_B, { recursive: true, force: true })
+  registerTestWorkspaces()
+})
+
+afterAll(() => {
+  rmSync(ROOT_A, { recursive: true, force: true })
+  rmSync(ROOT_B, { recursive: true, force: true })
+  if (originalConfig === null) rmSync(CONFIG_FILE, { force: true })
+  else writeFileSync(CONFIG_FILE, originalConfig)
+})
+
+describe('Pages RPC workspace capability gate', () => {
+  test('uses the requested workspace for desktop and WebUI capability reads', async () => {
     const invoke = createHarness()
 
-    await expect(invoke(RPC_CHANNELS.pages.CREATE, 'workspace', { name: 'blocked' })).rejects.toThrow('Workspace not found')
-    await expect(invoke(RPC_CHANNELS.pages.SET_CONTENT, 'workspace', 'page', '<p>x</p>')).rejects.toThrow('Workspace not found')
-    await expect(invoke(RPC_CHANNELS.pages.ISSUE_GRANT, 'workspace', 'page', {})).rejects.toThrow('Workspace not found')
-    await expect(invoke(RPC_CHANNELS.pages.CREATE_LEASE, 'workspace', 'page')).rejects.toThrow('Workspace not found')
-    await expect(invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, 'workspace', {})).rejects.toThrow('Workspace not found')
+    await expect(invoke(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES, WORKSPACE_A))
+      .resolves.toMatchObject({ pagesEnabled: true })
+    await expect(invoke(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES, WORKSPACE_B))
+      .resolves.toEqual({ pagesEnabled: false, sharingEnabled: false })
   })
 
-  test('reports the same disabled state to desktop capability consumers', async () => {
+  test('allows enabled workspace A through the broker and rejects every productive path in disabled workspace B', async () => {
+    const invoke = createHarness()
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Enabled page', content: '<p>enabled</p>',
+    }) as { slug: string }
+    const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    expect(lease.lease.leaseId).toBeString()
+
+    await expect(invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_B, { name: 'blocked' }))
+      .rejects.toThrow('PAGES_DISABLED')
+    await expect(invoke(RPC_CHANNELS.pages.SET_CONTENT, WORKSPACE_B, 'missing', '<p>x</p>'))
+      .rejects.toThrow('PAGES_DISABLED')
+    await expect(invoke(RPC_CHANNELS.pages.ISSUE_GRANT, WORKSPACE_B, 'missing', {}))
+      .rejects.toThrow('PAGES_DISABLED')
+    await expect(invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_B, 'missing'))
+      .rejects.toThrow('PAGES_DISABLED')
+    await expect(invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_B, { pageSlug: 'missing' }))
+      .rejects.toThrow('PAGES_DISABLED')
+    await expect(invoke(RPC_CHANNELS.pages.GET_SHARE_DATA_SCAN, WORKSPACE_B, 'missing'))
+      .rejects.toThrow('PAGES_DISABLED')
+    await expect(invoke(RPC_CHANNELS.pages.PUBLISH, WORKSPACE_B, 'missing', { includeData: false }))
+      .rejects.toThrow('PAGES_DISABLED')
+  })
+
+  test('resolves unknown workspaces before Pages availability checks', async () => {
     const invoke = createHarness()
 
-    await expect(invoke(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES, 'workspace')).resolves.toEqual({
-      pagesEnabled: false,
-      sharingEnabled: false,
-    })
+    await expect(invoke(RPC_CHANNELS.pages.CREATE, 'unknown-workspace', { name: 'blocked' }))
+      .rejects.toThrow('Workspace not found: unknown-workspace')
+    await expect(invoke(RPC_CHANNELS.pages.CREATE_LEASE, 'unknown-workspace', 'missing'))
+      .rejects.toThrow('Workspace not found: unknown-workspace')
+    await expect(invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, 'unknown-workspace', { pageSlug: 'missing' }))
+      .rejects.toThrow('Workspace not found: unknown-workspace')
+  })
+
+  test('preserves cleanup after a workspace is disabled without creating a broker', async () => {
+    const invoke = createHarness()
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Cleanup page', content: '<p>cleanup</p>',
+    }) as { slug: string }
+    const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
+    writeWorkspace(ROOT_A, WORKSPACE_A, false)
+
+    await expect(invoke(RPC_CHANNELS.pages.RELEASE_LEASE, WORKSPACE_A, lease.lease.leaseId)).resolves.toBeUndefined()
+    await expect(invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, 'unknown-request')).resolves.toBe(false)
+    await expect(invoke(RPC_CHANNELS.pages.REVOKE_GRANT, WORKSPACE_A, page.slug, 'unknown-grant')).resolves.toBe(false)
+    await expect(invoke(RPC_CHANNELS.pages.DELETE, WORKSPACE_A, page.slug)).resolves.toEqual({ publicCopyMayRemain: false })
   })
 })

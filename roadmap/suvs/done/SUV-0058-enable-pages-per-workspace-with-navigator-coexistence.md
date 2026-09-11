@@ -52,3 +52,9 @@ Projects, Workbench, Artifacts, or existing session navigation.
 - `2026-09-10` — moved from `in-progress` to `done`: persisted workspace
   capability, host gates, Settings/i18n, watcher refresh, and focused
   regression coverage are complete.
+- `2026-09-10` — post-review verification: two real workspaces proved enabled
+  versus disabled Pages RPC behavior, unknown-workspace precedence, broker and
+  cleanup exceptions; scheduler off/on, Claude/Pi runtime recreation, and
+  desktop/compact/keyboard navigation coexistence passed. Full gates: 4,148
+  shared tests, 409 WebUI/server-core tests, 196 server tests, 23 share-worker
+  tests, and 19 document-tool tests — all green.

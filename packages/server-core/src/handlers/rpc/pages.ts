@@ -266,6 +266,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   server.handle(RPC_CHANNELS.pages.SET_CONTENT, async (_ctx, workspaceId: string, pageSlug: string, content: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    assertAvailable(workspace.rootPath)
     const { savePageContent } = await import('@craft-agent/shared/pages')
     const updated = savePageContent(workspace.rootPath, pageSlug, content)
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
@@ -301,6 +302,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    assertAvailable(workspace.rootPath)
     const { addPageGrant } = await import('@craft-agent/shared/pages')
     const grant = addPageGrant(workspace.rootPath, pageSlug, input)
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
@@ -330,6 +332,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   server.handle(RPC_CHANNELS.pages.CREATE_LEASE, async (_ctx, workspaceId: string, pageSlug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    assertAvailable(workspace.rootPath)
     const { loadPageContent, computePageContentDigest } = await import('@craft-agent/shared/pages')
 
     const content = loadPageContent(workspace.rootPath, pageSlug)
@@ -353,6 +356,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   server.handle(RPC_CHANNELS.pages.EXECUTE_ACTION, async (_ctx, workspaceId: string, request: PageActionRequest) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    assertAvailable(workspace.rootPath)
     const { loadPageConfig } = await import('@craft-agent/shared/pages')
 
     const page = loadPageConfig(workspace.rootPath, request.pageSlug)
@@ -400,6 +404,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   server.handle(RPC_CHANNELS.pages.GET_SHARE_DATA_SCAN, async (_ctx, workspaceId: string, pageSlug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    assertAvailable(workspace.rootPath)
     const { scanPageShareData } = await import('@craft-agent/shared/pages')
     return scanPageShareData(workspace.rootPath, pageSlug)
   })
@@ -413,6 +418,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    assertAvailable(workspace.rootPath)
     const publisher = await buildPublisher()
     const updated = await publisher.publish(workspace.rootPath, workspace.id, pageSlug, {
       includeData: options.includeData === true,
@@ -433,6 +439,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    assertAvailable(workspace.rootPath)
     const publisher = await buildPublisher()
     const updated = await publisher.setPassword(workspace.rootPath, workspace.id, pageSlug, password)
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
@@ -462,6 +469,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   server.handle(RPC_CHANNELS.pages.GET_THUMBNAIL, async (_ctx, workspaceId: string, pageSlug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return null
+    assertAvailable(workspace.rootPath)
     const { loadPageConfig, getPageThumbnailPath, isThumbnailFresh } = await import('@craft-agent/shared/pages')
     const config = loadPageConfig(workspace.rootPath, pageSlug)
     if (!config || !isThumbnailFresh(config)) return null

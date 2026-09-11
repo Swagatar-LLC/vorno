@@ -375,7 +375,12 @@ export default function WorkspaceSettingsPage() {
     async (enabled: boolean) => {
       setPagesEnabled(enabled)
       const saved = await updateWorkspaceSetting('pagesEnabled', enabled)
-      if (!saved) return
+      if (!saved) {
+        // A later toggle may already have won; only undo this failed optimistic
+        // write, never overwrite the newer visible value.
+        setPagesEnabled(current => current === enabled ? !enabled : current)
+        return
+      }
       window.dispatchEvent(
         new CustomEvent('pages:flag-changed', {
           detail: { workspaceId: activeWorkspaceId, enabled },

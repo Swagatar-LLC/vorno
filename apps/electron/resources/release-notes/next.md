@@ -4,6 +4,7 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Features
 
+- **Per-workspace Pages availability** — Pages now stays disabled until enabled in a workspace’s Settings, with its navigation, authoring tools, refresh scheduling, and publication controls following the same persisted host authority. Cleanup remains available if Pages is turned back off. #200, 891060be
 - **Workspace Pages foundation** — persistent local pages, sandboxed rendering, data refresh, and mediated action contracts are present as an upstream compatibility baseline. Pages and publication remain unavailable by default in Vorno until the per-workspace authority and service boundaries land. (from upstream v0.13.0–v0.13.3)
 - **Expanded model catalog** — upstream additions include Claude Fable 5.1 across Anthropic and Bedrock profiles, GPT-6 Astra for OpenAI and ChatGPT connections, and newer Pi-provider model families. Existing saved connections retain explicit defaults; new OpenAI and ChatGPT connections default to GPT-6 Astra. (from upstream v0.13.1–v0.13.3)
 
