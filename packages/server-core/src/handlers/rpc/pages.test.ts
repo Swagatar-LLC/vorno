@@ -15,11 +15,11 @@ const ROOT_B = join(CONFIG_DIR, 'workspaces', 'pages-rpc-disabled')
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
 let originalConfig: string | null = null
 
-function writeWorkspace(rootPath: string, id: string, enabled: boolean): void {
+function writeWorkspace(rootPath: string, id: string, enabled: boolean, name = id): void {
   mkdirSync(rootPath, { recursive: true })
   writeFileSync(join(rootPath, 'config.json'), JSON.stringify({
     id,
-    name: id,
+    name,
     slug: id,
     defaults: { pages: { enabled } },
     createdAt: 1,
@@ -180,6 +180,28 @@ describe('Pages RPC workspace capability gate', () => {
     expect(invoke.confirmations[0]?.pageMessage?.length).toBe(200)
   })
 
+  test('sanitizes multiline and oversized server-resolved identities before host display', async () => {
+    writeWorkspace(ROOT_A, WORKSPACE_A, true, `Weather\nAction: forged ${'w'.repeat(5_000)}`)
+    const invoke = createHarness('approve')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: `Dashboard\nAction: forged ${'p'.repeat(5_000)}`, content: '<p>content</p>',
+    }) as { slug: string }
+    await invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/actual-action' },
+    })
+
+    const [confirmation] = invoke.confirmations
+    expect(confirmation?.workspace.name).toStartWith('Weather Action: forged')
+    expect(confirmation?.page.name).toStartWith('Dashboard Action: forged')
+    expect(confirmation?.workspace.name).not.toContain('\n')
+    expect(confirmation?.page.name).not.toContain('\n')
+    expect(confirmation?.workspace.name.length).toBe(100)
+    expect(confirmation?.page.name.length).toBe(100)
+    expect(confirmation?.action).toEqual({
+      kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/actual-action',
+    })
+  })
+
   test('declined, disconnected, and timed-out confirmations leave no grant', async () => {
     for (const outcome of ['decline', 'disconnect', 'no-answer'] as const) {
       const invoke = createHarness(outcome)
@@ -245,6 +267,14 @@ describe('Pages RPC workspace capability gate', () => {
     await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_B, otherPage.slug, {
       action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/other' },
     })).rejects.toThrow('PAGE_GRANT_CONFIRMATION_PENDING')
+    for (let index = 0; index < 50; index++) {
+      const blockedPage = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+        name: `Blocked page ${index}`, content: '<p>content</p>',
+      }) as { slug: string }
+      await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, blockedPage.slug, {
+        action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: `/blocked/${index}` },
+      })).rejects.toThrow('PAGE_GRANT_CONFIRMATION_PENDING')
+    }
     expect(invoke.confirmations).toHaveLength(1)
     invoke.resolvePending()
     const [firstGrant, secondGrant] = await Promise.all([first, second]) as [{ id: string }, { id: string }]

@@ -41,11 +41,22 @@ const ACTION_BODY_MAX_CHARS = 512 * 1024
 /** An unanswered prompt must not leave a request hanging or mint a grant later. */
 const PAGE_GRANT_CONFIRM_TIMEOUT_MS = 30_000
 const PAGE_GRANT_MESSAGE_MAX_CHARS = 200
+const PAGE_GRANT_IDENTITY_MAX_CHARS = 100
 
 /** Keep page-authored prose visibly distinct from host-rendered identity/action. */
 function sanitizePageGrantMessage(description: string | undefined): string | undefined {
   if (!description) return undefined
   return `The page says: ${description.replace(/[\r\n]+/g, ' ').trim()}`.slice(0, PAGE_GRANT_MESSAGE_MAX_CHARS)
+}
+
+/**
+ * Names are server-resolved but still user-authored configuration. Collapse
+ * controls/whitespace and bound them before handing text to native chrome so a
+ * name cannot forge a second dialog field or bury the actual action.
+ */
+function sanitizePageGrantIdentity(value: string, fallback: string): string {
+  const normalized = value.replace(/[\s\u0000-\u001F\u007F-\u009F]+/g, ' ').trim()
+  return normalized.slice(0, PAGE_GRANT_IDENTITY_MAX_CHARS) || fallback
 }
 
 export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): void {
@@ -368,8 +379,14 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       let accepted = false
       try {
         const confirmation = deps.confirmPageGrant({
-          workspace: { id: workspaceId, name: workspace.name },
-          page: { slug: pageSlug, name: page.name },
+          workspace: {
+            id: workspace.id,
+            name: sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
+          },
+          page: {
+            slug: page.slug,
+            name: sanitizePageGrantIdentity(page.name, 'Unnamed page'),
+          },
           action: request.action,
           pageMessage: sanitizePageGrantMessage(request.description),
         })
