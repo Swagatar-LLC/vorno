@@ -257,11 +257,15 @@ describe('Pages RPC workspace capability gate', () => {
     expect(seen).toBe('Workspace Forged control text')
   })
 
-  test('times out a never-settling forget confirmation and releases the host-wide slot', async () => {
-    const invoke = createHarness('unavailable', undefined, async () => await new Promise<boolean>(() => {}), 1)
+  test('times out a never-settling forget confirmation, aborts native UI, and releases the host-wide slot', async () => {
+    let aborted = false
+    const invoke = createHarness('unavailable', undefined, async ({ signal }) => await new Promise<boolean>(resolve => {
+      signal.addEventListener('abort', () => { aborted = true; resolve(false) }, { once: true })
+    }), 1)
     const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Timed forget', content: '<p>keep</p>' }) as { slug: string }
     await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true }))
       .rejects.toThrow('confirmation timed out or failed')
+    expect(aborted).toBe(true)
     await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, { action: { kind: 'script', script: 'scripts/refresh.ts' } }))
       .rejects.toThrow('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
   })

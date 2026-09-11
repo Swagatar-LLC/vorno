@@ -105,5 +105,5 @@ export interface HandlerDeps<
   /** Testable bound for a host confirmation that never settles. */
   pageGrantConfirmationTimeoutMs?: number
   /** Electron-only trusted UI boundary; absent hosts must refuse destructive local recovery. */
-  confirmForgetPagePublication?: (input: { workspaceName: string; pageSlug: string }) => Promise<boolean>
+  confirmForgetPagePublication?: (input: { workspaceName: string; pageSlug: string; signal: AbortSignal }) => Promise<boolean>
 }
