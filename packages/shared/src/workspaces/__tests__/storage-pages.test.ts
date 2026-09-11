@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createWorkspaceAtPath, loadWorkspaceConfig, saveWorkspaceConfig } from '../storage.ts'
-import { isPagesEnabled } from '../../feature-flags.ts'
+import { isPagesEnabled } from '../../pages/capability.ts'
 
 const tempDirs: string[] = []
 

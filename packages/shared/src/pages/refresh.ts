@@ -14,7 +14,7 @@
  */
 
 import type { AutomationMatcher } from '../automations/types.ts';
-import { isPagesEnabled } from '../feature-flags.ts';
+import { isPagesEnabled } from './capability.ts';
 import { loadWorkspacePages } from './storage.ts';
 
 /** Matcher-id prefix marking synthetic page-refresh matchers (also the history key) */

@@ -85,6 +85,7 @@
     "./resources": "./src/resources/index.ts",
     "./pages": "./src/pages/index.ts",
     "./pages/types": "./src/pages/types.ts",
+    "./pages/capability": "./src/pages/capability.ts",
     "./pages/data-store": "./src/pages/data-store.ts",
     "./utils/redaction": "./src/utils/redaction.ts"
   },

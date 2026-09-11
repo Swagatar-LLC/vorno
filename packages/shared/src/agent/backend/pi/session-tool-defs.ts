@@ -10,7 +10,8 @@ import {
   SESSION_TOOL_NAMES,
   type JsonSchemaToolDef,
 } from '@craft-agent/session-tools-core';
-import { FEATURE_FLAGS, isPagesEnabled } from '../../../feature-flags.ts';
+import { FEATURE_FLAGS } from '../../../feature-flags.ts';
+import { isPagesEnabled } from '../../../pages/capability.ts';
 
 export type SessionToolProxyDef = JsonSchemaToolDef;
 

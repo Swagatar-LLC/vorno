@@ -1,15 +1,8 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import type { HandlerDeps } from '../handler-deps'
 import type { HandlerFn, RequestContext, RpcServer } from '../../transport/types'
 import { registerPagesHandlers } from './pages'
-
-const savedPages = process.env.CRAFT_FEATURE_PAGES
-
-afterEach(() => {
-  if (savedPages === undefined) delete process.env.CRAFT_FEATURE_PAGES
-  else process.env.CRAFT_FEATURE_PAGES = savedPages
-})
 
 function createHarness() {
   const handlers = new Map<string, HandlerFn>()
@@ -33,7 +26,6 @@ function createHarness() {
 
 describe('Pages RPC availability gate', () => {
   test('rejects direct productive RPC calls while Pages is disabled', async () => {
-    delete process.env.CRAFT_FEATURE_PAGES
     const invoke = createHarness()
 
     await expect(invoke(RPC_CHANNELS.pages.CREATE, 'workspace', { name: 'blocked' })).rejects.toThrow('PAGES_DISABLED')
@@ -44,7 +36,6 @@ describe('Pages RPC availability gate', () => {
   })
 
   test('reports the same disabled state to desktop capability consumers', async () => {
-    delete process.env.CRAFT_FEATURE_PAGES
     const invoke = createHarness()
 
     await expect(invoke(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES, 'workspace')).resolves.toEqual({

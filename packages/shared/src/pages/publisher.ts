@@ -27,7 +27,8 @@
  */
 
 import type { PageConfig, PageShareInfo } from '@craft-agent/core';
-import { isPagesEnabled, isPagesSharingEnabled } from '../feature-flags.ts';
+import { isPagesSharingEnabled } from '../feature-flags.ts';
+import { isPagesEnabled } from './capability.ts';
 import { deletePage, loadPageConfig, setPageShareState } from './storage.ts';
 import { buildPageShareBundle, PageShareError } from './share-bundle.ts';
 

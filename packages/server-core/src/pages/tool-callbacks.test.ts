@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildPagesToolCallbacks } from './tool-callbacks'
@@ -9,16 +9,10 @@ import { buildPagesToolCallbacks } from './tool-callbacks'
 // sessions inherit CRAFT_IS_PACKAGED=true) it would flip into packaged-mode
 // hardening and block the PATH fallback this suite relies on.
 const SAVED_IS_PACKAGED = process.env.CRAFT_IS_PACKAGED
-const SAVED_PAGES = process.env.CRAFT_FEATURE_PAGES
-beforeAll(() => {
-  process.env.CRAFT_IS_PACKAGED = '0'
-  process.env.CRAFT_FEATURE_PAGES = '1'
-})
+beforeAll(() => { process.env.CRAFT_IS_PACKAGED = '0' })
 afterAll(() => {
   if (SAVED_IS_PACKAGED === undefined) delete process.env.CRAFT_IS_PACKAGED
   else process.env.CRAFT_IS_PACKAGED = SAVED_IS_PACKAGED
-  if (SAVED_PAGES === undefined) delete process.env.CRAFT_FEATURE_PAGES
-  else process.env.CRAFT_FEATURE_PAGES = SAVED_PAGES
 })
 
 describe('pages tool callbacks (end-to-end against a temp workspace)', () => {
@@ -28,6 +22,9 @@ describe('pages tool callbacks (end-to-end against a temp workspace)', () => {
 
   beforeAll(() => {
     workspace = mkdtempSync(join(tmpdir(), 'craft-pages-tools-'))
+    writeFileSync(join(workspace, 'config.json'), JSON.stringify({
+      id: 'test-ws', name: 'Tools', slug: 'tools', defaults: { pages: { enabled: true } }, createdAt: 1, updatedAt: 1,
+    }))
     callbacks = buildPagesToolCallbacks({
       workspaceId: 'test-ws',
       workspaceRootPath: workspace,
@@ -39,10 +36,14 @@ describe('pages tool callbacks (end-to-end against a temp workspace)', () => {
   })
 
   it('refuses productive tools by default while retaining delete cleanup', async () => {
-    delete process.env.CRAFT_FEATURE_PAGES
+    writeFileSync(join(workspace, 'config.json'), JSON.stringify({
+      id: 'test-ws', name: 'Tools', slug: 'tools', defaults: { pages: { enabled: false } }, createdAt: 1, updatedAt: 2,
+    }))
     await expect(callbacks.listPages()).rejects.toThrow('PAGES_DISABLED')
     await expect(callbacks.createPage({ name: 'Blocked' })).rejects.toThrow('PAGES_DISABLED')
-    process.env.CRAFT_FEATURE_PAGES = '1'
+    writeFileSync(join(workspace, 'config.json'), JSON.stringify({
+      id: 'test-ws', name: 'Tools', slug: 'tools', defaults: { pages: { enabled: true } }, createdAt: 1, updatedAt: 3,
+    }))
   })
 
   it('create → list → get round-trips through real storage', async () => {

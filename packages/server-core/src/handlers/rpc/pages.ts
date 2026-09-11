@@ -1,6 +1,6 @@
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
-import { assertPagesEnabled } from '@craft-agent/shared/feature-flags'
+import { assertPagesEnabled, isPagesEnabled } from '@craft-agent/shared/pages/capability'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 import type { PageActionRequest } from '@craft-agent/shared/pages'
@@ -391,7 +391,6 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // Whether the renderer may offer publish/update UI (unpublish is always allowed)
   server.handle(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES, async (_ctx, workspaceId: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
-    const { isPagesEnabled } = await import('@craft-agent/shared/feature-flags')
     const { isPagesSharingAvailable } = await import('@craft-agent/shared/pages')
     const pagesEnabled = isPagesEnabled(workspace?.rootPath)
     return {

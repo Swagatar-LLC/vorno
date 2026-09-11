@@ -82,7 +82,7 @@ import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable
 import { listTaskSlugs, loadTaskSpec, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
 import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
 import { buildPagesToolCallbacks } from '../pages/tool-callbacks'
-import { isPagesEnabled } from '@craft-agent/shared/feature-flags'
+import { isPagesEnabled } from '@craft-agent/shared/pages/capability'
 import { buildServersFromSources as buildServersFromSourcesShared } from '../sources/build-servers'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
@@ -1157,6 +1157,10 @@ export class SessionManager implements ISessionManager {
   private configWatchers: Map<string, ConfigWatcher> = new Map()
   // Automation systems for workspace event automations - one per workspace (includes scheduler, diffing, and handlers)
   private automationSystems: Map<string, AutomationSystem> = new Map()
+  // Last resolved Pages capability per workspace. Config watchers fire for
+  // every root-config write, so only a real boolean transition may rebuild
+  // matchers, broadcast UI state, or recreate agent runtimes.
+  private pagesCapabilityByWorkspace: Map<string, boolean> = new Map()
   // Pending credential request resolvers (keyed by requestId)
   private pendingCredentialResolvers: Map<string, (response: import('@craft-agent/shared/protocol').CredentialResponse) => void> = new Map()
   // Permission request metadata tracking (keyed by requestId)
@@ -1595,6 +1599,7 @@ export class SessionManager implements ISessionManager {
       return // Already watching this workspace
     }
 
+    this.pagesCapabilityByWorkspace.set(workspaceRootPath, isPagesEnabled(workspaceRootPath))
     sessionLog.info(`Setting up ConfigWatcher for workspace: ${workspaceId} (${workspaceRootPath})`)
 
     const callbacks: ConfigWatcherCallbacks = {
@@ -1651,10 +1656,12 @@ export class SessionManager implements ISessionManager {
         this.broadcastAutomationsChanged(workspaceId)
       },
       onWorkspaceConfigChange: () => {
-        // Pages availability resolves from workspace config on every host gate.
-        // Rebuild refresh matchers and notify all clients so disabled→enabled
-        // and enabled→disabled nav state cannot remain stale.
+        const previous = this.pagesCapabilityByWorkspace.get(workspaceRootPath)
+        const current = isPagesEnabled(workspaceRootPath)
+        if (previous === current) return
+        this.pagesCapabilityByWorkspace.set(workspaceRootPath, current)
         this.automationSystems.get(workspaceRootPath)?.reloadPageRefreshMatchers()
+        void this.refreshWorkspacePagesRuntime(workspaceRootPath)
         void import('@craft-agent/shared/pages')
           .then(({ loadWorkspacePages }) => this.broadcastPagesChanged(workspaceId, loadWorkspacePages(workspaceRootPath)))
           .catch((error) => sessionLog.warn(`Failed to broadcast Pages capability change: ${error instanceof Error ? error.message : String(error)}`))
@@ -3616,6 +3623,27 @@ export class SessionManager implements ISessionManager {
         await this.tryRefreshAgentRuntime(managed, 'connection update')
       } catch (error) {
         sessionLog.warn(`refreshConnectionRuntime failed for ${managed.id}: ${error instanceof Error ? error.message : error}`)
+      }
+    }
+  }
+
+  /**
+   * Recreate idle workspace agents after the Pages capability changes so their
+   * static system prompt and registered Claude/Pi tool definitions cannot
+   * advertise the prior state. Productive calls are still host-gated while a
+   * running turn finishes; its next lazy acquisition receives the new shape.
+   */
+  private async refreshWorkspacePagesRuntime(workspaceRootPath: string): Promise<void> {
+    for (const managed of this.sessions.values()) {
+      if (managed.workspace.rootPath !== workspaceRootPath || !managed.agent) continue
+      if (managed.agent.isProcessing()) {
+        sessionLog.info(`Deferring Pages runtime refresh for active session ${managed.id}`)
+        continue
+      }
+      try {
+        await this.disposeManagedAgentRuntime(managed, 'Pages capability changed')
+      } catch (error) {
+        sessionLog.warn(`Pages runtime refresh failed for ${managed.id}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
   }

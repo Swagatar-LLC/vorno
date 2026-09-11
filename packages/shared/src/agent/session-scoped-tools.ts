@@ -34,7 +34,8 @@ import {
 import { createLLMTool, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { createSpawnSessionTool, type SpawnSessionFn } from './spawn-session-tool.ts';
 import { createBrowserTools, type BrowserPaneFns } from './browser-tools.ts';
-import { FEATURE_FLAGS, isPagesEnabled } from '../feature-flags.ts';
+import { FEATURE_FLAGS } from '../feature-flags.ts';
+import { isPagesEnabled } from '../pages/capability.ts';
 import { getBrowserToolEnabled } from '../config/storage.ts';
 
 // Re-export types for backward compatibility
