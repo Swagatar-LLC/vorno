@@ -63,7 +63,9 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // Coalesce identical outstanding consent requests so a page cannot flood
   // host chrome while a user is deciding.
   const pendingGrantRequests = new Map<string, Promise<import('@craft-agent/shared/pages').PageActionGrant | null>>()
-  const pendingGrantPages = new Map<string, Promise<import('@craft-agent/shared/pages').PageActionGrant | null>>()
+  // Electron exposes one native dialog host, so grants must serialize across
+  // every workspace and page — not merely within one Page.
+  let pendingGrantConfirmation: Promise<import('@craft-agent/shared/pages').PageActionGrant | null> | undefined
 
   async function broadcastChanged(workspaceId: string, workspaceRootPath: string): Promise<void> {
     const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
@@ -348,10 +350,9 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const pendingKey = JSON.stringify({ workspaceId, pageSlug, action: request.action })
     const pending = pendingGrantRequests.get(pendingKey)
     if (pending) return pending
-    const pendingPageKey = JSON.stringify({ workspaceId, pageSlug })
-    // One native decision per Page at a time. Exact duplicates coalesce above;
-    // different descriptors are refused rather than queued behind OS chrome.
-    if (pendingGrantPages.has(pendingPageKey)) {
+    // One native decision for this host at a time. Exact duplicates coalesce
+    // above; every other workspace/page/descriptor is refused, never queued.
+    if (pendingGrantConfirmation) {
       throw new Error('PAGE_GRANT_CONFIRMATION_PENDING')
     }
 
@@ -403,12 +404,12 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       }
     })()
     pendingGrantRequests.set(pendingKey, issue)
-    pendingGrantPages.set(pendingPageKey, issue)
+    pendingGrantConfirmation = issue
     try {
       return await issue
     } finally {
       if (pendingGrantRequests.get(pendingKey) === issue) pendingGrantRequests.delete(pendingKey)
-      if (pendingGrantPages.get(pendingPageKey) === issue) pendingGrantPages.delete(pendingPageKey)
+      if (pendingGrantConfirmation === issue) pendingGrantConfirmation = undefined
     }
   })
 

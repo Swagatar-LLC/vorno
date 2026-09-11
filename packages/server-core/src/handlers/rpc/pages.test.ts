@@ -236,6 +236,15 @@ describe('Pages RPC workspace capability gate', () => {
     await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
       action: { kind: 'mcp', sourceSlug: 'example', toolName: 'other_action' },
     })).rejects.toThrow('PAGE_GRANT_CONFIRMATION_PENDING')
+    // The native host is global: another enabled workspace/page cannot open a
+    // second modal while this request is pending.
+    writeWorkspace(ROOT_B, WORKSPACE_B, true)
+    const otherPage = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_B, {
+      name: 'Second page', content: '<p>content</p>',
+    }) as { slug: string }
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_B, otherPage.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/other' },
+    })).rejects.toThrow('PAGE_GRANT_CONFIRMATION_PENDING')
     expect(invoke.confirmations).toHaveLength(1)
     invoke.resolvePending()
     const [firstGrant, secondGrant] = await Promise.all([first, second]) as [{ id: string }, { id: string }]
