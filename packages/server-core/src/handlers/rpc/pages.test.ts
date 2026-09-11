@@ -92,6 +92,13 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
   const invokeWithContext = async (ctx: RequestContext, channel: string, ...args: unknown[]) => {
     const handler = handlers.get(channel)
     if (!handler) throw new Error(`handler not registered: ${channel}`)
+    if (channel === RPC_CHANNELS.pages.REQUEST_GRANT && args.length === 3) {
+      const [workspaceId, pageSlug] = args as [string, string, unknown]
+      const createLease = handlers.get(RPC_CHANNELS.pages.CREATE_LEASE)
+      if (!createLease) throw new Error('missing create-lease handler')
+      const { lease } = await createLease(ctx, workspaceId, pageSlug) as { lease: { leaseId: string } }
+      return handler(ctx, ...args, lease.leaseId)
+    }
     return handler(ctx, ...args)
   }
   const invoke = async (channel: string, ...args: unknown[]) => invokeWithContext({
@@ -282,49 +289,79 @@ describe('Pages RPC workspace capability gate', () => {
     expect(invoke.confirmations).toEqual([])
   })
 
-  test('coalesces duplicate consent and queues distinct descriptors and pages behind one native prompt', async () => {
+  test('coalesces duplicate consent, limits a render to one prompt, and queues another page', async () => {
     const invoke = createHarness('pending')
     const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
       name: 'Coalesced grant', content: '<p>content</p>',
     }) as { slug: string }
+    const { lease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as { lease: { leaseId: string } }
     const input = { action: { kind: 'script' as const, script: 'scripts/refresh.ts' } }
-    const first = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input)
+    const first = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input, lease.leaseId)
     for (let attempt = 0; attempt < 10 && invoke.confirmations.length === 0; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 0))
     }
     const duplicate = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
       ...input,
       description: 'A changed page-authored message must not create another prompt',
-    })
-    const secondDescriptor = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+    }, lease.leaseId)
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
       action: { kind: 'mcp', sourceSlug: 'example', toolName: 'other_action' },
-    })
+    }, lease.leaseId)).rejects.toThrow('PAGE_GRANT_CONFIRMATION_ALREADY_PENDING')
+
     writeWorkspace(ROOT_B, WORKSPACE_B, true)
     const otherPage = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_B, {
       name: 'Second page', content: '<p>content</p>',
     }) as { slug: string }
-    const secondPage = invoke.invokeWithContext({
-      clientId: 'trusted-client', workspaceId: WORKSPACE_B, webContentsId: 101,
-    }, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_B, otherPage.slug, {
+    const otherContext = { clientId: 'trusted-client', workspaceId: WORKSPACE_B, webContentsId: 101 }
+    const { lease: otherLease } = await invoke.invokeWithContext(otherContext, RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_B, otherPage.slug) as { lease: { leaseId: string } }
+    const secondPage = invoke.invokeWithContext(otherContext, RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_B, otherPage.slug, {
       action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/other' },
-    })
+    }, otherLease.leaseId)
 
-    for (let prompt = 0; prompt < 3; prompt++) {
+    for (let prompt = 0; prompt < 2; prompt++) {
       for (let attempt = 0; attempt < 10 && invoke.confirmations.length <= prompt; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 0))
       }
       expect(invoke.confirmations).toHaveLength(prompt + 1)
       invoke.resolvePending()
     }
-    const [firstGrant, duplicateGrant, secondDescriptorGrant, secondPageGrant] = await Promise.all([
-      first, duplicate, secondDescriptor, secondPage,
-    ]) as [{ id: string }, { id: string }, { id: string }, { id: string }]
+    const [firstGrant, duplicateGrant, secondPageGrant] = await Promise.all([
+      first, duplicate, secondPage,
+    ]) as [{ id: string }, { id: string }, { id: string }]
     expect(firstGrant.id).toBe(duplicateGrant.id)
-    expect(secondDescriptorGrant.id).not.toBe(firstGrant.id)
     expect(secondPageGrant.id).not.toBe(firstGrant.id)
-    expect(invoke.confirmations).toHaveLength(3)
-    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(2)
+    expect(invoke.confirmations).toHaveLength(2)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
     await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_B, otherPage.slug)).resolves.toHaveLength(1)
+  })
+
+  test('cancels queued consent when its Page render lease is released', async () => {
+    const invoke = createHarness('pending')
+    const firstPage = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Active prompt', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease: firstLease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, firstPage.slug) as { lease: { leaseId: string } }
+    const first = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, firstPage.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/first' },
+    }, firstLease.leaseId)
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+
+    const cancelledPage = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Cancelled prompt', content: '<p>content</p>',
+    }) as { slug: string }
+    const { lease: cancelledLease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, cancelledPage.slug) as { lease: { leaseId: string } }
+    const cancelled = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, cancelledPage.slug, {
+      action: { kind: 'mcp', sourceSlug: 'example', toolName: 'cancelled_action' },
+    }, cancelledLease.leaseId)
+    await invoke(RPC_CHANNELS.pages.RELEASE_LEASE, WORKSPACE_A, cancelledLease.leaseId)
+    invoke.resolvePending()
+
+    await expect(first).resolves.toMatchObject({ id: expect.any(String) })
+    await expect(cancelled).resolves.toBeNull()
+    expect(invoke.confirmations).toHaveLength(1)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, cancelledPage.slug)).resolves.toEqual([])
   })
 
   test('does not coalesce a changed digest with stale pending consent', async () => {

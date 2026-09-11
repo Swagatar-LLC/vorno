@@ -240,6 +240,13 @@ export class PageActionBroker {
     return lease;
   }
 
+  /** Whether a render lease still represents this page and exact content. */
+  hasActiveLease(leaseId: string, pageSlug: string, contentDigest: string): boolean {
+    this.pruneExpiredLeases();
+    const lease = this.leases.get(leaseId);
+    return lease?.pageSlug === pageSlug && lease.contentDigest === contentDigest;
+  }
+
   /** Drop a lease (page unmounted). Idempotent. */
   releaseLease(leaseId: string): void {
     const lease = this.leases.get(leaseId);

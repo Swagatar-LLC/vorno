@@ -26,6 +26,7 @@ import {
   reconcileGrantSummaries,
   toGrantSummary,
   type PageBridgeIncoming,
+  type PageGrantRequestEntry,
   type PageGrantSummary,
 } from '../../../shared/page-bridge'
 
@@ -113,6 +114,10 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
   grantsRef.current = grants
 
   const deniedRef = useRef<Set<string>>(new Set())
+  /** Serialized per-render requests keep one Page from filling host chrome. */
+  const grantRequestQueueRef = useRef<PageGrantRequestEntry[]>([])
+  const pendingGrantSignaturesRef = useRef<Set<string>>(new Set())
+  const grantRequestInFlightRef = useRef(false)
   /** Approvals from this render the config watcher hasn't confirmed yet. */
   const locallyIssuedRef = useRef<Set<string>>(new Set())
 
@@ -153,6 +158,8 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
   // digest-bound grant request rather than inheriting the old deny-memory.
   useEffect(() => {
     deniedRef.current.clear()
+    grantRequestQueueRef.current = []
+    pendingGrantSignaturesRef.current.clear()
   }, [lease.contentDigest])
 
   // Live pages get replacement snapshots; interactive pages keep their
@@ -209,47 +216,66 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
     [workspaceId, pageSlug, lease.leaseId, lease.nonce, postToFrame],
   )
 
-  const handleGrantRequest = useCallback(
-    async (msg: Extract<PageBridgeIncoming, { type: 'grant-request' }>) => {
-      if (msg.nonce !== lease.nonce) return
-      const current = grantsRef.current
-      const remaining = msg.requests.filter(
-        req =>
-          !current.some(g => descriptorEquals(g.action, req.action)) &&
-          !deniedRef.current.has(descriptorSignature(req.action)),
-      )
-      // Even a duplicate bridge request needs a grants reply; otherwise the
-      // opaque frame can wait forever for a result. Distinct requests proceed
-      // to the bounded server queue so one native modal never drops another.
-      if (remaining.length === 0) {
-        postToFrame(buildPageGrantsMessage(current))
-        return
-      }
-      for (const entry of remaining) {
+  const processGrantRequestQueue = useCallback(async () => {
+    if (grantRequestInFlightRef.current) return
+    grantRequestInFlightRef.current = true
+    try {
+      while (grantRequestQueueRef.current.length > 0) {
+        const entry = grantRequestQueueRef.current.shift()!
+        const signature = descriptorSignature(entry.action)
         try {
           // The RPC host, not this renderer, owns consent and persistence.
           const grant = await window.electronAPI.requestPageGrant(workspaceId, pageSlug, {
             action: entry.action,
             ...(entry.description !== undefined ? { description: entry.description } : {}),
-          })
+          }, lease.leaseId)
           if (!grant) {
-            deniedRef.current.add(descriptorSignature(entry.action))
+            deniedRef.current.add(signature)
             continue
           }
           locallyIssuedRef.current.add(grant.id)
           postGrants([...grantsRef.current, toGrantSummary(grant)])
           toast.success(t('toast.pageGrantsIssued'))
         } catch (err) {
-          // Contention, a stale digest, and an unavailable host are transient
-          // outcomes. Do not poison deny-memory; the page may retry safely.
+          // A transient host failure is never deny-memory. The page may make
+          // a later request, while this bounded queue releases the descriptor.
           toast.error(t('toast.pageGrantFailed'), {
             description: err instanceof Error ? err.message : String(err),
           })
+        } finally {
+          pendingGrantSignaturesRef.current.delete(signature)
         }
       }
+    } finally {
+      grantRequestInFlightRef.current = false
       postToFrame(buildPageGrantsMessage(grantsRef.current))
+    }
+  }, [lease.leaseId, workspaceId, pageSlug, postGrants, postToFrame, t])
+
+  const handleGrantRequest = useCallback(
+    (msg: Extract<PageBridgeIncoming, { type: 'grant-request' }>) => {
+      if (msg.nonce !== lease.nonce) return
+      const current = grantsRef.current
+      const remaining = msg.requests.filter(req => {
+        const signature = descriptorSignature(req.action)
+        return !current.some(g => descriptorEquals(g.action, req.action)) &&
+          !deniedRef.current.has(signature) &&
+          !pendingGrantSignaturesRef.current.has(signature)
+      })
+      // Even a duplicate bridge request needs a grants reply; otherwise the
+      // opaque frame can wait forever for a result. Distinct descriptors enter
+      // the per-render queue and run one at a time after the prior decision.
+      if (remaining.length === 0) {
+        postToFrame(buildPageGrantsMessage(current))
+        return
+      }
+      for (const entry of remaining) {
+        pendingGrantSignaturesRef.current.add(descriptorSignature(entry.action))
+        grantRequestQueueRef.current.push(entry)
+      }
+      void processGrantRequestQueue()
     },
-    [lease.nonce, workspaceId, pageSlug, postGrants, postToFrame, t],
+    [lease.nonce, postToFrame, processGrantRequestQueue],
   )
 
   useEffect(() => {
@@ -293,6 +319,8 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
   useEffect(() => {
     const limiter = limiterRef.current!
     return () => {
+      grantRequestQueueRef.current = []
+      pendingGrantSignaturesRef.current.clear()
       for (const requestId of limiter.inFlightIds) {
         void window.electronAPI.cancelPageAction(workspaceId, requestId)
       }
