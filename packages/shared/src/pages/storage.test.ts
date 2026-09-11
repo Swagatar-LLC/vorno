@@ -325,6 +325,24 @@ describe('pages/storage', () => {
       expect(loadPageConfig(workspaceDir, created.slug)?.grants).toEqual([]);
     });
 
+    it('allows unrelated updates after a configured refresh grant expires', () => {
+      const created = createPage(workspaceDir, { name: 'Expired refresh', content: 'v1' });
+      const grant = addPageGrant(workspaceDir, created.slug, {
+        action: { kind: 'script', script: 'scripts/refresh.ts' },
+      });
+      const refresh = { cron: '*/5 * * * *', script: 'scripts/refresh.ts', grantId: grant.id };
+      updatePage(workspaceDir, created.slug, { refresh });
+      const config = loadPageConfig(workspaceDir, created.slug)!;
+      savePageConfig(workspaceDir, {
+        ...config,
+        grants: config.grants!.map(candidate => candidate.id === grant.id ? { ...candidate, expiresAt: Date.now() - 1 } : candidate),
+      });
+
+      expect(updatePage(workspaceDir, created.slug, { description: 'Metadata remains editable' }).description)
+        .toBe('Metadata remains editable');
+      expect(() => updatePage(workspaceDir, created.slug, { refresh })).toThrow(/stale or expired/);
+    });
+
     it('persists a refresh only for an exact usable script grant', () => {
       const created = createPage(workspaceDir, { name: 'Refresh', content: 'v1' });
       const grant = addPageGrant(workspaceDir, created.slug, {

@@ -167,6 +167,13 @@ export const PageActionDescriptorSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
+/** Client-facing request shape. The host adds the expected content digest after consent. */
+export const AddPageGrantInputSchema = z.object({
+  action: PageActionDescriptorSchema,
+  description: z.string().optional(),
+  ttlMs: z.number().finite().positive().optional(),
+}).strict();
+
 export const PageActionGrantSchema = z.object({
   id: z.string().min(1),
   description: z.string().optional(),

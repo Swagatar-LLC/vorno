@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { savePageContent } from '@craft-agent/shared/pages'
-import type { HandlerDeps } from '../handler-deps'
+import type { HandlerDeps, PageGrantConfirmationSpec } from '../handler-deps'
 import type { HandlerFn, RequestContext, RpcServer } from '../../transport/types'
 import { registerPagesHandlers } from './pages'
 
@@ -40,22 +40,33 @@ function registerTestWorkspaces(): void {
   }))
 }
 
-type GrantConfirmation = 'approve' | 'decline' | 'disconnect' | 'no-answer' | 'unavailable'
+type GrantConfirmation = 'approve' | 'decline' | 'disconnect' | 'no-answer' | 'pending' | 'unavailable'
 
-function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirmation?: () => void) {
+type GrantHarness = ((channel: string, ...args: unknown[]) => Promise<unknown>) & {
+  confirmations: PageGrantConfirmationSpec[]
+  clientConsentCalls: () => number
+  resolvePending: () => void
+}
+
+function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirmation?: () => void): GrantHarness {
   const handlers = new Map<string, HandlerFn>()
+  const confirmations: PageGrantConfirmationSpec[] = []
+  let clientConsentCallCount = 0
+  let resolvePendingConfirmation: ((accepted: boolean) => void) | undefined
   const server: RpcServer = {
     handle(channel, handler) { handlers.set(channel, handler) },
     push() {},
-    async invokeClient() { return undefined },
-    hasClientCapability() { return false },
-    findClientsWithCapability() { return [] },
+    async invokeClient() { clientConsentCallCount++; return { response: 1 } },
+    hasClientCapability() { return true },
+    findClientsWithCapability() { return ['hostile-client'] },
   }
-  const confirmPageGrant = confirm === 'unavailable' ? undefined : async () => {
+  const confirmPageGrant = confirm === 'unavailable' ? undefined : async (spec: PageGrantConfirmationSpec) => {
+    confirmations.push(spec)
     duringConfirmation?.()
     if (confirm === 'approve') return true
     if (confirm === 'decline') return false
     if (confirm === 'disconnect') throw new Error('host dialog disconnected')
+    if (confirm === 'pending') return await new Promise<boolean>(resolve => { resolvePendingConfirmation = resolve })
     return await new Promise<boolean>(() => {})
   }
   registerPagesHandlers(server, {
@@ -67,11 +78,16 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
     confirmPageGrant,
     ...(confirm === 'no-answer' ? { pageGrantConfirmationTimeoutMs: 1 } : {}),
   } as unknown as HandlerDeps)
-  return async (channel: string, ...args: unknown[]) => {
+  const invoke = async (channel: string, ...args: unknown[]) => {
     const handler = handlers.get(channel)
     if (!handler) throw new Error(`handler not registered: ${channel}`)
-    return handler({ workspaceId: WORKSPACE_A, clientId: 'test-client' } as RequestContext, ...args)
+    return handler({ workspaceId: WORKSPACE_A, clientId: 'hostile-client' } as RequestContext, ...args)
   }
+  return Object.assign(invoke, {
+    confirmations,
+    clientConsentCalls: () => clientConsentCallCount,
+    resolvePending: () => resolvePendingConfirmation?.(true),
+  })
 }
 
 beforeAll(() => {
@@ -143,6 +159,27 @@ describe('Pages RPC workspace capability gate', () => {
     await expect(approved(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
   })
 
+  test('passes server-resolved identity, descriptor, and bounded page prose to the trusted host', async () => {
+    const invoke = createHarness('approve')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Human readable Page', content: '<p>content</p>',
+    }) as { slug: string }
+    await invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+      description: `first line\nsecond line ${'x'.repeat(240)}`,
+    })
+
+    expect(invoke.confirmations).toHaveLength(1)
+    expect(invoke.confirmations[0]).toMatchObject({
+      workspace: { id: WORKSPACE_A, name: WORKSPACE_A },
+      page: { slug: page.slug, name: 'Human readable Page' },
+      action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
+    })
+    expect(invoke.confirmations[0]?.pageMessage).toStartWith('The page says: first line second line')
+    expect(invoke.confirmations[0]?.pageMessage).not.toContain('\n')
+    expect(invoke.confirmations[0]?.pageMessage?.length).toBe(200)
+  })
+
   test('declined, disconnected, and timed-out confirmations leave no grant', async () => {
     for (const outcome of ['decline', 'disconnect', 'no-answer'] as const) {
       const invoke = createHarness(outcome)
@@ -166,6 +203,41 @@ describe('Pages RPC workspace capability gate', () => {
       action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
     })).rejects.toThrow('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
     await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toEqual([])
+    // A hostile remote client advertises and returns approval for the generic
+    // dialog capability, but Page grant issuance never asks it.
+    expect(invoke.clientConsentCalls()).toBe(0)
+  })
+
+  test('rejects malformed descriptors before inspecting action kind or prompting', async () => {
+    const invoke = createHarness('approve')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Malformed grant', content: '<p>content</p>',
+    }) as { slug: string }
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      action: { kind: 'script', script: '../escape.ts' },
+    })).rejects.toThrow('PAGE_GRANT_INVALID_REQUEST')
+    expect(invoke.confirmations).toEqual([])
+  })
+
+  test('coalesces identical pending consent requests into one host prompt', async () => {
+    const invoke = createHarness('pending')
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Coalesced grant', content: '<p>content</p>',
+    }) as { slug: string }
+    const input = { action: { kind: 'script' as const, script: 'scripts/refresh.ts' } }
+    const first = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, input)
+    for (let attempt = 0; attempt < 10 && invoke.confirmations.length === 0; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    const second = invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, {
+      ...input,
+      description: 'A changed page-authored message must not create another prompt',
+    })
+    expect(invoke.confirmations).toHaveLength(1)
+    invoke.resolvePending()
+    const [firstGrant, secondGrant] = await Promise.all([first, second]) as [{ id: string }, { id: string }]
+    expect(firstGrant.id).toBe(secondGrant.id)
+    await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
   })
 
   test('refuses a grant when content changes while the host prompt is pending', async () => {

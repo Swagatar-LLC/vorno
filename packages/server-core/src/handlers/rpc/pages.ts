@@ -40,11 +40,12 @@ export const HANDLED_CHANNELS = [
 const ACTION_BODY_MAX_CHARS = 512 * 1024
 /** An unanswered prompt must not leave a request hanging or mint a grant later. */
 const PAGE_GRANT_CONFIRM_TIMEOUT_MS = 30_000
+const PAGE_GRANT_MESSAGE_MAX_CHARS = 200
 
-function describeGrantForConfirmation(action: import('@craft-agent/shared/pages').PageActionDescriptor): string {
-  if (action.kind === 'api') return `${action.method} ${action.sourceSlug}${action.pathPattern}`
-  if (action.kind === 'mcp') return `${action.sourceSlug}:${action.toolName}`
-  return `${action.runtime ?? 'bun'} ${action.script}${action.args?.length ? ` ${action.args.join(' ')}` : ''}`
+/** Keep page-authored prose visibly distinct from host-rendered identity/action. */
+function sanitizePageGrantMessage(description: string | undefined): string | undefined {
+  if (!description) return undefined
+  return `The page says: ${description.replace(/[\r\n]+/g, ' ').trim()}`.slice(0, PAGE_GRANT_MESSAGE_MAX_CHARS)
 }
 
 export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): void {
@@ -59,6 +60,9 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // independent of session pools. Clients live until the process exits
   // (same lifetime as the brokers above).
   const mcpPools = new Map<string, import('@craft-agent/shared/mcp').McpClientPool>()
+  // Coalesce identical outstanding consent requests so a page cannot flood
+  // host chrome while a user is deciding.
+  const pendingGrantRequests = new Map<string, Promise<import('@craft-agent/shared/pages').PageActionGrant | null>>()
 
   async function broadcastChanged(workspaceId: string, workspaceRootPath: string): Promise<void> {
     const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
@@ -68,11 +72,11 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // Lifecycle audit is deliberately metadata-only: never record the descriptor,
   // source values, or user-supplied description alongside an approval decision.
-  async function auditGrantDecision(event: 'page_grant_approved' | 'page_grant_rejected', pageSlug: string, actionKind: string): Promise<void> {
+  async function auditGrantDecision(event: 'page_grant_approved' | 'page_grant_rejected', workspaceId: string, pageSlug: string, actionKind: string): Promise<void> {
     try {
       const path = join(CONFIG_DIR, 'logs', 'page-actions.jsonl')
       await mkdir(dirname(path), { recursive: true })
-      await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), event, pageSlug, actionKind })}\n`, 'utf8')
+      await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), event, workspaceId, pageSlug, actionKind })}\n`, 'utf8')
     } catch (error) {
       log.warn(`Failed to audit page grant decision: ${error}`)
     }
@@ -323,59 +327,79 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     _ctx,
     workspaceId: string,
     pageSlug: string,
-    input: import('@craft-agent/shared/pages').AddPageGrantInput,
+    input: unknown,
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     assertAvailable(workspace.rootPath)
 
-    const { loadPageConfig, addPageGrant } = await import('@craft-agent/shared/pages')
-    const expectedContentDigest = loadPageConfig(workspace.rootPath, pageSlug)?.contentDigest
-    if (!expectedContentDigest) throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved.`)
-    if (!deps.confirmPageGrant) {
-      await auditGrantDecision('page_grant_rejected', pageSlug, input.action.kind)
-      throw new Error('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
+    // Treat every transport request as hostile. In particular, do not inspect
+    // `kind` until the existing discriminated-union schema has accepted it.
+    const { AddPageGrantInputSchema, loadPageConfig, addPageGrant } = await import('@craft-agent/shared/pages')
+    const parsed = AddPageGrantInputSchema.safeParse(input)
+    if (!parsed.success) {
+      await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, 'invalid')
+      throw new Error('PAGE_GRANT_INVALID_REQUEST')
     }
+    const request = parsed.data
+    // Page-authored description and requested lifetime must not bypass this
+    // guard; the security identity is the page plus the action descriptor.
+    const pendingKey = JSON.stringify({ workspaceId, pageSlug, action: request.action })
+    const pending = pendingGrantRequests.get(pendingKey)
+    if (pending) return pending
 
-    let accepted = false
-    try {
-      const confirmation = deps.confirmPageGrant({
-        type: input.action.kind === 'script' ? 'warning' : 'question',
-        title: 'Approve Page action',
-        message: `Allow this page to use: ${describeGrantForConfirmation(input.action)}?`,
-        detail: input.description ?? 'This permission is bound to the current page content and expires automatically.',
-        buttons: ['Deny', 'Approve'],
-        defaultId: 0,
-        cancelId: 0,
-      })
-      let timer: ReturnType<typeof setTimeout> | undefined
-      try {
-        const timeout = new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error('confirmation timed out')), deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
-        })
-        accepted = await Promise.race([confirmation, timeout])
-      } finally {
-        if (timer) clearTimeout(timer)
+    const issue = (async () => {
+      const page = loadPageConfig(workspace.rootPath, pageSlug)
+      const expectedContentDigest = page?.contentDigest
+      if (!page || !expectedContentDigest) throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved.`)
+      if (!deps.confirmPageGrant) {
+        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
+        throw new Error('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
       }
-    } catch (error) {
-      log.info(`Page grant confirmation unavailable for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`)
-    }
 
-    if (!accepted) {
-      await auditGrantDecision('page_grant_rejected', pageSlug, input.action.kind)
-      return null
-    }
+      let accepted = false
+      try {
+        const confirmation = deps.confirmPageGrant({
+          workspace: { id: workspaceId, name: workspace.name },
+          page: { slug: pageSlug, name: page.name },
+          action: request.action,
+          pageMessage: sanitizePageGrantMessage(request.description),
+        })
+        let timer: ReturnType<typeof setTimeout> | undefined
+        try {
+          const timeout = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('confirmation timed out')), deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
+          })
+          accepted = await Promise.race([confirmation, timeout])
+        } finally {
+          if (timer) clearTimeout(timer)
+        }
+      } catch (error) {
+        log.info(`Page grant confirmation unavailable for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`)
+      }
 
+      if (!accepted) {
+        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
+        return null
+      }
+
+      try {
+        const grant = addPageGrant(workspace.rootPath, pageSlug, { ...request, expectedContentDigest })
+        deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
+        await broadcastChanged(workspaceId, workspace.rootPath)
+        await auditGrantDecision('page_grant_approved', workspaceId, pageSlug, grant.action.kind)
+        log.info(`Approved page grant ${grant.id} on ${pageSlug} (${grant.action.kind})`)
+        return grant
+      } catch (error) {
+        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
+        throw error
+      }
+    })()
+    pendingGrantRequests.set(pendingKey, issue)
     try {
-      const grant = addPageGrant(workspace.rootPath, pageSlug, { ...input, expectedContentDigest })
-      deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
-      await broadcastChanged(workspaceId, workspace.rootPath)
-      await auditGrantDecision('page_grant_approved', pageSlug, grant.action.kind)
-      log.info(`Approved page grant ${grant.id} on ${pageSlug} (${grant.action.kind})`)
-      return grant
-    } catch (error) {
-      await auditGrantDecision('page_grant_rejected', pageSlug, input.action.kind)
-      throw error
+      return await issue
+    } finally {
+      if (pendingGrantRequests.get(pendingKey) === issue) pendingGrantRequests.delete(pendingKey)
     }
   })
 

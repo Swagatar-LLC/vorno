@@ -363,8 +363,12 @@ export function updatePage(
     if (patch[field] === null) (normalized as Record<string, unknown>)[field] = undefined;
   }
 
-  const refresh = Object.hasOwn(normalized, 'refresh') ? normalized.refresh : existing.refresh;
-  if (refresh) assertPageRefreshGrant(existing, refresh);
+  // Existing refreshes may later expire or be revoked. That must not prevent
+  // unrelated metadata edits; validate only when this write creates or changes
+  // the refresh configuration itself.
+  if (Object.hasOwn(normalized, 'refresh') && normalized.refresh) {
+    assertPageRefreshGrant(existing, normalized.refresh);
+  }
 
   const updated: PageConfig = {
     ...existing,
