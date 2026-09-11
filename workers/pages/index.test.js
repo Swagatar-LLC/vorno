@@ -11,6 +11,8 @@ import { handle, MAX_CONTENT_BYTES, PAGE_ID_RE, randomToken } from './index.js'
 function makeBucket({ failDeletes = new Map() } = {}) {
   const objects = new Map()
   let failNextPut
+  let blockNextManifest
+  let revision = 0
   const drain = async value => {
     if (value instanceof Blob) return new Uint8Array(await value.arrayBuffer())
     if (value instanceof ReadableStream) return new Uint8Array(await new Response(value).arrayBuffer())
@@ -19,21 +21,38 @@ function makeBucket({ failDeletes = new Map() } = {}) {
   return {
     objects,
     async put(key, value, options = {}) {
+      if (blockNextManifest && key.endsWith('/manifest.json')) {
+        const block = blockNextManifest
+        blockNextManifest = undefined
+        block.entered()
+        await block.wait
+      }
+      if (options.onlyIf?.etagMatches && objects.get(key)?.etag !== options.onlyIf.etagMatches) return null
       if (failNextPut?.(key)) {
         failNextPut = undefined
         throw new Error(`put failed for ${key}`)
       }
       const bytes = await drain(value)
-      objects.set(key, { bytes, customMetadata: options.customMetadata })
+      const etag = `etag-${++revision}`
+      objects.set(key, { bytes, customMetadata: options.customMetadata, etag })
+      return { etag }
     },
     async get(key) {
       const object = objects.get(key)
-      return object ? { body: new Blob([object.bytes]).stream(), customMetadata: object.customMetadata } : null
+      return object ? { body: new Blob([object.bytes]).stream(), customMetadata: object.customMetadata, etag: object.etag } : null
     },
     async list({ prefix = '' } = {}) {
       return { objects: [...objects.keys()].filter(key => key.startsWith(prefix)).map(key => ({ key })), truncated: false }
     },
     failNextPut(predicate) { failNextPut = predicate },
+    blockNextManifest() {
+      let release
+      let entered
+      const wait = new Promise(resolve => { release = resolve })
+      const enteredPromise = new Promise(resolve => { entered = resolve })
+      blockNextManifest = { wait, entered }
+      return { release, entered: enteredPromise }
+    },
     async delete(key) {
       const remaining = failDeletes.get(key) || 0
       if (remaining) {
@@ -48,6 +67,7 @@ function makeBucket({ failDeletes = new Map() } = {}) {
 function makeEnv(overrides = {}) {
   return {
     PAGES: makeBucket(),
+    PAGE_CREATE_LIMIT: { limit: async () => ({ success: true }) },
     PASSWORD_TICKET_SECRET: 'test-only-ticket-secret',
     // Tests exercise ticket lifecycle, not PBKDF CPU cost; production uses the measured default.
     PBKDF2_ITERATIONS: 1,
@@ -120,6 +140,20 @@ describe('publication capabilities', () => {
     expect(keys.filter(key => key.includes('/revisions/')).length).toBe(2)
   })
 
+  test('a stale update cannot resurrect a publication after concurrent logical revocation', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env)
+    const block = bucket.blockNextManifest()
+    const update = handle(req(`/api/publications/${data.id}`, { method: 'PUT', headers: auth(data.adminToken), body: bundle({ content: '<p>stale update</p>' }) }), env)
+    await block.entered
+    const deleted = await handle(req(`/api/publications/${data.id}`, { method: 'DELETE', headers: auth(data.adminToken) }), env)
+    expect(deleted.status).toBe(200)
+    block.release()
+    expect((await update).status).toBe(409)
+    expect((await content(env, data.id)).status).toBe(404)
+  })
+
   test('changes revision only for content updates, never a password-only update', async () => {
     const env = makeEnv()
     const { data } = await create(env)
@@ -167,12 +201,35 @@ describe('multipart caps and rate brakes', () => {
     expect(lowEnv.PAGES.objects.size).toBe(0)
   })
 
-  test('fails closed when a create limiter denies and open only when the limiter itself is unavailable', async () => {
+  test('rejects malformed snapshots and common HTML secret candidates before persistence', async () => {
+    const invalidSnapshot = makeEnv()
+    const malformed = bundle({ snapshot: '{not-json' })
+    // Replace the blob with malformed JSON without changing the opt-in manifest.
+    malformed.set('snapshot', new Blob(['{not-json']), 'snapshot.json')
+    expect((await handle(req('/api/publications', { method: 'POST', body: malformed }), invalidSnapshot)).status).toBe(400)
+    expect(invalidSnapshot.PAGES.objects.size).toBe(0)
+    const secret = makeEnv()
+    expect((await create(secret, { content: '-----BEGIN PRIVATE KEY----- secret' })).response.status).toBe(400)
+    expect(secret.PAGES.objects.size).toBe(0)
+  })
+
+  test('caps raw multipart bytes before parsing unused chunked fields', async () => {
+    const env = makeEnv()
+    const form = bundle()
+    form.set('ignored', new Blob(['x'.repeat(11 * 1024 * 1024)]), 'ignored.bin')
+    const response = await handle(req('/api/publications', { method: 'POST', body: form }), env)
+    expect(response.status).toBe(413)
+    expect(env.PAGES.objects.size).toBe(0)
+  })
+
+  test('fails closed when the create limiter is absent, denies, or throws', async () => {
     const denied = makeEnv({ PAGE_CREATE_LIMIT: { limit: async () => ({ success: false }) } })
     expect((await create(denied)).response.status).toBe(429)
     expect(denied.PAGES.objects.size).toBe(0)
     const unavailable = makeEnv({ PAGE_CREATE_LIMIT: { limit: async () => { throw new Error('down') } } })
-    expect((await create(unavailable)).response.status).toBe(201)
+    expect((await create(unavailable)).response.status).toBe(429)
+    const missing = makeEnv({ PAGE_CREATE_LIMIT: undefined })
+    expect((await create(missing)).response.status).toBe(429)
   })
 })
 
@@ -182,7 +239,8 @@ describe('public containment and snapshot opt-in', () => {
     const { data } = await create(env)
     const publicContent = await content(env, data.id)
     expect(publicContent.headers.get('content-security-policy')).toContain("connect-src 'none'")
-    expect(publicContent.headers.get('content-security-policy')).toContain('frame-ancestors https://pages.vorno.ai')
+    expect(publicContent.headers.get('content-security-policy')).toContain("frame-ancestors 'self'")
+    expect(publicContent.headers.get('content-security-policy')).toContain('sandbox allow-scripts')
     expect(publicContent.headers.get('x-content-type-options')).toBe('nosniff')
     expect(publicContent.headers.get('cache-control')).toBe('no-store')
     const shell = await handle(req(`/p/${data.id}`), env)
@@ -193,6 +251,17 @@ describe('public containment and snapshot opt-in', () => {
     expect(html).toContain('public-actions-disabled')
     expect(html).toContain("grants:[]")
     expect(html).not.toContain('window.open')
+  })
+
+  test('sandboxes direct static documents without allowing scripts', async () => {
+    const env = makeEnv()
+    const form = bundle();
+    form.set('manifest', JSON.stringify({ version: 1, slug: 'static', title: 'Static', kind: 'static', contentDigest: digest, includesData: false }))
+    const created = await handle(req('/api/publications', { method: 'POST', body: form }), env)
+    const data = await created.json()
+    const direct = await content(env, data.id)
+    expect(direct.headers.get('content-security-policy')).toContain('; sandbox')
+    expect(direct.headers.get('content-security-policy')).not.toContain('sandbox allow-scripts')
   })
 
   test('never exposes a snapshot unless the publisher explicitly included one', async () => {

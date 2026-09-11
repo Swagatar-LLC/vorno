@@ -57,10 +57,13 @@ export function isPagesSharingAvailable(
 export function resolveStoredPagesShareApiBaseUrl(shareUrl: string): string | undefined {
   let url: URL;
   try { url = new URL(shareUrl); } catch { return undefined; }
-  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash) return undefined;
+  if (url.username || url.password || url.search || url.hash) return undefined;
   if (!/^\/p\/[A-Za-z0-9_-]+$/.test(url.pathname)) return undefined;
-  if (url.hostname === 'thecraftagents.com') return 'https://thecraftagents.com/p/api';
-  if (url.hostname === 'pages.vorno.ai') return 'https://pages.vorno.ai/api';
+  if (url.protocol === 'https:' && !url.port && url.hostname === 'thecraftagents.com') return 'https://thecraftagents.com/p/api';
+  if (url.protocol === 'https:' && !url.port && url.hostname === 'pages.vorno.ai') return 'https://pages.vorno.ai/api';
+  if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1') && url.port) {
+    return `${url.origin}/api`;
+  }
   return undefined;
 }
 
@@ -134,7 +137,7 @@ export interface UnpublishResult {
    * Set when local state was cleared without remote confirmation (vault token
    * missing) — the public copy may still exist until it is garbage-collected.
    */
-  warning?: 'remote-copy-may-remain';
+  warning?: 'remote-cleanup-pending';
 }
 
 interface WorkerPublicationResponse {
@@ -296,7 +299,7 @@ export class PagePublisher {
       // Nothing we can do remotely without the capability; free the local page.
       const updated = setPageShareState(workspaceRootPath, pageSlug, undefined);
       this.log(`Unpublished ${pageSlug} locally only — admin token missing from vault`);
-      return { config: updated, warning: 'remote-copy-may-remain' };
+      return { config: updated, warning: 'remote-cleanup-pending' };
     }
 
     const response = await this.request(
@@ -316,13 +319,17 @@ export class PagePublisher {
     // routes 404, but the Worker recorded a physical-object cleanup retry.
     // Reuse the existing conservative UI warning rather than hiding an
     // operator-visible retention failure behind a successful HTTP status.
-    const warning = await hasPendingRemoteCleanup(response)
-      ? 'remote-copy-may-remain' as const
-      : undefined;
+    if (await hasPendingRemoteCleanup(response)) {
+      // Keep the ID, token, and state reachable so the same user-visible
+      // Unpublish action retries physical cleanup. Public routes are already 404.
+      const updated = setPageShareState(workspaceRootPath, pageSlug, { ...share, cleanupPending: true, updatedAt: Date.now() });
+      this.log(`Logical unpublish complete; remote cleanup pending for ${pageSlug} (${share.publicationId})`);
+      return { config: updated, warning: 'remote-cleanup-pending' };
+    }
     const updated = setPageShareState(workspaceRootPath, pageSlug, undefined);
     await this.tokenStore.delete(workspaceId, config.id);
     this.log(`Unpublished page ${pageSlug} (${share.publicationId})`);
-    return { config: updated, ...(warning ? { warning } : {}) };
+    return { config: updated };
   }
 
   // --------------------------------------------------------------------
@@ -530,7 +537,9 @@ export async function deletePageWithUnpublish(
         log: options?.log,
       });
       const result = await publisher.unpublish(workspaceRootPath, workspaceId, pageSlug);
-      publicCopyMayRemain = result.warning === 'remote-copy-may-remain';
+      if (result.warning === 'remote-cleanup-pending') {
+        throw new Error('The page is no longer public, but remote data cleanup is pending. Retry unpublish before deleting the local page.');
+      }
     } catch (error) {
       publicCopyMayRemain = true;
       options?.log?.(

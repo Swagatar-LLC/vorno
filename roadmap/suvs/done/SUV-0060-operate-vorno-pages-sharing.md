@@ -71,3 +71,4 @@ longer than 30 days.
 - `2026-09-10` — moved from `planned` to `in-progress`: isolated Worker implementation, client contract verification, and security tests started on `pages-sharing-0060`.
 - `2026-09-10` — implementation complete: isolated Worker, client cleanup warning, strict CI gates, and pre-deployment guide added; focused Worker/client checks passed. No Cloudflare resource, secret, DNS, or deployment was mutated.
 - `2026-09-10` — moved from `in-progress` to `done`: implementation is committed for review; deployment remains blocked by SUV-0063 and Jeff's privacy/retention decision.
+- `2026-09-10` — PR review hardening: direct-document CSP sandboxing, fail-closed create limiting, manifest CAS, retained cleanup retry, raw multipart caps, exact localhost lifecycle, upload secret/snapshot validation, bounded revisions, and config CI guard added; no deployment occurred.

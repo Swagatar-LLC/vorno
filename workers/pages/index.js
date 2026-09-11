@@ -107,7 +107,7 @@ async function loadRecord(env, id) {
   if (!object) return null
   try {
     const record = JSON.parse(await bodyText(object))
-    return isRecord(record) ? record : null
+    return isRecord(record) ? { record, etag: object.etag } : null
   } catch {
     return null
   }
@@ -122,24 +122,36 @@ function isRecord(record) {
     && record.manifest && typeof record.manifest === 'object'
 }
 
-async function saveRecord(env, record) {
-  await env.PAGES.put(manifestPath(record.id), JSON.stringify(record), {
+async function saveRecord(env, record, etag) {
+  const result = await env.PAGES.put(manifestPath(record.id), JSON.stringify(record), {
     httpMetadata: { contentType: 'application/json; charset=utf-8' },
+    ...(etag ? { onlyIf: { etagMatches: etag } } : {}),
   })
+  // R2 returns null for a failed conditional put. Test doubles may return undefined.
+  return result !== null
 }
 
-async function rateLimited(env, bindingName, request, scope = '') {
+async function rateLimited(env, bindingName, request, scope = '', failClosed = false) {
   const limiter = env[bindingName]
-  if (!limiter) return false
+  if (!limiter) return failClosed
   const ip = request.headers.get('cf-connecting-ip') || 'unknown'
   try {
     const { success } = await limiter.limit({ key: `${scope}:${ip}` })
     return !success
   } catch {
-    // ponytail: rate limiting is a burst brake, not an availability dependency;
-    // replace only when a durable account-level quota exists.
-    return false
+    return failClosed
   }
+}
+
+function cappedBody(body, max) {
+  let seen = 0
+  return body.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      seen += chunk.byteLength
+      if (seen > max) throw new Error('too_large')
+      controller.enqueue(chunk)
+    },
+  }))
 }
 
 function validManifest(manifest) {
@@ -155,11 +167,19 @@ async function readUpload(request, { allowPasswordAction = false } = {}) {
   const declared = declaredLength(request)
   if (declared !== null && declared > MAX_UPLOAD_REQUEST_BYTES) return { error: 'too_large', status: 413 }
 
+  if (!request.body) return { error: 'invalid_multipart', status: 400 }
   let form
   try {
-    form = await request.formData()
-  } catch {
-    return { error: 'invalid_multipart', status: 400 }
+    // Cap raw multipart bytes before parsing, including ignored fields and chunked bodies.
+    const cappedRequest = new Request(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: cappedBody(request.body, MAX_UPLOAD_REQUEST_BYTES),
+      duplex: 'half',
+    })
+    form = await cappedRequest.formData()
+  } catch (error) {
+    return { error: error instanceof Error && error.message === 'too_large' ? 'too_large' : 'invalid_multipart', status: error instanceof Error && error.message === 'too_large' ? 413 : 400 }
   }
 
   const passwordAction = form.get('passwordAction')
@@ -193,6 +213,11 @@ async function readUpload(request, { allowPasswordAction = false } = {}) {
   const total = encoder.encode(manifestText).byteLength + content.size + (snapshot instanceof Blob ? snapshot.size : 0)
   if (total > MAX_BUNDLE_BYTES) return { error: 'too_large', status: 413 }
   if (manifest.includesData !== (snapshot instanceof Blob)) return { error: 'snapshot_mismatch', status: 400 }
+  if (snapshot instanceof Blob) {
+    try { JSON.parse(await snapshot.text()) } catch { return { error: 'invalid_snapshot', status: 400 } }
+  }
+  const secretPattern = /-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}/
+  if (secretPattern.test(await content.text())) return { error: 'secret_candidate', status: 400 }
   return { manifest, content, snapshot: snapshot instanceof Blob ? snapshot : undefined, password: password || undefined }
 }
 
@@ -245,13 +270,14 @@ async function hasValidTicket(request, env, record) {
 }
 
 async function authorize(request, env, id) {
-  const record = await loadRecord(env, id)
-  if (!record) return { response: json({ error: 'not_found' }, 404) }
+  const loaded = await loadRecord(env, id)
+  if (!loaded) return { response: json({ error: 'not_found' }, 404) }
+  const { record, etag } = loaded
   const supplied = bearerToken(request)
   if (!supplied || !timingSafeEqual(await sha256Hex(supplied), record.adminTokenHash)) {
     return { response: json({ error: 'unauthorized' }, 401) }
   }
-  return { record }
+  return { record, etag }
 }
 
 function publicationDto(request, record, includeToken = false, adminToken) {
@@ -267,17 +293,17 @@ function publicationDto(request, record, includeToken = false, adminToken) {
   }
 }
 
-async function writeBundle(env, record, upload) {
+async function writeBundle(env, record, upload, etag) {
   // All parsing and limits complete before the first put. Immutable revision
   // keys mean a failed upload cannot replace content selected by the live
   // manifest; the manifest pointer is switched only after every new object is ready.
   await env.PAGES.put(record.contentKey, upload.content, { httpMetadata: { contentType: 'text/html; charset=utf-8' } })
   if (upload.snapshot) await env.PAGES.put(record.snapshotKey, upload.snapshot, { httpMetadata: { contentType: 'application/json; charset=utf-8' } })
-  await saveRecord(env, record)
+  return saveRecord(env, record, etag)
 }
 
 async function createPublication(request, env) {
-  if (await rateLimited(env, 'PAGE_CREATE_LIMIT', request, 'create')) return json({ error: 'rate_limited' }, 429)
+  if (await rateLimited(env, 'PAGE_CREATE_LIMIT', request, 'create', true)) return json({ error: 'rate_limited' }, 429)
   const upload = await readUpload(request)
   if (upload.error) return json({ error: upload.error }, upload.status)
 
@@ -300,7 +326,7 @@ async function createPublication(request, env) {
     cleanup: { state: 'none', attempts: 0 },
   }
   try {
-    await writeBundle(env, record, upload)
+    if (!(await writeBundle(env, record, upload))) throw new Error('manifest_conflict')
   } catch {
     // Best effort removes a failed partial write; public reads require the manifest, written last.
     await Promise.allSettled([env.PAGES.delete(record.contentKey), env.PAGES.delete(record.snapshotKey), env.PAGES.delete(manifestPath(id))])
@@ -320,7 +346,7 @@ async function updatePublication(request, env, id) {
     let password
     try { password = upload.passwordAction === 'set' ? await passwordMetadata(env, upload.password) : undefined } catch { return json({ error: 'password_tickets_unconfigured' }, 503) }
     const record = { ...auth.record, password, updatedAt: Date.now() }
-    await saveRecord(env, record)
+    if (!(await saveRecord(env, record, auth.etag))) return json({ error: 'conflict' }, 409)
     return json(publicationDto(request, record))
   }
 
@@ -332,18 +358,31 @@ async function updatePublication(request, env, id) {
     ...revisionPaths(id, revision),
     updatedAt: Date.now(),
   }
-  try {
-    await writeBundle(env, record, upload)
-  } catch {
-    // The new keys were never selected by the old manifest. Remove them anyway
-    // so a failed revision does not accumulate unreachable user content.
+  let saved
+  try { saved = await writeBundle(env, record, upload, auth.etag) } catch { saved = undefined }
+  if (!saved) {
     await Promise.allSettled([env.PAGES.delete(record.contentKey), env.PAGES.delete(record.snapshotKey)])
-    return json({ error: 'storage_failed' }, 503)
+    return json({ error: saved === false ? 'conflict' : 'storage_failed' }, saved === false ? 409 : 503)
   }
+  await cleanupSupersededRevisions(env, record)
   return json(publicationDto(request, record))
 }
 
-async function cleanupPublication(env, record) {
+async function cleanupSupersededRevisions(env, record) {
+  // Keep only the selected revision after a successful manifest switch. Any
+  // transient delete failure is retried by the next update and by unpublish.
+  try {
+    const listed = await env.PAGES.list({ prefix: `${record.id}/revisions/` })
+    await Promise.allSettled(listed.objects
+      .map(object => object.key)
+      .filter(key => key !== record.contentKey && key !== record.snapshotKey)
+      .map(key => env.PAGES.delete(key)))
+  } catch {
+    // The manifest selects exactly one revision; unpublish is the full-prefix backstop.
+  }
+}
+
+async function cleanupPublication(env, record, etag) {
   const errors = []
   let objects = []
   try {
@@ -356,7 +395,6 @@ async function cleanupPublication(env, record) {
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error))
   }
-  // The manifest is the tombstone/audit record and deliberately survives cleanup.
   for (const key of objects.filter(key => key !== manifestPath(record.id))) {
     try { await env.PAGES.delete(key) } catch (error) { errors.push(error instanceof Error ? error.message : String(error)) }
   }
@@ -367,30 +405,39 @@ async function cleanupPublication(env, record) {
     ...(errors.length ? { lastError: errors.join('; ').slice(0, 500) } : {}),
   }
   const updated = { ...record, cleanup, updatedAt: Date.now() }
-  await saveRecord(env, updated)
-  return updated
+  return (await saveRecord(env, updated, etag)) ? updated : record
 }
 
 async function unpublishPublication(request, env, id) {
-  const auth = await authorize(request, env, id)
-  if (auth.response) return auth.response
-  let record = auth.record
-  if (record.status === 'published') {
-    // Logical revocation is the security boundary. It commits before any best-effort delete.
-    record = { ...record, status: 'unpublished', unpublishedAt: Date.now(), cleanup: { state: 'pending', attempts: 0 } }
-    try { await saveRecord(env, record) } catch { return json({ error: 'storage_failed' }, 503) }
+  // CAS prevents a stale content PUT from writing a published manifest after revocation.
+  let auth
+  for (let attempt = 0; attempt < 3; attempt++) {
+    auth = await authorize(request, env, id)
+    if (auth.response) return auth.response
+    if (auth.record.status === 'unpublished') break
+    const revoked = { ...auth.record, status: 'unpublished', unpublishedAt: Date.now(), cleanup: { state: 'pending', attempts: 0 } }
+    if (await saveRecord(env, revoked, auth.etag)) {
+      auth = await authorize(request, env, id)
+      break
+    }
   }
+  if (!auth || auth.response) return json({ error: 'conflict' }, 409)
+  if (auth.record.status !== 'unpublished') return json({ error: 'conflict' }, 409)
+  let record = auth.record
   try {
-    record = await cleanupPublication(env, record)
+    record = await cleanupPublication(env, record, auth.etag)
   } catch {
-    // The tombstone already makes every public route 404; keep the audit/retry record intact.
-    record = { ...record, cleanup: { state: 'pending', attempts: (record.cleanup?.attempts || 0) + 1, lastAttemptAt: Date.now(), lastError: 'manifest_audit_write_failed' } }
+    // The logical tombstone was committed first, so public routes remain 404.
   }
   return json({ ...publicationDto(request, record), cleanupPending: record.cleanup.state !== 'complete' })
 }
 
 const SHELL_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'; connect-src 'none'; form-action 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'"
-const CONTENT_CSP = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-ancestors https://pages.vorno.ai"
+const CONTENT_CSP = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'"
+
+function contentCsp(record) {
+  return `${CONTENT_CSP}; sandbox${record.manifest.kind === 'static' ? '' : ' allow-scripts'}`
+}
 
 function escapeHtml(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
@@ -411,8 +458,8 @@ function passwordHtml(record) {
 }
 
 async function publicRecord(env, id) {
-  const record = await loadRecord(env, id)
-  return record?.status === 'published' ? record : null
+  const loaded = await loadRecord(env, id)
+  return loaded?.record.status === 'published' ? loaded.record : null
 }
 
 async function serveShell(request, env, id) {
@@ -436,7 +483,7 @@ async function serveContent(request, env, id) {
   if (!(await hasValidTicket(request, env, record))) return json({ error: 'password_required' }, 401)
   const object = await env.PAGES.get(record.contentKey)
   if (!object) return json({ error: 'not_found' }, 404)
-  return new Response(object.body, { headers: publicHeaders('text/html; charset=utf-8', { 'content-security-policy': CONTENT_CSP }) })
+  return new Response(object.body, { headers: publicHeaders('text/html; charset=utf-8', { 'content-security-policy': contentCsp(record) }) })
 }
 
 async function serveSnapshot(request, env, id) {

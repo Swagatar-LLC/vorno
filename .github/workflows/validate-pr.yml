@@ -190,6 +190,9 @@ jobs:
           bun-version: "1.3.10"
       # No `bun install`: this Worker uses only Web platform globals and Bun's test runner.
 
+      - name: Validate Pages Worker config / non-deploy dry run
+        run: cd workers/pages && bun run check:config && bun run dry-run
+
       - name: Run Pages Worker tests (strict — 0 failures allowed)
         run: bun test workers/pages
 

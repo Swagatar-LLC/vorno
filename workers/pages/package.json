@@ -6,7 +6,9 @@
     "dev": "wrangler dev",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit",
-    "deploy": "wrangler deploy",
+    "check:config": "bun validate-config.js",
+    "dry-run": "bun validate-config.js",
+    "deploy": "bun validate-config.js --deploy && wrangler deploy",
     "bench:password": "bun bench-password.js"
   },
   "devDependencies": {

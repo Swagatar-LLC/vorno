@@ -61,6 +61,8 @@ describe('Pages sharing default gate', () => {
   test('derives cleanup APIs only from recognized legacy and Vorno public URL shapes', () => {
     expect(resolveStoredPagesShareApiBaseUrl('https://thecraftagents.com/p/publication-1')).toBe('https://thecraftagents.com/p/api');
     expect(resolveStoredPagesShareApiBaseUrl('https://pages.vorno.ai/p/publication-1')).toBe('https://pages.vorno.ai/api');
+    expect(resolveStoredPagesShareApiBaseUrl('http://localhost:8787/p/publication-1')).toBe('http://localhost:8787/api');
+    expect(resolveStoredPagesShareApiBaseUrl('http://127.0.0.1:8787/p/publication-1')).toBe('http://127.0.0.1:8787/api');
     for (const hostile of [
       'https://evil.example/p/publication-1',
       'https://pages.vorno.ai:444/p/publication-1',
@@ -151,7 +153,7 @@ describe('Pages sharing default gate', () => {
       })) as unknown as typeof fetch,
     });
     try {
-      expect((await publisher.unpublish(workspace, 'workspace', page.slug)).warning).toBe('remote-copy-may-remain');
+      expect((await publisher.unpublish(workspace, 'workspace', page.slug)).warning).toBe('remote-cleanup-pending');
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
