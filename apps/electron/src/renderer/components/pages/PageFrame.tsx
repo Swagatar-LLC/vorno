@@ -256,8 +256,11 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
     (msg: Extract<PageBridgeIncoming, { type: 'grant-request' }>) => {
       if (msg.nonce !== lease.nonce) return
       const current = grantsRef.current
+      const batchSignatures = new Set<string>()
       const remaining = msg.requests.filter(req => {
         const signature = descriptorSignature(req.action)
+        if (batchSignatures.has(signature)) return false
+        batchSignatures.add(signature)
         return !current.some(g => descriptorEquals(g.action, req.action)) &&
           !deniedRef.current.has(signature) &&
           !pendingGrantSignaturesRef.current.has(signature)
