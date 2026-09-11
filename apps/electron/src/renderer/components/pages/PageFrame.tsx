@@ -82,9 +82,11 @@ function hasUserActivation(): boolean {
 
 /** Stable identity for deny-memory and dedupe. */
 function descriptorSignature(d: PageActionDescriptor): string {
-  if (d.kind === 'mcp') return `mcp:${d.sourceSlug}:${d.toolName}`
-  if (d.kind === 'script') return `script:${d.script}:${d.runtime ?? 'bun'}:${(d.args ?? []).join('\u0000')}`
-  return `api:${d.sourceSlug}:${d.method}:${d.pathPattern}`
+  // JSON array encoding preserves script argument boundaries, unlike joining
+  // with a delimiter that a valid argument could itself contain.
+  if (d.kind === 'mcp') return JSON.stringify(['mcp', d.sourceSlug, d.toolName])
+  if (d.kind === 'script') return JSON.stringify(['script', d.script, d.runtime ?? 'bun', d.args ?? []])
+  return JSON.stringify(['api', d.sourceSlug, d.method, d.pathPattern])
 }
 
 export function PageFrame({ workspaceId, page, lease, content, snapshot, className }: PageFrameProps) {
