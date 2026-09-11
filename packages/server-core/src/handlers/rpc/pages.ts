@@ -1,13 +1,9 @@
-import { appendFile, mkdir } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
-import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { assertPagesEnabled, isPagesEnabled } from '@craft-agent/shared/pages/capability'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
-import type { HandlerDeps } from '../handler-deps'
-import type { PageActionRequest } from '@craft-agent/shared/pages'
-import type { PageActionBroker, PageActionExecutors } from '@craft-agent/shared/pages'
+import type { HandlerDeps, PageGrantRequester } from '../handler-deps'
+import { MAX_LIVE_LEASES, pageActionDescriptorSignature, type PageActionRequest, type PageActionBroker, type PageActionExecutors } from '@craft-agent/shared/pages'
 import { assertPageSourceUsable } from '../../pages/source-gate'
 
 export const HANDLED_CHANNELS = [
@@ -42,11 +38,13 @@ const ACTION_BODY_MAX_CHARS = 512 * 1024
 const PAGE_GRANT_CONFIRM_TIMEOUT_MS = 30_000
 const PAGE_GRANT_MESSAGE_MAX_CHARS = 200
 const PAGE_GRANT_IDENTITY_MAX_CHARS = 100
+/** Bound queued consent work while an OS-native modal serializes requests. */
+const MAX_PENDING_PAGE_GRANT_CONFIRMATIONS = 32
 
 /** Keep page-authored prose visibly distinct from host-rendered identity/action. */
 function sanitizePageGrantMessage(description: string | undefined): string | undefined {
   if (!description) return undefined
-  return `The page says: ${description.replace(/[\r\n]+/g, ' ').trim()}`.slice(0, PAGE_GRANT_MESSAGE_MAX_CHARS)
+  return description.replace(/[\r\n]+/g, ' ').trim().slice(0, PAGE_GRANT_MESSAGE_MAX_CHARS)
 }
 
 /**
@@ -71,12 +69,71 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // independent of session pools. Clients live until the process exits
   // (same lifetime as the brokers above).
   const mcpPools = new Map<string, import('@craft-agent/shared/mcp').McpClientPool>()
-  // Coalesce identical outstanding consent requests so a page cannot flood
-  // host chrome while a user is deciding.
+  // Coalesce exact outstanding consent requests. The content digest belongs in
+  // the key: a changed page must receive a fresh confirmation, never stale work.
   const pendingGrantRequests = new Map<string, Promise<import('@craft-agent/shared/pages').PageActionGrant | null>>()
-  // Electron exposes one native dialog host, so grants must serialize across
-  // every workspace and page — not merely within one Page.
-  let pendingGrantConfirmation: Promise<import('@craft-agent/shared/pages').PageActionGrant | null> | undefined
+  // A rendered Page may own one host confirmation at a time. The renderer
+  // serializes its descriptors; this remains authoritative for direct RPC.
+  const pendingGrantLeases = new Map<string, Promise<import('@craft-agent/shared/pages').PageActionGrant | null>>()
+  // Server-only binding for grant-capable render leases. Do not put this in
+  // PageRenderLease: the iframe receives that object and must never choose or
+  // forge the Electron client/window authority behind its render.
+  const leaseRequesters = new Map<string, Map<string, {
+    webContentsId: number
+    renderGeneration: number
+    workspaceId: string
+    pageSlug: string
+    contentDigest: string
+  }>>()
+  const grantConfirmationQueue: Array<() => Promise<void>> = []
+  let drainingGrantConfirmationQueue = false
+  /**
+   * Confirmations whose host surface is open right now, keyed by lease.
+   *
+   * Revoking a request's authority — releasing its lease, replacing its render
+   * — makes its answer unusable, but refusing to persist that answer is only
+   * half the job: the sheet is still on the user's window, and the queue is
+   * drained serially, so every other Page and workspace waits behind a prompt
+   * that can no longer produce a grant. Holding the controller here is what
+   * lets a revocation close the surface instead of merely outliving it.
+   *
+   * Queued-but-unopened requests need no entry: they re-check lease, digest,
+   * and requester when they reach the head, and with the head unblocked that
+   * is immediate.
+   */
+  const activeConfirmations = new Map<string, {
+    deadline: AbortController
+    requester: PageGrantRequester
+  }>()
+
+  /**
+   * The one lease-key format. JSON encoding keeps the two parts unambiguous
+   * whatever a workspace path contains, and a single builder is what keeps the
+   * pending-consent map and the abort lookup addressing the same entry — two
+   * hand-written template literals silently stop matching.
+   */
+  const leaseKeyFor = (workspaceRootPath: string, leaseId: string) =>
+    JSON.stringify([workspaceRootPath, leaseId])
+
+  /** Close an open host surface whose authority has just been revoked. */
+  function abortActiveConfirmation(leaseKey: string): void {
+    activeConfirmations.get(leaseKey)?.deadline.abort()
+  }
+
+  /**
+   * Close any open surface belonging to a render that no longer exists. The
+   * host calls this on the generation it is retiring, so the abort lands on
+   * the prompt that render opened and not on its successor's.
+   */
+  function invalidatePageGrantRequester(requester: PageGrantRequester): void {
+    for (const active of activeConfirmations.values()) {
+      if (
+        active.requester.webContentsId === requester.webContentsId &&
+        active.requester.renderGeneration === requester.renderGeneration
+      ) active.deadline.abort()
+    }
+  }
+  deps.registerPageGrantInvalidator?.(invalidatePageGrantRequester)
 
   async function broadcastChanged(workspaceId: string, workspaceRootPath: string): Promise<void> {
     const { loadWorkspacePages } = await import('@craft-agent/shared/pages')
@@ -87,13 +144,83 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // Lifecycle audit is deliberately metadata-only: never record the descriptor,
   // source values, or user-supplied description alongside an approval decision.
   async function auditGrantDecision(event: 'page_grant_approved' | 'page_grant_rejected', workspaceId: string, pageSlug: string, actionKind: string): Promise<void> {
-    try {
-      const path = join(CONFIG_DIR, 'logs', 'page-actions.jsonl')
-      await mkdir(dirname(path), { recursive: true })
-      await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), event, workspaceId, pageSlug, actionKind })}\n`, 'utf8')
-    } catch (error) {
-      log.warn(`Failed to audit page grant decision: ${error}`)
+    const { appendPageActionAudit } = await import('@craft-agent/shared/pages')
+    await appendPageActionAudit({ event, workspaceId, pageSlug, actionKind }, {
+      onError: (error) => log.warn(`Failed to audit page grant decision: ${error}`),
+    })
+  }
+
+  function deleteLeaseRequester(workspaceRootPath: string, leaseId: string): void {
+    const requesters = leaseRequesters.get(workspaceRootPath)
+    if (!requesters) return
+    requesters.delete(leaseId)
+    if (requesters.size === 0) leaseRequesters.delete(workspaceRootPath)
+  }
+
+  function isLeaseRequesterCurrent(
+    workspaceRootPath: string,
+    leaseId: string,
+    workspaceId: string,
+    pageSlug: string,
+    contentDigest: string,
+    requester: PageGrantRequester,
+  ): boolean {
+    const bound = leaseRequesters.get(workspaceRootPath)?.get(leaseId)
+    return deps.isPageGrantRequesterCurrent?.(requester, workspaceId) === true &&
+      bound?.webContentsId === requester.webContentsId &&
+      // The binding belongs to one render, not one window. A reload keeps the
+      // webContents id and can leave this lease active, so an exact generation
+      // match is what stops a replacement renderer inheriting the approval.
+      bound.renderGeneration === requester.renderGeneration &&
+      bound.workspaceId === workspaceId &&
+      bound.pageSlug === pageSlug &&
+      bound.contentDigest === contentDigest
+  }
+
+  function bindLeaseRequester(
+    workspaceRootPath: string,
+    leaseId: string,
+    workspaceId: string,
+    pageSlug: string,
+    contentDigest: string,
+    requester: PageGrantRequester,
+  ): boolean {
+    if (deps.isPageGrantRequesterCurrent?.(requester, workspaceId) !== true) return false
+    const workspaceRequesters = leaseRequesters.get(workspaceRootPath) ?? new Map()
+    const existing = workspaceRequesters.get(leaseId)
+    // A lease a previous render bound is not re-bindable. The replacement
+    // renderer takes a fresh lease; silently rebinding this one would hand it
+    // whatever consent state its predecessor left behind.
+    if (existing) return existing.webContentsId === requester.webContentsId &&
+      existing.renderGeneration === requester.renderGeneration &&
+      existing.workspaceId === workspaceId && existing.pageSlug === pageSlug &&
+      existing.contentDigest === contentDigest
+    if (workspaceRequesters.size >= MAX_LIVE_LEASES) {
+      workspaceRequesters.delete(workspaceRequesters.keys().next().value!)
     }
+    workspaceRequesters.set(leaseId, {
+      webContentsId: requester.webContentsId,
+      renderGeneration: requester.renderGeneration,
+      workspaceId,
+      pageSlug,
+      contentDigest,
+    })
+    leaseRequesters.set(workspaceRootPath, workspaceRequesters)
+    return true
+  }
+
+  function drainGrantConfirmationQueue(): void {
+    if (drainingGrantConfirmationQueue) return
+    drainingGrantConfirmationQueue = true
+    void (async () => {
+      try {
+        while (grantConfirmationQueue.length > 0) {
+          await grantConfirmationQueue.shift()!()
+        }
+      } finally {
+        drainingGrantConfirmationQueue = false
+      }
+    })()
   }
 
   /**
@@ -334,100 +461,202 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     return loadPageConfig(workspace.rootPath, pageSlug)?.grants ?? []
   })
 
-  // Additive, host-authoritative grant issuance. The server owns the decision
-  // branch; unavailable, declined, timed-out, or failed native confirmation
-  // never reaches storage and therefore leaves no persisted capability.
-  server.handle(RPC_CHANNELS.pages.REQUEST_GRANT, async (
-    _ctx,
+  // Only this host-registered entry point may request consent. Its requester
+  // originates in Electron's ipcMain event.sender, never a transport envelope.
+  const requestPageGrantFromHost = async (
+    requester: PageGrantRequester,
     workspaceId: string,
     pageSlug: string,
     input: unknown,
+    leaseId: unknown,
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     assertAvailable(workspace.rootPath)
+    // `workspaceId` is a name-or-id lookup key. Everything downstream that
+    // compares, coalesces, or records a workspace uses the resolved id, so two
+    // aliases for one workspace cannot mint two identities — and so an audit
+    // line never records a caller's spelling in place of the real workspace.
+    const canonicalWorkspaceId = workspace.id
+    if (deps.isPageGrantRequesterCurrent?.(requester, canonicalWorkspaceId) !== true) {
+      throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+    }
+    if (typeof leaseId !== 'string' || leaseId.length === 0) throw new Error('PAGE_GRANT_RENDER_LEASE_REQUIRED')
 
     // Treat every transport request as hostile. In particular, do not inspect
     // `kind` until the existing discriminated-union schema has accepted it.
     const { AddPageGrantInputSchema, loadPageConfig, addPageGrant } = await import('@craft-agent/shared/pages')
     const parsed = AddPageGrantInputSchema.safeParse(input)
     if (!parsed.success) {
-      await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, 'invalid')
+      await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, 'invalid')
       throw new Error('PAGE_GRANT_INVALID_REQUEST')
     }
     const request = parsed.data
-    // Page-authored description and requested lifetime must not bypass this
-    // guard; the security identity is the page plus the action descriptor.
-    const pendingKey = JSON.stringify({ workspaceId, pageSlug, action: request.action })
+    const pageAtRequest = loadPageConfig(workspace.rootPath, pageSlug)
+    const expectedContentDigest = pageAtRequest?.contentDigest
+    if (!pageAtRequest || !expectedContentDigest) {
+      throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved.`)
+    }
+    const broker = await getBroker(canonicalWorkspaceId, workspace.rootPath)
+    const leaseKey = leaseKeyFor(workspace.rootPath, leaseId)
+    // A Page may unmount between bridge dispatch and this async handler. It
+    // owns no surviving consent work, so quietly decline without host chrome.
+    if (!broker.hasActiveLease(leaseId, pageSlug, expectedContentDigest)) {
+      deleteLeaseRequester(workspace.rootPath, leaseId)
+      return null
+    }
+
+    // Identity of an outstanding request. The digest belongs here so changed
+    // content starts a new request instead of coalescing behind a stale
+    // confirmation, and the descriptor enters through the one canonical
+    // signature the renderer also dedupes on — otherwise a reordered or
+    // under-specified copy of an approved capability reads as a new request
+    // and earns its own native prompt and its own persisted grant.
+    const pendingKey = JSON.stringify([
+      canonicalWorkspaceId,
+      pageSlug,
+      leaseId,
+      expectedContentDigest,
+      pageActionDescriptorSignature(request.action),
+    ])
     const pending = pendingGrantRequests.get(pendingKey)
     if (pending) return pending
-    // One native decision for this host at a time. Exact duplicates coalesce
-    // above; every other workspace/page/descriptor is refused, never queued.
-    if (pendingGrantConfirmation) {
-      throw new Error('PAGE_GRANT_CONFIRMATION_PENDING')
+    const pendingLeaseKey = leaseKey
+    // A grant-capable lease belongs to the exact requester that created it.
+    // Re-resolving the original ctx alone is insufficient: a window can
+    // disconnect, crash, or be rebound while native chrome is awaiting input.
+    if (!bindLeaseRequester(
+      workspace.rootPath, leaseId, canonicalWorkspaceId, pageSlug, expectedContentDigest, requester,
+    )) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+    if (pendingGrantLeases.has(pendingLeaseKey)) throw new Error('PAGE_GRANT_CONFIRMATION_ALREADY_PENDING')
+    if (pendingGrantRequests.size >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) {
+      throw new Error('PAGE_GRANT_CONFIRMATION_QUEUE_FULL')
     }
 
-    const issue = (async () => {
-      const page = loadPageConfig(workspace.rootPath, pageSlug)
-      const expectedContentDigest = page?.contentDigest
-      if (!page || !expectedContentDigest) throw new Error(`Page "${pageSlug}" has no content yet, so access can't be approved.`)
-      if (!deps.confirmPageGrant) {
-        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
-        throw new Error('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
-      }
-
-      let accepted = false
+    let resolveIssue!: (value: import('@craft-agent/shared/pages').PageActionGrant | null) => void
+    let rejectIssue!: (reason?: unknown) => void
+    const issue = new Promise<import('@craft-agent/shared/pages').PageActionGrant | null>((resolve, reject) => {
+      resolveIssue = resolve
+      rejectIssue = reject
+    })
+    pendingGrantRequests.set(pendingKey, issue)
+    pendingGrantLeases.set(pendingLeaseKey, issue)
+    grantConfirmationQueue.push(async () => {
       try {
-        const confirmation = deps.confirmPageGrant({
-          workspace: {
-            id: workspace.id,
-            name: sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
-          },
-          page: {
-            slug: page.slug,
-            name: sanitizePageGrantIdentity(page.name, 'Unnamed page'),
-          },
-          action: request.action,
-          pageMessage: sanitizePageGrantMessage(request.description),
-        })
-        let timer: ReturnType<typeof setTimeout> | undefined
-        try {
-          const timeout = new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => reject(new Error('confirmation timed out')), deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
-          })
-          accepted = await Promise.race([confirmation, timeout])
-        } finally {
-          if (timer) clearTimeout(timer)
+        // Do not show an obsolete request that waited behind another native
+        // prompt. A request from the new digest is separately queued above.
+        const page = loadPageConfig(workspace.rootPath, pageSlug)
+        if (!page || page.contentDigest !== expectedContentDigest) {
+          await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
+          throw new Error('PAGE_GRANT_CONTENT_CHANGED')
         }
-      } catch (error) {
-        log.info(`Page grant confirmation unavailable for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`)
-      }
+        if (!broker.hasActiveLease(leaseId, pageSlug, expectedContentDigest)) {
+          await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
+          resolveIssue(null)
+          return
+        }
+        if (!deps.confirmPageGrant) {
+          await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
+          throw new Error('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
+        }
+        // The request may have waited behind another native prompt; re-check
+        // the main-process-observed sender/window/workspace binding first.
+        if (!isLeaseRequesterCurrent(
+          workspace.rootPath, leaseId, canonicalWorkspaceId, pageSlug, expectedContentDigest, requester,
+        )) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
 
-      if (!accepted) {
-        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
-        return null
-      }
+        let accepted = false
+        // The deadline must reach the host, not just this promise: abandoning
+        // the race would leave a real OS modal on the user's window forever,
+        // and the next queued request would wait behind a prompt nobody can
+        // answer. The host dismisses on abort; the race is the backstop for a
+        // host that cannot.
+        const deadline = new AbortController()
+        // Published for exactly as long as the surface is open, so a lease
+        // release or a retired render can close it instead of waiting out the
+        // full timeout with the whole queue stalled behind it.
+        activeConfirmations.set(pendingLeaseKey, { deadline, requester })
+        try {
+          const confirmation = deps.confirmPageGrant(requester, {
+            workspace: {
+              id: canonicalWorkspaceId,
+              name: sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
+            },
+            page: {
+              slug: page.slug,
+              name: sanitizePageGrantIdentity(page.name, 'Unnamed page'),
+            },
+            action: request.action,
+            pageMessage: sanitizePageGrantMessage(request.description),
+          }, deadline.signal)
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            const timeout = new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => {
+                deadline.abort()
+                reject(new Error('confirmation timed out'))
+              }, deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
+            })
+            accepted = await Promise.race([confirmation, timeout])
+          } finally {
+            if (timer) clearTimeout(timer)
+          }
+        } catch (error) {
+          log.info(`Page grant confirmation unavailable for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`)
+        } finally {
+          // A settled or failed confirmation releases the host surface too:
+          // an un-aborted controller would strand a sheet on an error path.
+          if (activeConfirmations.get(pendingLeaseKey)?.deadline === deadline) {
+            activeConfirmations.delete(pendingLeaseKey)
+          }
+          deadline.abort()
+        }
 
-      try {
+        if (!accepted) {
+          await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
+          resolveIssue(null)
+          return
+        }
+
+        // The host surface may have closed on its own schedule, so re-check
+        // after its response: an unmounted Page must never receive a grant.
+        if (!broker.hasActiveLease(leaseId, pageSlug, expectedContentDigest)) {
+          await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
+          resolveIssue(null)
+          return
+        }
+        // The user may have approved after the Electron renderer disconnected,
+        // crashed, or rebound. Persist only if its original server-held
+        // window/workspace/lease/digest binding remains live.
+        if (!isLeaseRequesterCurrent(
+          workspace.rootPath, leaseId, canonicalWorkspaceId, pageSlug, expectedContentDigest, requester,
+        )) {
+          await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
+          resolveIssue(null)
+          return
+        }
         const grant = addPageGrant(workspace.rootPath, pageSlug, { ...request, expectedContentDigest })
         deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
-        await broadcastChanged(workspaceId, workspace.rootPath)
-        await auditGrantDecision('page_grant_approved', workspaceId, pageSlug, grant.action.kind)
+        await broadcastChanged(canonicalWorkspaceId, workspace.rootPath)
+        await auditGrantDecision('page_grant_approved', canonicalWorkspaceId, pageSlug, grant.action.kind)
         log.info(`Approved page grant ${grant.id} on ${pageSlug} (${grant.action.kind})`)
-        return grant
+        resolveIssue(grant)
       } catch (error) {
-        await auditGrantDecision('page_grant_rejected', workspaceId, pageSlug, request.action.kind)
-        throw error
+        rejectIssue(error)
+      } finally {
+        if (pendingGrantRequests.get(pendingKey) === issue) pendingGrantRequests.delete(pendingKey)
+        if (pendingGrantLeases.get(pendingLeaseKey) === issue) pendingGrantLeases.delete(pendingLeaseKey)
       }
-    })()
-    pendingGrantRequests.set(pendingKey, issue)
-    pendingGrantConfirmation = issue
-    try {
-      return await issue
-    } finally {
-      if (pendingGrantRequests.get(pendingKey) === issue) pendingGrantRequests.delete(pendingKey)
-      if (pendingGrantConfirmation === issue) pendingGrantConfirmation = undefined
-    }
+    })
+    drainGrantConfirmationQueue()
+    return issue
+  }
+  deps.registerPageGrantHostRequest?.(requestPageGrantFromHost)
+
+  // Direct transport RPC is deliberately refused: handshake fields are
+  // client-asserted and must never authorize native consent.
+  server.handle(RPC_CHANNELS.pages.REQUEST_GRANT, async () => {
+    throw new Error('PAGE_GRANT_IPC_REQUIRED')
   })
 
   // ADR-0033's intentional wire divergence: direct RPC cannot mint grants.
@@ -466,7 +695,10 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     if (content === null) throw new Error(`Page has no content: ${pageSlug}`)
 
     const broker = await getBroker(workspaceId, workspace.rootPath)
-    const lease = broker.createLease({ pageSlug, contentDigest: computePageContentDigest(content) })
+    const contentDigest = computePageContentDigest(content)
+    const lease = broker.createLease({ pageSlug, contentDigest })
+    // Transport clients may create leases, but only the sender-derived IPC
+    // grant entry point can bind one to consent authority.
     return { lease, content }
   })
 
@@ -476,6 +708,12 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return
     brokers.get(workspace.rootPath)?.releaseLease(leaseId)
+    deleteLeaseRequester(workspace.rootPath, leaseId)
+    // Closing this lease's open prompt grants nothing and reveals nothing: the
+    // release already made any answer unusable, so an untrusted caller reaches
+    // the same denial it could always reach — it just stops holding the queue
+    // hostage while it does.
+    abortActiveConfirmation(leaseKeyFor(workspace.rootPath, leaseId))
   })
 
   // Execute a granted source action. Page config is re-read from disk per

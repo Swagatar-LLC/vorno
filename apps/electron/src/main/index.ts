@@ -91,6 +91,13 @@ import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient } from '@craf
 import type { PlatformServices } from '../runtime/platform'
 import { createElectronPlatform } from './platform'
 import type { HandlerDeps } from './handlers/handler-deps'
+import type { PageGrantHostRequest } from '@craft-agent/server-core/handlers'
+import {
+  createRenderGenerationTracker,
+  handlePageGrantIpc,
+  isRequesterCurrent,
+  type RenderIdentity,
+} from './page-grant-identity'
 import { bootstrapServer, releaseServerLock } from '@craft-agent/server-core/bootstrap'
 import { createMessagingBootstrap, type MessagingBootstrapHandle } from '@craft-agent/messaging-gateway'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
@@ -657,9 +664,33 @@ app.whenReady().then(async () => {
       // Pre-import power manager (async import needed for applyPlatformToSubsystems)
       const { onSessionStarted, onSessionStopped } = await import('./power-manager')
 
-      // Client ID tracking for Electron IPC bridge (webContentsId → clientId)
+      // Client ID tracking for Electron IPC bridge (webContentsId → clientId).
+      // This is routing metadata only: Page grant authority comes from
+      // ipcMain's event.sender, never this client-asserted transport mapping.
       const clientMap = new Map<number, string>()
       const resolveClientId = (wcId: number) => clientMap.get(wcId)
+      let pageGrantHostRequest: PageGrantHostRequest | undefined
+
+      // ---------------------------------------------------------------------
+      // Page grant render generations.
+      //
+      // A webContents id outlives the document inside it: a reload, a main-frame
+      // navigation, or a renderer crash-and-recover keeps the same id and the
+      // same workspace mapping, and lease release is renderer-owned so a
+      // renderer that dies before cleanup leaves its lease active. Window
+      // identity alone therefore cannot tell a replacement renderer from the
+      // one that opened a consent prompt — the approval a user gave to the
+      // previous document would persist for the new one.
+      //
+      // The generation is main-process-observed state, never an argument: it is
+      // stamped onto the requester at the IPC hop and compared exactly before
+      // the prompt and again before persistence, so consent dies with the
+      // document that asked for it.
+      // ---------------------------------------------------------------------
+      let invalidatePageGrantRequester: ((requester: RenderIdentity) => void) | undefined
+      const renderGenerations = createRenderGenerationTracker(
+        (retired) => invalidatePageGrantRequester?.(retired),
+      )
 
       // Read embedded server config (Server settings page)
       const { getServerConfig } = await import('@craft-agent/shared/config')
@@ -782,30 +813,51 @@ app.whenReady().then(async () => {
             oauthFlowStore: ofs,
             messagingRegistry: messagingHandle.registry,
             // Native Electron chrome is the only currently trusted Page grant
-            // consent surface. WebUI/headless hosts intentionally omit this.
-            confirmPageGrant: isHeadless ? undefined : async (spec) => {
-              const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-              if (!win) return false
+            // consent surface. The IPC handler below derives this requester
+            // from event.sender; transport envelope fields never enter here.
+            isPageGrantRequesterCurrent: isHeadless ? undefined : (requester, workspaceId) =>
+              isRequesterCurrent(windowManager ?? undefined, renderGenerations, requester, workspaceId),
+            registerPageGrantHostRequest: isHeadless ? undefined : (request) => {
+              pageGrantHostRequest = request
+            },
+            registerPageGrantInvalidator: isHeadless ? undefined : (invalidate) => {
+              invalidatePageGrantRequester = invalidate
+            },
+            confirmPageGrant: isHeadless ? undefined : async (requester, spec, signal) => {
+              const win = windowManager?.getWindowByWebContentsId(requester.webContentsId)
+              if (
+                !win || win.isDestroyed() || signal.aborted ||
+                !renderGenerations.isCurrent(requester)
+              ) return false
               const action = spec.action.kind === 'api'
-                ? `${spec.action.method} ${spec.action.sourceSlug}${spec.action.pathPattern}`
+                ? i18n.t('pages.grants.confirm.actionApi', { method: spec.action.method, source: spec.action.sourceSlug, path: spec.action.pathPattern })
                 : spec.action.kind === 'mcp'
-                  ? `${spec.action.sourceSlug}:${spec.action.toolName}`
-                  : `${spec.action.runtime ?? 'bun'} ${spec.action.script}${spec.action.args?.length ? ` ${spec.action.args.join(' ')}` : ''}`
+                  ? i18n.t('pages.grants.confirm.actionMcp', { source: spec.action.sourceSlug, tool: spec.action.toolName })
+                  : i18n.t('pages.grants.confirm.actionScript', { runtime: spec.action.runtime ?? 'bun', script: spec.action.script, args: spec.action.args?.length ? ` ${spec.action.args.join(' ')}` : '' })
               // The host, rather than the requesting transport client, renders
               // every security-relevant identity and descriptor.
+              //
+              // `win` is both the trusted parent and the reason `signal` works:
+              // Electron only honours an abort for a message box shown AS A
+              // SHEET, i.e. one with a parent window. Detaching this dialog
+              // (or parenting it to the focused window) would make the host's
+              // timeout unenforceable — the modal would outlive its request.
               return (await dialog.showMessageBox(win, {
                 type: spec.action.kind === 'script' ? 'warning' : 'question',
-                title: 'Approve Page action',
-                message: `Allow page "${spec.page.name}" in workspace "${spec.workspace.name}" to use ${action}?`,
-                detail: [
-                  `Workspace: ${spec.workspace.name} (${spec.workspace.id})`,
-                  `Page: ${spec.page.name} (${spec.page.slug})`,
-                  `Action: ${action}`,
-                  spec.pageMessage,
-                ].filter(Boolean).join('\n'),
-                buttons: ['Deny', 'Approve'],
+                title: i18n.t('pages.grants.confirm.title'),
+                message: i18n.t('pages.grants.confirm.message', { page: spec.page.name, workspace: spec.workspace.name, action }),
+                detail: i18n.t('pages.grants.confirm.detail', {
+                  workspace: spec.workspace.name,
+                  workspaceId: spec.workspace.id,
+                  page: spec.page.name,
+                  pageSlug: spec.page.slug,
+                  action,
+                  pageMessage: spec.pageMessage ?? i18n.t('pages.grants.confirm.noPageMessage'),
+                }),
+                buttons: [i18n.t('pages.grants.confirm.deny'), i18n.t('pages.grants.confirm.approve')],
                 defaultId: 0,
                 cancelId: 0,
+                signal,
               })).response === 1
             },
           }
@@ -879,6 +931,17 @@ app.whenReady().then(async () => {
       }
 
       // IPC handlers — preload uses sendSync to get WS connection details
+
+      // Consent is privileged main-process IPC. Do not accept workspace, window,
+      // or render identity from preload: all three come from event.sender and
+      // main-process state, so a renderer cannot name the workspace a trusted
+      // prompt targets nor claim to be a document that has been replaced.
+      ipcMain.handle('__pages:request-grant', async (event, pageSlug: unknown, input: unknown, leaseId: unknown) =>
+        handlePageGrantIpc({
+          getWorkspaceForWindow: (wcId) => windowManager?.getWorkspaceForWindow(wcId),
+          tracker: renderGenerations,
+          request: pageGrantHostRequest,
+        }, event.sender, pageSlug, input, leaseId))
 
       // Remove workspace from config (cleanup stale entries)
       ipcMain.handle('workspace:remove', async (_event, workspaceId: string) => {

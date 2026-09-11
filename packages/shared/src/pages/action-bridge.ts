@@ -51,6 +51,29 @@ import { hasPathTraversal } from './types.ts';
 
 const log = createLogger('page-action-broker');
 
+/**
+ * The single durable append path for Page-action decisions. Keeping redaction
+ * beside persistence prevents lifecycle callers from creating a second JSONL
+ * writer that can drift from execution auditing.
+ */
+export async function appendPageActionAudit(
+  payload: Record<string, unknown>,
+  options: { auditLogPath?: string; onError?: (error: unknown) => void } = {},
+): Promise<void> {
+  try {
+    const auditLogPath = options.auditLogPath ?? join(CONFIG_DIR, 'logs', 'page-actions.jsonl');
+    await mkdir(dirname(auditLogPath), { recursive: true });
+    await appendFile(
+      auditLogPath,
+      `${JSON.stringify({ timestamp: new Date().toISOString(), ...redactSensitiveValues(payload) })}\n`,
+      'utf8',
+    );
+  } catch (error) {
+    if (options.onError) options.onError(error);
+    else log.warn(`[PageActionBroker] Failed to write audit log: ${error}`);
+  }
+}
+
 /** Default render-lease lifetime; re-mounting a page issues a fresh lease */
 export const DEFAULT_PAGE_LEASE_TTL_MS = 12 * 60 * 60 * 1000;
 /** Default per-action timeout */
@@ -215,6 +238,13 @@ export class PageActionBroker {
       expiresAt: lease.expiresAt,
     });
     return lease;
+  }
+
+  /** Whether a render lease still represents this page and exact content. */
+  hasActiveLease(leaseId: string, pageSlug: string, contentDigest: string): boolean {
+    this.pruneExpiredLeases();
+    const lease = this.leases.get(leaseId);
+    return lease?.pageSlug === pageSlug && lease.contentDigest === contentDigest;
   }
 
   /** Drop a lease (page unmounted). Idempotent. */
@@ -620,15 +650,9 @@ export class PageActionBroker {
    * audit failures are logged but never fail the action).
    */
   private async appendAudit(payload: Record<string, unknown>): Promise<void> {
-    try {
-      await mkdir(dirname(this.auditLogPath), { recursive: true });
-      await appendFile(
-        this.auditLogPath,
-        `${JSON.stringify({ timestamp: new Date().toISOString(), ...payload })}\n`,
-        'utf8',
-      );
-    } catch (error) {
-      log.warn(`[PageActionBroker] Failed to write audit log: ${error}`);
-    }
+    await appendPageActionAudit(payload, {
+      auditLogPath: this.auditLogPath,
+      onError: (error) => log.warn(`[PageActionBroker] Failed to write audit log: ${error}`),
+    });
   }
 }

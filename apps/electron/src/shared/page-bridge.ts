@@ -48,7 +48,7 @@ import type {
   PageDataSnapshot,
   PageKind,
 } from '@craft-agent/shared/pages/types'
-import { hasPathTraversal } from '@craft-agent/shared/pages/types'
+import { hasPathTraversal, pageActionDescriptorSignature } from '@craft-agent/shared/pages/types'
 
 export const PAGE_BRIDGE_PROTOCOL = 'craft-pages/v1'
 
@@ -131,29 +131,20 @@ export function grantIdsEqual(a: PageGrantSummary[], b: PageGrantSummary[]): boo
   return b.every(g => ids.has(g.id))
 }
 
-/** Structural equality for grant descriptors (order-insensitive by field). */
-export function descriptorEquals(a: PageActionDescriptor, b: PageActionDescriptor): boolean {
-  if (a.kind === 'api' && b.kind === 'api') {
-    return a.sourceSlug === b.sourceSlug && a.method === b.method && a.pathPattern === b.pathPattern
-  }
-  if (a.kind === 'mcp' && b.kind === 'mcp') {
-    return a.sourceSlug === b.sourceSlug && a.toolName === b.toolName
-  }
-  if (a.kind === 'script' && b.kind === 'script') {
-    return (
-      a.script === b.script &&
-      (a.runtime ?? 'bun') === (b.runtime ?? 'bun') &&
-      argsEqual(a.args, b.args)
-    )
-  }
-  return false
-}
+/**
+ * Stable identity for deny-memory and dedupe, re-exported from the shared
+ * definition. The RPC host coalesces outstanding consent on this exact string,
+ * so a second definition here would let renderer and host disagree about which
+ * requests are "the same capability".
+ */
+export const descriptorSignature = pageActionDescriptorSignature
 
-/** Order-sensitive array equality for pinned script args (undefined ≡ []). */
-function argsEqual(a: string[] | undefined, b: string[] | undefined): boolean {
-  const x = a ?? []
-  const y = b ?? []
-  return x.length === y.length && x.every((v, i) => v === y[i])
+/**
+ * Structural equality for grant descriptors (order-insensitive by field,
+ * script `runtime`/`args` normalized to their execution defaults).
+ */
+export function descriptorEquals(a: PageActionDescriptor, b: PageActionDescriptor): boolean {
+  return descriptorSignature(a) === descriptorSignature(b)
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

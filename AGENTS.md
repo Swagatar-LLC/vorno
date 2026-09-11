@@ -65,7 +65,7 @@ When the user asks for any of those, read the matching `SKILL.md` first.
 - **CI is green or it doesn't merge.** Validate workflow lives at `.github/workflows/validate-pr.yml`.
 - **Plans before significant work.** Anything > half a day → write a plan via `[skill:roadmap-plan-create]`.
 - **SUVs before execution.** A plan is decomposed into SUVs via `[skill:roadmap-suv-create]`; one SUV is one PR. Never execute a plan directly.
-- **ALWAYS capture debugging insights.** After root-causing any non-obvious bug or recovering from a recurring issue, write a `LEARNING-NNN` entry in [`roadmap/learnings/`](roadmap/learnings/) before moving on — see the hard rule below and `[skill:capture-learning]`.
+- **ALWAYS capture debugging insights.** After root-causing any non-obvious bug or recovering from a recurring issue, write a `LEARNING-NNN` entry before moving on — see the hard rule below and `[skill:capture-learning]`. Learnings are **internal-only**: they land in the private `Swagatar-LLC/vorno-internal` repo under `learnings/`, never in this one.
 
 ## Hard rules
 
@@ -76,7 +76,8 @@ When the user asks for any of those, read the matching `SKILL.md` first.
 - **Never skip hooks** (`--no-verify`) unless the user explicitly asks.
 - **No marketing fluff in docs.** Plain technical English.
 - **No emojis** unless the user explicitly asks.
-- **ALWAYS record debugging insights during fixes.** When you root-cause a non-obvious bug, recover from a recurring issue, or work around upstream behavior, capture the insight in [`roadmap/learnings/`](roadmap/learnings/) as a `LEARNING-NNN` entry **before moving on**. Trivial typo fixes are exempt; anything that required reading multiple files, comparing versions, or reasoning about resolution order is not. Use `[skill:capture-learning]` to scaffold the entry. The artifact prevents the next agent (you, or another) from re-debugging the same issue.
+- **ALWAYS record debugging insights during fixes.** When you root-cause a non-obvious bug, recover from a recurring issue, or work around upstream behavior, capture the insight as a `LEARNING-NNN` entry **before moving on**. Trivial typo fixes are exempt; anything that required reading multiple files, comparing versions, or reasoning about resolution order is not. Use `[skill:capture-learning]` to scaffold the entry. The artifact prevents the next agent (you, or another) from re-debugging the same issue.
+  - **Learnings live in the private repo, not here.** They go to `Swagatar-LLC/vorno-internal` under `learnings/` — this repository has no `roadmap/learnings/` directory and a learning must never be added to it. See the public/private split in [`roadmap/README.md`](roadmap/README.md). Cross-reference one from public material as `vorno-internal:learnings/LEARNING-NNN-...`. Because it is a separate repository, the learning is a **separate commit there**; it cannot ride the PR that carries the fix, and a reviewer looking for it inside this repo will correctly not find it.
 
 ## Build/test quick commands
 

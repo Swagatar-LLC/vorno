@@ -29,7 +29,7 @@ export type {
   CreatePageInput,
   LoadedPage,
 } from './types.ts';
-export { isPageGrantUsable } from './types.ts';
+export { isPageGrantUsable, pageActionDescriptorSignature } from './types.ts';
 
 // Storage
 export {
@@ -128,6 +128,8 @@ export {
 // Mediated source-action bridge
 export {
   PageActionBroker,
+  MAX_LIVE_LEASES,
+  appendPageActionAudit,
   type PageActionBrokerOptions,
   type PageActionExecutors,
   type PageActionValidationErrorCode,

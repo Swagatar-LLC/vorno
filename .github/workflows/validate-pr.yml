@@ -118,6 +118,12 @@ jobs:
   # the electron app-shell renderer suites, packages/ui (all annotation/
   # follow-up logic lives there), and packages/server-core (transport client).
   # These were previously un-gated (local-only); strict — 0 failures allowed.
+  #
+  # Also gates `src/shared` (the RPC wire-format inventory and the Page bridge)
+  # and the Page-grant identity suite. Both were local-only, which is how the
+  # wire-format list sat two channels stale on main without any job noticing.
+  # The REST of `src/main/__tests__` stays out on purpose: it carries 8
+  # long-standing `browser-pane-manager` failures, and this job allows zero.
   # ---------------------------------------------------------------------------
   test-webui:
     name: Test WebUI (headless smoke + units)

@@ -1005,7 +1005,7 @@ export interface ElectronAPI {
   getPageData(workspaceId: string, pageSlug: string): Promise<import('@craft-agent/shared/pages/types').PageDataSnapshot | null>
   listPageGrants(workspaceId: string, pageSlug: string): Promise<import('@craft-agent/shared/pages/types').PageActionGrant[]>
   /** Host-held consent flow; null means denied, disconnected, or unanswered. */
-  requestPageGrant(workspaceId: string, pageSlug: string, input: { action: import('@craft-agent/shared/pages/types').PageActionDescriptor; description?: string; ttlMs?: number }): Promise<import('@craft-agent/shared/pages/types').PageActionGrant | null>
+  requestPageGrant(workspaceId: string, pageSlug: string, input: { action: import('@craft-agent/shared/pages/types').PageActionDescriptor; description?: string; ttlMs?: number }, leaseId: string): Promise<import('@craft-agent/shared/pages/types').PageActionGrant | null>
   /** Compatibility-only; the host always refuses direct issuance. */
   issuePageGrant(workspaceId: string, pageSlug: string, input: { action: import('@craft-agent/shared/pages/types').PageActionDescriptor; description?: string; ttlMs?: number }): Promise<import('@craft-agent/shared/pages/types').PageActionGrant>
   revokePageGrant(workspaceId: string, pageSlug: string, grantId: string): Promise<boolean>

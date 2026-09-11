@@ -13,6 +13,7 @@ import {
   buildPageGrantsMessage,
   buildPageInitMessage,
   descriptorEquals,
+  descriptorSignature,
   grantIdsEqual,
   isMutatingInvocation,
   isSafeExternalUrl,
@@ -223,6 +224,25 @@ describe('descriptorEquals', () => {
     expect(descriptorEquals(script, { ...script, runtime: 'node' })).toBe(false)
     expect(descriptorEquals(script, { ...script, args: ['b', 'a'] })).toBe(false)
     expect(descriptorEquals(script, { ...script, args: ['a'] })).toBe(false)
+  })
+
+  test('field order is not identity, and absent runtime/args equal their defaults', () => {
+    // A page controls the key order of the descriptor it sends. If order were
+    // identity, one approved capability would present itself as several — one
+    // native prompt and one persisted grant each.
+    const api = { kind: 'api' as const, sourceSlug: 's', method: 'GET' as const, pathPattern: '/x' }
+    const reordered = { pathPattern: '/x', method: 'GET' as const, sourceSlug: 's', kind: 'api' as const }
+    expect(descriptorSignature(reordered)).toBe(descriptorSignature(api))
+    const bare = { kind: 'script' as const, script: 'pages/p/run.sh' }
+    const spelledOut = { args: [], runtime: 'bun' as const, script: 'pages/p/run.sh', kind: 'script' as const }
+    expect(descriptorSignature(spelledOut)).toBe(descriptorSignature(bare))
+  })
+
+  test('a script argument containing the encoding delimiter cannot forge a collision', () => {
+    const embeddedSeparator = { kind: 'script' as const, script: 'r.sh', args: ['a","b'] }
+    const twoArgs = { kind: 'script' as const, script: 'r.sh', args: ['a', 'b'] }
+    expect(descriptorSignature(embeddedSeparator)).not.toBe(descriptorSignature(twoArgs))
+    expect(descriptorEquals(embeddedSeparator, twoArgs)).toBe(false)
   })
 })
 

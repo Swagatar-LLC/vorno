@@ -61,7 +61,7 @@ what the SUV level is for. See [ADR-0028](roadmap/decisions/0028-suv-as-the-ship
 - SUVs before execution — see `[skill:roadmap-suv-create]`. One SUV, one PR.
 - Update the roadmap as state changes (a status folder move *is* the state change).
 - The user runs upstream stable side-by-side. The fork is distinguished by its own branding (Vorno name, icon, tray identity); the old "FORK" accent stripe was removed 2026-07-14 at Jeff's request — do not reintroduce it.
-- **ALWAYS capture debugging insights** when you fix a non-obvious bug. Use `[skill:capture-learning]` to write a `LEARNING-NNN` markdown in [`roadmap/learnings/`](roadmap/learnings/) before moving on. See the hard rule below.
+- **ALWAYS capture debugging insights** when you fix a non-obvious bug. Use `[skill:capture-learning]` to write a `LEARNING-NNN` markdown before moving on. Learnings are **internal-only**: they land in the private `Swagatar-LLC/vorno-internal` repo under `learnings/`, never in this one. See the hard rule below.
 
 ## Hard rules
 
@@ -69,7 +69,8 @@ what the SUV level is for. See [ADR-0028](roadmap/decisions/0028-suv-as-the-ship
 - Wire compatibility with upstream is a contract — see [`roadmap/upstream/compatibility.md`](roadmap/upstream/compatibility.md). Breaking it requires a new ADR.
 - Pre-commit hooks are not skipped (`--no-verify` is for emergencies the user authorizes).
 - Don't generate URLs you aren't confident in. Ask or grep.
-- **Always record debugging insights during fixes.** When you root-cause a non-obvious bug, recover from a recurring issue, or work around upstream behavior, capture it in [`roadmap/learnings/`](roadmap/learnings/) as a `LEARNING-NNN` entry **before moving on**. Trivial typo fixes are exempt; anything that required reading multiple files, comparing versions, or reasoning about resolution order is not. The artifact prevents re-debugging the same issue next time.
+- **Always record debugging insights during fixes.** When you root-cause a non-obvious bug, recover from a recurring issue, or work around upstream behavior, capture it as a `LEARNING-NNN` entry **before moving on**. Trivial typo fixes are exempt; anything that required reading multiple files, comparing versions, or reasoning about resolution order is not. The artifact prevents re-debugging the same issue next time.
+  - **Learnings live in the private repo, not here.** They go to `Swagatar-LLC/vorno-internal` under `learnings/` — this repository has no `roadmap/learnings/` directory and a learning must never be added to it. See the public/private split in [`roadmap/README.md`](roadmap/README.md). Cross-reference one from public material as `vorno-internal:learnings/LEARNING-NNN-...`. Because it is a separate repository, the learning is a **separate commit there**; it cannot ride the PR that carries the fix, and a reviewer looking for it inside this repo will correctly not find it.
 
 ## Where things live (high level)
 
