@@ -87,6 +87,16 @@ class SessionPersistenceQueue {
   private writtenGeneration = new Map<string, number>()
   private receiptWaiters = new Map<string, ReceiptWaiter[]>()
   /**
+   * Sessions cancelled since their last enqueue.
+   *
+   * `cancel` drops the PENDING entry, but a write already on the tail is past
+   * that point — it can finish and rename its temp file over a session the
+   * caller has deleted or replaced, recreating state that was meant to be gone.
+   * The flag is checked when a write starts and again immediately before the
+   * rename, which is the step that actually commits.
+   */
+  private cancelled = new Set<string>()
+  /**
    * Last write failure per session, cleared on the next success.
    *
    * `write` deliberately swallows its errors so the fire-and-forget callers
@@ -111,6 +121,10 @@ class SessionPersistenceQueue {
     if (existing) {
       clearTimeout(existing.timer)
     }
+
+    // A fresh enqueue means the session is live again — otherwise a cancel
+    // would silently suppress every future write for the process's lifetime.
+    this.cancelled.delete(session.id)
 
     const generation = (this.generations.get(session.id) ?? 0) + 1
     this.generations.set(session.id, generation)
@@ -196,6 +210,14 @@ class SessionPersistenceQueue {
     this.pending.delete(sessionId)
     const { generation } = entry
 
+    // Cancelled between enqueue and execution: do not write at all.
+    if (this.cancelled.has(sessionId)) {
+      debug(`[PersistenceQueue] Skipped cancelled write for session ${sessionId}`)
+      this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
+      this.settleReceipts(sessionId, generation, { ok: false, error: 'session write cancelled' })
+      return false
+    }
+
     try {
       const { data } = entry
       ensureSessionsDir(data.workspaceRootPath)
@@ -259,6 +281,24 @@ class SessionPersistenceQueue {
 
       const tmpFile = filePath + '.tmp'
       await writeFile(tmpFile, lines.join('\n') + '\n', 'utf-8')
+
+      // Re-checked immediately before the commit. The write above is real I/O
+      // and a cancel can land during it; renaming now would put a deleted
+      // session's state back on disk. The temp file goes with it — leaving it
+      // behind is litter a later reader could mistake for a real write.
+      //
+      // Not covered by a deterministic test: the in-memory suite's writes
+      // settle too fast to land a cancel inside them, and the unit test says so
+      // rather than pretending otherwise. This guards the real filesystem case,
+      // where `writeFile` takes measurable time.
+      if (this.cancelled.has(sessionId)) {
+        try { await unlink(tmpFile) } catch { /* best effort */ }
+        debug(`[PersistenceQueue] Abandoned cancelled write for session ${sessionId}`)
+        this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
+        this.settleReceipts(sessionId, generation, { ok: false, error: 'session write cancelled' })
+        return false
+      }
+
       // On Windows, rename fails if target exists. Delete first for cross-platform compatibility.
       try { await unlink(filePath) } catch { /* ignore if doesn't exist */ }
       await rename(tmpFile, filePath)
@@ -337,6 +377,9 @@ class SessionPersistenceQueue {
       this.pending.delete(sessionId)
       debug(`[PersistenceQueue] Cancelled pending write for session ${sessionId}`)
     }
+    // Set regardless of whether anything was pending: the write that matters
+    // here is the one already on the tail, which `pending` no longer holds.
+    this.cancelled.add(sessionId)
     this.lastWrittenHeaderSignature.delete(sessionId)
     this.lastWriteFailure.delete(sessionId)
     // A cancelled session will never write, so anything waiting on it must be

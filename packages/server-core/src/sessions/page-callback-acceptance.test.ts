@@ -250,6 +250,27 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     expect(survived!.draftInputSnapshot).toBe('draft text')
   })
 
+  it('keeps the mirror in step when compaction completes', async () => {
+    seed()
+    await seedPendingPlan()
+    const managed = hydrateFromDisk()
+    expect((managed.pendingPlanExecution as { awaitingCompaction: boolean }).awaitingCompaction).toBe(true)
+
+    await sm.markCompactionComplete(SESSION_ID)
+
+    // Every owner of this state updates disk and mirror together. A stale
+    // mirror here would have a later persist write `awaitingCompaction: true`
+    // back — un-completing a compaction that had finished, and sending reload
+    // recovery back to waiting for something that already happened.
+    expect((managed.pendingPlanExecution as { awaitingCompaction: boolean }).awaitingCompaction).toBe(false)
+
+    ;(managed as unknown as { name: string }).name = 'later write'
+    ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
+    await sm.flushSession(SESSION_ID)
+
+    expect(getPendingPlanExecution(root, SESSION_ID)?.awaitingCompaction).toBe(false)
+  })
+
   it('keeps a dismissed plan absent across later persists', async () => {
     seed()
     await seedPendingPlan()

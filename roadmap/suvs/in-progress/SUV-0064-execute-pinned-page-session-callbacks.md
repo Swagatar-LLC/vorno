@@ -567,6 +567,31 @@ the actual mechanism.
 - Reservation-token release and the both-placeholder provenance fallback have
   direct tests.
 
+## Round 17 — the two new mechanisms each had a gap
+
+`2026-09-12` — Greptile 3/5. Both findings were in the round-16 work.
+
+- **`cancel()` did not stop a write already on the tail.** It drops the pending
+  entry, but a write past that point finishes and renames its temp file over a
+  session the caller has deleted — recreating state meant to be gone, silently.
+  A cancelled flag is now checked when a write starts and again immediately
+  before the rename, and the temp file is removed rather than left as litter a
+  later reader could misread. A fresh enqueue clears the flag, so a cancel
+  cannot suppress every later write for the process's lifetime.
+- **`markCompactionComplete` left the mirror stale.** Round 16 updated `set`,
+  `markDispatched` and `clear` and missed this one, so a later persist would
+  write `awaitingCompaction: true` back — un-completing a compaction that had
+  finished and sending reload recovery back to waiting for something that had
+  already happened. Every owner now updates disk and mirror together.
+
+**One guard is deliberately not covered by a test, and the code says so.** The
+pre-rename cancel check defends a cancel landing *mid-I/O*; this suite's writes
+settle far too fast to construct that, and the first version of the test passed
+with the check removed because cancel had actually landed before the write even
+started. Rather than leave a test implying coverage it does not have, it now
+states what it covers — cancel-before-start — and both the test and the code
+name the uncovered case explicitly.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionPersistenceQueue } from '../persistence-queue.ts';
@@ -135,6 +135,39 @@ describe('SessionPersistenceQueue.flushChecked', () => {
     const receipt = queue.flushChecked('s7');
     queue.cancel('s7');
     expect(await receipt).toMatchObject({ ok: false });
+  });
+
+  it('does not commit a write cancelled after it was queued onto the tail', async () => {
+    // `flush` chains onto the tail, so the write begins on a microtask — a
+    // cancel arriving first must stop it. This covers the cancel-before-start
+    // case.
+    //
+    // The pre-rename check in `write` covers a DIFFERENT case: a cancel landing
+    // mid-I/O, after the temp file is written. That one is deliberately not
+    // asserted here, because this suite cannot construct it deterministically —
+    // the writes settle far too quickly — and a test that appeared to cover it
+    // would be worse than none. It is belt-and-braces for a real filesystem
+    // where `writeFile` takes measurable time.
+    queue.enqueue(session('s8'));
+    const running = queue.flush('s8');
+    queue.cancel('s8');
+    await running;
+
+    expect(existsSync(getSessionFilePath(root, 's8'))).toBe(false);
+    // And no temp file left behind for a later reader to misread.
+    expect(existsSync(getSessionFilePath(root, 's8') + '.tmp')).toBe(false);
+  });
+
+  it('writes again normally after a cancelled session is re-enqueued', () => {
+    // A cancel must not suppress every future write for the life of the
+    // process — a fresh enqueue means the session is live again.
+    queue.enqueue(session('s9'));
+    queue.cancel('s9');
+    const cancelledState = (queue as unknown as { cancelled: Set<string> }).cancelled;
+    expect(cancelledState.has('s9')).toBe(true);
+
+    queue.enqueue(session('s9'));
+    expect(cancelledState.has('s9')).toBe(false);
   });
 
   it('keeps reporting failure until a later write succeeds', async () => {

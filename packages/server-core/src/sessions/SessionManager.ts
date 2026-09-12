@@ -5405,6 +5405,11 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
+      // The mirror moves with it. Every owner of this state updates both, or
+      // the copy goes stale and a later persist writes the old value back —
+      // here that would restore `awaitingCompaction: true` and un-complete a
+      // compaction that had finished.
+      managed.pendingPlanExecution = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId) ?? undefined
       sessionLog.info(`Session ${sessionId}: compaction marked complete for pending plan`)
     }
   }
