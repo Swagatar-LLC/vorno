@@ -130,8 +130,10 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       write is already queued for it.
 - [x] A session mid-finalisation (flag already false, deferred still set) is
       selected for a checked final persist, not read as idle.
-- [x] `markAllSessionsRead` saves the sessions it can, always emits the unread
-      summary, and reports a partial failure naming the sessions that failed.
+- [x] `markAllSessionsRead` saves the sessions it can, reverts the in-memory
+      flag for the ones whose write failed so memory matches disk, emits the
+      unread summary after those reverts, and reports a partial failure naming
+      the sessions that failed.
 - [x] A handoff interrupt (plan submit, auth request, auth retry) releases the
       finalisation deferred, so shutdown resolves promptly instead of waiting
       out its bound on a turn that merely paused.

@@ -6402,7 +6402,7 @@ export class SessionManager implements ISessionManager {
    * Called from "Mark All Read" context menu on "All Sessions".
    */
   async markAllSessionsRead(workspaceId: string): Promise<void> {
-    const updates: Array<{ id: string; write: Promise<void> }> = []
+    const updates: Array<{ id: string; managed: ManagedSession; write: Promise<void> }> = []
     for (const managed of this.sessions.values()) {
       if (managed.workspace.id !== workspaceId) continue
       if (managed.hidden || managed.isArchived) continue
@@ -6411,6 +6411,7 @@ export class SessionManager implements ISessionManager {
       managed.hasUnread = false
       updates.push({
         id: managed.id,
+        managed,
         write: updateSessionMetadata(managed.workspace.rootPath, managed.id, { hasUnread: false }),
       })
     }
@@ -6422,17 +6423,24 @@ export class SessionManager implements ISessionManager {
     // correctly were never reported and the caller learned about one failure
     // out of however many there were.
     const results = await Promise.allSettled(updates.map(u => u.write))
-    const failures = results.flatMap((result, i) =>
-      result.status === 'rejected'
-        ? [`${updates[i]!.id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`]
-        : [],
-    )
+    const failures: string[] = []
+    results.forEach((result, i) => {
+      if (result.status !== 'rejected') return
+      const { id, managed } = updates[i]!
+      // Put the flag BACK. The clear at the top was optimistic, and this write
+      // is why it was optimistic: disk still says unread, so leaving memory
+      // saying read would broadcast a badge state no restart agrees with — the
+      // count would silently reappear next launch with nothing to explain it.
+      // Memory tracks disk, including when disk refuses.
+      managed.hasUnread = true
+      failures.push(`${id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`)
+    })
 
-    // Emitted UNCONDITIONALLY, and before the throw. The in-memory `hasUnread`
-    // flags were cleared at the top of this method, so the badge is already
-    // wrong by the time anything fails — skipping the event on the error path
-    // left the UI showing unread counts that memory disagreed with, which is a
-    // worse outcome than the failure itself.
+    // Emitted UNCONDITIONALLY, and AFTER the reverts above so it describes what
+    // actually happened: the sessions that saved read as read, the ones that
+    // failed read as unread. Skipping it on the error path was the first
+    // version of this and left the UI disagreeing with memory; emitting it
+    // before the reverts would have left it disagreeing with disk.
     this.emitUnreadSummaryChanged()
 
     if (failures.length) {

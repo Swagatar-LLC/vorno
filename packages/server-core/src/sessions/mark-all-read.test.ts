@@ -92,6 +92,14 @@ describe('markAllSessionsRead', () => {
     expect(good.hasUnread).toBe(false)
     expect(alsoGood.hasUnread).toBe(false)
 
+    // And the one that could NOT be saved reads unread again. The clear at the
+    // top of the method is optimistic; disk still says unread, so leaving
+    // memory saying read would broadcast a badge no restart agrees with — the
+    // count would silently reappear next launch with nothing to explain it.
+    const broken = (sm as unknown as { sessions: Map<string, { hasUnread?: boolean }> })
+      .sessions.get('broken-1')!
+    expect(broken.hasUnread).toBe(true)
+
     // And the badge event fired anyway — the in-memory flags changed before any
     // write ran, so suppressing it on the error path is what leaves the UI
     // disagreeing with memory.
