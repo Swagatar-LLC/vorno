@@ -32,7 +32,7 @@ import { appendPageActionAudit } from './action-bridge.ts';
 import { authorizePageAction } from './admission.ts';
 import { isPagesEnabled } from './capability.ts';
 import { refreshDescriptorMatches } from './storage.ts';
-import { pageActionOriginAllowsKind, pageActionOriginPolicy, type PageActionOriginPolicy } from './types.ts';
+import { pageActionOriginPolicy, type PageActionOriginPolicy } from './types.ts';
 
 /**
  * Whether a policy row is one a cron tick can actually satisfy.
@@ -156,7 +156,8 @@ export async function admitScheduledPageRefresh(
     page,
     grantId,
     // A cron tick is a bare trigger, identical in shape to the one a Page sends
-    // for a script grant.
+    // for a script grant. Kind confinement — a scheduled origin may run only a
+    // script grant — is enforced inside the primitive, not restated here.
     invocation: { kind: 'script' },
     authority,
     now: Date.now(),

@@ -52,9 +52,12 @@ is SUV-0064.
 - [x] Replay, lease-scoped in-flight keys/cancellation, page/workspace rate
       limits, and timeout have regression coverage.
 - [x] Rejection, execution, cancellation, timeout, and result are audited
-      without credentials or sensitive payloads: rows carry closed enums
-      (outcome and rejection codes) and bounded identifiers (`toolName`,
-      page/grant/request/lease/workspace ids) only — never paths, params, MCP
+      without credentials or sensitive payloads. The durable row never quotes
+      the caller: `requestId` is ALWAYS hashed (`pageAuditIdHash`); a lease or
+      grant id appears raw only after host validation has proven it host state,
+      and is hashed otherwise; source and tool are read off the approved grant
+      and bounded, never off the request. A rejection row carries the action
+      kind and the closed code alone. Never recorded: paths, query params, MCP
       arguments, bodies, script output, the dynamic rejection reason, or remote
       error text.
 
