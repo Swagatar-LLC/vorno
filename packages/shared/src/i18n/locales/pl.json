@@ -752,7 +752,7 @@
   "pages.actions.confirm.cancel": "Anuluj",
   "pages.actions.confirm.detail": "Workspace: {{workspace}}\nStrona: {{page}} ({{pageSlug}})\n\nTa strona prosi o uruchomienie zatwierdzonej akcji po raz pierwszy w tym widoku:\n\n{{action}}\n\nDziała z Twoim dostępem i uprawnieniami. Dopóki ta strona pozostaje otwarta, nie zapytamy ponownie o tę akcję.",
   "pages.actions.confirm.message": "Uruchomić tę akcję dla „{{page}}” w {{workspace}}?",
-  "pages.actions.confirm.run": "Uruchom raz",
+  "pages.actions.confirm.run": "Zezwól w tym widoku",
   "pages.actions.confirm.title": "Uruchom akcję strony",
   "pages.askAgent": "Poproś agenta",
   "pages.askAgentPrompt": "Stwórz dla mnie stronę, która pokazuje ",

@@ -752,7 +752,7 @@
   "pages.actions.confirm.cancel": "Abbrechen",
   "pages.actions.confirm.detail": "Workspace: {{workspace}}\nSeite: {{page}} ({{pageSlug}})\n\nDiese Seite möchte zum ersten Mal in dieser Ansicht eine freigegebene Aktion ausführen:\n\n{{action}}\n\nSie läuft mit deinem Zugriff und deinen Berechtigungen. Solange diese Seite geöffnet bleibt, wirst du für diese Aktion nicht erneut gefragt.",
   "pages.actions.confirm.message": "Diese Aktion für „{{page}}“ in {{workspace}} ausführen?",
-  "pages.actions.confirm.run": "Einmal ausführen",
+  "pages.actions.confirm.run": "In dieser Ansicht erlauben",
   "pages.actions.confirm.title": "Seitenaktion ausführen",
   "pages.askAgent": "Agent fragen",
   "pages.askAgentPrompt": "Erstelle mir eine Seite, die Folgendes zeigt: ",

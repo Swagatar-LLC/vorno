@@ -939,6 +939,33 @@ describe('pages/action-bridge', () => {
       expect((overflow as { code: string }).code).toBe('rate-limited');
     });
 
+    it('holds the outstanding cap against concurrent mints', async () => {
+      // First-use confirmation is an await on a human, so counting only ISSUED
+      // tickets let every concurrent mint read the same pre-dialog total and
+      // all pass. Eight at once against a cap of four.
+      const { broker } = activationBroker();
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = writePage();
+      disk.page = page;
+
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const confirmFirstUse = async () => { await held; return true; };
+
+      const attempts = Array.from({ length: 8 }, () =>
+        broker.mintActivationTicket(page, writeRequest(lease), AUTHORITY, { confirmFirstUse }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      release();
+      const outcomes = await Promise.all(attempts);
+
+      const minted = outcomes.filter((o) => o.ok);
+      expect(minted.length).toBeLessThanOrEqual(MAX_OUTSTANDING_TICKETS_PER_LEASE);
+      expect(broker.activationTicketCount).toBeLessThanOrEqual(MAX_OUTSTANDING_TICKETS_PER_LEASE);
+      // The rest are refused, not silently dropped.
+      expect(outcomes.filter((o) => !o.ok).length).toBe(8 - minted.length);
+      expect(outcomes.some((o) => !o.ok && (o as { code: string }).code === 'rate-limited')).toBe(true);
+    });
+
     it('does not mint for a non-mutating action', async () => {
       const { broker } = activationBroker();
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });

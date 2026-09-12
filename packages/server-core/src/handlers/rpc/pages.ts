@@ -54,24 +54,33 @@ const MAX_PENDING_PAGE_GRANT_CONFIRMATIONS = 32
  * against the grant. Duplicating the descriptor schema here would create a
  * second definition of a valid invocation, and the two would drift.
  */
-function parsePageActionRequest(value: unknown, pageSlug: string): PageActionRequest | null {
+function parsePageActionRequest(value: unknown, pageSlug?: string): PageActionRequest | null {
   if (typeof value !== 'object' || value === null) return null
   const candidate = value as Record<string, unknown>
   const bounded = (field: unknown) => typeof field === 'string' && field.length > 0 && field.length <= 128
   if (!bounded(candidate.requestId) || !bounded(candidate.leaseId) || !bounded(candidate.nonce) || !bounded(candidate.grantId)) {
     return null
   }
+  // The activation path is handed the page by the host and ignores the payload's
+  // claim; the execute path has no such argument, so it reads the field and the
+  // broker proves it against the lease. Both go through this one parser.
+  const slug = pageSlug ?? (bounded(candidate.pageSlug) ? (candidate.pageSlug as string) : undefined)
+  if (slug === undefined) return null
   const invocation = candidate.invocation
   if (typeof invocation !== 'object' || invocation === null || typeof (invocation as { kind?: unknown }).kind !== 'string') {
     return null
   }
+  // Carried through, never minted here: a ticket is only ever valid if the
+  // broker issued it, so an unparseable one simply fails redemption.
+  const activationTicket = bounded(candidate.activationTicket) ? (candidate.activationTicket as string) : undefined
   return {
     requestId: candidate.requestId as string,
-    pageSlug,
+    pageSlug: slug,
     leaseId: candidate.leaseId as string,
     nonce: candidate.nonce as string,
     grantId: candidate.grantId as string,
     invocation: invocation as PageActionRequest['invocation'],
+    ...(activationTicket !== undefined ? { activationTicket } : {}),
   }
 }
 
@@ -1010,14 +1019,39 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // Execute a granted source action. Page config is re-read from disk per
   // request so revocations and content changes apply immediately.
-  server.handle(RPC_CHANNELS.pages.EXECUTE_ACTION, async (_ctx, workspaceId: string, request: PageActionRequest) => {
+  server.handle(RPC_CHANNELS.pages.EXECUTE_ACTION, async (_ctx, workspaceId: string, rawRequest: unknown) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     assertAvailable(workspace.rootPath)
-    const { loadPageConfig } = await import('@craft-agent/shared/pages')
+    const { appendPageActionAudit, loadPageConfig } = await import('@craft-agent/shared/pages')
+
+    /**
+     * Refusals a malformed payload produces, shaped like every other action
+     * result rather than thrown.
+     *
+     * This channel is reachable by any transport client, so its argument is
+     * untrusted input — not a `PageActionRequest` because the signature says
+     * so. Throwing would surface as a transport error the page cannot handle
+     * and, worse, would leave no audit row: an attacker probing the shape of
+     * this endpoint would do so invisibly. Every refusal is recorded, with
+     * metadata only, since by definition nothing here has been validated.
+     */
+    const malformed = async (reason: string) => {
+      await appendPageActionAudit({
+        event: 'page_action_rejected',
+        workspaceId: workspace.id,
+        origin: 'sandboxed-page',
+        code: 'malformed-request',
+        reason,
+      }, { onError: (error) => log.warn(`Failed to audit malformed page action: ${error}`) })
+      return { requestId: 'unknown', ok: false, error: `malformed-request: ${reason}`, durationMs: 0 }
+    }
+
+    const request = parsePageActionRequest(rawRequest)
+    if (!request) return malformed('Request does not match the page action shape')
 
     const page = loadPageConfig(workspace.rootPath, request.pageSlug)
-    if (!page) throw new Error(`Page not found: ${request.pageSlug}`)
+    if (!page) return malformed('Page not found')
 
     const broker = await getBroker(workspaceId, workspace.rootPath)
     // Authority is built HERE, from the resolved workspace and the transport

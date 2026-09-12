@@ -21,7 +21,7 @@
  * distinction is written down rather than assumed.
  */
 
-import type { PageConfig, PageRefreshSpec } from '@craft-agent/core';
+import type { PageActionAuthority, PageConfig, PageRefreshSpec } from '@craft-agent/core';
 import { loadWorkspaceConfig } from '../workspaces/storage.ts';
 import { appendPageActionAudit } from './action-bridge.ts';
 import { assertPageRefreshGrant } from './storage.ts';
@@ -55,13 +55,25 @@ export async function admitScheduledPageRefresh(
   const { workspaceRootPath, page, refresh, grantId, auditLogPath } = input;
 
   const workspace = safeLoadWorkspace(workspaceRootPath);
+  /**
+   * The same `PageActionAuthority` shape the broker is given, constructed here
+   * because this is the host for a cron tick. Built as a value rather than
+   * spelled as a literal at each use so the origin, workspace, and mode that
+   * the policy is checked against are provably the ones the audit records.
+   */
+  const authority: PageActionAuthority = {
+    workspaceId: workspace.id,
+    origin: 'scheduled-refresh',
+    permissionMode: workspace.permissionMode,
+  };
+
   const audit = (code: string, reason: string) =>
     appendPageActionAudit(
       {
         event: 'page_action_rejected',
-        workspaceId: workspace.id,
-        origin: 'scheduled-refresh',
-        permissionMode: workspace.permissionMode,
+        workspaceId: authority.workspaceId,
+        origin: authority.origin,
+        permissionMode: authority.permissionMode,
         pageSlug: page.slug,
         grantId,
         actionKind: 'script',
@@ -78,16 +90,16 @@ export async function admitScheduledPageRefresh(
 
   // Origin policy first, read from the same table the broker reads. An origin
   // that vanished from the table must stop everything, not fall through.
-  const policy = pageActionOriginPolicy('scheduled-refresh');
+  const policy = pageActionOriginPolicy(authority.origin);
   if (!policy) return refuse('origin-unattributed', 'The scheduled origin has no policy');
-  if (!pageActionOriginAllowsKind('scheduled-refresh', 'script')) {
+  if (!pageActionOriginAllowsKind(authority.origin, 'script')) {
     return refuse('origin-forbidden', 'A scheduled refresh may not run this action kind');
   }
 
   // Explore is read-only across the product, and a background script is not an
   // exception to that. Re-read per run, so switching a workspace to Explore
   // stops the next refresh rather than the next restart.
-  if (workspace.permissionMode === 'safe') {
+  if (authority.permissionMode === 'safe') {
     return refuse('permission-mode-forbidden', 'Explore mode does not run scheduled page refreshes');
   }
 
@@ -107,9 +119,9 @@ export async function admitScheduledPageRefresh(
   await appendPageActionAudit(
     {
       event: 'page_action_admitted',
-      workspaceId: workspace.id,
-      origin: 'scheduled-refresh',
-      permissionMode: workspace.permissionMode,
+      workspaceId: authority.workspaceId,
+      origin: authority.origin,
+      permissionMode: authority.permissionMode,
       pageSlug: page.slug,
       grantId,
       actionKind: 'script',

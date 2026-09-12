@@ -752,7 +752,7 @@
   "pages.actions.confirm.cancel": "Cancel",
   "pages.actions.confirm.detail": "Workspace: {{workspace}}\nPage: {{page}} ({{pageSlug}})\n\nThis page is asking to run an approved action for the first time in this view:\n\n{{action}}\n\nIt runs with your access and your permissions. You will not be asked again for this action while this page stays open.",
   "pages.actions.confirm.message": "Run this action for “{{page}}” in {{workspace}}?",
-  "pages.actions.confirm.run": "Run once",
+  "pages.actions.confirm.run": "Allow in this view",
   "pages.actions.confirm.title": "Run page action",
   "pages.askAgent": "Ask an agent",
   "pages.askAgentPrompt": "Create a page for me that shows ",

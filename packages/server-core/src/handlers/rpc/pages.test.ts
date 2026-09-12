@@ -1092,6 +1092,55 @@ describe('Pages RPC workspace capability gate', () => {
       expect(result.error).toContain('activation-required')
     })
 
+    test('shape-guards the wire payload instead of throwing', async () => {
+      const invoke = createHarness('approve')
+      await seedScriptGrant(invoke)
+
+      // This channel is reachable by any transport client, so its argument is
+      // untrusted input regardless of what the handler signature claims. A
+      // throw would surface as a transport error the page cannot handle AND
+      // leave no audit row, so probing the endpoint's shape would be invisible.
+      for (const hostile of [
+        undefined, null, 'string', 42, [], {},
+        { requestId: 'r' },
+        { requestId: 'r', leaseId: 'l', nonce: 'n' },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g' },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash' },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: 'nope' },
+        { requestId: 'x'.repeat(500), leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api' } },
+      ]) {
+        const result = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, hostile) as {
+          ok: boolean; error?: string
+        }
+        expect(result.ok).toBe(false)
+        expect(result.error).toContain('malformed-request')
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const audit = readFileSync(AUDIT_LOG, 'utf-8').trim().split('\n').map((line) => JSON.parse(line))
+      const malformed = audit.filter((entry) => entry.code === 'malformed-request')
+      expect(malformed.length).toBeGreaterThan(0)
+      // Metadata only — nothing from the payload, which by definition has not
+      // been validated and may be anything at all.
+      expect(malformed[0]?.origin).toBe('sandboxed-page')
+      expect(malformed[0]?.workspaceId).toBe(WORKSPACE_A)
+      expect(malformed[0]?.invocation).toBeUndefined()
+    })
+
+    test('does not treat a page that no longer exists as a crash', async () => {
+      const invoke = createHarness('approve')
+      const { page, lease, grant } = await seedScriptGrant(invoke)
+      await invoke(RPC_CHANNELS.pages.DELETE, WORKSPACE_A, page.slug)
+
+      const result = await invoke(
+        RPC_CHANNELS.pages.EXECUTE_ACTION,
+        WORKSPACE_A,
+        requestFor(page, lease, grant!),
+      ) as { ok: boolean; error?: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('malformed-request')
+    })
+
     test('refuses a forged activation ticket', async () => {
       const invoke = createHarness('approve')
       const { page, lease, grant } = await seedScriptGrant(invoke)

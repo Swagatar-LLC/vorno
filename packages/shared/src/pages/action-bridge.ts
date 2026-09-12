@@ -407,6 +407,17 @@ export class PageActionBroker {
   /** ticketId → the single-use activation record the broker holds */
   private readonly tickets = new Map<string, PageActivationTicket>();
   /**
+   * Mints that have reserved a slot against the outstanding cap but have not
+   * produced a ticket yet, per lease.
+   *
+   * The cap is meaningless without this. First-use confirmation is an `await`
+   * on a human, so counting only issued tickets let every concurrent mint read
+   * the same pre-dialog total, pass, and then all issue — the check and the
+   * reservation have to be one synchronous step, exactly as the mutating-slot
+   * cap does it.
+   */
+  private readonly pendingMintsByLease = new Map<string, number>();
+  /**
    * Grants whose host-rendered first-use confirmation this render has already
    * cleared, keyed by lease AND grant. Scoped to the lease because ADR-0033 §3
    * says per render: new content, or a re-mount, asks again.
@@ -893,14 +904,44 @@ export class PageActionBroker {
       return reject('activation-invalid', 'Non-mutating actions do not take an activation ticket');
     }
 
-    const outstanding = [...this.tickets.values()].filter((t) => t.leaseId === request.leaseId).length;
-    if (outstanding >= MAX_OUTSTANDING_TICKETS_PER_LEASE) {
+    // Reserve synchronously: issued tickets plus mints already past this line.
+    if (!this.reserveMintSlot(request.leaseId)) {
       return reject(
         'rate-limited',
         `Too many unspent activations for this render (max ${MAX_OUTSTANDING_TICKETS_PER_LEASE})`,
       );
     }
+    try {
+      return await this.mintReserved(page, request, authority, options, validation, reject);
+    } finally {
+      this.releaseMintSlot(request.leaseId);
+    }
+  }
 
+  /** Count-and-reserve in one synchronous step. */
+  private reserveMintSlot(leaseId: string): boolean {
+    const issued = [...this.tickets.values()].filter((t) => t.leaseId === leaseId).length;
+    const pending = this.pendingMintsByLease.get(leaseId) ?? 0;
+    if (issued + pending >= MAX_OUTSTANDING_TICKETS_PER_LEASE) return false;
+    this.pendingMintsByLease.set(leaseId, pending + 1);
+    return true;
+  }
+
+  private releaseMintSlot(leaseId: string): void {
+    const pending = this.pendingMintsByLease.get(leaseId) ?? 0;
+    if (pending <= 1) this.pendingMintsByLease.delete(leaseId);
+    else this.pendingMintsByLease.set(leaseId, pending - 1);
+  }
+
+  /** The confirmation-and-issue half of minting, holding a reserved slot. */
+  private async mintReserved(
+    page: PageConfig,
+    request: PageActionRequest,
+    authority: PageActionAuthority,
+    options: MintActivationOptions,
+    validation: Extract<ValidationOutcome, { ok: true }>,
+    reject: (code: PageActionValidationErrorCode, reason: string) => MintActivationOutcome,
+  ): Promise<MintActivationOutcome> {
     const policy = pageActionOriginPolicy(authority.origin)!;
     // The confirmation identity is the lease, the grant, AND the exact command.
     //
@@ -940,6 +981,16 @@ export class PageActionBroker {
       // question is not the same as approving the state that follows it.
       const revalidation = this.validate(page, request, authority);
       if (!revalidation.ok) return reject(revalidation.code, revalidation.reason);
+      // Other mints can have issued while this dialog was open. This mint's own
+      // reservation is still held, so re-check the issued total against the cap
+      // rather than assuming the pre-dialog headroom survived.
+      const issuedNow = [...this.tickets.values()].filter((t) => t.leaseId === request.leaseId).length;
+      if (issuedNow >= MAX_OUTSTANDING_TICKETS_PER_LEASE) {
+        return reject(
+          'rate-limited',
+          `Too many unspent activations for this render (max ${MAX_OUTSTANDING_TICKETS_PER_LEASE})`,
+        );
+      }
       this.firstUseConfirmed.set(firstUseKey, { leaseId: request.leaseId, grantId: request.grantId });
     }
 

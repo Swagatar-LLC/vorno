@@ -752,7 +752,7 @@
   "pages.actions.confirm.cancel": "取消",
   "pages.actions.confirm.detail": "工作区：{{workspace}}\n页面：{{page}}（{{pageSlug}}）\n\n此页面请求在该视图中首次运行一项已批准的操作：\n\n{{action}}\n\n它将使用你的访问权限运行。只要此页面保持打开，就不会再次询问该操作。",
   "pages.actions.confirm.message": "要在 {{workspace}} 中为“{{page}}”运行此操作吗？",
-  "pages.actions.confirm.run": "运行一次",
+  "pages.actions.confirm.run": "在该视图中允许",
   "pages.actions.confirm.title": "运行页面操作",
   "pages.askAgent": "让智能体创建",
   "pages.askAgentPrompt": "帮我创建一个页面，用来展示",

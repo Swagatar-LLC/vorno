@@ -88,6 +88,9 @@ to: it takes ADR-0033's trusted-host-click branch.
 - A gesture is **spent** when it mints a ticket, which is what makes "one
   privileged action per click" true rather than aspirational. Passive input
   (moves, wheel, hover, enter/leave) never counts as a gesture.
+- The gesture is checked **before** any dialog is rendered, and there is no
+  path that substitutes one for the other. A request with no fresh unspent
+  gesture is refused at the IPC hop.
 - **Every mutating kind** requires host-rendered first-use confirmation per
   render, naming the exact descriptor. That dialog is host chrome, so the
   user's answer is a click the main process both renders and observes — the
@@ -115,9 +118,20 @@ to: it takes ADR-0033's trusted-host-click branch.
 Finding 3's unknown is deliberately made safe by shape rather than by assumption:
 if real in-frame clicks turn out to be invisible to `input-event`, a Page button
 mints no ticket and the action is **refused**. The failure is a usability
-complaint, not a bypass. The first-use confirmation keeps even that case working
-for the dangerous kinds, because answering the dialog is itself an observed
-gesture.
+complaint, not a bypass.
+
+**Correction (2026-09-11).** An earlier revision of this file claimed the
+first-use confirmation would "keep even that case working, because answering the
+dialog is itself an observed gesture". That is **false**, and the code never
+worked that way. `handlePageActivationIpc` consumes the gesture *before* it
+calls the server, and the server is what renders the dialog — so with no fresh
+gesture the request is refused at the IPC hop and no dialog is ever shown. There
+is no fallback, by design: the gesture is a precondition of asking, not
+something asking can supply. If finding 3's unknown resolves badly, privileged
+Page actions stop working until the gesture source is fixed. That is the
+fail-closed behaviour the ADR asks for, and it is worth stating plainly rather
+than softening — a security record that quietly overstates a recovery path is
+worse than one that admits the hard edge.
 
 Re-running the probe on a new Electron is worthwhile when the version moves, and
 a positive result does **not** by itself license reading activation as frame
