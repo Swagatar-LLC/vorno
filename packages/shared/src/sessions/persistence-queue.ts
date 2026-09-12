@@ -639,6 +639,28 @@ class SessionPersistenceQueue {
    * answer and the one place it can be reported.
    */
   private closingWriteFailures = new Map<SessionWriteKey, string>()
+  /**
+   * The exact snapshot of the LAST write that failed, per key, kept until
+   * something newer actually commits.
+   *
+   * A failed write used to lose its bytes: the entry is shifted off the queue
+   * before the attempt, so on failure the state it carried existed nowhere. For
+   * an ordinary write — no receipt holder, nobody watching — the session's
+   * latest state was simply gone, and stayed gone unless some later edit
+   * happened to enqueue another write. That is the failure mode with no
+   * symptom: the file on disk is stale, every map says quiescent, and the app
+   * reports nothing.
+   *
+   * So the snapshot is EVIDENCE and it is retained through quiescence — that is
+   * why `retireIfQuiescent` refuses to sweep a key holding one. `flushAll`
+   * retries them before it may report a clean shutdown, which is also what
+   * covers `storage.ts:saveSession` callers that never go through
+   * SessionManager. Released only by a successful commit for the same key
+   * (which is same-or-newer by construction: generations increase and the FIFO
+   * drains them in order) or by deletion, where there is no session left to
+   * write.
+   */
+  private failedSnapshots = new Map<SessionWriteKey, { data: StoredSession; generation: number; error: string }>()
   private debounceMs: number
 
   constructor(debounceMs = 500, commitHooks?: SessionCommitHooks) {
@@ -904,6 +926,13 @@ class SessionPersistenceQueue {
     if (this.queued.has(key)) return
     if (this.tails.has(key)) return
     if (this.receiptWaiters.get(key)?.length) return
+    // Failure evidence is NOT swept. A retained snapshot is state that has not
+    // reached disk and is waiting to be retried at shutdown; retiring the
+    // generation bookkeeping under it would leave that retry re-entering at
+    // generation 1 with a zeroed watermark, and retiring the snapshot itself
+    // would silently discard the write. Deletion and a successful commit are
+    // the only two releases — see `failedSnapshots`.
+    if (this.failedSnapshots.has(key)) return
     // No guard for `pendingExternalMetadata`, deliberately. Retirement below
     // does not touch that map, so an undischarged observation already survives
     // a sweep; blocking on it would only pin the generation maps open for a
@@ -948,6 +977,11 @@ class SessionPersistenceQueue {
       cancelledThrough: this.cancelledThrough.size,
       receiptWaiters: this.receiptWaiters.size,
       lastWriteFailure: this.lastWriteFailure.size,
+      // Retained evidence rather than bookkeeping, and both are bounded by an
+      // anomaly (a write that failed) rather than by traffic — which is exactly
+      // why they have to be watchable.
+      failedSnapshots: this.failedSnapshots.size,
+      closingWriteFailures: this.closingWriteFailures.size,
       // Every per-key map appears here. A leak test can only assert on what
       // it can see, so an omitted map is a map nothing is watching — and
       // `lastEnqueuedMetadata` and `pendingExternalMetadata` in particular grow
@@ -1228,6 +1262,9 @@ class SessionPersistenceQueue {
       // This session's state IS on disk now, so an earlier failure in the same
       // drain has nothing left to report — see `closingWriteFailures`.
       this.closingWriteFailures.delete(key)
+      // And the retained snapshot has been overtaken: this commit is
+      // same-or-newer by construction, so nothing is left to retry.
+      this.failedSnapshots.delete(key)
       this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
       this.settleReceipts(key, generation, { ok: true })
       return true
@@ -1249,6 +1286,10 @@ class SessionPersistenceQueue {
       // ordinary write has none. Recorded so `flushAll` can refuse to report a
       // clean shutdown over it.
       if (this.closing) this.closingWriteFailures.set(key, `${entry.data.id}: ${message}`)
+      // The bytes themselves, kept. This entry was shifted off the queue before
+      // the attempt, so without this the state it carried exists nowhere —
+      // see `failedSnapshots`.
+      this.failedSnapshots.set(key, { data: entry.data, generation, error: message })
       // Marked attempted either way, so a waiter learns the outcome promptly
       // instead of hanging until some later write happens to supersede it.
       // Failure is an answer; silence is not.
@@ -1304,6 +1345,10 @@ class SessionPersistenceQueue {
     this.inFlightSignature.delete(key)
     this.lastEnqueuedMetadata.delete(key)
     this.lastWriteFailure.delete(key)
+    // No session left to write it into. The one other release besides a
+    // successful commit — see `failedSnapshots`.
+    this.failedSnapshots.delete(key)
+    this.closingWriteFailures.delete(key)
     this.pendingExternalMetadata.delete(key)
     // Drop the bookkeeping, but only if nothing is still in flight. Deleted
     // sessions would otherwise leave an entry in every map for the life of the
@@ -1451,6 +1496,31 @@ class SessionPersistenceQueue {
    * Idempotent for the already-quiet case. Reopening is deliberately explicit —
    * see {@link reopenAfterFlushAll}; a normal process never reopens, it exits.
    */
+  /**
+   * Re-attempt every retained failed snapshot, once, on the way out.
+   *
+   * Enqueued as a RECONCILIATION entry, which is the one path the freeze
+   * exempts, and as a CHECKED one so it cannot be coalesced into and so this
+   * can await the exact outcome (I4). The two properties are needed together:
+   * exempt or the shutdown refuses its own retry, checked or the answer is
+   * somebody else's.
+   *
+   * One attempt each. A retry that fails records itself in
+   * `closingWriteFailures` like any other write failing while closing, so the
+   * caller reports it and refuses to call the shutdown clean — retrying harder
+   * against a filesystem that has said no twice only delays the quit.
+   */
+  private async retryRetainedFailures(): Promise<void> {
+    for (const [key, failed] of [...this.failedSnapshots]) {
+      debug(`[PersistenceQueue] Retrying failed write for session ${failed.data.id} during shutdown`)
+      const generation = this.enqueueEntry(failed.data, { checked: true, reconciliation: true })
+      const receipt = this.receiptFor(key, generation)
+      this.clearQueuedTimers(key)
+      void this.runOnTail(key)
+      await receipt
+    }
+  }
+
   async flushAll(): Promise<void> {
     this.closing = true
     let quiescent = false
@@ -1459,6 +1529,15 @@ class SessionPersistenceQueue {
       if (!keys.size) { quiescent = true; break }
       await Promise.all([...keys].map(key => this.flush(key)))
     }
+
+    // Retry anything whose last write failed and was never overtaken. Quit is
+    // the last chance a transient failure gets — a full disk that has since
+    // been freed, a directory that was briefly gone — and until now that state
+    // simply died with the process, silently, because an ordinary write has no
+    // receipt holder to notice. AFTER the drain on purpose: a newer write
+    // already queued for the same session commits first and releases the
+    // snapshot, so this never resurrects state something newer has replaced.
+    await this.retryRetainedFailures()
 
     // Two different ways a shutdown is unclean, reported TOGETHER. Throwing on
     // the first one found would hide the other, and they answer different

@@ -235,6 +235,69 @@ orphaning instead of superseding at turn start. The auth-retry site is the one
 stop site with no test of its own — its tail is two synchronous statements and
 the supersede backstop bounds a leak there — recorded rather than implied away.
 
+### Review 16 — three producers that acted past the edges of the shutdown
+
+1. **A failed ordinary write's bytes existed nowhere.** The queue shifts an entry
+   off before attempting it, so on failure the snapshot it carried was gone: no
+   receipt holder, no queue entry, every map quiescent, a stale file on disk and
+   nothing that would ever correct it. The exact latest failed snapshot is now
+   RETAINED per key — `retireIfQuiescent` refuses to sweep a key holding one,
+   because that is evidence rather than bookkeeping — and released only by a
+   successful commit for that key (same-or-newer by construction: generations
+   increase and the FIFO drains them in order) or by deletion. `flushAll` retries
+   each retained snapshot before it may report a clean shutdown, enqueued as
+   checked + reconciliation: exempt or the shutdown refuses its own retry,
+   checked or the answer belongs to somebody else. Ordered AFTER the drain, so a
+   newer queued write commits first and releases the snapshot instead of being
+   overwritten by stale bytes. One attempt each — a filesystem that has said no
+   twice is not going to be talked round, and the failure reports itself through
+   the closing ledger. This is also what covers `storage.ts:saveSession` callers
+   that never reach SessionManager, which is why it lives at the queue level
+   rather than in the candidate scan.
+
+2. **`generateTitle` acted after the freeze.** Un-awaited by its caller and not
+   one of the producers `stopPersistenceProducers` stops — a quit may not be held
+   open for a model round-trip — it would mutate `managed.name`, enqueue a write
+   the closing queue refuses, and emit `title_generated`, leaving memory, disk
+   and the renderer disagreeing about the name. It now re-checks after its await
+   and DISCARDS before mutating, persisting, announcing or logging success, and
+   refuses to stand up a temporary backend once the freeze has landed, so the
+   provider handle is never opened rather than opened and abandoned. Bounded by
+   refusing rather than by being awaited, deliberately: the title is derived, and
+   the fallback name the session already has is correct. The previous round
+   recorded this as an accepted P3 residual; it is now fixed, and the residual
+   says so.
+
+3. **A replayed queued message lost its skill slugs.** `options` is not
+   persisted, so the entry rebuilt at cold load had `options: undefined` and the
+   pre-enable block (`if (options?.skillSlugs?.length)`) never ran — the replayed
+   turn started with the skill's required sources disabled, which is exactly the
+   two-turn penalty that block exists to remove. The slugs are reconstructed from
+   the message's persisted skill badges. Two hydration paths held byte-identical
+   copies of this recovery and were separately maintained, which is how they came
+   to be separately wrong in the same way; there is one copy now
+   (`recoverOrphanedQueuedMessages`), so the next fix lands once.
+
+   `skillSlugsFromBadges` parses `rawText` against the same bracket form the
+   input builds and nothing else. That is the security half, not a formality: a
+   badge is CONTENT — it travels with a message, is persisted, and nothing
+   revalidates it on the way back in — while the slug it yields reaches
+   `loadSkillBySlug`, which builds a filesystem path out of it. `[\w-]+` cannot
+   express a separator or a `..`, so what comes back is a name and not a route,
+   and `label` is deliberately not a fallback because it is a display string.
+   Existence stays `loadSkillBySlug`'s question, which it already answers and
+   tolerates a miss on.
+
+Six mutations, each killed: no shutdown retry; retirement sweeping the evidence;
+a successful commit not releasing the snapshot; the title applying after the
+freeze; the replay dropping `skillSlugs`; and a permissive slug pattern.
+
+Honest limit on the third: the end-to-end claim "a cold replay pre-enables the
+same sources the original send did" is asserted at the SEAM — the recovered
+queue entry carries exactly the `options.skillSlugs` the pre-enable block reads —
+rather than through a live skill-file-plus-source fixture driven all the way to
+an enabled source. The pre-enable block itself is unchanged by this SUV.
+
 ### Review 14 — two ways a shutdown reported success it did not have
 
 1. **Quiescence is not success.** The cold-session no-rewrite decision is right —
@@ -622,14 +685,23 @@ activity.
 - The auth-retry resend is the one turn-stop site with no test of its own. Its
   tail is two synchronous statements, and a forgotten release there is bounded
   by the supersede-at-turn-start backstop rather than by coverage.
-- **`generateTitle` is fired un-awaited from the send path and is not covered by
-  `stopPersistenceProducers`.** A quit in the seconds after a first message can
-  therefore land while a title is still being generated, and that write is
-  refused by the closing queue. Assessed **P3** and accepted: what is lost is a
-  DERIVED value — the transcript, the user message and the turn state are all
-  written by paths that shutdown does wait for — and it regenerates on the next
-  turn. Pre-existing, not introduced here. Fixing it means either awaiting a
-  model call inside the send path or giving the title its own admission.
+- **`generateTitle` is still not awaited by shutdown, by choice.** It is fired
+  un-awaited from the send path and `stopPersistenceProducers` does not stop it,
+  because holding a quit open for a model round-trip is worse than losing the
+  title. What is guaranteed instead is that it cannot ACT across the freeze: it
+  discards before mutating, persisting, announcing or logging success, and will
+  not open a temporary backend once shutdown has begun. So a title in flight at
+  quit is lost — a DERIVED value that regenerates next turn, while the
+  transcript, the user message and the turn state are all written by paths
+  shutdown does wait for. `AgentInstance.generateTitle` takes no abort signal,
+  so cancelling the in-flight provider call is not available to us today.
+- **Retained failure evidence is bounded by an anomaly, not by traffic.** A key
+  whose last write failed keeps its snapshot and its generation bookkeeping
+  until something commits or the session is deleted — so a session that fails
+  and is never written again holds one record for the life of the process, and
+  `retireIfQuiescent` is blocked for it. Same shape and same justification as
+  the held-observation residual: the alternative is discarding the only copy of
+  state that never reached disk. Visible in `diagnostics()`.
 - **`isQueued` replay is at-least-once, not exactly-once.** A message committed
   during shutdown is marked `isQueued` and re-queued by the cold-load scan;
   `processNextQueuedMessage` clears the flag and persists, so a crash in the
@@ -653,6 +725,14 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 16 (architecture P1/P2/P3): a failed ordinary write's
+  bytes existed nowhere afterwards, so the exact snapshot is now retained (and
+  not swept by retirement) and retried by `flushAll` before it may report a
+  clean shutdown; `generateTitle` acted past the freeze and now discards before
+  mutating, persisting, announcing or logging; and a replayed queued message
+  lost its skill slugs, which are reconstructed from persisted badges through
+  one shape-validated helper shared by both cold-recovery sites, which were
+  duplicated and separately wrong. Six mutations killed.
 - `2026-09-12` — review 15 (security: P0–P2 clear, one P3): both shutdown waits
   bounded themselves with a 5s timer and never cleared the losing side of the
   race, so a Bun headless or standalone host sat with its event loop held open

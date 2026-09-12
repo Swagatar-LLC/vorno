@@ -96,7 +96,7 @@ import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
-import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type AnnotationMutationResult, type TokenUsage, type HeadroomRetrieveResult } from '@craft-agent/core/types'
+import { messageToStored, storedToMessage, type ContentBadge, type Message, type StoredAttachment, type ToolDisplayMeta, type AnnotationMutationResult, type TokenUsage, type HeadroomRetrieveResult } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
@@ -1076,6 +1076,40 @@ interface SendAdmission {
   settle(): void
 }
 
+/**
+ * The skill mentions a persisted user message carried, recovered from its badges.
+ *
+ * A queued message that outlives its process is replayed from `managed.messages`,
+ * and its `options` are NOT persisted — so the skill slugs the original send
+ * passed were silently dropped and the replay skipped the source pre-enabling
+ * that `[skill:…]` exists to trigger. The badges ARE persisted, so the slugs are
+ * recoverable from them.
+ *
+ * Parsed from `rawText` against the same bracket form the input builds
+ * (`[skill:slug]` or `[skill:workspaceId:slug]`), and a badge that does not
+ * match that form contributes nothing. That is the security half, not a
+ * formality: these slugs reach `loadSkillBySlug`, which builds a filesystem
+ * path out of them, and a badge is content — it travels with a message and
+ * nothing revalidates it on the way back in. `[\w-]+` cannot express a path
+ * separator or a `..`, so the recovered value is a name and not a route.
+ * `label` is deliberately not a fallback: it is a display string.
+ *
+ * Existence is somebody else's question — `loadSkillBySlug` already answers it
+ * and tolerates a miss — so this stays pure and shape-only.
+ */
+const SKILL_MENTION_PATTERN = /^\[skill:(?:[^\]:]+:)?([\w-]+)\]$/
+
+export function skillSlugsFromBadges(badges: ContentBadge[] | undefined): string[] | undefined {
+  if (!badges?.length) return undefined
+  const slugs: string[] = []
+  for (const badge of badges) {
+    if (badge.type !== 'skill') continue
+    const slug = SKILL_MENTION_PATTERN.exec(badge.rawText ?? '')?.[1]
+    if (slug && !slugs.includes(slug)) slugs.push(slug)
+  }
+  return slugs.length ? slugs : undefined
+}
+
 const PI_SDK_MESSAGE_ID_CACHE_LIMIT = 256
 
 export interface AutoRetryPendingHost {
@@ -1460,6 +1494,48 @@ export class SessionManager implements ISessionManager {
     }
     // Whatever is still registered never settled; the map is the live answer.
     return [...this.sendAdmissions.values()].map(a => a.sessionId)
+  }
+
+  /**
+   * Re-queue the messages a previous process accepted but never ran.
+   *
+   * Both hydration paths — cold load and lazy load — reached this the same way
+   * and were separately maintained, which is how they came to be separately
+   * WRONG in the same way: each rebuilt the queue entry without `options`, so a
+   * message sent with `[skill:…]` replayed after a restart without its skill
+   * slugs and skipped the source pre-enabling the original send performed. One
+   * copy now, so the next fix lands once.
+   *
+   * `isQueued` on a persisted user message is the durable half of the queue —
+   * `messageQueue` itself is runtime state that dies with the process — so this
+   * scan is what actually makes a queued message survive a quit or a crash.
+   */
+  private recoverOrphanedQueuedMessages(managed: ManagedSession): void {
+    const orphanedQueued = managed.messages.filter(m => m.role === 'user' && m.isQueued === true)
+    if (orphanedQueued.length === 0) return
+
+    sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
+    for (const msg of orphanedQueued) {
+      const skillSlugs = skillSlugsFromBadges(msg.badges)
+      managed.messageQueue.push({
+        message: msg.content,
+        messageId: msg.id,
+        attachments: undefined,  // Attachments already stored on disk
+        storedAttachments: msg.attachments,
+        // Rebuilt from what survived, not carried: `options` is not persisted.
+        // Only `skillSlugs` is reconstructed, because it is the only member with
+        // an effect the replay would otherwise silently drop.
+        options: skillSlugs ? { skillSlugs } : undefined,
+      })
+    }
+
+    // Process queue when session becomes active (will be triggered by first message or interaction)
+    // Use setImmediate to avoid blocking the load and allow session state to settle
+    if (!managed.isProcessing && managed.messageQueue.length > 0) {
+      setImmediate(() => {
+        this.processNextQueuedMessage(managed.id)
+      })
+    }
   }
 
   /**
@@ -2575,27 +2651,7 @@ export class SessionManager implements ISessionManager {
       if (managed.transferredSessionSummary === undefined) managed.transferredSessionSummary = stored.transferredSessionSummary
       if (managed.transferredSessionSummaryApplied === undefined) managed.transferredSessionSummaryApplied = stored.transferredSessionSummaryApplied
 
-      // Queue recovery: find orphaned queued messages from crash/restart and re-queue them.
-      const orphanedQueued = managed.messages.filter(m =>
-        m.role === 'user' && m.isQueued === true
-      )
-      if (orphanedQueued.length > 0) {
-        sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
-        for (const msg of orphanedQueued) {
-          managed.messageQueue.push({
-            message: msg.content,
-            messageId: msg.id,
-            attachments: undefined,
-            storedAttachments: msg.attachments,
-            options: undefined,
-          })
-        }
-        if (!managed.isProcessing && managed.messageQueue.length > 0) {
-          setImmediate(() => {
-            this.processNextQueuedMessage(managed.id)
-          })
-        }
-      }
+      this.recoverOrphanedQueuedMessages(managed)
       sessionLog.debug(`Cold-hydrated ${managed.messages.length} messages for session ${managed.id}`)
     }
     managed.messagesLoaded = true
@@ -3585,29 +3641,7 @@ export class SessionManager implements ISessionManager {
       managed.transferredSessionSummaryApplied = storedSession.transferredSessionSummaryApplied
       sessionLog.debug(`Lazy-loaded ${managed.messages.length} messages for session ${managed.id}`)
 
-      // Queue recovery: find orphaned queued messages from crash/restart and re-queue them
-      const orphanedQueued = managed.messages.filter(m =>
-        m.role === 'user' && m.isQueued === true
-      )
-      if (orphanedQueued.length > 0) {
-        sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
-        for (const msg of orphanedQueued) {
-          managed.messageQueue.push({
-            message: msg.content,
-            messageId: msg.id,
-            attachments: undefined,  // Attachments already stored on disk
-            storedAttachments: msg.attachments,
-            options: undefined,
-          })
-        }
-        // Process queue when session becomes active (will be triggered by first message or interaction)
-        // Use setImmediate to avoid blocking the load and allow session state to settle
-        if (!managed.isProcessing && managed.messageQueue.length > 0) {
-          setImmediate(() => {
-            this.processNextQueuedMessage(managed.id)
-          })
-        }
-      }
+      this.recoverOrphanedQueuedMessages(managed)
     }
     managed.messagesLoaded = true
   }
@@ -9213,10 +9247,23 @@ export class SessionManager implements ISessionManager {
     if (!agent) {
       let attempts = 0
       while (!managed.agent && attempts < 10) {
+        // This poll is the one place a title can sit for a whole second, so a
+        // quit that begins inside it should not be waited out and must not go
+        // on to open anything — see the discard below.
+        if (this.shuttingDown) break
         await new Promise(resolve => setTimeout(resolve, 100))
         attempts++
       }
       agent = managed.agent
+    }
+
+    // Never stand up a fresh backend during a shutdown. `postInit` opens a
+    // provider connection, and the title it would produce is already
+    // unwritable: the point of refusing here is that the handle is never
+    // created rather than created and then abandoned.
+    if (!agent && this.shuttingDown) {
+      sessionLog.info(`[generateTitle] Skipped for session ${managed.id}: shutting down`)
+      return
     }
 
     // If still no agent, create a temporary one using the session's connection
@@ -9260,6 +9307,19 @@ export class SessionManager implements ISessionManager {
         titleLanguage: titleLanguage ?? null,
       })
       const title = await agent.generateTitle(userMessage, { language: titleLanguage })
+      // DISCARDED, before anything is mutated, persisted, announced, or logged
+      // as a success. This call is un-awaited by its caller and untracked by
+      // `stopPersistenceProducers` — a model round-trip is not something a quit
+      // may be held open for — so what bounds it instead is that it cannot act
+      // after the freeze. Applying the title here would mutate a session whose
+      // final state has already been written and enqueue a write the closing
+      // queue refuses, leaving memory, disk and the renderer disagreeing about
+      // the name. The title is DERIVED: dropping it costs a regeneration on the
+      // next turn, and the fallback name the session already has is correct.
+      if (this.shuttingDown) {
+        sessionLog.info(`[generateTitle] Discarded for session ${managed.id}: shutting down`)
+        return
+      }
       if (title) {
         managed.name = title
         this.persistSession(managed)

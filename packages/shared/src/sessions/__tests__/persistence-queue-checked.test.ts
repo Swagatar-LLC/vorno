@@ -295,6 +295,60 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(readFileSync(getSessionFilePath(root, 'drainheal'), 'utf-8')).toContain('"name":"newer"');
     });
 
+    it('retries a write that failed BEFORE the freeze, and lands it if the disk recovered', async () => {
+      // The failure with no symptom. An entry is shifted off the queue before
+      // the attempt, so a failed ordinary write's bytes existed nowhere
+      // afterwards — no receipt holder, no queue entry, every map quiescent,
+      // and a stale file on disk that nothing would ever correct. Quit is the
+      // last chance a transient failure gets, so the snapshot is retained and
+      // retried here.
+      const tmp = join(root, 'sessions', 'probe', 'session.jsonl.tmp');
+      mkdirSync(tmp, { recursive: true });
+      queue.enqueue(Object.assign(session('probe'), { name: 'latest state' }) as StoredSession);
+      await queue.driveChecked(k('probe'));
+
+      // Failed, and the evidence is held rather than swept.
+      expect(existsSync(getSessionFilePath(root, 'probe'))).toBe(false);
+      expect(queue.diagnostics().failedSnapshots).toBe(1);
+
+      // The disk recovers before the quit.
+      rmSync(tmp, { recursive: true, force: true });
+      await queue.flushAll();
+
+      expect(readFileSync(getSessionFilePath(root, 'probe'), 'utf-8')).toContain('"name":"latest state"');
+      expect(queue.diagnostics().failedSnapshots).toBe(0);
+      expect(queue.diagnostics().closingWriteFailures).toBe(0);
+    });
+
+    it('fails the shutdown when the retained write still cannot land', async () => {
+      mkdirSync(join(root, 'sessions', 'probe2', 'session.jsonl.tmp'), { recursive: true });
+      queue.enqueue(session('probe2'));
+      await queue.driveChecked(k('probe2'));
+      expect(queue.diagnostics().failedSnapshots).toBe(1);
+
+      // Still broken at quit: one retry, then the shutdown says so.
+      await expect(queue.flushAll()).rejects.toThrow(/probe2/);
+      rmSync(join(root, 'sessions', 'probe2', 'session.jsonl.tmp'), { recursive: true, force: true });
+    });
+
+    it('does not resurrect a failed snapshot that newer state has already replaced', async () => {
+      // The retry runs after the drain for exactly this reason: a queued newer
+      // write commits first and releases the snapshot, so shutdown never writes
+      // stale bytes over fresh ones.
+      const tmp = join(root, 'sessions', 'probe3', 'session.jsonl.tmp');
+      mkdirSync(tmp, { recursive: true });
+      queue.enqueue(Object.assign(session('probe3'), { name: 'stale' }) as StoredSession);
+      await queue.driveChecked(k('probe3'));
+      expect(queue.diagnostics().failedSnapshots).toBe(1);
+
+      rmSync(tmp, { recursive: true, force: true });
+      queue.enqueue(Object.assign(session('probe3'), { name: 'fresh' }) as StoredSession);
+      await queue.flushAll();
+
+      expect(readFileSync(getSessionFilePath(root, 'probe3'), 'utf-8')).toContain('"name":"fresh"');
+      expect(queue.diagnostics().failedSnapshots).toBe(0);
+    });
+
     it('fails the shutdown if reconciliation never settles, rather than looping forever', async () => {
       // The exemption is bounded by the same rounds as everything else. A
       // watcher stuck in a supersede/persist cycle must fail the shutdown
