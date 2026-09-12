@@ -20,7 +20,6 @@ import {
   MAX_AUDITED_IDENTIFIER_CHARS,
   MAX_LIVE_LEASES,
   MAX_OUTSTANDING_TICKETS_PER_LEASE,
-  PAGE_LEASE_CREATIONS_PER_MINUTE_PER_CALLER,
   PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE,
   PAGE_ACTION_MAX_IN_FLIGHT_PER_LEASE,
   PAGE_ACTION_MAX_QUEUED_MUTATING_PER_LEASE,
@@ -2275,83 +2274,71 @@ describe('pages/action-bridge', () => {
     });
   });
 
-  describe('lease lifecycle budget', () => {
-    it('bounds lease creation per workspace and writes no rows past the budget', async () => {
-      // `pages:createLease` needs no lease to reach and wrote up to TWO durable
-      // rows per call — a creation, plus an eviction once the store was full.
-      // A flood therefore amplified into the audit file at 2x with nothing to
-      // stop it.
-      const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
-
-      let created = 0;
-      let refused = 0;
-      for (let i = 0; i < 500; i++) {
-        try {
-          broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-          created++;
-        } catch (error) {
-          refused++;
-          expect((error as Error).message).toContain('PAGE_LEASE_RATE_LIMITED');
-        }
-      }
-      expect(created).toBe(PAGE_LEASE_CREATIONS_PER_MINUTE_PER_CALLER);
-      expect(refused).toBe(500 - PAGE_LEASE_CREATIONS_PER_MINUTE_PER_CALLER);
-
-      const audit = await readAudit();
-      const lifecycle = audit.filter(
-        (e) => e.event === 'page_lease_created' || e.event === 'page_lease_evicted',
-      );
-      // No double-row amplification, and the durable rows are throttled on top
-      // of the creation budget, so the file grows far slower than the leases do.
-      expect(lifecycle.length).toBeLessThanOrEqual(20);
-      expect(audit.some((e) => e.event === 'page_lease_evicted')).toBe(false);
-    });
-
-    it('refuses before creating, so a spent budget mints nothing', async () => {
-      const broker = makeBroker();
-      for (let i = 0; i < PAGE_LEASE_CREATIONS_PER_MINUTE_PER_CALLER; i++) {
-        broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-      }
-      const before = broker.leaseCount;
-      expect(() => broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 })).toThrow('PAGE_LEASE_RATE_LIMITED');
-      expect(broker.leaseCount).toBe(before);
-    });
-
-    it('isolates callers, so one client cannot starve another', async () => {
-      // A workspace-wide budget bounds the file and lets any client spend the
-      // whole allowance — trading a denial of service against the disk for one
-      // against the person whose windows then cannot mount Pages.
-      const broker = makeBroker();
-      for (let i = 0; i < PAGE_LEASE_CREATIONS_PER_MINUTE_PER_CALLER; i++) {
-        broker.createLease({ pageSlug: `page-${i}`, contentDigest: DIGEST_V1, budgetKey: 'hostile-client' });
-      }
-      expect(() => broker.createLease({ pageSlug: 'x', contentDigest: DIGEST_V1, budgetKey: 'hostile-client' }))
-        .toThrow('PAGE_LEASE_RATE_LIMITED');
-
-      // The user's own window is unaffected.
-      expect(broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1, budgetKey: 'the-user' }).leaseId)
-        .toBeTruthy();
-
-      // …and the window slides, so even the spent caller recovers.
-      clock.now += 61_000;
-      expect(broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1, budgetKey: 'hostile-client' }).leaseId)
-        .toBeTruthy();
-    });
-
-    it('bounds durable lifecycle rows even when a caller rotates identity', async () => {
-      // Rotation escapes the per-caller budget by design — it is an
-      // availability partition, not an authority. What it must NOT escape is
-      // the durable-write bound, which is throttled workspace-wide.
+  describe('lease flood containment', () => {
+    it('bounds durable lifecycle rows however many leases a flood mints', async () => {
+      // `pages:createLease` needs no lease to reach and wrote a row per call —
+      // plus an eviction row once the store filled — so a flood amplified into
+      // the audit file at up to 2x.
+      //
+      // The bound is on the WRITES, not on the creations. A per-caller creation
+      // quota was tried and removed: it keys on `clientId`, a client-asserted
+      // handshake field, so reconnecting resets it, and the bucket map it needs
+      // grows with exactly that churn. This holds regardless of who is asking.
       const broker = makeBroker();
       for (let i = 0; i < 400; i++) {
-        try {
-          broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1, budgetKey: `rotating-${i}` });
-        } catch { /* MAX_LIVE_LEASES eviction path still applies */ }
+        broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       }
       const lifecycle = (await readAudit()).filter(
         (e) => e.event === 'page_lease_created' || e.event === 'page_lease_evicted',
       );
       expect(lifecycle.length).toBeLessThanOrEqual(20);
+      // …and memory is bounded by the store cap, which no identity trick moves.
+      expect(broker.leaseCount).toBe(MAX_LIVE_LEASES);
+    });
+
+    it('evicts an idle lease rather than one doing work', async () => {
+      // Eviction is where a flood reaches a stranger: the store is shared, any
+      // client can mint into it, and dropping a lease aborts what it was
+      // running. Age alone would let a later loop displace a window mid-write.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const broker = makeBroker({
+        executeApi: async () => { await gate; return { status: 200, ok: true, body: null }; },
+      });
+      const page = makePage({ grants: [makeGrant({ expiresAt: clock.now + 3_600_000 })] });
+      disk.page = page;
+
+      // The oldest lease in the store, and it is busy.
+      const busy = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const working = broker.executeAction(page, makeRequest(busy), AUTHORITY);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      // Fill the rest of the store with idle leases, then push one past the cap.
+      for (let i = 1; i <= MAX_LIVE_LEASES; i++) {
+        clock.now += 1;
+        broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      }
+
+      // The busy lease survived: an idle one was chosen instead.
+      expect(broker.hasActiveLease(busy.leaseId, 'dash', DIGEST_V1)).toBe(true);
+      release();
+      expect((await working).ok).toBe(true);
+    });
+
+    it('falls back to the oldest when every lease is busy', async () => {
+      // With nothing idle to choose, age decides — the store cap still has to
+      // hold, and refusing to evict would be the worse failure.
+      const broker = makeBroker();
+      const first = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      for (let i = 1; i < MAX_LIVE_LEASES; i++) {
+        clock.now += 1;
+        broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      }
+      clock.now += 1;
+      broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      // All idle here, so the oldest goes and the cap holds.
+      expect(broker.hasActiveLease(first.leaseId, 'dash', DIGEST_V1)).toBe(false);
+      expect(broker.leaseCount).toBe(MAX_LIVE_LEASES);
     });
 
     it('releases only a lease that exists, and audits nothing otherwise', async () => {

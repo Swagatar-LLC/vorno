@@ -782,12 +782,10 @@ describe('Pages RPC workspace capability gate', () => {
     await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
   })
 
-  test('keeps a grant binding when another workspace exhausts its lease budget', async () => {
-    // Lease state — the store AND the per-minute creation budget — is per
-    // workspace, because there is one broker per workspace. This used to fill
-    // both stores to MAX_LIVE_LEASES to show independence; with a creation
-    // budget in place the stronger and more relevant property is that one
-    // workspace spending its budget cannot spend another's.
+  test('keeps a grant binding when another workspace churns its lease store', async () => {
+    // Lease state is per workspace, because there is one broker per workspace.
+    // Workspace B filling and evicting its own store must not touch A's lease
+    // or the grant binding that lease carries.
     const invoke = createHarness('approve')
     const pageA = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
       name: 'Workspace A leases', content: '<p>content</p>',
@@ -799,21 +797,12 @@ describe('Pages RPC workspace capability gate', () => {
       name: 'Workspace B leases', content: '<p>content</p>',
     }) as { slug: string }
     const workspaceBContext = { clientId: 'trusted-client', workspaceId: WORKSPACE_B, webContentsId: 101 }
-
-    // Spend workspace B's budget until it refuses.
-    let bRefused = false
-    for (let i = 0; i < 200 && !bRefused; i++) {
-      try {
-        await invoke.invokeWithContext(workspaceBContext, RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_B, pageB.slug)
-      } catch (error) {
-        expect((error as Error).message).toContain('PAGE_LEASE_RATE_LIMITED')
-        bRefused = true
-      }
+    // Past B's store cap, so B evicts repeatedly.
+    for (let i = 0; i < MAX_LIVE_LEASES + 10; i++) {
+      await invoke.invokeWithContext(workspaceBContext, RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_B, pageB.slug)
     }
-    expect(bRefused).toBe(true)
 
-    // Workspace A is untouched: it can still mint, and the grant binding its
-    // earlier lease carries still works.
+    // A is untouched: it still mints, and its earlier lease still binds consent.
     await expect(invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, pageA.slug)).resolves.toBeDefined()
     await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, pageA.slug, {
       action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
@@ -1373,29 +1362,6 @@ describe('Pages RPC workspace capability gate', () => {
         await expect(invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, 'req_ok', lease.leaseId, value))
           .resolves.toBe(false)
       }
-    })
-
-    test('refuses lease creation past the workspace budget with a stable code', async () => {
-      const invoke = createHarness('approve')
-      const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
-        name: 'Flood page', content: '<p>flood</p>',
-      }) as { slug: string }
-
-      // `pages:createLease` needs no lease to reach and writes a durable row per
-      // call, so a flood is an audit-growth primitive without a budget.
-      let created = 0
-      let refused = 0
-      for (let i = 0; i < 120; i++) {
-        try {
-          await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug)
-          created++
-        } catch (error) {
-          refused++
-          expect((error as Error).message).toContain('PAGE_LEASE_RATE_LIMITED')
-        }
-      }
-      expect(refused).toBeGreaterThan(0)
-      expect(created).toBeLessThanOrEqual(60)
     })
 
     test('audits the execution with its origin, workspace, and permission mode', async () => {

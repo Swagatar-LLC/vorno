@@ -170,45 +170,18 @@ export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_LEASE = 30;
 const PAGE_ACTION_RATE_WINDOW_MS = 60_000;
 /**
  * Cap on simultaneously live leases. Expiry alone (12h TTL) lets a re-mount
- * loop grow the lease + replay-cache maps unbounded; past the cap the
- * oldest-issued lease is evicted (audited) — old renders lose their lease and
- * recover by re-mounting, new mounts always work.
+ * loop grow the lease + replay-cache maps unbounded; past the cap a lease is
+ * evicted (audited) — old renders lose their lease and recover by re-mounting,
+ * new mounts always work.
+ *
+ * This is the bound that matters, and it is the reason there is no per-caller
+ * creation budget: any quota keyed on `clientId` is keyed on a client-asserted
+ * handshake field, so a reconnecting caller resets it, while the bucket map
+ * such a quota needs grows with exactly that churn. The store cap holds
+ * regardless of who is asking or how often they reconnect, and durable writes
+ * are bounded separately by the workspace-scoped audit throttle.
  */
 export const MAX_LIVE_LEASES = 256;
-/**
- * Lease creations allowed per CALLER per minute.
- *
- * `pages:createLease` is transport-reachable and was unbounded: each call minted
- * a lease and wrote a `page_lease_created` row, and past `MAX_LIVE_LEASES` it
- * also evicted one and wrote a second — two durable lines per request, with no
- * lease needed to get in.
- *
- * **Per caller, not per workspace**, and that distinction is the whole design.
- * A workspace-wide budget bounds the file but lets any authenticated client
- * spend a workspace's entire allowance, so a hostile or looping client stops
- * the user's own windows from mounting Pages until the window rolls — trading a
- * denial of service against the disk for one against the person. Keying on the
- * caller means a client can only exhaust itself.
- *
- * A caller that rotates its identity escapes this budget, which is why it is
- * not the only defence: the lifecycle audit rows are throttled workspace-wide
- * (`throttleKey`), so rotation buys a rotating attacker more leases — bounded
- * by `MAX_LIVE_LEASES` and lease TTL — but no additional durable writes. The
- * two limits guard different things on purpose.
- *
- * Sixty is generous for what this serves: a lease is minted when a Page mounts
- * and when its content changes.
- */
-export const PAGE_LEASE_CREATIONS_PER_MINUTE_PER_CALLER = 60;
-
-/** Thrown by `createLease` when the workspace's lease budget is spent. */
-export class PageLeaseRateLimitedError extends Error {
-  readonly code = 'PAGE_LEASE_RATE_LIMITED';
-  constructor() {
-    super('PAGE_LEASE_RATE_LIMITED: too many render leases for this workspace');
-    this.name = 'PageLeaseRateLimitedError';
-  }
-}
 
 /**
  * ADR-0033 §3 caps activation-ticket lifetime at 10 seconds. The cap is the
@@ -492,12 +465,6 @@ export interface CreateLeaseInput {
   pageSlug: string;
   /** Digest of the content actually being rendered */
   contentDigest: string;
-  /**
-   * Who is asking, for the creation budget. Hosts pass the transport client id
-   * so one caller cannot spend another's allowance; callers that omit it share
-   * a single bucket, which is the conservative reading of "unknown".
-   */
-  budgetKey?: string;
 }
 
 /**
@@ -562,8 +529,6 @@ export class PageActionBroker {
   private readonly startTimesByPage = new Map<string, number[]>();
   /** Workspace-wide start timestamps (this broker serves exactly one workspace) */
   private startTimesByWorkspace: number[] = [];
-  /** Caller identity → lease-creation timestamps within the sliding window */
-  private readonly leaseCreationTimesByCaller = new Map<string, number[]>();
   /** ticketId → the single-use activation record the broker holds */
   private readonly tickets = new Map<string, PageActivationTicket>();
   /**
@@ -617,37 +582,35 @@ export class PageActionBroker {
   createLease(input: CreateLeaseInput): PageRenderLease {
     this.pruneExpiredLeases();
 
-    // Refused BEFORE anything is created, audited, or evicted. Checking after
-    // would leave the amplification intact: the refusal itself would be the
-    // second row, and the eviction it triggered would be the third.
-    const budgetKey = input.budgetKey ?? 'anonymous';
-    const recent = this.withinWindow(this.leaseCreationTimesByCaller.get(budgetKey) ?? []);
-    if (recent.length >= PAGE_LEASE_CREATIONS_PER_MINUTE_PER_CALLER) {
-      this.leaseCreationTimesByCaller.set(budgetKey, recent);
-      throw new PageLeaseRateLimitedError();
-    }
-    recent.push(this.now());
-    this.leaseCreationTimesByCaller.set(budgetKey, recent);
-    // Bound the map: one entry per caller identity seen, swept once the oldest
-    // entry in a bucket has aged out.
-    if (this.leaseCreationTimesByCaller.size > 256) {
-      for (const [key, times] of this.leaseCreationTimesByCaller) {
-        if (this.withinWindow(times).length === 0) this.leaseCreationTimesByCaller.delete(key);
-      }
-    }
-
     if (this.leases.size >= MAX_LIVE_LEASES) {
+      // Prefer an IDLE lease — one with nothing in flight — over a busy one.
+      //
+      // Eviction is the only place a flood reaches a stranger: the store is
+      // shared and bounded, any client may mint into it, and dropping a lease
+      // now aborts whatever it was running. Choosing purely by age lets a loop
+      // that started later displace a window in the middle of a write. Age
+      // still decides among idle leases, so an abandoned render is what goes.
+      //
+      // Deliberately independent of caller identity: a rotating client would
+      // defeat any per-caller reservation, and "is this lease doing work right
+      // now" is a property of the host's own state that nothing can forge.
       let oldest: PageRenderLease | undefined;
+      let oldestIdle: PageRenderLease | undefined;
       for (const lease of this.leases.values()) {
         if (!oldest || lease.issuedAt < oldest.issuedAt) oldest = lease;
+        if ((this.inFlightByLease.get(lease.leaseId) ?? 0) > 0) continue;
+        if (!oldestIdle || lease.issuedAt < oldestIdle.issuedAt) oldestIdle = lease;
       }
-      if (oldest) {
-        this.dropLease(oldest.leaseId);
+      // Only when every live lease is busy does the oldest lose regardless.
+      const evicted = oldestIdle ?? oldest;
+      if (evicted) {
+        this.dropLease(evicted.leaseId);
         void this.appendAudit({
           event: 'page_lease_evicted',
-          pageSlug: oldest.pageSlug,
-          leaseId: oldest.leaseId,
+          pageSlug: evicted.pageSlug,
+          leaseId: evicted.leaseId,
           reason: 'lease-store-full',
+          idle: oldestIdle !== undefined,
         }, 'lease-lifecycle');
       }
     }
