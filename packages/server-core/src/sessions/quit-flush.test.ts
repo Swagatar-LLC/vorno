@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -309,6 +309,44 @@ describe('quit flushes sessions that are mid-commit', () => {
       expect(sessionPersistenceQueue.isClosing).toBe(true)
     })
 
+    it('decides what to persist BEFORE quiescing, so a turn that ends without persisting still lands', async () => {
+      // Why the `needsFinalPersist` snapshot is taken before turns are aborted
+      // rather than after.
+      //
+      // Reading it afterwards works only as long as every finishing turn
+      // enqueues a write of its own — `onProcessingStopped` does, so the drain
+      // would cover it. That is an assumption about a collaborator, and this is
+      // the case where it does not hold: a turn that clears `isProcessing`
+      // without persisting. Read after quiesce, such a session looks cold and
+      // idle with nothing queued, and its state is dropped. Read before, it was
+      // processing, so it gets a final write.
+      const sessionId = 'sess_silent_finish'
+      const managed = seedManaged(sessionId, { isProcessing: true, messageQueue: [] })
+      managed.agent = {
+        forceAbort: () => {
+          setTimeout(() => {
+            const live = (sm as unknown as { sessions: Map<string, Record<string, unknown>> })
+              .sessions.get(sessionId)!
+            ;(live.messages as unknown[]).push({
+              id: 'silent-final',
+              role: 'assistant',
+              content: 'finished without persisting',
+              timestamp: Date.now(),
+            })
+            // Ends the turn WITHOUT going through `onProcessingStopped`, so
+            // nothing enqueues on its behalf.
+            live.isProcessing = false
+          }, 20)
+        },
+      }
+
+      await sm.flushAllSessions()
+
+      expect(readFileSync(getSessionFilePath(root, sessionId), 'utf-8')).toContain(
+        'finished without persisting',
+      )
+    })
+
     it('refuses a new send once shutdown has begun', async () => {
       const sessionId = 'sess_refuse_send'
       seedManaged(sessionId)
@@ -338,6 +376,11 @@ describe('quit flushes sessions that are mid-commit', () => {
         content: 'innocent final state',
         timestamp: Date.now(),
       })
+      // Enqueued the way a real mutation is. Shutdown deliberately does not
+      // rewrite cold sessions, so an in-memory change nobody persisted is not
+      // state it can know about — a real mutator calls `persistSession`, which
+      // is what makes the drain responsible for it.
+      ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(innocent)
 
       // Still throws — the shutdown was NOT clean and the caller must know.
       await expect(sm.flushAllSessions()).rejects.toThrow(/not clean/)
@@ -362,5 +405,58 @@ describe('quit flushes sessions that are mid-commit', () => {
 
       await expect(sm.flushAllSessions()).rejects.toThrow(/did not finish within/)
     }, 15000)
+  })
+
+  describe('shutdown does not rewrite the workspace', () => {
+    it('leaves 200 cold sessions untouched — no rewrite, no restamp, no hydration', async () => {
+      // The correction. Persisting every loaded session meant a quit rewrote
+      // the whole workspace: each cold session hydrated from disk purely to be
+      // written back, and each restamped with a fresh `lastUsedAt` — so idle
+      // sessions drifted to the top of a recency-sorted list because the app
+      // closed. Expensive, and wrong for records that had not changed.
+      const COLD = 200
+      const before = new Map<string, { mtimeMs: number; bytes: string }>()
+      for (let i = 0; i < COLD; i++) {
+        const id = `cold-${i}`
+        seedManaged(id, { messagesLoaded: false, messages: [] })
+        const file = getSessionFilePath(root, id)
+        before.set(id, { mtimeMs: statSync(file).mtimeMs, bytes: readFileSync(file, 'utf-8') })
+      }
+
+      // One session with real work, to prove the skip is selective rather than
+      // a blanket "persist nothing".
+      const activeId = 'cold-active'
+      const active = seedManaged(activeId, {
+        messageQueue: [{ message: 'queued', messageId: 'q1' }],
+      })
+      ;(active.messages as unknown[]).push({
+        id: 'kept-1',
+        role: 'assistant',
+        content: 'work worth keeping',
+        timestamp: Date.now(),
+      })
+
+      // A filesystem mtime can be coarse, so make any rewrite unambiguous.
+      await new Promise((r) => setTimeout(r, 15))
+      await sm.flushAllSessions()
+
+      for (const [id, snapshot] of before) {
+        const file = getSessionFilePath(root, id)
+        // Byte-identical: not rewritten at all, so `lastUsedAt` cannot have
+        // been restamped and the header is exactly as it was.
+        expect(readFileSync(file, 'utf-8')).toBe(snapshot.bytes)
+        expect(statSync(file).mtimeMs).toBe(snapshot.mtimeMs)
+      }
+
+      // Not hydrated either — a rewrite would have had to load messages first.
+      for (let i = 0; i < COLD; i++) {
+        const managed = (sm as unknown as { sessions: Map<string, Record<string, unknown>> })
+          .sessions.get(`cold-${i}`)!
+        expect(managed.messagesLoaded).toBe(false)
+      }
+
+      // And the session that HAD work kept its final state.
+      expect(readFileSync(getSessionFilePath(root, activeId), 'utf-8')).toContain('work worth keeping')
+    }, 30000)
   })
 })

@@ -126,6 +126,12 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       turn that will not finish fails the shutdown instead of being closed over.
 - [x] A final write superseded by a watcher reconciliation does not fail the
       shutdown — receipts distinguish `cancelled` from `failed`.
+- [x] 200 cold sessions are byte-identical after a quit — no rewrite, no
+      `lastUsedAt` restamp, no hydration — while a session with queued work or
+      an active turn still has its final state persisted, including a turn that
+      ends without persisting itself.
+- [x] `saveSession` reapplies its patch once when an external edit supersedes
+      it (both changes survive) and never resurrects a deleted session.
 - [x] A stuck turn still lets every other session's final state reach disk and
       still closes and drains the queue, and the shutdown still reports itself
       unclean.
@@ -140,6 +146,35 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       3 rounds on the round-1 fixes, and 6 on the round-2 fixes — all caught.
 
 ## Review findings
+
+### Review 9 — security: shutdown scope and cancellation intent
+
+1. **Shutdown was rewriting the whole workspace.** Persisting every loaded
+   session hydrated hundreds of cold records from disk purely to write them back
+   and restamped `lastUsedAt`, so idle sessions drifted up a recency-sorted list
+   because the app closed. `collectSessionsNeedingFinalPersist` now defaults to
+   SKIP: a session earns a final write only if it was processing or holds queued
+   messages, and anything already queued or in flight is skipped because the
+   drain carries it. Evaluated BEFORE quiescing — aborting turns is what makes
+   every session look idle — which also removes a dependency on
+   `onProcessingStopped` always enqueueing.
+2. **`cancelled` split into `superseded` and `deleted`.** They were one value
+   until a caller needed to retry one and never the other: `saveSession` now
+   reapplies its patch ONCE on a supersede (the queue's held observation merges
+   both changes) and throws without retrying on a deletion, because retrying
+   would resurrect a session the user deleted. Bounded to one retry — a second
+   supersede means edits are arriving faster than writes complete, and looping
+   would hide that.
+3. **Batch loops no longer abandon the rest.** `saveSession` throwing is new, so
+   `unbindSessionsFromProject` collects failures and reports a partial result
+   instead of stopping at the first, and the two sync status/label migration
+   loops — which call an async updater WITHOUT awaiting — now catch per session,
+   so a rejection is neither unhandled nor invisible.
+
+Adjacent-but-different handling, stated because the two look alike: shutdown's
+final write does not retry a supersede (it is a whole-snapshot write that the
+replacement already supersedes), while `saveSession` does (it carries a
+caller's patch that would otherwise be collateral damage).
 
 ### Review 7 — architecture: shutdown producer completeness
 
@@ -434,6 +469,11 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 9 (security): shutdown was rewriting every cold session
+  (hydration + `lastUsedAt` restamp); the final-persist set is now computed
+  before quiesce and defaults to skip. `cancelled` split into `superseded` and
+  `deleted` so `saveSession` can retry the first once and must never retry the
+  second; batch loops collect partial failures.
 - `2026-09-12` — review 8 (Greptile P1): the ordered shutdown's timeout path
   threw before the final persist and the drain, so one stuck turn cost every
   other session its last write. Failures are now collected and reported after

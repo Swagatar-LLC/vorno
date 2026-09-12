@@ -345,7 +345,14 @@ function stripLabelFromSessions(
     // Check if any entry matches the deleted label ID (handles both boolean and valued entries)
     if (session.labels && session.labels.some((entry: string) => extractLabelId(entry) === deletedLabelId)) {
       const updatedLabels = session.labels.filter((entry: string) => extractLabelId(entry) !== deletedLabelId);
-      updateSessionMetadata(workspaceRootPath, session.id, { labels: updatedLabels });
+      // Not awaited (sync function), so the rejection is caught here rather
+      // than becoming an unhandled one — possible now that `saveSession`
+      // reports write failures. One session failing must not stop the others.
+      void updateSessionMetadata(workspaceRootPath, session.id, { labels: updatedLabels }).catch(
+        (error: unknown) => {
+          console.error(`[labels] Failed to strip ${deletedLabelId} from session ${session.id}:`, error);
+        },
+      );
       strippedCount++;
     }
   }

@@ -164,6 +164,100 @@ describe('internal session seams', () => {
     });
   });
 
+  describe('saveSession and the two cancellations', () => {
+    let root: string;
+    let dispose: (() => void) | undefined;
+
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'save-cancel-'));
+    });
+    afterEach(() => {
+      dispose?.();
+      dispose = undefined;
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    const record = (id: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      workspaceRootPath: root,
+      name: 'saved',
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      messages: [],
+      tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, contextTokens: 0, costUsd: 0 },
+      ...extra,
+    }) as never;
+
+    it('reapplies the caller patch once when an external edit supersedes the save', async () => {
+      // A supersede means the write lost ON PURPOSE, because an external
+      // metadata edit was absorbed while it was in flight. Failing there would
+      // make the caller's patch collateral damage of somebody else's rename,
+      // and silently succeeding would be a lie. It is retried once, and the
+      // queue's held observation is what merges both.
+      await saveSession(record('merge1', { name: 'first' }));
+      const file = getSessionFilePath(root, 'merge1');
+      const header = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+
+      // Supersede the first attempt mid-commit, carrying an external edit to a
+      // field the caller is not touching.
+      let superseded = false;
+      dispose = installSingletonCommitHooksForTesting({
+        afterRename: (key) => {
+          if (superseded) return;
+          superseded = true;
+          sessionPersistenceQueue.supersedePendingWrites(key, {
+            ...header(),
+            permissionMode: 'safe',
+          } as never);
+        },
+      });
+
+      // The caller's patch renames the session.
+      await saveSession(record('merge1', { name: 'caller patch' }));
+      dispose?.();
+      dispose = undefined;
+
+      expect(superseded).toBe(true);
+      // Both survive: the caller's change committed, and the external edit it
+      // collided with was not discarded.
+      expect(header().name).toBe('caller patch');
+      expect(header().permissionMode).toBe('safe');
+    });
+
+    it('never resurrects a deleted session, and says so', async () => {
+      // The reason `superseded` and `deleted` are separate reasons. Retrying a
+      // deleted session's write would recreate a session the user deleted, so
+      // this one throws without a retry.
+      await saveSession(record('gone1'));
+      const file = getSessionFilePath(root, 'gone1');
+      expect(existsSync(file)).toBe(true);
+
+      let deleted = false;
+      dispose = installSingletonCommitHooksForTesting({
+        afterRename: (key) => {
+          if (deleted) return;
+          deleted = true;
+          sessionPersistenceQueue.cancelForDeletion(key);
+        },
+      });
+
+      await expect(saveSession(record('gone1', { name: 'zombie' }))).rejects.toThrow(/deleted/);
+      dispose?.();
+      dispose = undefined;
+
+      expect(deleted).toBe(true);
+      // Gone, and stayed gone — no retry put it back.
+      //
+      // A beat first: the receipt settles from the deletion broadcast, which is
+      // BEFORE the abandoning write finishes removing the artifact. That order
+      // is deliberate (cleanup precedes the receipt only for the committed
+      // case), so a filesystem assertion here has to let the tail drain — the
+      // same tail-versus-receipt gap the checked suite documents.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(existsSync(file)).toBe(false);
+    });
+  });
+
   describe('shutdown honesty', () => {
     it('refuses a checked write once closing, with a receipt that says so', async () => {
       await sessionPersistenceQueue.flushAll();

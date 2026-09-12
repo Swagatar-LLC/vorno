@@ -2615,6 +2615,11 @@ export class SessionManager implements ISessionManager {
     // anyway. Salvage everything salvageable first; report at the end.
     const failures: string[] = []
 
+    // Decided BEFORE quiescing, because quiescing destroys the evidence: once
+    // turns are aborted, `isProcessing` is false everywhere and every session
+    // looks idle. See `collectSessionsNeedingFinalPersist`.
+    const needsFinalPersist = this.collectSessionsNeedingFinalPersist()
+
     const stuck = await this.stopActiveTurnsForShutdown()
     if (stuck.length) {
       failures.push(
@@ -2625,7 +2630,7 @@ export class SessionManager implements ISessionManager {
     // Still persist every session, INCLUDING a stuck one — a partial transcript
     // on disk beats none, and the other sessions are simply innocent.
     try {
-      await this.persistFinalSessionStates()
+      await this.persistFinalSessionStates(needsFinalPersist)
     } catch (error) {
       failures.push(error instanceof Error ? error.message : String(error))
     }
@@ -2654,9 +2659,50 @@ export class SessionManager implements ISessionManager {
    * there is nothing to serialise between them — and every failure is collected
    * rather than the first one thrown, so the log names all of them.
    */
-  private async persistFinalSessionStates(): Promise<void> {
-    const handles: Array<{ id: string; handle: SessionWriteHandle }> = []
+  /**
+   * Which sessions actually have a final state worth writing.
+   *
+   * Called BEFORE turns are aborted, because aborting them is what makes every
+   * session look idle — read afterwards, this would return nothing.
+   *
+   * The default is SKIP, and that is the correction. Persisting every loaded
+   * session meant a quit rewrote the whole workspace: a few hundred cold
+   * sessions, each hydrated from disk by `hydrateMessagesForColdPersist` purely
+   * to be written back, each restamped with a fresh `lastUsedAt` — so idle
+   * sessions drifted to the top of a recency-sorted list just because the app
+   * closed. Expensive and wrong, for records that had not changed.
+   *
+   * A session earns a final write only if it has state the drain would not
+   * otherwise carry:
+   *
+   * - **Processing.** Its turn is about to be aborted and finalised, so there
+   *   is a final response and a completed state to record.
+   * - **Queued messages.** `messageQueue` is persisted state, and shutdown
+   *   deliberately does not replay it, so it has to survive to be replayed
+   *   after a restart.
+   *
+   * Anything with a write already queued or in flight is skipped too, and that
+   * is not a compromise: `flushAll` DRAINS that write, so the state is already
+   * on its way. Re-persisting would mean writing the record twice, the second
+   * time from a snapshot no newer than the first.
+   */
+  private collectSessionsNeedingFinalPersist(): ManagedSession[] {
+    const needed: ManagedSession[] = []
     for (const managed of this.sessions.values()) {
+      if (sessionPersistenceQueue.hasPendingOrTail(this.writeKeyFor(managed))) {
+        // Already covered — the drain carries it.
+        continue
+      }
+      if (managed.isProcessing || managed.messageQueue.length > 0) {
+        needed.push(managed)
+      }
+    }
+    return needed
+  }
+
+  private async persistFinalSessionStates(sessions: ManagedSession[]): Promise<void> {
+    const handles: Array<{ id: string; handle: SessionWriteHandle }> = []
+    for (const managed of sessions) {
       try {
         handles.push({ id: managed.id, handle: this.persistSessionChecked(managed) })
       } catch (error) {
@@ -2671,16 +2717,21 @@ export class SessionManager implements ISessionManager {
       handles.map(async ({ id, handle }) => {
         const receipt = await handle.receipt
         if (receipt.ok) return
-        // A CANCELLED final write is not a failure, and treating it as one
-        // aborted shutdown over a supersede doing its job. Cancelled means
-        // something newer replaced this snapshot — a watcher reconciliation
-        // landing during the drain, or the session being deleted — so the state
-        // that should be on disk is the replacement's, and `flushAll` below is
-        // what guarantees the replacement actually gets there.
+        // Neither cancellation reason is a shutdown failure, and treating them
+        // as one aborted the shutdown over a supersede doing its job:
         //
-        // Only `failed` means the filesystem refused and data may be lost.
-        if (receipt.reason === 'cancelled') {
-          sessionLog.info(`Shutdown: final write for ${id} was superseded; its replacement carries the state`)
+        // - `superseded` — a watcher reconciliation landed during the drain, so
+        //   the replacement carries the state and `flushAll` below is what gets
+        //   it to disk. NOT retried here, deliberately: `saveSession` retries
+        //   because it holds a caller's patch, whereas this is a whole-snapshot
+        //   write that the replacement already supersedes.
+        // - `deleted` — the session is gone. There is nothing left to persist,
+        //   and re-writing it is the one thing that must not happen.
+        //
+        // Only `failed` means the filesystem refused and data may be lost;
+        // `refused` cannot arise here, because the queue closes after this step.
+        if (receipt.reason === 'superseded' || receipt.reason === 'deleted') {
+          sessionLog.info(`Shutdown: final write for ${id} was ${receipt.reason}; not retried here`)
           return
         }
         failures.push(`${id}: ${receipt.error}`)

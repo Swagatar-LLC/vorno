@@ -208,6 +208,20 @@ function resolveExternalMetadata({
  */
 type CancellationWatermark = { deleteThrough: number; supersedeThrough: number }
 
+/**
+ * Which cancellation a generation fell under.
+ *
+ * The deletion watermark wins when both cover it, matching the stickiness rule:
+ * nothing un-deletes a session, so a supersede arriving afterwards must not
+ * downgrade the answer to one a caller would retry.
+ */
+function cancellationReasonFor(
+  watermark: CancellationWatermark | undefined,
+  generation: number,
+): 'deleted' | 'superseded' {
+  return (watermark?.deleteThrough ?? 0) >= generation ? 'deleted' : 'superseded'
+}
+
 /** The highest generation cancelled under either intent. */
 function cancelledThroughGeneration(watermark?: CancellationWatermark): number {
   return Math.max(watermark?.deleteThrough ?? 0, watermark?.supersedeThrough ?? 0)
@@ -405,15 +419,24 @@ export type SessionWriteReceipt =
    * `reason` exists because not every `ok: false` means the same thing to a
    * caller, and shutdown is where the difference bites.
    *
-   * - `cancelled` — something newer superseded this snapshot, or the session
-   *   was deleted. The write did not land AND did not need to: whatever
-   *   replaced it is what should be on disk. A shutdown that treated this as a
+   * - `superseded` — something newer replaced this snapshot. The write did not
+   *   land and did not need to: the replacement is what should be on disk, and
+   *   for a caller holding a patch the right move is to REAPPLY it against the
+   *   merged state rather than to fail. A shutdown that treated this as a
    *   failure would abort over a supersede doing its job.
+   * - `deleted` — the session itself is gone. Distinct from `superseded`
+   *   precisely because retrying is the WRONG answer here: re-writing would
+   *   resurrect a session the user deleted. Callers must not retry.
    * - `refused` — the queue is closing and would not accept the work at all.
-   * - `failed` — the write was attempted and the filesystem said no. This is
-   *   the only one that means data may have been lost.
+   *   Nothing was attempted.
+   * - `failed` — the write was attempted and the filesystem said no. The only
+   *   one that means data may have been lost.
+   *
+   * `superseded` and `deleted` were one value until a caller needed to retry
+   * one and never the other; collapsing them again would make "retry a
+   * cancelled write" mean "recreate a deleted session".
    */
-  | { ok: false; error: string; reason: 'cancelled' | 'refused' | 'failed' }
+  | { ok: false; error: string; reason: 'superseded' | 'deleted' | 'refused' | 'failed' }
 
 /**
  * A claim on one specific enqueued snapshot.
@@ -676,7 +699,7 @@ class SessionPersistenceQueue {
       // "a receipt may be answered by somebody else's write" is exactly the
       // assumption that produced false positives, and it should be untrue by
       // construction rather than by that pairing holding.
-      this.settleReceipts(key, replaced, { ok: false, error: 'session write superseded', reason: 'cancelled' as const })
+      this.settleReceipts(key, replaced, { ok: false, error: 'session write superseded', reason: 'superseded' })
     } else {
       list.push({ data: session, timer, generation, checked })
     }
@@ -737,8 +760,10 @@ class SessionPersistenceQueue {
     // above it. No black-box test can reach this branch, and none pretends to;
     // it is here because the invariant — never report success for a cancelled
     // generation — should survive someone changing that arithmetic.
-    if (cancelledThroughGeneration(this.cancelledThrough.get(key)) >= generation) {
-      return Promise.resolve({ ok: false, error: 'session write cancelled', reason: 'cancelled' as const })
+    const preCancelled = this.cancelledThrough.get(key)
+    if (cancelledThroughGeneration(preCancelled) >= generation) {
+      const reason = cancellationReasonFor(preCancelled, generation)
+      return Promise.resolve({ ok: false, error: `session write ${reason}`, reason })
     }
     const written = this.writtenGeneration.get(key) ?? 0
     if (written >= generation) {
@@ -765,7 +790,7 @@ class SessionPersistenceQueue {
       return Promise.resolve<SessionWriteReceipt>(
         prior
           ? { ok: false, error: prior, reason: 'failed' }
-          : { ok: false, error: 'session write cancelled', reason: 'cancelled' },
+          : { ok: false, error: 'session write superseded', reason: 'superseded' },
       )
     }
 
@@ -966,7 +991,8 @@ class SessionPersistenceQueue {
     if (cancelledThroughGeneration(this.cancelledThrough.get(key)) >= generation) {
       debug(`[PersistenceQueue] Skipped cancelled write for ${entry.data.id}`)
       this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
-      this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled', reason: 'cancelled' as const })
+      const reason = cancellationReasonFor(this.cancelledThrough.get(key), generation)
+      this.settleReceipts(key, generation, { ok: false, error: `session write ${reason}`, reason })
       return false
     }
 
@@ -1140,7 +1166,8 @@ class SessionPersistenceQueue {
         // continuing to hold.
         if (stage === 'committed' && discardCommitted) this.committedMetadata.delete(key)
         this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
-        this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled', reason: 'cancelled' as const })
+        const abandonReason = cancellationReasonFor(watermark, generation)
+        this.settleReceipts(key, generation, { ok: false, error: `session write ${abandonReason}`, reason: abandonReason })
         return true
       }
 
@@ -1343,7 +1370,13 @@ class SessionPersistenceQueue {
     // Anything holding a receipt for a cancelled generation must be told rather
     // than left hanging, and telling them is also what makes the session
     // eligible for retirement — the order is load-bearing, not cosmetic.
-    this.settleReceipts(key, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled', reason: 'cancelled' as const }, 'through')
+    const broadcastReason = intent === 'delete' ? 'deleted' as const : 'superseded' as const
+    this.settleReceipts(
+      key,
+      Number.MAX_SAFE_INTEGER,
+      { ok: false, error: `session write ${broadcastReason}`, reason: broadcastReason },
+      'through',
+    )
   }
 
   /**
@@ -1420,6 +1453,21 @@ class SessionPersistenceQueue {
    */
   hasPending(key: SessionWriteKey): boolean {
     return this.queued.has(key)
+  }
+
+  /**
+   * Whether this session has work QUEUED or IN FLIGHT.
+   *
+   * The question a shutdown actually needs: "is there already a write for this
+   * session that the drain will carry?" If yes, the state is covered and
+   * re-persisting it would rewrite a record that is already on its way. If no,
+   * and nothing has changed in memory, there is nothing to write at all.
+   *
+   * `hasPending` alone cannot answer it — a write lifted onto its tail is no
+   * longer queued but is very much outstanding.
+   */
+  hasPendingOrTail(key: SessionWriteKey): boolean {
+    return this.queued.has(key) || this.tails.has(key)
   }
 
   /**

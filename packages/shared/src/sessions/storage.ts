@@ -42,7 +42,7 @@ import { validateSessionStatus } from '../statuses/validation.ts';
 import { debug } from '../utils/debug.ts';
 import { getStatusCategory } from '../statuses/storage.ts';
 import { readSessionHeader, readSessionJsonl } from './jsonl.ts';
-import { sessionWriteKey, sessionPersistenceQueue } from './persistence-queue.ts';
+import { sessionPersistenceQueue, type SessionWriteReceipt } from './persistence-queue.ts';
 
 // Re-export types for convenience
 export type { SessionConfig } from './types.ts';
@@ -327,17 +327,42 @@ export async function saveSession(session: StoredSession): Promise<void> {
   // mutations, an in-flight RPC or tool call) was told it had succeeded.
   // A silent success is the one answer an awaited save must never give.
   //
-  // The receipt is generation-exact, so this reports on THIS snapshot's bytes
-  // rather than on whatever else happened to be in the queue.
+  // The four failure reasons are NOT interchangeable here, and that is the
+  // whole reason the receipt carries one:
+  //
+  // - `superseded` — an external metadata edit was absorbed while this write
+  //   was in flight, so the write lost on purpose. Failing would make this
+  //   caller's patch collateral damage of somebody else's rename. It is
+  //   REAPPLIED once instead: the queue is holding the observed external edit,
+  //   so the retry's merge combines both and the caller's change commits.
+  //   Bounded to one retry — a second supersede means edits are arriving faster
+  //   than writes complete, and looping would hide that rather than fix it.
+  // - `deleted` — retrying would RESURRECT a session the user deleted, so this
+  //   throws without a retry. The distinction is the reason `superseded` and
+  //   `deleted` are separate reasons at all.
+  // - `refused` / `failed` — nothing to merge with; report it.
+  const first = await attemptSave(session);
+  if (first.ok) return;
+
+  if (first.reason === 'superseded') {
+    const retry = await attemptSave(session);
+    if (retry.ok) return;
+    throw new Error(
+      `Failed to save session ${session.id} after one retry: ${retry.error} (first attempt: ${first.error})`,
+    );
+  }
+
+  throw new Error(`Failed to save session ${session.id}: ${first.error}`);
+}
+
+/** One checked attempt, driven immediately rather than waiting out the debounce. */
+async function attemptSave(session: StoredSession): Promise<SessionWriteReceipt> {
   const handle = sessionPersistenceQueue.enqueueChecked(session);
   // Keyed by workspace + id, not id alone: session ids are unique only within
   // a workspace, and flushing the wrong workspace's entry would be silent. The
   // handle carries its own key, so this cannot drive a different one.
   sessionPersistenceQueue.driveChecked(handle.key);
-  const receipt = await handle.receipt;
-  if (!receipt.ok) {
-    throw new Error(`Failed to save session ${session.id}: ${receipt.error}`);
-  }
+  return handle.receipt;
 }
 
 /**
@@ -689,13 +714,33 @@ export async function unbindProjectFromSessions(
 ): Promise<number> {
   const sessions = listSessions(workspaceRootPath);
   let touched = 0;
+  // Failures are collected, not allowed to abandon the rest of the batch.
+  //
+  // `saveSession` can throw now that it reports the truth, and a bare `await`
+  // in this loop meant one unlucky session stopped every session after it from
+  // being unbound — while the caller received a count that looked like a
+  // complete answer. Unbinding is per-session work with no ordering between
+  // sessions, so one failure is not a reason to skip the others.
+  const failures: string[] = [];
   for (const meta of sessions) {
     const full = loadSession(workspaceRootPath, meta.id);
     if (full?.projectId === projectId) {
       full.projectId = undefined;
-      await saveSession(full);
-      touched++;
+      try {
+        await saveSession(full);
+        touched++;
+      } catch (error) {
+        failures.push(`${meta.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
+  }
+  if (failures.length) {
+    // Thrown AFTER the batch, so the work that could be done was done, and the
+    // message names what was not — a partial result reported as a partial
+    // result rather than as a smaller success.
+    throw new Error(
+      `Unbound ${touched} session(s) from project ${projectId}; ${failures.length} failed — ${failures.join('; ')}`,
+    );
   }
   return touched;
 }
