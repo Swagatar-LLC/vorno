@@ -268,6 +268,11 @@ the supersede backstop bounds a leak there — recorded rather than implied away
    whether a replayed turn pre-enabled its sources. `Message.queuedSkillSlugs` is
    now the canonical copy, normalized from the original options on the way out
    and re-normalized on the way in, written with `isQueued` and cleared with it.
+   That normalizer takes `unknown` and checks `Array.isArray` FIRST (a later
+   security pass): the value returns from a file anyone can edit, and a bare
+   string passes a `.length` test and then iterates as CHARACTERS — each a valid
+   slug shape — while `{length: 2}` passes it and THROWS on iteration, inside
+   hydration, which is a session that will not open.
    `skillSlugsFromBadges` is deleted rather than kept as a fallback: a second
    source of truth for the same answer is how the two hydration paths came to
    disagree in the first place.
@@ -790,6 +795,11 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 18 (security P3): `normalizeQueuedSkillSlugs` trusted a
+  `.length` check on an untrusted field, so a corrupted `queuedSkillSlugs`
+  string produced one slug per character and an object with a `length` threw
+  during hydration. `Array.isArray` first, parameter widened to `unknown`, plus
+  a read-path regression that opens a session carrying both corrupt forms.
 - `2026-09-12` — review 17 (architecture P1/P2/P3): a delete racing a failing
   write left retained evidence the shutdown retry then RESURRECTED, so
   cancellation now outranks failure in the catch; the replay handoff cleared the

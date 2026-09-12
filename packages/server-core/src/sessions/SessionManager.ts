@@ -1094,8 +1094,14 @@ interface SendAdmission {
  */
 const SKILL_SLUG_PATTERN = /^[\w-]+$/
 
-export function normalizeQueuedSkillSlugs(slugs: readonly unknown[] | undefined): string[] | undefined {
-  if (!slugs?.length) return undefined
+export function normalizeQueuedSkillSlugs(slugs: unknown): string[] | undefined {
+  // `Array.isArray` FIRST, and the parameter is `unknown` for the same reason:
+  // this value comes back off a JSONL file anyone can edit, so "an array of
+  // strings" is a hope rather than a type. A bare string passes a `.length`
+  // check and then iterates as CHARACTERS — every one of which is a valid slug
+  // shape — and an object with a `length` property passes it and throws on
+  // iteration, inside session hydration, which is a session that will not open.
+  if (!Array.isArray(slugs) || slugs.length === 0) return undefined
   const normalized: string[] = []
   for (const raw of slugs) {
     if (typeof raw !== 'string') continue

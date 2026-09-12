@@ -53,6 +53,19 @@ describe('normalizeQueuedSkillSlugs', () => {
   it('keeps the good slugs out of a mixed list', () => {
     expect(normalizeQueuedSkillSlugs(['../escape', 'commit'])).toEqual(['commit'])
   })
+
+  it('refuses anything that is not actually an array', () => {
+    // The value arrives from a file a user can edit, so "an array of strings" is
+    // a hope. A bare STRING passes a `.length` check and then iterates as
+    // characters — each of which is a perfectly valid slug shape — and an object
+    // with a `length` passes it and THROWS on iteration.
+    expect(normalizeQueuedSkillSlugs('commit')).toBeUndefined()
+    expect(normalizeQueuedSkillSlugs({ length: 2 })).toBeUndefined()
+    expect(normalizeQueuedSkillSlugs({ length: 2, 0: 'a', 1: 'b' })).toBeUndefined()
+    expect(normalizeQueuedSkillSlugs(42)).toBeUndefined()
+    expect(normalizeQueuedSkillSlugs(null)).toBeUndefined()
+    expect(normalizeQueuedSkillSlugs({})).toBeUndefined()
+  })
 })
 
 describe('a queued send crossing a process boundary', () => {
@@ -192,6 +205,53 @@ describe('a queued send crossing a process boundary', () => {
     expect(replayed?.isQueued).toBeFalsy()
     expect(replayed?.queuedSkillSlugs).toBeUndefined()
   }, 30000)
+
+  it('opens a session whose queued message has a corrupted slug field', async () => {
+    // The read path, which is the one that matters: a hand-edited or
+    // half-written JSONL must not stop a session from opening. Before the
+    // array check, the string form silently produced one skill slug per
+    // CHARACTER and the object form threw inside hydration.
+    const sessionId = 'sess_corrupt_slugs'
+    const filePath = getSessionFilePath(root, sessionId)
+    mkdirSync(dirname(filePath), { recursive: true })
+    writeSessionJsonl(filePath, {
+      id: sessionId,
+      workspaceRootPath: root,
+      name: 'Corrupt session',
+      sessionStatus: 'todo',
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      messages: [
+        { type: 'user', id: 'm-str', content: 'string form', isQueued: true, queuedSkillSlugs: SKILL_SLUG },
+        { type: 'user', id: 'm-obj', content: 'object form', isQueued: true, queuedSkillSlugs: { length: 2 } },
+      ],
+    } as unknown as StoredSession)
+
+    const sm = new SessionManager()
+    const managed = createManagedSession(
+      { id: sessionId, name: 'Corrupt session', sessionStatus: 'todo', createdAt: Date.now() },
+      workspace(),
+    ) as unknown as Record<string, unknown>
+    managed.messageQueue = []
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, managed)
+    ;(sm as unknown as {
+      getOrCreateAgent(m: unknown): Promise<unknown>
+    }).getOrCreateAgent = async () => { throw new Error('fake turn boundary') }
+
+    // Opens. Before the fix the object form threw out of here.
+    await (sm as unknown as {
+      ensureMessagesLoaded(m: unknown): Promise<void>
+    }).ensureMessagesLoaded(managed)
+
+    const queue = managed.messageQueue as Array<{ messageId?: string; options?: unknown }>
+    expect(queue.map((q) => q.messageId)).toEqual(['m-str', 'm-obj'])
+    // Neither corrupted value became slugs — and in particular the string did
+    // not become five of them.
+    expect(queue.every((q) => q.options === undefined)).toBe(true)
+
+    // Let hydration's scheduled replay settle rather than leaving it running.
+    await new Promise((r) => setTimeout(r, 30))
+  }, 20000)
 
   it('keeps the durable marker when the replay is refused by a shutdown', async () => {
     // At-least-once, never lost. `processNextQueuedMessage` claims the admission
