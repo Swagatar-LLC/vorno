@@ -264,9 +264,9 @@ the supersede backstop bounds a leak there — recorded rather than implied away
    candidate scan had already decided what needed writing.
 
    So a send is now *admitted*: `admitSend` registers a deferred in the SAME tick
-   as the entry check (registering after any await just moves the window), every
-   pre-mutation await is followed by a fresh `assertNotShuttingDown`, and a
-   resuming send refuses having mutated nothing and ACKed nothing. Ownership
+   as the entry check (registering after any await just moves the window), and a
+   send that resumes into a quit refuses having mutated nothing and ACKed
+   nothing. Ownership
    transfers to `turnFinalization` in `beginTurnFromAdmittedSend`, which holds
    both statements together — the atomicity comes from there being no await
    between them, not from their order, since nothing can run in between either
@@ -274,13 +274,38 @@ the supersede backstop bounds a leak there — recorded rather than implied away
    take a turn is visible to it; bounded like the turn drain and reported rather
    than thrown, for the same reason.
 
-Mutations: shutdown skipping the admission wait, a missing post-hydration
-re-check, a transfer that forgets to settle, a ledger that never records, and a
-success that does not clear the ledger — each fails a test. One mutation
-SURVIVED and is recorded rather than papered over: swapping the two statements
-inside `beginTurnFromAdmittedSend` changes nothing observable, because a
-synchronous block has no instant in between. The comment claiming the order was
-the contract was corrected to say what actually holds.
+3. **Where the refusal point sits was the next P1** (Greptile, on the first
+   version of item 2). Re-checking after *every* pre-mutation await looked
+   strictly safer and was not: `clearStoredPendingPlanExecution` unlinks an
+   accepted plan from DISK, so a check after it refused the send having already
+   dismissed the user's plan — destroying state while reporting that nothing was
+   mutated, on a session that might then earn no final write at all.
+
+   There is now exactly ONE refusal point, after hydration and BEFORE the plan
+   clear: the last instant at which refusing costs nothing. Past it a send is
+   COMMITTED and finishes — the admission holds the queue open, so the message is
+   written and honestly ACKed. What a committed send skips is STARTING A TURN,
+   since shutdown has already chosen the turns it will abort; it marks the
+   message `isQueued` and leaves it, the same answer `processNextQueuedMessage`
+   gives when it declines to replay during a shutdown. `isQueued` is the durable
+   half — `messageQueue` is runtime-only and dies with the process, and the
+   cold-load re-queue scan is what actually replays the message next launch.
+
+Mutations, each killed: shutdown skipping the admission wait; a missing
+post-hydration re-check; a transfer that forgets to settle; a ledger that never
+records; a success that does not clear the ledger; a turn started during
+shutdown rather than queued; and a refusal placed after the plan clear. That
+last one appeared to SURVIVE TWICE before it was killed, both times because the
+mutation was aimed at the wrong line — the file holds two
+`pendingPlanExecution = undefined` sites and the earlier one is not on the send
+path. A surviving mutation is a question about the aim before it is a claim
+about coverage; this SUV has now been bitten by that twice.
+
+One mutation survives for a real reason, recorded rather than papered over:
+swapping the two statements inside `beginTurnFromAdmittedSend` changes nothing
+observable, because a synchronous block has no instant in between. The comment
+claiming the order was the contract was corrected to say what actually holds —
+that the absence of an await is the property.
 
 ### Review 9 — security: shutdown scope and cancellation intent
 
@@ -597,6 +622,11 @@ activity.
 - The auth-retry resend is the one turn-stop site with no test of its own. Its
   tail is two synchronous statements, and a forgotten release there is bounded
   by the supersede-at-turn-start backstop rather than by coverage.
+- `clearStoredPendingPlan` is a one-line, one-caller indirection around a module
+  import, kept as a test seam. What it buys is the only way to hold the window
+  where a quit lands INSIDE the plan clear — the window a P1 was found in — open
+  for a test; a module-level import cannot be held. Named rather than passed off
+  as a refactor.
 
 ## Status log
 

@@ -921,6 +921,131 @@ describe('quit flushes sessions that are mid-commit', () => {
       )
     }, 20000)
 
+    it('leaves an accepted plan intact when the send is refused', async () => {
+      // Where the refusal point sits is the whole question. Clearing the
+      // accepted plan BEFORE it meant a refused send had already unlinked that
+      // plan from disk — permanently dismissing work the user had accepted, on
+      // behalf of a message that never went through, while reporting that
+      // nothing had been mutated. The clear now sits on the committed side.
+      const sessionId = 'sess_refused_keeps_plan'
+      const managed = seedManaged(sessionId, {
+        messageQueue: [],
+        pendingPlanExecution: { planPath: '/tmp/plan.md', awaitingCompaction: false, executionDispatched: false },
+      })
+      // The same state on disk, which is what the clear would unlink.
+      writeSessionJsonl(getSessionFilePath(root, sessionId), {
+        id: sessionId,
+        workspaceRootPath: root,
+        name: 'Quit session',
+        sessionStatus: 'todo',
+        createdAt: Date.now(),
+        lastUsedAt: Date.now(),
+        messages: [{ role: 'user', content: 'transcript' }],
+        pendingPlanExecution: { planPath: '/tmp/plan.md', awaitingCompaction: false, executionDispatched: false },
+      } as unknown as StoredSession)
+
+      let releaseLoad!: () => void
+      const loadHeld = new Promise<void>((r) => { releaseLoad = r })
+      ;(sm as unknown as {
+        ensureMessagesLoaded(m: unknown): Promise<void>
+      }).ensureMessagesLoaded = async () => { await loadHeld }
+
+      const send = sm.sendMessage(sessionId, 'refused mid-quit').then(() => 'resolved').catch((e: unknown) => e)
+      await new Promise((r) => setTimeout(r, 20))
+      const shutdown = sm.flushAllSessions()
+      await new Promise((r) => setTimeout(r, 40))
+      releaseLoad()
+
+      expect(String(await send)).toMatch(/shutting down/)
+      await shutdown
+
+      // The plan survived the refusal, in memory and on disk.
+      expect(managed.pendingPlanExecution).toBeDefined()
+      expect(readFileSync(getSessionFilePath(root, sessionId), 'utf-8')).toContain('pendingPlanExecution')
+    }, 20000)
+
+    it('finishes a send whose quit began DURING the plan clear, rather than refusing after it', async () => {
+      // Greptile's window, held open. The plan clear is the first irreversible
+      // step, and a quit can land inside it — so the refusal point has to be
+      // BEFORE it, and everything after has to finish. A check placed after the
+      // clear looks harmless and permanently dismisses an accepted plan for a
+      // message the caller is simultaneously told was never accepted.
+      const sessionId = 'sess_quit_during_plan_clear'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+
+      let releaseClear!: () => void
+      const clearHeld = new Promise<void>((r) => { releaseClear = r })
+      ;(sm as unknown as {
+        clearStoredPendingPlan(m: unknown): Promise<void>
+      }).clearStoredPendingPlan = async () => { await clearHeld }
+
+      let acked = false
+      const send = sm.sendMessage(
+        sessionId, 'committed while the plan was being cleared',
+        undefined, undefined, undefined, undefined, undefined,
+        () => { acked = true },
+      ).then(() => 'resolved').catch((e: unknown) => e)
+      await new Promise((r) => setTimeout(r, 20))
+
+      const shutdown = sm.flushAllSessions()
+      await new Promise((r) => setTimeout(r, 40))
+      releaseClear()
+
+      expect(await send).toBe('resolved')
+      await shutdown
+
+      expect(acked).toBe(true)
+      expect(readFileSync(getSessionFilePath(root, sessionId), 'utf-8')).toContain(
+        'committed while the plan was being cleared',
+      )
+      expect(managed.isProcessing).toBe(false)
+    }, 20000)
+
+    it('saves and queues a send that was already committed when the quit began', async () => {
+      // The other side of the refusal point. Past it, the send has unlinked the
+      // accepted plan from disk, so refusing would dismiss a plan on behalf of
+      // a message that never went through — destroying state while reporting
+      // that nothing happened. A committed send therefore finishes: the message
+      // is written and ACKed (the admission keeps the queue open for exactly
+      // this), and what it skips is STARTING A TURN, because shutdown has
+      // already chosen the turns it will abort and wait for.
+      const sessionId = 'sess_committed_send'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+
+      // The quit begins while the user message is being flushed to disk — after
+      // the refusal point, before any turn.
+      let releaseFlush!: () => void
+      const flushHeld = new Promise<void>((r) => { releaseFlush = r })
+      const realFlush = (sm as unknown as { flushSession(id: string): Promise<void> }).flushSession.bind(sm)
+      ;(sm as unknown as {
+        flushSession(id: string): Promise<void>
+      }).flushSession = async (id: string) => { await realFlush(id); await flushHeld }
+
+      let ackedId: string | undefined
+      const send = sm.sendMessage(
+        sessionId, 'sent as the app was closing',
+        undefined, undefined, undefined, undefined, undefined,
+        (id) => { ackedId = id },
+      ).then(() => 'resolved').catch((e: unknown) => e)
+      await new Promise((r) => setTimeout(r, 20))
+
+      const shutdown = sm.flushAllSessions()
+      await new Promise((r) => setTimeout(r, 40))
+      releaseFlush()
+
+      expect(await send).toBe('resolved')
+      await shutdown
+
+      // Saved and honestly acknowledged — not refused after the plan clear.
+      expect(ackedId).toBeDefined()
+      expect(readFileSync(getSessionFilePath(root, sessionId), 'utf-8')).toContain('sent as the app was closing')
+      // No turn was started, and the message carries the durable marker the
+      // cold-load path re-queues from.
+      expect(managed.isProcessing).toBe(false)
+      expect((managed.messages as Array<{ content?: string; isQueued?: boolean }>)
+        .find((m) => m.content === 'sent as the app was closing')?.isQueued).toBe(true)
+    }, 20000)
+
     it('hands ownership from the admission to the turn with no gap', () => {
       // The handover is the one instant where a session could fall between the
       // two things shutdown looks at. Release the admission first and there is

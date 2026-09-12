@@ -1455,6 +1455,19 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * The disk half of the send's plan dismissal.
+   *
+   * A one-line indirection with one caller, and it earns its place as a seam: a
+   * quit that begins DURING this await is the window where refusing would
+   * destroy an accepted plan on behalf of a message that never went through,
+   * and a module-level import cannot be held open by a test. The rule it pins
+   * is that a send which has reached this line finishes.
+   */
+  private clearStoredPendingPlan(managed: ManagedSession): Promise<void> {
+    return clearStoredPendingPlanExecution(managed.workspace.rootPath, managed.id)
+  }
+
+  /**
    * Start the turn and hand shutdown-visibility over from the admission to it,
    * with NO GAP.
    *
@@ -7235,21 +7248,29 @@ export class SessionManager implements ISessionManager {
     // Clear any pending plan execution state when a new user message is sent.
     // This acts as a safety valve - if the user moves on, we don't want to
     // auto-execute an old plan later.
-    await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
-    // A quit may have begun while that await ran. Refuse here rather than
-    // carry on into the mutations below — shutdown is waiting on this send's
-    // admission, so refusing is what lets it proceed, and nothing this far in
-    // has touched in-memory state.
+    // Ensure messages are loaded before we try to add new ones
+    await this.ensureMessagesLoaded(managed)
+
+    // THE REFUSAL POINT. A quit may have begun while hydration ran — the entry
+    // check only answered "may this send start" — and this is the last instant
+    // at which refusing costs nothing, because nothing below is reversible.
+    // Everything after it is COMMITTED: shutdown is waiting on this send's
+    // admission, so the queue is still open and the writes below still land.
     this.assertNotShuttingDown(`send a message to ${sessionId}`)
+
+    // Clear any pending plan execution state when a new user message is sent.
+    // This acts as a safety valve - if the user moves on, we don't want to
+    // auto-execute an old plan later.
+    //
+    // Deliberately on the committed side of that line, and it is why the line
+    // exists. This unlinks an accepted plan from DISK, so a refusal after it
+    // would dismiss a plan on behalf of a message that never went through —
+    // destroying state while reporting that nothing happened. A send that has
+    // reached here finishes.
+    await this.clearStoredPendingPlan(managed)
     // And any in-memory mirror, so a later persist cannot write back a plan
     // the user has just dismissed.
     managed.pendingPlanExecution = undefined
-
-    // Ensure messages are loaded before we try to add new ones
-    await this.ensureMessagesLoaded(managed)
-    // Same again: hydration reads from disk and can take as long as the file
-    // is large. This is the last await before the branches that push a message.
-    this.assertNotShuttingDown(`send a message to ${sessionId}`)
 
     // If currently processing, behavior depends on the connection's
     // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
@@ -7296,12 +7317,6 @@ export class SessionManager implements ISessionManager {
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
       }
-      // The mutation boundary. Nothing above awaits today, so this repeats the
-      // check a few lines up — deliberately, because what makes the push safe
-      // is that no quit has begun, not that the code between happens to be
-      // synchronous. A future await inserted above must not silently reopen the
-      // window.
-      this.assertNotShuttingDown(`send a message to ${sessionId}`)
       managed.messages.push(userMessage)
 
       const delivery = resolveMidStreamDeliveryOutcome(behavior, steered)
@@ -7361,9 +7376,6 @@ export class SessionManager implements ISessionManager {
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
       }
-      // The mutation boundary on this branch — same reasoning as the mid-stream
-      // one above.
-      this.assertNotShuttingDown(`send a message to ${sessionId}`)
       managed.messages.push(userMessage)
 
       // Update lastMessageRole for badge display. Skip for hidden messages so the
@@ -7447,6 +7459,29 @@ export class SessionManager implements ISessionManager {
       }
     } catch (e) {
       sessionLog.warn(`Auto-label evaluation failed for session ${sessionId}:`, e)
+    }
+
+    // The message is saved and acknowledged. What must NOT happen now is a new
+    // turn: shutdown has already captured the set of turns it will abort and
+    // wait for, so this one would run with nothing watching it, be cut off
+    // mid-stream, and write into a closing queue.
+    //
+    // So it is queued instead of started — the same answer
+    // `processNextQueuedMessage` gives when it declines to replay during a
+    // shutdown. `isQueued` is the DURABLE half (`messageQueue` is runtime-only
+    // state that dies with the process): the cold-load path re-queues every
+    // user message still carrying it, so the send the user made while quitting
+    // runs on the next launch instead of vanishing.
+    if (this.shuttingDown) {
+      sessionLog.info(`Not starting a turn for ${sessionId}: shutting down; queued for replay`)
+      userMessage.isQueued = true
+      managed.messageQueue.push({
+        message, attachments, storedAttachments, options,
+        messageId: userMessage.id,
+        optimisticMessageId: options?.optimisticMessageId,
+      })
+      this.persistSession(managed)
+      return
     }
 
     managed.lastMessageAt = Date.now()
