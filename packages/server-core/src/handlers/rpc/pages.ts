@@ -1065,13 +1065,16 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
      * metadata only, since by definition nothing here has been validated.
      */
     const malformed = async (reason: string) => {
+      // Code only. `reason` is returned to the caller and logged for debugging;
+      // it must not reach the durable file, which by definition has seen no
+      // validated input at this point.
       await appendPageActionAudit({
         event: 'page_action_rejected',
         workspaceId: workspace.id,
         origin: 'sandboxed-page',
         code: 'malformed-request',
-        reason,
       }, { onError: (error) => log.warn(`Failed to audit malformed page action: ${error}`) })
+      log.debug(`Malformed page action on ${workspace.id}: ${reason}`)
       return { requestId: 'unknown', ok: false, error: `malformed-request: ${reason}`, durationMs: 0 }
     }
 

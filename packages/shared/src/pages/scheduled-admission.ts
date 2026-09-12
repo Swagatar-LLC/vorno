@@ -73,7 +73,10 @@ export async function admitScheduledPageRefresh(
     permissionMode: workspace.permissionMode,
   };
 
-  const audit = (code: string, reason: string) =>
+  // The durable row carries the code only. `reason` is returned to the caller
+  // and surfaced in the blocked-run message, where it can name the script or
+  // the mismatch; the log that lives forever stays a closed set.
+  const audit = (code: string) =>
     appendPageActionAudit(
       {
         event: 'page_action_rejected',
@@ -84,13 +87,12 @@ export async function admitScheduledPageRefresh(
         grantId,
         actionKind: 'script',
         code,
-        reason,
       },
       { auditLogPath },
     );
 
   const refuse = async (code: string, reason: string): Promise<ScheduledAdmissionOutcome> => {
-    await audit(code, reason);
+    await audit(code);
     return { ok: false, code, reason };
   };
 

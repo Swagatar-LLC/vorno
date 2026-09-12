@@ -1014,6 +1014,29 @@ describe('pages/action-bridge', () => {
     });
   });
 
+  describe('origin policy is enforced, not presented', () => {
+    it('states the cells each caller consumes', () => {
+      // The scheduled path structurally cannot produce either credential, and
+      // refuses if its row ever says it must; the render path requires both and
+      // enforces them. Asserting the rows here is what ties those two branches
+      // to the table — if someone flips a cell, this fails alongside the
+      // behaviour that depends on it.
+      //
+      // Honest limitation: with today's table the scheduled refusal branch is
+      // unreachable, so it is guarded by this assertion rather than executed by
+      // a test. Making it executable would mean injecting the policy, which is
+      // more machinery than the guard is worth.
+      expect(pageActionOriginPolicy('scheduled-refresh')).toEqual({
+        requiresActivationTicket: false,
+        requiresFirstUseConfirmation: false,
+      });
+      expect(pageActionOriginPolicy('sandboxed-page')).toEqual({
+        requiresActivationTicket: true,
+        requiresFirstUseConfirmation: true,
+      });
+    });
+  });
+
   describe('first-use confirmation for script grants (ADR-0033 §3)', () => {
     const scriptPage = () => makePage({
       grants: [makeGrant({ id: 'grant_script001', action: { kind: 'script', script: 'pages/dash/run.sh' } })],
@@ -1253,8 +1276,10 @@ describe('pages/action-bridge', () => {
       const after = await broker.executeAction(makePage(), makeRequest(lease), AUTHORITY);
       expect(after.ok).toBe(false);
       expect(after.error).toContain('timeout');
+      // The durable row carries the stable outcome, not the executor's message.
       const audit = await readAudit();
-      expect(audit.some((e) => e.event === 'page_action_executed' && String(e.error).includes('timeout'))).toBe(true);
+      expect(audit.some((e) => e.event === 'page_action_executed' && e.outcome === 'timeout')).toBe(true);
+      expect(JSON.stringify(audit)).not.toContain('exceeded');
     });
 
     it('runs at most two mutating actions at once and serializes the rest', async () => {
@@ -1932,6 +1957,151 @@ describe('pages/action-bridge', () => {
       expect(executed?.invocation).toEqual({ kind: 'api', method: 'GET' });
       expect(executed?.sourceSlug).toBe('github');
       expect(executed?.grantId).toBe('grant_test0001');
+    });
+
+    it('never persists the rejection reason, which interpolates the caller path', async () => {
+      // `Path /patients/… does not match the granted pattern` is a perfectly
+      // good message for the caller and a data leak in a file that outlives the
+      // install. The code is stable and sufficient; the reason is not.
+      const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage();
+      disk.page = page;
+
+      const result = await run(broker, page, makeRequest(lease, {
+        invocation: { kind: 'api', method: 'GET', path: '/patients/SSN-078-05-1120-jeff@example.com' },
+      }));
+      // The caller still gets the detail it needs to fix the call.
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('/patients/SSN-078-05-1120');
+
+      const audit = await readAudit();
+      const serialized = JSON.stringify(audit);
+      expect(serialized).not.toContain('SSN-078-05-1120');
+      expect(serialized).not.toContain('jeff@example.com');
+      expect(serialized).not.toContain('patients');
+      // …and the row is still useful.
+      const rejected = audit.find((e) => e.event === 'page_action_rejected');
+      expect(rejected?.code).toBe('grant-mismatch');
+      expect(rejected?.invocation).toEqual({ kind: 'api', method: 'GET' });
+      expect(rejected?.reason).toBeUndefined();
+    });
+
+    it('never persists an executor error, which is whatever the far end said', async () => {
+      const broker = makeBroker({
+        executeApi: async () => {
+          throw new Error('upstream rejected token sk-live-4eC39HqLyjWDarjtT1zdp7dc for tenant acme-health');
+        },
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage();
+      disk.page = page;
+
+      const result = await run(broker, page, makeRequest(lease));
+      expect(result.ok).toBe(false);
+      // The page sees the real message — it has to, to be actionable.
+      expect(result.error).toContain('sk-live-4eC39HqLyjWDarjtT1zdp7dc');
+
+      const audit = await readAudit();
+      const serialized = JSON.stringify(audit);
+      expect(serialized).not.toContain('sk-live-4eC39HqLyjWDarjtT1zdp7dc');
+      expect(serialized).not.toContain('acme-health');
+      const executed = audit.find((e) => e.event === 'page_action_executed');
+      expect(executed?.outcome).toBe('executor-error');
+      expect(executed?.error).toBeUndefined();
+    });
+
+    // Narrower than the two above, and worth saying so: a non-zero exit puts
+    // stderr in `body`, not in `error`, so this guards the body never reaching
+    // the audit rather than the error path. It passes with the error leak
+    // restored; the test above it is the one that catches that.
+    it('never persists a script stderr through the audit', async () => {
+      const broker = makeBroker({
+        executeScript: async () => ({ exitCode: 2, stdout: '', stderr: 'DB_PASSWORD=hunter2 refused' }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage({
+        grants: [makeGrant({ id: 'grant_script001', action: { kind: 'script', script: 'run.sh' } })],
+      });
+      disk.page = page;
+
+      await run(broker, page, makeRequest(lease, { grantId: 'grant_script001', invocation: { kind: 'script' } }));
+      const audit = await readAudit();
+      expect(JSON.stringify(audit)).not.toContain('hunter2');
+      expect(audit.find((e) => e.event === 'page_action_executed')?.outcome).toBe('non-zero-exit');
+    });
+
+    it('audits the mode the decision was actually made under, after a queue reload', async () => {
+      // ask → safe: the refusal must be recorded as `safe`, the mode that
+      // caused it, not `ask`, the mode that applied when it was admitted.
+      const gates: Array<() => void> = [];
+      const broker = makeBroker({
+        executeApi: () => new Promise((resolve) => { gates.push(() => resolve({ status: 201, ok: true, body: null })); }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage({ grants: [writeGrant()] });
+      disk.page = page;
+      const start = async () => {
+        const request = makeRequest(lease, {
+          grantId: 'grant_write0001',
+          invocation: { kind: 'api', method: 'POST', path: '/repos/x' },
+        });
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+        return { requestId: request.requestId, done: broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY) };
+      };
+
+      const running = [await start(), await start()].map((r) => r.done);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = await start();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      disk.permissionMode = 'safe';
+      while (gates.length) gates.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      while (gates.length) gates.shift()!();
+      await queued.done;
+      await Promise.all(running);
+
+      const refusal = (await readAudit()).find(
+        (e) => e.event === 'page_action_rejected' && e.requestId === queued.requestId,
+      );
+      expect(refusal?.code).toBe('permission-mode-forbidden');
+      expect(refusal?.permissionMode).toBe('safe');
+    });
+
+    it('audits an upgraded mode when the reload widens it', async () => {
+      // ask → allow-all: the execution row names `allow-all`, which is what the
+      // decision was made under.
+      const gates: Array<() => void> = [];
+      const broker = makeBroker({
+        executeApi: () => new Promise((resolve) => { gates.push(() => resolve({ status: 201, ok: true, body: null })); }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage({ grants: [writeGrant()] });
+      disk.page = page;
+      const start = async () => {
+        const request = makeRequest(lease, {
+          grantId: 'grant_write0001',
+          invocation: { kind: 'api', method: 'POST', path: '/repos/x' },
+        });
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+        return { requestId: request.requestId, done: broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY) };
+      };
+
+      const running = [await start(), await start()].map((r) => r.done);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = await start();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      disk.permissionMode = 'allow-all';
+      while (gates.length) gates.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      while (gates.length) gates.shift()!();
+      expect((await queued.done).ok).toBe(true);
+      await Promise.all(running);
+
+      const executed = (await readAudit()).find(
+        (e) => e.event === 'page_action_executed' && e.requestId === queued.requestId,
+      );
+      expect(executed?.permissionMode).toBe('allow-all');
     });
 
     it('audits no MCP arguments', async () => {

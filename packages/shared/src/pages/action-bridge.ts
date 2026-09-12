@@ -145,6 +145,26 @@ export const PAGE_ACTION_MAX_QUEUED_MUTATING_PER_LEASE = 4;
 export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_PAGE = 60;
 export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_WORKSPACE = 120;
 
+/**
+ * Stable outcome of an execution attempt, for the audit log.
+ *
+ * The audit records THIS and never `result.error`. An executor's message is
+ * whatever the far end said — an API body, an MCP server's exception, a
+ * script's stderr — so persisting it puts arbitrary third-party text, including
+ * tokens and customer data, into a durable file. The detailed message still
+ * goes to the caller and the debug log; only the log that lives forever is
+ * restricted to a closed set.
+ */
+export type PageActionOutcomeCode =
+  | 'ok'
+  | 'http-error'
+  | 'non-zero-exit'
+  | 'executor-error'
+  | 'executor-unavailable'
+  | 'timeout'
+  | 'cancelled'
+  | 'kind-mismatch';
+
 export type PageActionValidationErrorCode =
   | 'origin-unattributed'
   | 'origin-forbidden'
@@ -826,8 +846,10 @@ export class PageActionBroker {
         leaseId: request.leaseId,
         grantId: request.grantId,
         code,
-        reason,
       });
+      // `reason` is returned to the caller and deliberately NOT persisted: it
+      // interpolates the request path and other caller-supplied values, which
+      // is the same payload-in-the-audit-log mistake as recording params.
       return { ok: false, code, reason };
     };
 
@@ -1070,20 +1092,34 @@ export class PageActionBroker {
     const startTime = this.now();
     const invocationSummary = this.summarizeInvocation(request.invocation);
 
+    /**
+     * The authority the decision was actually made under.
+     *
+     * Reassigned after a queue reload, so an action refused because the
+     * workspace switched to Explore is audited as `safe` rather than as the
+     * mode that applied when it was admitted. An audit row that names the wrong
+     * mode is worse than one that omits it — it is evidence for a decision that
+     * was never made.
+     */
+    let effectiveAuthority = authority;
+
     const rejected = (code: PageActionValidationErrorCode, reason: string): PageActionResult => {
       void this.appendAudit({
         event: 'page_action_rejected',
-        workspaceId: authority?.workspaceId,
-        origin: authority?.origin,
-        permissionMode: authority?.permissionMode,
+        workspaceId: effectiveAuthority?.workspaceId,
+        origin: effectiveAuthority?.origin,
+        permissionMode: effectiveAuthority?.permissionMode,
         pageSlug: request.pageSlug,
         requestId: request.requestId,
         leaseId: request.leaseId,
         grantId: request.grantId,
         invocation: invocationSummary,
         code,
-        reason,
       });
+      // `reason` goes to the caller only. It interpolates the request path
+      // ("Path /patients/… does not match the granted pattern") and other
+      // caller-supplied values, so persisting it would put exactly the payload
+      // the audit summary strips back into the same file.
       return {
         requestId: request.requestId,
         ok: false,
@@ -1194,9 +1230,14 @@ export class PageActionBroker {
         releaseAdmission();
         return rejected('workspace-mismatch', 'Workspace changed while this request was queued');
       }
+      // Adopted BEFORE validating, so a refusal caused by the reloaded mode is
+      // audited as that mode. Setting it only on success would record the
+      // Explore refusal as having happened under `ask` — evidence for a
+      // decision that was never made.
+      effectiveAuthority = { ...current.authority, origin: authority.origin };
       // Re-validated against the CURRENT authority — a switch to Explore while
       // this sat in the queue refuses here rather than executing.
-      const afterQueue = this.validate(current.page, request, { ...current.authority, origin: authority.origin }, { checkReplay: false });
+      const afterQueue = this.validate(current.page, request, effectiveAuthority, { checkReplay: false });
       if (!afterQueue.ok) {
         releaseAdmission();
         return rejected(afterQueue.code, afterQueue.reason);
@@ -1252,12 +1293,14 @@ export class PageActionBroker {
     };
 
     let result: PageActionResult;
+    let outcome: PageActionOutcomeCode = 'ok';
     try {
       if (grant.action.kind === 'api' && request.invocation.kind === 'api') {
         if (!this.executors.executeApi) {
+          outcome = 'executor-unavailable';
           result = this.unavailableResult(request, startTime, 'API executor not wired in this host');
         } else {
-          const outcome = await race(this.executors.executeApi(
+          const apiOutcome = await race(this.executors.executeApi(
             {
               sourceSlug: grant.action.sourceSlug,
               method: request.invocation.method,
@@ -1268,15 +1311,17 @@ export class PageActionBroker {
           ));
           result = {
             requestId: request.requestId,
-            ok: outcome.ok,
-            status: outcome.status,
-            body: outcome.body,
-            ...(outcome.ok ? {} : { error: `API responded with status ${outcome.status}` }),
+            ok: apiOutcome.ok,
+            status: apiOutcome.status,
+            body: apiOutcome.body,
+            ...(apiOutcome.ok ? {} : { error: `API responded with status ${apiOutcome.status}` }),
             durationMs: this.now() - startTime,
           };
+          outcome = apiOutcome.ok ? 'ok' : 'http-error';
         }
       } else if (grant.action.kind === 'mcp' && request.invocation.kind === 'mcp') {
         if (!this.executors.executeMcp) {
+          outcome = 'executor-unavailable';
           result = this.unavailableResult(request, startTime, 'MCP executor not wired in this host');
         } else {
           const body = await race(this.executors.executeMcp(
@@ -1296,9 +1341,10 @@ export class PageActionBroker {
         }
       } else if (grant.action.kind === 'script' && request.invocation.kind === 'script') {
         if (!this.executors.executeScript) {
+          outcome = 'executor-unavailable';
           result = this.unavailableResult(request, startTime, 'Script executor not wired in this host');
         } else {
-          const outcome = await race(this.executors.executeScript(
+          const scriptOutcome = await race(this.executors.executeScript(
             {
               pageSlug: page.slug,
               script: grant.action.script,
@@ -1307,19 +1353,21 @@ export class PageActionBroker {
             },
             { signal },
           ));
-          const ok = outcome.exitCode === 0;
+          const ok = scriptOutcome.exitCode === 0;
           result = {
             requestId: request.requestId,
             ok,
             // The page sees stdout/stderr/exit even on failure — a script that
             // exits non-zero with a useful message should surface that message.
-            body: { exitCode: outcome.exitCode, stdout: outcome.stdout, stderr: outcome.stderr },
-            ...(ok ? {} : { error: `Script exited with code ${outcome.exitCode ?? 'null'}` }),
+            body: { exitCode: scriptOutcome.exitCode, stdout: scriptOutcome.stdout, stderr: scriptOutcome.stderr },
+            ...(ok ? {} : { error: `Script exited with code ${scriptOutcome.exitCode ?? 'null'}` }),
             durationMs: this.now() - startTime,
           };
+          outcome = ok ? 'ok' : 'non-zero-exit';
         }
       } else {
-        // invocationMismatch() makes this unreachable; keep a safe fallback.
+        // The admission primitive makes this unreachable; keep a safe fallback.
+        outcome = 'kind-mismatch';
         result = this.unavailableResult(request, startTime, 'Invocation kind does not match grant');
       }
     } catch (error) {
@@ -1327,6 +1375,7 @@ export class PageActionBroker {
       // to tell them apart: one is the host giving up on a slow action, the
       // other is a user or an unmount withdrawing it.
       const timedOut = error instanceof PageActionDeadlineError;
+      outcome = timedOut ? 'timeout' : controller.signal.aborted ? 'cancelled' : 'executor-error';
       const message = timedOut
         ? `timeout: action exceeded ${this.actionTimeoutMs}ms`
         : controller.signal.aborted
@@ -1346,9 +1395,11 @@ export class PageActionBroker {
 
     void this.appendAudit({
       event: 'page_action_executed',
-      workspaceId: authority.workspaceId,
-      origin: authority.origin,
-      permissionMode: authority.permissionMode,
+      workspaceId: effectiveAuthority.workspaceId,
+      origin: effectiveAuthority.origin,
+      // The mode the decision was actually made under — after a queue reload
+      // this is the current one, not the one that applied at admission.
+      permissionMode: effectiveAuthority.permissionMode,
       mutating,
       pageSlug: request.pageSlug,
       requestId: request.requestId,
@@ -1361,7 +1412,10 @@ export class PageActionBroker {
       policyDecision: policy.decision,
       ok: result.ok,
       ...(result.status !== undefined ? { status: result.status } : {}),
-      ...(result.error ? { error: result.error } : {}),
+      // A closed set, never `result.error`: that string is whatever the far end
+      // said — an API body, an MCP server's exception, a script's stderr — and
+      // this file outlives the install.
+      outcome,
       durationMs: result.durationMs,
     });
 
