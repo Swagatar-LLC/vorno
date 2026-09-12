@@ -64,6 +64,26 @@ function mergeHeaderWithExternalMetadata(localHeader: SessionHeader, diskHeader:
  * when rapid successive flushes (e.g., clearSessionForRecovery + onSdkSessionIdUpdate)
  * would otherwise write to the same .tmp file concurrently.
  */
+/**
+ * How far cancellation reaches, and how far it is allowed to go.
+ *
+ * `discardCommitted` is the difference between the two callers of this
+ * mechanism, and conflating them destroys live data:
+ *
+ * - **Deletion** (`cancelForDeletion`) must remove the artifact even if the
+ *   rename already committed, or a deleted session reappears on disk.
+ * - **Supersede** (`supersedePendingWrites`) must NEVER remove it. Its caller
+ *   is reacting to an external metadata edit and is about to write merged fresh
+ *   state; unlinking there deletes a live session's file, and leaves it absent
+ *   until the replacement write lands.
+ *
+ * Sticky by design: once a session is being deleted, a later supersede cannot
+ * downgrade the intent back to "keep the file", because nothing un-deletes a
+ * session. `through` is likewise monotonic. Both directions of ordering are
+ * therefore safe without the callers having to know about each other.
+ */
+type CancellationWatermark = { through: number; discardCommitted: boolean }
+
 /** Outcome of a checked persist. `ok:false` carries the reason for the audit. */
 export type SessionWriteReceipt = { ok: true } | { ok: false; error: string }
 
@@ -118,8 +138,12 @@ class SessionPersistenceQueue {
    * generation and is unaffected, with nothing to clear and no window in which
    * clearing it is wrong. Generations therefore stay monotonic for the life of
    * the process and are never reset.
+   *
+   * It carries an INTENT as well as a generation, because "stop these writes"
+   * has two meanings and only one of them may remove the session's file. See
+   * `CancellationWatermark`.
    */
-  private cancelledThrough = new Map<string, number>()
+  private cancelledThrough = new Map<string, CancellationWatermark>()
   /**
    * Test seam: awaited at each commit boundary so a suite can land a cancel
    * inside a write deterministically.
@@ -129,6 +153,20 @@ class SessionPersistenceQueue {
    * hit those windows by timing. Without a seam the guards above would be
    * untestable — and an untested guard is one nobody can tell is still working.
    * Unset in production, where it costs one optional-chain per boundary.
+   *
+   * **It is a public mutable field on a module singleton, which is a real if
+   * small hazard, and the alternatives were worse.** Anything in-process can set
+   * it, and because the hooks are awaited, a hostile or buggy one can stall
+   * every session write. It is not reachable by a Page, a script action, or any
+   * RPC — it has no wire representation and nothing serialises to it — so the
+   * exposure is to code already running in the host, which can call `unlink`
+   * directly anyway. Constructor injection was rejected because the singleton is
+   * constructed at module scope before any test can reach it; a subclass was
+   * rejected because the guards must be exercised on the exact instance the
+   * product uses. Suites that set it MUST clear it in `afterEach` — a leaked
+   * hook fires inside every later suite's writes. Tightening this to a
+   * build-stripped seam is a recorded residual on SUV-0064, not a silent
+   * acceptance.
    */
   commitHooks?: {
     beforeUnlink?: (sessionId: string) => void | Promise<void>
@@ -213,7 +251,7 @@ class SessionPersistenceQueue {
     // above it. No black-box test can reach this branch, and none pretends to;
     // it is here because the invariant — never report success for a cancelled
     // generation — should survive someone changing that arithmetic.
-    if ((this.cancelledThrough.get(sessionId) ?? 0) >= generation) {
+    if ((this.cancelledThrough.get(sessionId)?.through ?? 0) >= generation) {
       return Promise.resolve({ ok: false, error: 'session write cancelled' })
     }
     const written = this.writtenGeneration.get(sessionId) ?? 0
@@ -364,8 +402,10 @@ class SessionPersistenceQueue {
     this.pending.delete(sessionId)
     const { generation } = entry
 
-    // Cancelled between enqueue and execution: do not write at all.
-    if ((this.cancelledThrough.get(sessionId) ?? 0) >= generation) {
+    // Cancelled between enqueue and execution: do not write at all. Nothing was
+    // committed, so the intent does not matter here — there is no artifact to
+    // keep or discard either way.
+    if ((this.cancelledThrough.get(sessionId)?.through ?? 0) >= generation) {
       debug(`[PersistenceQueue] Skipped cancelled write for session ${sessionId}`)
       this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
       this.settleReceipts(sessionId, generation, { ok: false, error: 'session write cancelled' })
@@ -445,6 +485,11 @@ class SessionPersistenceQueue {
        * the one a single pre-commit check misses entirely — the bytes are on
        * disk for a session the caller has deleted.
        *
+       * The post-rename case is also the only one that depends on WHY the write
+       * was cancelled: removing the committed file is right for a deletion and
+       * catastrophic for a supersede. The intent rides on the watermark rather
+       * than being inferred here.
+       *
        * Cleanup happens BEFORE the receipt is settled, so "cancelled" can never
        * be reported while the artifact it describes might still exist. And it
        * happens before the tail releases, so later generations — which are
@@ -452,10 +497,19 @@ class SessionPersistenceQueue {
        * racing this cleanup.
        */
       const abandonIfCancelled = async (committed: boolean): Promise<boolean> => {
-        if ((this.cancelledThrough.get(sessionId) ?? 0) < generation) return false
+        const watermark = this.cancelledThrough.get(sessionId)
+        if ((watermark?.through ?? 0) < generation) return false
+        // The temp file is this generation's private scratch space and is
+        // always ours to remove, under either intent.
         try { await unlink(tmpFile) } catch { /* may not exist */ }
-        if (committed) {
-          // The rename already happened: remove what it produced.
+        if (committed && watermark?.discardCommitted) {
+          // Deletion only. The rename already happened, so remove what it
+          // produced — otherwise a session the caller deleted stays on disk.
+          //
+          // Emphatically NOT done for a supersede: there the file is a LIVE
+          // session's, the caller is about to write merged fresh state over it,
+          // and unlinking would delete real data and leave the session absent
+          // from disk until the replacement write lands.
           try { await unlink(filePath) } catch { /* may not exist */ }
         }
         debug(`[PersistenceQueue] Abandoned cancelled write for session ${sessionId} (committed=${committed})`)
@@ -535,9 +589,52 @@ class SessionPersistenceQueue {
   }
 
   /**
-   * Cancel a pending write for a session (e.g., when deleting the session).
+   * Stop every write enqueued so far, because the session is being DELETED.
+   *
+   * Discards the artifact even if the rename has already committed, and drops
+   * the header-signature baseline along with it — there is no session left for
+   * that baseline to describe.
    */
-  cancel(sessionId: string): void {
+  cancelForDeletion(sessionId: string): void {
+    this.stopPendingWrites(sessionId, { discardCommitted: true })
+    // Safe here and only here: the session is gone, so no later write can need
+    // this baseline to detect an external edit.
+    this.lastWrittenHeaderSignature.delete(sessionId)
+    this.lastWriteFailure.delete(sessionId)
+    // Drop the bookkeeping, but only if nothing is still in flight. Deleted
+    // sessions would otherwise leave an entry in every map for the life of the
+    // process; a session with a live tail retires when that tail drains.
+    this.retireIfQuiescent(sessionId)
+  }
+
+  /**
+   * Stop stale writes from committing over fresher state, WITHOUT touching the
+   * session's file.
+   *
+   * The caller has just absorbed an external metadata edit and is about to
+   * persist the merged result. What it needs is for in-flight writes carrying
+   * pre-edit state to lose; what it must never get is the session's file
+   * removed, because the session is live.
+   *
+   * The header-signature baseline is deliberately KEPT. It is the input to
+   * `write`'s external-change detection (`hasExternalMetadataChange` requires a
+   * previous signature), and that detection is the only thing that preserves
+   * `labels`, `isFlagged`, `permissionMode`, `hasUnread` and
+   * `lastReadMessageId` — five fields the caller's own reconciliation does not
+   * carry. Dropping the baseline here would make the very next write silently
+   * clobber the external edit this call exists to protect.
+   */
+  supersedePendingWrites(sessionId: string): void {
+    this.stopPendingWrites(sessionId, { discardCommitted: false })
+    // No retirement sweep and no baseline drop: this session is live, is about
+    // to be written again, and its baseline is load-bearing for that write.
+  }
+
+  /**
+   * Shared core of both intents: raise the watermark and settle anything
+   * waiting on the generations it now covers.
+   */
+  private stopPendingWrites(sessionId: string, { discardCommitted }: { discardCommitted: boolean }): void {
     const entry = this.pending.get(sessionId)
     if (entry) {
       clearTimeout(entry.timer)
@@ -548,21 +645,20 @@ class SessionPersistenceQueue {
     // here is the one already on the tail, which `pending` no longer holds.
     // Everything enqueued up to now is cancelled; anything enqueued after is
     // a higher generation and unaffected.
-    this.cancelledThrough.set(sessionId, this.generations.get(sessionId) ?? 0)
+    //
+    // Both fields climb and never fall, so the two callers cannot undo each
+    // other in either order: a supersede arriving after a deletion leaves the
+    // session deleted.
+    const previous = this.cancelledThrough.get(sessionId)
+    this.cancelledThrough.set(sessionId, {
+      through: Math.max(previous?.through ?? 0, this.generations.get(sessionId) ?? 0),
+      discardCommitted: (previous?.discardCommitted ?? false) || discardCommitted,
+    })
 
-    // Waiters first. Anything holding a receipt for a cancelled generation must
-    // be told rather than left hanging, and telling them is also what makes the
-    // session eligible for retirement below — the order is load-bearing, not
-    // cosmetic.
+    // Anything holding a receipt for a cancelled generation must be told rather
+    // than left hanging, and telling them is also what makes the session
+    // eligible for retirement — the order is load-bearing, not cosmetic.
     this.settleReceipts(sessionId, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled' })
-    this.lastWrittenHeaderSignature.delete(sessionId)
-    this.lastWriteFailure.delete(sessionId)
-
-    // Then drop the bookkeeping, but only if nothing is still in flight.
-    // Deleted sessions are the common case here and would otherwise leave an
-    // entry in every map for the life of the process; a session with a live
-    // tail retires when that tail drains instead.
-    this.retireIfQuiescent(sessionId)
   }
 
   /**

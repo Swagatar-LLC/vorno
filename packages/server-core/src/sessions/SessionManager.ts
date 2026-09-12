@@ -1698,8 +1698,14 @@ export class SessionManager implements ISessionManager {
     if (changed) {
       sessionLog.info(`External metadata change detected for session ${sessionId}`)
 
-      // Prevent stale pending writes from reverting externally-updated metadata.
-      sessionPersistenceQueue.cancel(sessionId)
+      // Supersede, NOT cancel-for-deletion. This session is live and is being
+      // written again on the next line; the only thing that has to stop is an
+      // in-flight write carrying pre-edit state. The deletion variant would
+      // unlink the committed file — deleting a live session's transcript and
+      // leaving it absent from disk until the replacement write lands — and
+      // would drop the header-signature baseline that the replacement write
+      // needs to detect this very edit.
+      sessionPersistenceQueue.supersedePendingWrites(sessionId)
       this.persistSession(managed)
     }
 
@@ -6415,8 +6421,10 @@ export class SessionManager implements ISessionManager {
     this.clearAdminRememberApprovalsForSession(sessionId)
     this.clearPendingPermissionRequestsForSession(sessionId)
 
-    // Cancel any pending persistence write (session is being deleted, no need to save)
-    sessionPersistenceQueue.cancel(sessionId)
+    // The session is being deleted, so pending writes are not merely stale —
+    // their artifact must not survive either, including one whose rename has
+    // already committed.
+    sessionPersistenceQueue.cancelForDeletion(sessionId)
 
     // Clean up session-scoped tool callbacks to prevent memory accumulation
     unregisterSessionScopedToolCallbacks(sessionId)

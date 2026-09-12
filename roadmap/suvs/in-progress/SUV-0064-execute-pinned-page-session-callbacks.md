@@ -790,8 +790,66 @@ Each fix in this round was falsified by injecting its regression: seven
 injections, six caught by a named test, one documented as structurally
 unreachable.
 
+## Round 23 — cancel had two intents wearing one name
+
+`2026-09-12` — security review. One P1, and it is the most consequential defect
+this SUV produced: a **live session's transcript could be deleted**.
+
+Round 19 taught `cancel` to remove the committed artifact when a cancellation
+lands after the rename. That is correct for the caller it was written for —
+`deleteSession`, where leaving the bytes on disk resurrects a deleted session.
+But `cancel` had a second caller with the opposite requirement:
+`applyExternalSessionMetadata` calls it to stop stale writes from reverting an
+external metadata edit, on a session that is **live and about to be written
+again**. On that path the post-rename unlink deletes a real transcript, and
+because the replacement write is debounced, leaves the session absent from disk
+in the meantime — permanently, if the process dies in the window.
+
+`cancel` is gone. Two named methods replace it, one per intent:
+
+- `cancelForDeletion(sessionId)` — discards the committed artifact and drops the
+  header-signature baseline. The session is going away; nothing is left for
+  either to describe.
+- `supersedePendingWrites(sessionId)` — raises the watermark so stale owners
+  lose, and **never unlinks the final file**. It also keeps the baseline, which
+  is the second half of the same bug: the baseline is the input to `write`'s
+  external-change detection, and that detection is the only thing carrying
+  `labels`, `isFlagged`, `permissionMode`, `hasUnread` and `lastReadMessageId` —
+  five fields the caller's own reconciliation does not touch. Dropping it would
+  make the next write clobber the very edit the call exists to protect.
+
+The intent rides on the watermark (`{ through, discardCommitted }`) rather than
+being inferred at the unlink, and both fields are **monotonic**: a supersede
+arriving after a deletion cannot un-delete a session, in either order, without
+the two callers having to know about each other.
+
+**Deleting `cancel` rather than aliasing it was the point.** Nine call sites
+failed to compile, which is how each one was classified deliberately instead of
+inheriting whichever behaviour the old name happened to have.
+
+**One new test passed under the injected regression and had to be rebuilt.** The
+file-presence assertion at the `SessionManager` level ran with an idle queue, so
+there was no in-flight write to abandon and it held under *both* intents. It now
+lands the external edit inside the commit window via `commitHooks.afterRename`,
+which is the only window where the two intents differ. Eighth instance in this
+SUV of *the assertion was fine, the construction did not reach the path* — and
+the first one I caught by injecting rather than by being told.
+
+Five injections, five caught: supersede-discards-file, supersede-drops-baseline,
+deletion-stops-discarding, intent-not-sticky, and the caller binding itself.
+
 ## Residuals
 
+- **`commitHooks` is a public mutable field on a module singleton.** It is the
+  test seam that makes the cancellation guards exercisable at all, and nothing
+  reaches it from a Page, a script action, or any RPC — it has no wire
+  representation, so the exposure is to host code that could call `unlink`
+  directly anyway. But it is awaited inside the write, so an errant hook can
+  stall every session write, and a suite that forgets to clear it in `afterEach`
+  leaks into later suites. Constructor injection does not work (the singleton is
+  built at module scope) and a subclass would not exercise the instance the
+  product uses. Tightening it to a build-stripped seam is deliberately left as a
+  follow-up rather than done under a security round.
 - **The webhook containment fix is behavioral.** A desktop webhook that had been
   relying on cross-workspace `{ id }` targeting — resolving a session by id from
   any loaded workspace and acting on it with the calling workspace's root path —
