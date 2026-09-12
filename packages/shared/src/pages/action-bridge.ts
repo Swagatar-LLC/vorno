@@ -503,6 +503,15 @@ export class PageActionBroker {
   private readonly now: () => number;
 
   private readonly leases = new Map<string, PageRenderLease>();
+  /**
+   * leaseId → when this lease last did anything a user would recognize:
+   * executed an action, or had a ticket minted for one.
+   *
+   * Eviction reads it to tell a mounted window that is simply between clicks
+   * from a lease a flood minted and never used. Without it, "idle" conflates
+   * the two and the flood wins on age.
+   */
+  private readonly leaseLastUsedAt = new Map<string, number>();
   private readonly seenRequestIds = new Map<string, Set<string>>();
   /**
    * In-flight actions, keyed by LEASE AND request id.
@@ -596,13 +605,26 @@ export class PageActionBroker {
       // now" is a property of the host's own state that nothing can forge.
       let oldest: PageRenderLease | undefined;
       let oldestIdle: PageRenderLease | undefined;
+      let oldestUnused: PageRenderLease | undefined;
       for (const lease of this.leases.values()) {
         if (!oldest || lease.issuedAt < oldest.issuedAt) oldest = lease;
-        if ((this.inFlightByLease.get(lease.leaseId) ?? 0) > 0) continue;
+        // Busy means anything ADMITTED, not merely executing. A mutating
+        // request registers its controller before it waits for a slot, so
+        // reading `inFlight` counts queued writes too — `inFlightByLease` is
+        // incremented only after the wait, and using it here classified a
+        // queued mutation as idle and let a flood abort it.
+        if ((this.inFlight.get(lease.leaseId)?.size ?? 0) > 0) continue;
         if (!oldestIdle || lease.issuedAt < oldestIdle.issuedAt) oldestIdle = lease;
+        // Never used at all: minted and abandoned, which is what a flood
+        // produces and what a mounted window does not.
+        if (this.leaseLastUsedAt.has(lease.leaseId)) continue;
+        if (!oldestUnused || lease.issuedAt < oldestUnused.issuedAt) oldestUnused = lease;
       }
-      // Only when every live lease is busy does the oldest lose regardless.
-      const evicted = oldestIdle ?? oldest;
+      // Preference order: never-used, then idle, then oldest regardless. A
+      // window that is merely between clicks outranks a lease that has done
+      // nothing since it was minted, which is the distinction that protects a
+      // real mount from churn without appealing to caller identity.
+      const evicted = oldestUnused ?? oldestIdle ?? oldest;
       if (evicted) {
         this.dropLease(evicted.leaseId);
         void this.appendAudit({
@@ -610,7 +632,7 @@ export class PageActionBroker {
           pageSlug: evicted.pageSlug,
           leaseId: evicted.leaseId,
           reason: 'lease-store-full',
-          idle: oldestIdle !== undefined,
+          selected: oldestUnused ? 'never-used' : oldestIdle ? 'idle' : 'oldest-busy',
         }, 'lease-lifecycle');
       }
     }
@@ -666,6 +688,11 @@ export class PageActionBroker {
    * lease-scoped authority and all end here — including on the expiry and
    * eviction paths, which call this rather than deleting the lease themselves.
    */
+  /** Record that a lease did something, for eviction preference. */
+  private noteLeaseUsed(leaseId: string): void {
+    if (this.leases.has(leaseId)) this.leaseLastUsedAt.set(leaseId, this.now());
+  }
+
   private dropLease(leaseId: string): void {
     // Abort FIRST, while the lease still exists.
     //
@@ -681,6 +708,7 @@ export class PageActionBroker {
     this.inFlight.delete(leaseId);
 
     this.leases.delete(leaseId);
+    this.leaseLastUsedAt.delete(leaseId);
     this.seenRequestIds.delete(leaseId);
     this.inFlightByLease.delete(leaseId);
     this.mutatingInFlightByLease.delete(leaseId);
@@ -1086,6 +1114,7 @@ export class PageActionBroker {
       expiresAt: now + this.activationTicketTtlMs,
     };
     this.tickets.set(ticket.ticketId, ticket);
+    this.noteLeaseUsed(request.leaseId);
     void this.appendAudit({
       event: 'page_activation_issued',
       workspaceId: authority.workspaceId,
@@ -1280,6 +1309,7 @@ export class PageActionBroker {
     }
 
     this.seenRequestIds.get(request.leaseId)?.add(request.requestId);
+    this.noteLeaseUsed(request.leaseId);
 
     // Policy annotation: grants ARE the user approval, so a requires-approval
     // verdict does not block a granted call — but the audit trail records how

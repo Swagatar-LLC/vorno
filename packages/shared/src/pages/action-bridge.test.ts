@@ -2325,6 +2325,72 @@ describe('pages/action-bridge', () => {
       expect((await working).ok).toBe(true);
     });
 
+    it('protects a mounted window that is merely between clicks', async () => {
+      // "Idle" alone conflates a window waiting for its next click with a lease
+      // a flood minted and abandoned. A mounted window has DONE something; that
+      // is the distinction, and it needs no caller identity to draw.
+      const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
+      const page = makePage({ grants: [makeGrant({ expiresAt: clock.now + 3_600_000 })] });
+      disk.page = page;
+
+      // The OLDEST lease in the store, used once and now idle.
+      const mounted = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      expect((await broker.executeAction(page, makeRequest(mounted), AUTHORITY)).ok).toBe(true);
+
+      // A flood mints and abandons enough leases to churn the store twice over.
+      for (let i = 0; i < MAX_LIVE_LEASES * 2; i++) {
+        clock.now += 1;
+        broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      }
+
+      // The mounted window survived, and can still act.
+      expect(broker.hasActiveLease(mounted.leaseId, 'dash', DIGEST_V1)).toBe(true);
+      expect((await broker.executeAction(page, makeRequest(mounted), AUTHORITY)).ok).toBe(true);
+    });
+
+    it('survives churn with work queued behind its executing actions', async () => {
+      // Busy is read from `inFlight`, which a mutating request joins BEFORE it
+      // waits for a slot, rather than from the executing counter which it joins
+      // after. That is the more precise reading, though it is worth recording
+      // that the difference is not exploitable on its own: a request only
+      // queues when the lease already has two executing actions, so such a
+      // lease is busy either way. What this pins is the property that matters —
+      // a lease with work outstanding is not evicted out from under it.
+      const gates: Array<() => void> = [];
+      const broker = makeBroker({
+        executeApi: () => new Promise((resolve) => { gates.push(() => resolve({ status: 201, ok: true, body: null })); }),
+      });
+      const page = makePage({
+        grants: [makeGrant({ id: 'grant_write0001', expiresAt: clock.now + 3_600_000, action: { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '/repos/.*' } })],
+      });
+      disk.page = page;
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const write = async () => {
+        const request = makeRequest(lease, { grantId: 'grant_write0001', invocation: { kind: 'api', method: 'POST', path: '/repos/x' } });
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+        return broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY);
+      };
+
+      // Two executing, one queued behind them.
+      const running = [write(), write()];
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = write();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Churn the store hard while that third write waits for a slot.
+      for (let i = 0; i < MAX_LIVE_LEASES * 2; i++) {
+        clock.now += 1;
+        broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      }
+      expect(broker.hasActiveLease(lease.leaseId, 'dash', DIGEST_V1)).toBe(true);
+
+      while (gates.length) gates.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      while (gates.length) gates.shift()!();
+      const settled = await Promise.all([...running, queued]);
+      expect(settled.every((r) => r.ok)).toBe(true);
+    });
+
     it('falls back to the oldest when every lease is busy', async () => {
       // With nothing idle to choose, age decides — the store cap still has to
       // hold, and refusing to evict would be the worse failure.
