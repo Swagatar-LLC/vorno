@@ -6410,6 +6410,22 @@ export class SessionManager implements ISessionManager {
       )
     } finally {
       if (announces) this.withdrawOrdinarySend(sessionId)
+      else {
+        // The accepted-turn marker must not outlive this call. It is set at
+        // commit and cleared at the `isProcessing` handover, but persistence,
+        // the flush, the ack, the event dispatch and title generation all sit
+        // between those two points and any of them can throw. A marker left set
+        // with `isProcessing` false is the worst possible residue: every later
+        // user message queues behind a turn that will never start, and the
+        // session goes quiet with no error the user can see.
+        //
+        // Clearing here is safe on the success path too — by the time this send
+        // settles the turn has already started and cleared it, so this is a
+        // no-op — and it is the only place that covers every failure path at
+        // once.
+        const target = this.sessions.get(sessionId)
+        if (target) target.pageCallbackTurnPending = false
+      }
     }
   }
 

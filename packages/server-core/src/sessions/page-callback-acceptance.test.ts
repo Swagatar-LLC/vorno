@@ -352,6 +352,33 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
       .resolves.toMatchObject({ ok: true })
   })
 
+  it('clears the accepted-turn marker when the send throws BEFORE the handover', async () => {
+    const managed = seed() as unknown as Record<string, unknown>
+
+    // Inject the throw where it actually matters: between the commit and the
+    // `isProcessing` handover. The harness's own failure happens *after* the
+    // handover, which already clears the marker — so using it would prove
+    // nothing. `flushSession` sits squarely in the window.
+    const original = (sm as unknown as { flushSession: unknown }).flushSession
+    ;(sm as unknown as { flushSession: unknown }).flushSession = async () => {
+      throw new Error('disk gone')
+    }
+
+    try {
+      const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+      // Committed, but never flushed — so delivered and explicitly not durable.
+      expect(outcome).toMatchObject({ ok: true, durable: false })
+    } finally {
+      ;(sm as unknown as { flushSession: unknown }).flushSession = original
+    }
+    await new Promise((r) => setTimeout(r, 50))
+
+    // A marker left set with `isProcessing` false is the worst residue
+    // available: every later user message queues behind a turn that will never
+    // start, and the session goes quiet with no error the user can see.
+    expect(managed.pageCallbackTurnPending).toBeFalsy()
+  })
+
   /**
    * User priority is a rule about WHEN, not a blanket precedence.
    *
@@ -368,12 +395,15 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     }
 
     await sm.tryDeliverPageCallback(SESSION_ID, 'from the page', { workspaceId: WORKSPACE_ID })
+    // Let the callback's own send settle first — its `finally` clears the
+    // marker, and setting it before that would have the clear land mid-test.
+    await new Promise((r) => setTimeout(r, 50))
 
     // The push→handover gap: committed, but the turn has not started.
     managed.pageCallbackTurnPending = true
     managed.isProcessing = false
 
-    await sm.sendMessage(SESSION_ID, 'from the user')
+    await sm.sendMessage(SESSION_ID, 'from the user').catch(() => {})
 
     // Both messages exist — the user is never dropped — but the user's is
     // queued behind the accepted turn rather than racing it.

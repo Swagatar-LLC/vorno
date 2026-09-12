@@ -425,6 +425,25 @@ it reads as proof.
   line that named a page without saying which approval authorized it — the half
   an operator needs in order to revoke it.
 
+## Round 11 — the marker could outlive its turn
+
+`2026-09-12` — one P1. `pageCallbackTurnPending` is set at commit and cleared at
+the `isProcessing` handover, but persistence, the flush, the ack, the event
+dispatch and title generation all sit between those two points and any of them
+can throw. A marker left set with `isProcessing` false is the worst residue
+available: every later user message queues behind a turn that will never start,
+and the session goes quiet with no error the user can see.
+
+Cleared now in the send wrapper's `finally`, which is the one place that covers
+every failure path at once, and a no-op on the success path because the handover
+has already cleared it.
+
+Worth recording how the test got there, because the first version was worthless:
+it relied on the harness's own post-commit failure, which happens *after* the
+handover — so the marker was cleared by the handover and the test passed with
+the fix removed. It now injects a throw in `flushSession`, squarely inside the
+window, and reddens when the clearing is taken out.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been
