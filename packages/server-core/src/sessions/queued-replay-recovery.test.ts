@@ -142,16 +142,33 @@ describe('a queued send crossing a process boundary', () => {
    * follows so nothing is left running when the test ends.
    */
   function fakeTurnBoundary(sm: SessionManager) {
-    let reached!: () => void
-    const at = new Promise<void>((r) => { reached = r })
+    let reached!: (sessionId: string) => void
+    const at = new Promise<string>((r) => { reached = r })
     ;(sm as unknown as {
-      getOrCreateAgent(m: unknown): Promise<unknown>
-    }).getOrCreateAgent = async () => {
-      reached()
+      getOrCreateAgent(m: { id: string }): Promise<unknown>
+    }).getOrCreateAgent = async (managed) => {
+      reached(managed.id)
       throw new Error('fake turn boundary')
     }
     return {
       at,
+      /**
+       * Finish the turn this boundary cut short.
+       *
+       * Required, and the reason is a real one rather than test plumbing: the
+       * send starts the turn and only THEN reaches `getOrCreateAgent`, which
+       * sits outside the chat loop's try — so a throw there unwinds past every
+       * handler and leaves `isProcessing` true with nothing scheduled to clear
+       * it. Production has the same hole (reported separately); here the fixture
+       * closes the lifecycle it interrupted, so quiescence is a state the test
+       * can actually reach instead of one it waits out.
+       */
+      endTurn: async () => {
+        const sessionId = await at
+        await (sm as unknown as {
+          onProcessingStopped(id: string, reason: string): Promise<void>
+        }).onProcessingStopped(sessionId, 'error')
+      },
       /**
        * Let the rejection unwind and the admission's `finally` run.
        *
@@ -280,9 +297,9 @@ describe('a queued send crossing a process boundary', () => {
 
     // Hydration scheduled the replay itself. Waited for by the EVENT it is about
     // — reaching the turn — rather than by a timer, which would only assert that
-    // 50ms had passed.
-    await turn.at
-    await turn.settled()
+    // 50ms had passed. Closing the turn is part of the wait: the boundary throws
+    // from a point the send's own handlers do not cover.
+    await turn.endTurn()
 
     // THE POINT: the skill's required source was enabled before the turn.
     expect(revived.enabledSourceSlugs as string[]).toContain(SOURCE_SLUG)
@@ -431,7 +448,7 @@ describe('a queued send crossing a process boundary', () => {
 
     expect((revived.messageQueue as Array<{ messageId?: string; options?: { skillSlugs?: string[] } }>)
       .map((q) => q.options?.skillSlugs)).toEqual([[SKILL_SLUG]])
-    await turn.at
+    await turn.endTurn()
     await quiesce(second)
   }, 30000)
 
@@ -673,7 +690,7 @@ describe('a queued send crossing a process boundary', () => {
 
     // Let hydration's scheduled replay reach its boundary and unwind, rather
     // than leaving it running.
-    await turn.at
+    await turn.endTurn()
     await quiesce(sm)
   }, 20000)
 

@@ -284,6 +284,22 @@ quiescence: idleness has to hold across consecutive turns of the loop before it
 counts, because the empty instant between one replay settling and the next being
 admitted is not quiescence.
 
+That change then failed in CI once — and the failure was earned, not noise. The
+fixture stops a replay by throwing from `getOrCreateAgent`, which the send
+reaches AFTER starting the turn and which sits OUTSIDE the chat loop's try, so
+the throw unwinds past every handler and leaves `isProcessing` true with nothing
+scheduled to clear it. Quiescence was therefore a state the test could never
+reach, and the old momentary check had been passing only because it did not look.
+The fixture now closes the lifecycle it interrupted; verified with 20 consecutive
+runs of the file and 10 of the whole WebUI gate, all clean.
+
+**Recorded for the orchestrator, not fixed here:** production has the same hole.
+A `getOrCreateAgent` that throws — a backend that cannot be built, bad
+credentials — leaves the session marked processing with no completion event, and
+that session then makes shutdown wait out its entire drain bound and report a
+stuck turn. It is a lifecycle defect adjacent to this SUV rather than one of its
+own, so it is named rather than quietly folded in.
+
 ### Review 19 — the last places the two paths disagreed
 
 1. **An undelivered steer came back as a different message, and not durably.** A
