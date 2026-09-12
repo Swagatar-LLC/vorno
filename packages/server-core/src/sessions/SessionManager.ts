@@ -154,7 +154,7 @@ import {
   mayCloseSession,
   describeOrigin,
 } from '@craft-agent/shared/statuses'
-import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, checkContextAction, sessionActionOutcome, resolveWorkspaceSessionTarget, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, checkContextAction, sessionActionOutcome, resolveWorkspaceSessionTarget, type WorkspaceSessionLookup, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
 import type { PromptAction as AutomationPromptAction, PendingSessionAction, AutomationCause, SessionActionSkip, ContextActionRejection } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, buildRuntimeEnvelope, filterAttachmentsForModelInput } from './runtime-config'
 import { validateArchiveTarget } from './archive-guards'
@@ -7856,6 +7856,28 @@ export class SessionManager implements ISessionManager {
    * Once the commit happens the action has succeeded and nothing downstream may
    * relabel it — which is why acceptance, not completion, is the boundary.
    */
+  /**
+   * Identity-only view of this workspace's sessions, for target resolution.
+   *
+   * Deliberately NOT `getSessions`, even though that satisfies the same
+   * interface. `getSessions` is the UI-facing projection: it maps every managed
+   * session through `managedToSession` and sorts the result, which is a lot of
+   * work to answer "does this workspace own this id", and it puts a render
+   * concern on an authorization path. Routing automation dispatch through it
+   * also measurably shifted timing — enough to expose a latent race in an
+   * unrelated history test, which is a fair warning about the coupling.
+   *
+   * Ordering is preserved because label resolution means "most recently active
+   * session carrying this label", and that is a real part of the contract.
+   */
+  private readonly sessionTargetLookup: WorkspaceSessionLookup = {
+    getSessions: (workspaceId: string) =>
+      Array.from(this.sessions.values())
+        .filter((m) => m.workspace.id === workspaceId)
+        .sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0))
+        .map((m) => ({ id: m.id, labels: m.labels })),
+  }
+
   async tryDeliverPageCallback(
     sessionId: string,
     message: string,
@@ -9335,7 +9357,7 @@ export class SessionManager implements ISessionManager {
     // in another. One resolver now, shared with the desktop webhook executor and
     // Page callbacks, and containment is a property of the lookup rather than a
     // check each caller has to remember.
-    const sessionId = resolveWorkspaceSessionTarget(this, workspaceId, action.target)
+    const sessionId = resolveWorkspaceSessionTarget(this.sessionTargetLookup, workspaceId, action.target)
     if (!sessionId) {
       await this.appendSessionActionHistory(workspaceRootPath, action, sessionActionOutcome.targetNotFound, false, {
         target: action.target,

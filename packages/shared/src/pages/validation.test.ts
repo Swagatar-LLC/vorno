@@ -152,12 +152,12 @@ describe('PageActionDescriptorSchema session arm', () => {
   });
 
   it('bounds the pinned body at the length a human can actually read in a sheet', () => {
-    const longest = 'x'.repeat(2000);
+    const longest = 'x'.repeat(1000);
     expect(PageActionDescriptorSchema.safeParse({ ...valid, message: longest }).success).toBe(true);
 
     const tooLong = PageActionDescriptorSchema.safeParse({ ...valid, message: `${longest}y` });
     expect(tooLong.success).toBe(false);
-    expect(tooLong.error!.issues.some(issue => issue.message.includes('cannot exceed 2000 characters'))).toBe(true);
+    expect(tooLong.error!.issues.some(issue => issue.message.includes('cannot exceed 1000 characters'))).toBe(true);
 
     // Far past the cap is the shape abuse actually takes — a body nobody reads
     // is a body nobody consented to.

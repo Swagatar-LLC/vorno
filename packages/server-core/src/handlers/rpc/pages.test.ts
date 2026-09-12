@@ -1719,7 +1719,7 @@ describe('Page session callbacks', () => {
       { kind: 'session', message: PINNED },
       { kind: 'session', sessionId: '', message: PINNED },
       { kind: 'session', sessionId: TARGET.id, message: '' },
-      { kind: 'session', sessionId: TARGET.id, message: 'x'.repeat(2001) },
+      { kind: 'session', sessionId: TARGET.id, message: 'x'.repeat(1001) },
     ]) {
       await expect(invoke(
         RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, { action: hostile }, lease.lease.leaseId,

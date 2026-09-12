@@ -161,13 +161,20 @@ export const PageActionHttpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH',
 /**
  * Upper bound on a pinned callback body.
  *
- * Two things bound it and the smaller one wins. A human has to READ this in a
- * host confirmation sheet before approving it, and a body nobody reads is a
- * body nobody consented to — so the cap is set where a dialog stays legible,
- * not where a session's context window gives out. It also has to survive on
- * disk in `page.json` and cross the consent dialog intact.
+ * This cap is a **security control, not ergonomics**, and it is the reason the
+ * consent dialog is allowed to render the body in full. The alternative —
+ * a large cap plus a truncated preview — lets a page put innocuous text in the
+ * visible prefix and instructions in the hidden suffix, so the user authorizes
+ * one thing and a live session receives another. That is the exact
+ * prompt-injection shape this feature exists to prevent, arriving through the
+ * mechanism meant to prevent it.
+ *
+ * So the rule is: whatever a human must approve, a human must be able to see
+ * whole. The cap is therefore set where a native dialog stays legible rather
+ * than where a session's context window gives out. Raising it means first
+ * proving the consent surface can still show every character.
  */
-const SESSION_CALLBACK_MESSAGE_MAX_CHARS = 2000;
+const SESSION_CALLBACK_MESSAGE_MAX_CHARS = 1000;
 
 /**
  * Upper bound on a pinned target session id. Session ids are generated

@@ -237,7 +237,7 @@ describe('parsePageBridgeMessage: grant-request', () => {
     expect(parsePageBridgeMessage(withAction({ kind: 'session', sessionId: 'sess_target', message: 42 }))).toBeNull()
     // Bounded at the frame so an oversized body never travels to the host.
     expect(parsePageBridgeMessage(withAction({
-      kind: 'session', sessionId: 'sess_target', message: 'x'.repeat(2001),
+      kind: 'session', sessionId: 'sess_target', message: 'x'.repeat(1001),
     }))).toBeNull()
     expect(parsePageBridgeMessage(withAction({
       kind: 'session', sessionId: 'x'.repeat(129), message: 'hi',

@@ -66,7 +66,7 @@ const MAX_TOOL_NAME_CHARS = 256
  * a mismatch fails safe in one direction only — a smaller value here just
  * refuses earlier, and a larger one is caught by the schema.
  */
-const MAX_SESSION_MESSAGE_CHARS = 2000
+const MAX_SESSION_MESSAGE_CHARS = 1000
 const MAX_OBJECT_DEPTH = 8
 const MAX_GRANT_REQUESTS = 8
 const MAX_GRANT_DESCRIPTION_CHARS = 500

@@ -220,6 +220,31 @@ The adjacency itself is pinned by a test that reads the source and fails if an
 because the behavioral tests pass either way (the window it opens is a race, and
 races do not fail deterministically).
 
+## The truncation that became the vulnerability
+
+`2026-09-12` — worth recording separately, because the mistake was mine and the
+shape of it is instructive.
+
+Round 3 raised a presentation concern: a 2,000-character pinned body could push
+the target identity off a native sheet. I fixed it twice — reordering so
+host-resolved identity leads, **and** truncating the body at 600 characters for
+display. The second fix was a P1 vulnerability. A page could put innocuous text
+in the visible prefix and instructions in the hidden suffix; the user approves
+what they can see, and the session receives the whole thing. That is exactly the
+prompt-injection shape this feature exists to prevent, arriving through the
+mechanism built to prevent it.
+
+The rule now stated in code, docs, and a test: **what a human approves, a human
+sees whole.** The consent dialog never truncates. The "long body buries the
+target" problem is solved by ordering and by a body cap small enough to display
+in full (1,000 characters) — never by showing less than was approved. Raising
+that cap means first proving the consent surface still shows every character.
+
+The general lesson: a *display* mitigation for a *layout* problem became a
+security hole because it broke the correspondence between what is consented to
+and what executes. When consent is the security boundary, do not make the
+consent surface lossy.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

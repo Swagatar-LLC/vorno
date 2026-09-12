@@ -78,30 +78,26 @@ export interface RenderIdentity {
 }
 
 /**
- * How much of a pinned callback body the consent sheet renders in full.
+ * Exact, escaped host-dialog representation of a consented action descriptor.
  *
- * The schema caps the body at 2,000 characters, which is the right ceiling for
- * a stored capability but far more than a native dialog shows before it
- * scrolls or clips. A body long enough to push the rest of the descriptor out
- * of view is a body that hides the descriptor, so the sheet shows a generous
- * leading slice and says plainly that it truncated. The full text is still
- * visible in the Page's Approved-actions list, which scrolls.
+ * **Nothing here truncates, and nothing may.** A consent dialog that showed a
+ * prefix while the grant persisted and delivered the whole body would let a
+ * page put innocuous text in the visible part and instructions in the hidden
+ * part — the user authorizes one thing and a live session receives another.
+ * That is precisely the prompt-injection shape this feature is built to
+ * prevent, so truncating here would defeat the feature from inside the
+ * mechanism meant to protect it.
  *
- * This is presentation only — the grant persists and executes the whole body.
+ * The "a long body buries the target" problem is real, and it is solved by
+ * ordering (host-resolved identity leads the sheet) and by a body cap small
+ * enough to display whole (`SESSION_CALLBACK_MESSAGE_MAX_CHARS` in
+ * `pages/validation.ts`) — never by showing less than was approved.
  */
-const DIALOG_MESSAGE_PREVIEW_CHARS = 600
-
-/** Exact, escaped host-dialog representation of a consented action descriptor. */
 export function formatPageGrantDescriptor(action: import('@craft-agent/core').PageActionDescriptor): string {
   const serialized = JSON.stringify(
     action.kind === 'script'
       ? { ...action, runtime: action.runtime ?? 'bun', args: action.args ?? [] }
-      : action.kind === 'session' && action.message.length > DIALOG_MESSAGE_PREVIEW_CHARS
-        ? {
-            ...action,
-            message: `${action.message.slice(0, DIALOG_MESSAGE_PREVIEW_CHARS)}… [truncated for display; ${action.message.length} characters total]`,
-          }
-        : action,
+      : action,
     null,
     2,
   )

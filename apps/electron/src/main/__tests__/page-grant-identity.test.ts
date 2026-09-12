@@ -93,6 +93,23 @@ describe('host grant descriptor rendering', () => {
     expect(rendered).toContain('Please re-run the quarterly export and post the totals.')
   })
 
+  test('renders a pinned body in full — never a truncated preview', () => {
+    // A dialog that showed a prefix while the grant delivered the whole body
+    // would let a page put innocuous text in the visible part and instructions
+    // in the hidden part: the user authorizes one thing, a live session
+    // receives another. That is the injection this feature exists to stop,
+    // arriving through the mechanism meant to stop it. The body is capped at
+    // 1000 characters precisely so the sheet can always show all of it.
+    const body = `LEADING-VISIBLE-${'x'.repeat(940)}-TRAILING-HIDDEN-INSTRUCTION`
+    const rendered = formatPageGrantDescriptor({
+      kind: 'session', sessionId: 'sess_target', message: body,
+    })
+    expect(rendered).toContain('LEADING-VISIBLE')
+    expect(rendered).toContain('TRAILING-HIDDEN-INSTRUCTION')
+    expect(rendered).not.toContain('truncated')
+    expect(rendered).not.toContain('…')
+  })
+
   test('escapes invisible characters inside a pinned callback body', () => {
     // A pinned body is agent-authored prose heading for a native dialog, so it
     // is the widest surface in this descriptor for hiding text a user is being
