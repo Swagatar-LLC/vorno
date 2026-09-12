@@ -2423,20 +2423,178 @@ describe('pages/action-bridge', () => {
       expect((await broker.executeAction(page, makeRequest(mounted), AUTHORITY)).ok).toBe(true);
     });
 
-    it('falls back to the oldest when every lease is busy', async () => {
-      // With nothing idle to choose, age decides — the store cap still has to
-      // hold, and refusing to evict would be the worse failure.
-      const broker = makeBroker();
-      const first = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-      for (let i = 1; i < MAX_LIVE_LEASES; i++) {
+    it('evicts a busy lease only when every lease is busy, and aborts its work', async () => {
+      // The previous version of this filled the store with IDLE leases and
+      // asserted the oldest went — which exercises the ordinary path and says
+      // nothing about the fallback. A small cap makes it cheap to put real
+      // outstanding work on every candidate.
+      const aborted: string[] = [];
+      const broker = makeBroker({
+        executeApi: (invocation, { signal }) => new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            aborted.push(invocation.path);
+            reject(new Error('aborted'));
+          }, { once: true });
+        }),
+      });
+      // Rebuild with a small cap so "every lease busy" is reachable.
+      const small = new PageActionBroker({
+        executors: {
+          executeApi: (invocation, { signal }) => new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => {
+              aborted.push(invocation.path);
+              reject(new Error('aborted'));
+            }, { once: true });
+          }),
+        },
+        auditLogPath: auditPath,
+        now: () => clock.now,
+        maxLiveLeases: 3,
+        loadCurrentAdmission: async () => disk.page
+          ? { page: disk.page, authority: { ...AUTHORITY, permissionMode: disk.permissionMode } }
+          : null,
+      });
+      void broker;
+
+      const page = makePage({ grants: [makeGrant({ expiresAt: clock.now + 24 * 3_600_000 })] });
+      disk.page = page;
+
+      // Three leases, each with a GET actually in flight and never settling.
+      const leases = [] as PageRenderLease[];
+      const running: Array<Promise<PageActionResult>> = [];
+      for (let i = 0; i < 3; i++) {
         clock.now += 1;
-        broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+        const lease = small.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+        leases.push(lease);
+        running.push(small.executeAction(page, makeRequest(lease, {
+          invocation: { kind: 'api', method: 'GET', path: `/repos/hold-${i}` },
+        }), AUTHORITY));
       }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(small.leaseCount).toBe(3);
+
+      // A fourth mount with nothing idle to take: the oldest busy lease loses,
+      // and — the part that matters — its in-flight action is actually aborted
+      // rather than left running against a lease that no longer exists.
+      clock.now += 1;
+      small.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(small.hasActiveLease(leases[0]!.leaseId, 'dash', DIGEST_V1)).toBe(false);
+      expect(aborted).toContain('/repos/hold-0');
+      expect((await running[0]!).ok).toBe(false);
+      expect(small.leaseCount).toBe(3);
+
+      // The newer busy leases survived.
+      expect(small.hasActiveLease(leases[1]!.leaseId, 'dash', DIGEST_V1)).toBe(true);
+      expect(small.hasActiveLease(leases[2]!.leaseId, 'dash', DIGEST_V1)).toBe(true);
+    });
+
+    it('treats a lease awaiting its first-use sheet as busy', async () => {
+      // A mint holds a reservation while the native confirmation is on screen.
+      // Evicting that lease would drop the render the user is being asked
+      // about, leaving a prompt whose answer can no longer be used.
+      let openSheet!: () => void;
+      const onScreen = new Promise<void>((resolve) => { openSheet = resolve; });
+      let release!: () => void;
+      const answered = new Promise<void>((resolve) => { release = resolve; });
+
+      const broker = new PageActionBroker({
+        executors: { executeScript: async () => ({ exitCode: 0, stdout: '', stderr: '' }) },
+        auditLogPath: auditPath,
+        now: () => clock.now,
+        maxLiveLeases: 2,
+        loadCurrentAdmission: async () => disk.page
+          ? { page: disk.page, authority: { ...AUTHORITY, permissionMode: disk.permissionMode } }
+          : null,
+      });
+      const page = makePage({
+        grants: [makeGrant({ id: 'grant_script001', expiresAt: clock.now + 24 * 3_600_000, action: { kind: 'script', script: 'run.sh' } })],
+      });
+      disk.page = page;
+
+      // The OLDEST lease, waiting on a sheet.
+      const confirming = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const minting = broker.mintActivationTicket(
+        page,
+        makeRequest(confirming, { grantId: 'grant_script001', invocation: { kind: 'script' } }),
+        AUTHORITY,
+        { confirmFirstUse: async () => { openSheet(); await answered; return true; } },
+      );
+      await onScreen;
+
+      // Fill and overflow the store around it.
       clock.now += 1;
       broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-      // All idle here, so the oldest goes and the cap holds.
-      expect(broker.hasActiveLease(first.leaseId, 'dash', DIGEST_V1)).toBe(false);
-      expect(broker.leaseCount).toBe(MAX_LIVE_LEASES);
+      clock.now += 1;
+      broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+
+      // It survived: the idle newer lease was taken instead.
+      expect(broker.hasActiveLease(confirming.leaseId, 'dash', DIGEST_V1)).toBe(true);
+      release();
+      expect((await minting).ok).toBe(true);
+    });
+
+    it('tells the host about every drop, so native chrome can be closed', async () => {
+      // Eviction, expiry, and release all invalidate a lease on the broker's
+      // schedule while host state — an open sheet, a requester binding —
+      // outlives it. Refusing the answer is not enough; the prompt is still on
+      // the window and host chrome drains serially.
+      const dropped: Array<[string, string]> = [];
+      const broker = new PageActionBroker({
+        executors: {},
+        auditLogPath: auditPath,
+        now: () => clock.now,
+        maxLiveLeases: 1,
+        onLeaseDropped: (leaseId, reason) => { dropped.push([leaseId, reason]); },
+      });
+
+      const released = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      broker.releaseLease(released.leaseId);
+      expect(dropped).toContainEqual([released.leaseId, 'released']);
+
+      const evicted = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      clock.now += 1;
+      broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      expect(dropped).toContainEqual([evicted.leaseId, 'evicted']);
+
+      const expired = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      clock.now += 13 * 60 * 60 * 1000;
+      expect(broker.leaseCount).toBe(0);
+      expect(dropped).toContainEqual([expired.leaseId, 'expired']);
+    });
+
+    it('scopes the audit budget per workspace, so one cannot silence another', async () => {
+      // A single shared throttle bucket means churn in workspace A suppresses
+      // workspace B's lifecycle rows — one tenant erasing another's audit
+      // trail, which is worse than the disk growth the throttle exists to stop.
+      const brokerFor = (workspaceId: string) => new PageActionBroker({
+        executors: {},
+        auditLogPath: auditPath,
+        now: () => clock.now,
+        workspaceId,
+      });
+      const noisy = brokerFor('ws_noisy');
+      const quiet = brokerFor('ws_quiet');
+
+      // A floods well past the write budget.
+      for (let i = 0; i < 200; i++) {
+        noisy.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      }
+      // B mounts one Page, as a user would.
+      const quietLease = quiet.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+
+      const audit = await readAudit();
+      const quietRows = audit.filter(
+        (e) => e.event === 'page_lease_created' && e.leaseId === quietLease.leaseId,
+      );
+      // B's row is present despite A having spent its own budget many times over.
+      expect(quietRows).toHaveLength(1);
+      // …and A is still bounded.
+      const noisyRows = audit.filter(
+        (e) => e.event === 'page_lease_created' && e.leaseId !== quietLease.leaseId,
+      );
+      expect(noisyRows.length).toBeLessThanOrEqual(20);
     });
 
     it('releases only a lease that exists, and audits nothing otherwise', async () => {

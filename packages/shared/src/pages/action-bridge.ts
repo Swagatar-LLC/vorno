@@ -451,12 +451,40 @@ export interface PageActionBrokerOptions {
   auditLogPath?: string;
   /** Render-lease lifetime in ms */
   leaseTtlMs?: number;
+  /**
+   * Cap on simultaneously live leases; past it the store evicts. Defaults to
+   * `MAX_LIVE_LEASES`. Lowering it is how a test puts every live lease into a
+   * genuinely busy state — filling 256 with real outstanding work is slow
+   * enough that a test written that way tends to end up asserting nothing.
+   */
+  maxLiveLeases?: number;
   /** Per-action timeout in ms */
   actionTimeoutMs?: number;
   /** Activation-ticket lifetime; clamped to ADR-0033's 10-second ceiling */
   activationTicketTtlMs?: number;
+  /**
+   * Canonical id of the workspace this broker serves, resolved by the host.
+   *
+   * Scopes the audit write budget. Without it every workspace shares one
+   * throttle bucket, so churn in workspace A silently suppresses workspace B's
+   * lifecycle rows — one tenant erasing another's audit trail. Must come from
+   * the host's resolved workspace and never from a client-supplied id, or the
+   * scope is chosen by the caller it is meant to contain.
+   */
+  workspaceId?: string;
   /** Workspace context for policy annotation in the audit trail */
   permissionsContext?: PermissionsContext;
+  /**
+   * Called for EVERY internal lease drop — eviction, expiry, and release.
+   *
+   * The broker can invalidate a lease on its own schedule, and when it does,
+   * host state outlives it: a native first-use sheet stays on the user's
+   * window, and the server's lease→requester binding stays in its map. Refusing
+   * to honour the answer is not enough, because the prompt is still there and
+   * host chrome is drained serially — an un-closable sheet stalls every other
+   * Page and workspace behind it.
+   */
+  onLeaseDropped?: (leaseId: string, reason: 'evicted' | 'expired' | 'released') => void;
   /** Test hook */
   now?: () => number;
 }
@@ -496,7 +524,14 @@ export class PageActionBroker {
   private readonly leaseTtlMs: number;
   private readonly actionTimeoutMs: number;
   private readonly activationTicketTtlMs: number;
+  private readonly maxLiveLeases: number;
   private readonly permissionsContext?: PermissionsContext;
+  /** Host-resolved workspace id; scopes the audit write budget. */
+  private readonly auditScope: string;
+  private readonly onLeaseDropped?: (
+    leaseId: string,
+    reason: 'evicted' | 'expired' | 'released',
+  ) => void;
   private readonly loadCurrentAdmission?: (
     pageSlug: string,
   ) => Promise<{ page: PageConfig; authority: PageActionAuthority } | null>;
@@ -571,6 +606,7 @@ export class PageActionBroker {
     this.executors = options.executors;
     this.auditLogPath = options.auditLogPath ?? join(CONFIG_DIR, 'logs', 'page-actions.jsonl');
     this.leaseTtlMs = options.leaseTtlMs ?? DEFAULT_PAGE_LEASE_TTL_MS;
+    this.maxLiveLeases = Math.max(1, options.maxLiveLeases ?? MAX_LIVE_LEASES);
     this.actionTimeoutMs = options.actionTimeoutMs ?? DEFAULT_PAGE_ACTION_TIMEOUT_MS;
     // Clamp, never trust: the ceiling is an ADR constant and a caller passing a
     // generous number must not be able to raise it.
@@ -579,7 +615,9 @@ export class PageActionBroker {
       PAGE_ACTIVATION_TICKET_TTL_CEILING_MS,
     );
     this.permissionsContext = options.permissionsContext;
+    this.auditScope = options.workspaceId ?? 'unscoped';
     this.loadCurrentAdmission = options.loadCurrentAdmission;
+    this.onLeaseDropped = options.onLeaseDropped;
     this.now = options.now ?? Date.now;
   }
 
@@ -594,7 +632,7 @@ export class PageActionBroker {
   createLease(input: CreateLeaseInput): PageRenderLease {
     this.pruneExpiredLeases();
 
-    if (this.leases.size >= MAX_LIVE_LEASES) {
+    if (this.leases.size >= this.maxLiveLeases) {
       // Evict the coldest lease: never-used before used, oldest first within
       // each group, and a busy lease only when every lease is busy.
       //
@@ -627,9 +665,12 @@ export class PageActionBroker {
       let coldest: PageRenderLease | undefined;
       let coldestBusy: PageRenderLease | undefined;
       for (const lease of this.leases.values()) {
-        // Busy means anything ADMITTED, not merely executing: a mutating
-        // request registers its controller before it waits for a slot.
-        if ((this.inFlight.get(lease.leaseId)?.size ?? 0) > 0) {
+        // Busy means anything OUTSTANDING, not merely executing: a mutating
+        // request registers its controller before it waits for a slot, and a
+        // mint holds a reservation while its first-use sheet is on the user's
+        // screen. Dropping that lease would evict a render the user is being
+        // asked about right now.
+        if (this.isLeaseBusy(lease.leaseId)) {
           if (!coldestBusy || colder(lease, coldestBusy)) coldestBusy = lease;
           continue;
         }
@@ -638,14 +679,14 @@ export class PageActionBroker {
       // Only when every live lease has work outstanding does one of those lose.
       const evicted = coldest ?? coldestBusy;
       if (evicted) {
-        this.dropLease(evicted.leaseId);
+        this.dropLease(evicted.leaseId, 'evicted');
         void this.appendAudit({
           event: 'page_lease_evicted',
           pageSlug: evicted.pageSlug,
           leaseId: evicted.leaseId,
           reason: 'lease-store-full',
           selected: coldest ? 'coldest-idle' : 'busy-fallback',
-        }, 'lease-lifecycle');
+        }, `lease-lifecycle:${this.auditScope}`);
       }
     }
 
@@ -661,16 +702,17 @@ export class PageActionBroker {
 
     this.leases.set(lease.leaseId, lease);
     this.seenRequestIds.set(lease.leaseId, new Set());
-    // Throttled workspace-wide: the per-caller budget stops one client starving
-    // another, and this stops a caller that rotates identity from growing the
-    // durable file. Different limits, different jobs.
+    // Throttled, and scoped to THIS workspace. `pages:createLease` needs no
+    // lease to reach, so an unthrottled row here is a disk-growth primitive;
+    // and a bucket shared across workspaces would let one tenant's churn
+    // suppress another's lifecycle rows, which is the worse failure.
     void this.appendAudit({
       event: 'page_lease_created',
       pageSlug: lease.pageSlug,
       leaseId: lease.leaseId,
       contentDigest: lease.contentDigest,
       expiresAt: lease.expiresAt,
-    }, 'lease-lifecycle');
+    }, `lease-lifecycle:${this.auditScope}`);
     return lease;
   }
 
@@ -686,7 +728,7 @@ export class PageActionBroker {
     const lease = this.leases.get(leaseId);
     if (!lease) return;
     this.dropLease(leaseId);
-    void this.appendAudit({ event: 'page_lease_released', pageSlug: lease.pageSlug, leaseId }, 'lease-lifecycle');
+    void this.appendAudit({ event: 'page_lease_released', pageSlug: lease.pageSlug, leaseId }, `lease-lifecycle:${this.auditScope}`);
   }
 
   /**
@@ -700,12 +742,25 @@ export class PageActionBroker {
    * lease-scoped authority and all end here — including on the expiry and
    * eviction paths, which call this rather than deleting the lease themselves.
    */
+  /**
+   * Whether a lease has anything outstanding: an admitted action (queued or
+   * executing) or a mint awaiting first-use confirmation.
+   *
+   * One definition, because eviction and the drop path must agree about what
+   * "in use" means — a lease that is busy for one and idle for the other is how
+   * a sheet ends up on screen for a render that no longer exists.
+   */
+  private isLeaseBusy(leaseId: string): boolean {
+    if ((this.inFlight.get(leaseId)?.size ?? 0) > 0) return true;
+    return (this.pendingMintsByLease.get(leaseId) ?? 0) > 0;
+  }
+
   /** Record that a lease did something, for eviction preference. */
   private noteLeaseUsed(leaseId: string): void {
     if (this.leases.has(leaseId)) this.leaseLastUsedAt.set(leaseId, this.now());
   }
 
-  private dropLease(leaseId: string): void {
+  private dropLease(leaseId: string, reason: 'evicted' | 'expired' | 'released' = 'released'): void {
     // Abort FIRST, while the lease still exists.
     //
     // Releasing a lease withdraws the authority its in-flight actions are
@@ -734,6 +789,15 @@ export class PageActionBroker {
     const queued = this.mutatingQueueByLease.get(leaseId);
     this.mutatingQueueByLease.delete(leaseId);
     for (const wake of queued ?? []) wake();
+
+    // Last, and outside the state teardown: the host closes native chrome and
+    // drops its own binding here, and a callback that threw part-way through
+    // must not leave the broker half-torn-down.
+    try {
+      this.onLeaseDropped?.(leaseId, reason);
+    } catch (error) {
+      log.warn(`[PageActionBroker] onLeaseDropped failed for ${leaseId}: ${error}`);
+    }
   }
 
   private dropTicketsWhere(predicate: (ticket: PageActivationTicket) => boolean): void {
@@ -889,7 +953,7 @@ export class PageActionBroker {
   private pruneExpiredLeases(): void {
     const now = this.now();
     for (const [leaseId, lease] of this.leases) {
-      if (now > lease.expiresAt) this.dropLease(leaseId);
+      if (now > lease.expiresAt) this.dropLease(leaseId, 'expired');
     }
   }
 
@@ -937,7 +1001,7 @@ export class PageActionBroker {
       return { ok: false, code: 'lease-page-mismatch', reason: 'Lease belongs to a different page' };
     }
     if (now > lease.expiresAt) {
-      this.dropLease(request.leaseId);
+      this.dropLease(request.leaseId, 'expired');
       return { ok: false, code: 'lease-expired', reason: 'Render lease expired — re-mount the page' };
     }
     if (lease.nonce !== request.nonce) {
@@ -1281,7 +1345,11 @@ export class PageActionBroker {
         grantIdHash: pageAuditIdHash(request.grantId),
         invocation: { kind: request.invocation.kind },
         code,
-      }, `rejected:${effectiveAuthority?.workspaceId ?? 'unknown'}`);
+      // Scoped by the BROKER's host-resolved workspace, not by the authority on
+      // the call: an unattributed or hostile caller must not be able to pick
+      // the bucket it shares with, which would let it suppress another
+      // workspace's rows by flooding under the same key.
+      }, `rejected:${this.auditScope}`);
       // `reason` goes to the caller only. It interpolates the request path
       // ("Path /patients/… does not match the granted pattern") and other
       // caller-supplied content, so persisting it would put exactly the payload

@@ -632,6 +632,18 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         executeScript: createPagesScriptExecutor({ workspaceRootPath, log }),
       },
       permissionsContext: { workspaceRootPath, activeSourceSlugs },
+      // Host-resolved, never client-supplied: it scopes the audit write budget,
+      // so one workspace cannot flood another's lifecycle rows out of the log.
+      workspaceId,
+      // The broker invalidates leases on its own schedule — eviction, expiry,
+      // release — and host state outlives them: a native first-use sheet stays
+      // on the window and the lease→requester binding stays in its map. Closing
+      // the sheet is the part that matters, because host chrome drains serially
+      // and an un-closable prompt stalls every other Page and workspace.
+      onLeaseDropped: (leaseId: string) => {
+        abortActiveConfirmation(leaseKeyFor(workspaceRootPath, leaseId))
+        deleteLeaseRequester(workspaceRootPath, leaseId)
+      },
       // The broker does no IO, but it must not act on a stale view either: an
       // action that waited for a slot was admitted against state read before
       // the wait. This re-reads grants, digest, and expiry from disk AND

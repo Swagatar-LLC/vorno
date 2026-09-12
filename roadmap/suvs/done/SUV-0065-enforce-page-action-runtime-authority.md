@@ -176,21 +176,32 @@ future owner will meet.
   unspent window gesture but no second dialog, and the SUV-0065 experiment
   proved a window gesture cannot be attributed to the Page frame. Confirming
   every invocation is friction ADR-0033 explicitly did not ask for.
-- **A mounted-but-unacted lease can be churned out of the shared store.** The
-  lease store is shared per workspace and capped at `MAX_LIVE_LEASES`, and
-  `pages:createLease` is transport-reachable, so sustained creation evicts
-  something. Eviction ranks never-used before used and oldest-use first within
-  the used group, so a window is exposed only in the gap between mounting and
-  its first action; everything past first use is protected, and the cost of
-  staying "recently used" is bounded by the per-page and per-workspace action
-  budgets.
+- **A lease can be churned out of the shared store.** The store is shared per
+  workspace and capped at `MAX_LIVE_LEASES`, and `pages:createLease` is
+  transport-reachable, so sustained creation evicts something. Eviction ranks
+  never-used before used, oldest-use first within the used group, and busy
+  (anything in flight or awaiting a first-use sheet) last.
+
+  Two classes of window are therefore exposed, not one: a **mounted but
+  unacted** render, which sits in the never-used group until its first action;
+  and a **long-idle used** render, whose last activity is old enough to make it
+  the coldest of the used group. A window in active use is safe, because
+  staying the most recently used costs the attacker an action per lease per
+  round against the per-page and per-workspace action budgets.
 
   **Severity: availability only.** No grant, ticket, or confirmation is
   bypassed — an evicted lease fails closed with `lease-not-found`, and recovery
   is a re-mount.
 
-  **This is benign only while re-mounting stays cheap and unbudgeted, and that
-  coupling is easy to break by accident.** A per-caller lease creation budget
+  **A real fix needs host-trusted lease ownership** — per-lease attribution to
+  a path the caller cannot assert, so eviction can protect one owner's leases
+  from another's churn. Every scope available today (`clientId`, connection,
+  handshake workspace) is client-supplied, which is the same reason grant
+  consent in this feature crosses `ipcMain` rather than the transport. That is
+  an ADR-level change, not an eviction-order tweak.
+
+  **Until then this is benign only while re-mounting stays cheap and
+  unbudgeted, and that coupling is easy to break by accident.** A per-caller lease creation budget
   was written and removed during this SUV precisely because it keys on
   `clientId`, a client-asserted handshake field: it bounded nothing a
   reconnecting caller could not reset, while its bucket map grew with that same
