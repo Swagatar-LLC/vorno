@@ -39,15 +39,23 @@ describe('normalizeQueuedSkillSlugs', () => {
     expect(normalizeQueuedSkillSlugs(['a1'])).toEqual(['a1'])
   })
 
-  it('holds the repo slug shape: lowercase alphanumeric and hyphens', () => {
-    // Stated compatibility rather than a discovered surprise: a skill DIRECTORY
-    // may be named anything the filesystem allows, and one with a capital or an
-    // underscore is mentionable today. Such a skill still runs — what it loses
-    // is the source pre-enable, on the live path and the replayed one alike.
-    expect(normalizeQueuedSkillSlugs(['My_Skill'])).toBeUndefined()
-    expect(normalizeQueuedSkillSlugs(['Commit'])).toBeUndefined()
-    expect(normalizeQueuedSkillSlugs(['under_score'])).toBeUndefined()
-    expect(normalizeQueuedSkillSlugs(['-leading'])).toBeUndefined()
+  it('accepts a path-safe directory name, capitals and underscores included', () => {
+    // A skill is a DIRECTORY the user made. `My_Skill` and `Commit` are names the
+    // mention parser already accepts and `loadSkillBySlug` already finds, so
+    // enforcing the cosmetic half of the repo's slug rule here would have
+    // silently stopped pre-enabling their sources — on the live path as well as
+    // the replayed one. What the check is for is the other half: it must stay a
+    // name and never become a route.
+    expect(normalizeQueuedSkillSlugs(['My_Skill'])).toEqual(['My_Skill'])
+    expect(normalizeQueuedSkillSlugs(['Commit'])).toEqual(['Commit'])
+    expect(normalizeQueuedSkillSlugs(['under_score'])).toEqual(['under_score'])
+    expect(normalizeQueuedSkillSlugs(['-leading'])).toEqual(['-leading'])
+  })
+
+  it('still rejects separators, dots and anything with structure', () => {
+    expect(normalizeQueuedSkillSlugs(['a.b'])).toBeUndefined()
+    expect(normalizeQueuedSkillSlugs(['a/b', 'a\\b', '..', '.', 'has space'])).toBeUndefined()
+    expect(normalizeQueuedSkillSlugs(['~/x', 'a:b', 'a\u0000b'])).toBeUndefined()
   })
 
   it('drops anything that is not a bare slug', () => {
@@ -162,6 +170,33 @@ describe('a queued send crossing a process boundary', () => {
     }
   }
 
+  /**
+   * Wait until this manager is STABLY idle, then assert it.
+   *
+   * An empty admission map is not quiescence — it is momentarily true between a
+   * replay settling and the next one being admitted, and a check that samples
+   * that instant passes while work is still in flight. So idleness has to hold
+   * across consecutive turns of the loop before it counts, and the wait is
+   * bounded: work that never settles fails an assertion rather than hanging the
+   * suite.
+   */
+  async function quiesce(sm: SessionManager) {
+    const inner = sm as unknown as {
+      sendAdmissions: Map<symbol, unknown>
+      sessions: Map<string, { isProcessing?: boolean; turnFinalization?: unknown }>
+    }
+    const idle = () => inner.sendAdmissions.size === 0
+      && [...inner.sessions.values()].every(m => !m.isProcessing && !m.turnFinalization)
+
+    let stable = 0
+    for (let i = 0; i < 400 && stable < 5; i++) {
+      stable = idle() ? stable + 1 : 0
+      await new Promise((r) => setImmediate(r))
+    }
+    expect(inner.sendAdmissions.size).toBe(0)
+    expect([...inner.sessions.values()].filter(m => m.isProcessing)).toHaveLength(0)
+  }
+
   /** Nothing this manager started is still outstanding. */
   function expectNoLeakedWork(sm: SessionManager) {
     expect((sm as unknown as { sendAdmissions: Map<symbol, unknown> }).sendAdmissions.size).toBe(0)
@@ -259,80 +294,6 @@ describe('a queued send crossing a process boundary', () => {
     expectNoLeakedWork(second)
   }, 30000)
 
-  it('promotes an undelivered steer to durable queued state, as the same message', async () => {
-    // A steer is a user message that was ACCEPTED, ACKed and persisted, and then
-    // pushed into the running turn instead of queued. When the turn ends without
-    // delivering it, `steer_undelivered` brings it back — and it used to come
-    // back as a bare string: a NEW message with a new id (a duplicate in the
-    // transcript), no attachments, no skill slugs, and nothing durable, since
-    // `messageQueue` dies with the process. So a quit right there lost a message
-    // the user had been told was accepted.
-    const sessionId = 'sess_steer_undelivered'
-    const first = new SessionManager()
-    const managed = seed(first, sessionId)
-    const turns = first as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void }
-    turns.setProcessing(managed, true)
-    // A backend that accepts the steer.
-    managed.agent = { redirect: () => true }
-    managed.llmConnection = 'claude-max'
-
-    await first.sendMessage(sessionId, 'steered mid-turn', undefined, undefined, {
-      skillSlugs: [SKILL_SLUG],
-    })
-    // Accepted into the turn, so NOT queued.
-    expect((managed.messageQueue as unknown[]).length).toBe(0)
-    const sent = (managed.messages as Array<{ id: string; content?: string }>)
-      .find((m) => m.content === 'steered mid-turn')!
-    expect(sent).toBeDefined()
-
-    // The turn ends without ever delivering it.
-    await (first as unknown as {
-      processEvent(m: unknown, e: unknown): Promise<void>
-    }).processEvent(managed, { type: 'steer_undelivered', message: 'steered mid-turn' })
-
-    // Durable, and the SAME message: same id, its slugs, one copy.
-    const queue = managed.messageQueue as Array<{ messageId?: string; options?: { skillSlugs?: string[] } }>
-    expect(queue).toHaveLength(1)
-    expect(queue[0]!.messageId).toBe(sent.id)
-    expect(queue[0]!.options?.skillSlugs).toEqual([SKILL_SLUG])
-    expect((managed.messages as Array<{ content?: string }>)
-      .filter((m) => m.content === 'steered mid-turn')).toHaveLength(1)
-
-    // And the quit right there keeps it: the flag and the slugs are on disk.
-    turns.setProcessing(managed, false, 'no-tail')
-    await first.flushAllSessions()
-    sessionPersistenceQueue.reopenAfterFlushAll()
-
-    const line = readFileSync(getSessionFilePath(root, sessionId), 'utf-8')
-      .trim().split('\n').slice(1).find((l) => l.includes('steered mid-turn'))!
-    const stored = JSON.parse(line) as Record<string, unknown>
-    expect(stored.id).toBe(sent.id)
-    expect(stored.isQueued).toBe(true)
-    expect(stored.queuedSkillSlugs).toEqual([SKILL_SLUG])
-
-    // A new process recovers exactly that message, once.
-    const second = new SessionManager()
-    const revived = createManagedSession(
-      { id: sessionId, name: 'Replay session', sessionStatus: 'todo', createdAt: Date.now() },
-      workspace(),
-    ) as unknown as Record<string, unknown>
-    revived.messageQueue = []
-    ;(second as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, revived)
-    const turn = fakeTurnBoundary(second)
-    await (second as unknown as {
-      ensureMessagesLoaded(m: unknown): Promise<void>
-    }).ensureMessagesLoaded(revived)
-
-    const recovered = revived.messageQueue as Array<{ messageId?: string; options?: { skillSlugs?: string[] } }>
-    expect(recovered).toHaveLength(1)
-    expect(recovered[0]!.messageId).toBe(sent.id)
-    expect(recovered[0]!.options?.skillSlugs).toEqual([SKILL_SLUG])
-
-    await turn.at
-    await turn.settled()
-    expectNoLeakedWork(second)
-  }, 30000)
-
   it('enables the same source on a LIVE send as on a replayed one, and drops a path-like slug', async () => {
     // Live and restart have to agree, and they did not: the slugs were
     // normalized where they were persisted, so the replay was validated while
@@ -405,29 +366,124 @@ describe('a queued send crossing a process boundary', () => {
     expect(steer.held).toBeNull()
   }, 30000)
 
-  it('promotes the LATEST of two same-text steers, not the first', async () => {
-    // The backend holds ONE steer slot and the newest write wins it, so when two
-    // steers in a turn carry the same text, the text handed back at turn end
-    // belongs to the SECOND. Matching the first re-queued the wrong message id,
-    // with the earlier send's attachments and options — a silent swap, since the
-    // text it reports is identical either way.
-    const sessionId = 'sess_steer_duplicate_text'
+  /**
+   * A backend with ONE steer slot, exactly like Claude's: `redirect` assigns to
+   * it, the newest write wins, and the slot is reported only when ASKED —
+   * `deliver()` is what "a tool call fired" looks like from the outside.
+   */
+  function steeringBackend() {
+    const slot = { held: null as string | null }
+    return {
+      slot,
+      /** The turn delivered whatever is in the slot. */
+      deliver: () => { slot.held = null },
+      agent: {
+        redirect: (text: string) => { slot.held = text; return true },
+        takeUndeliveredSteer: () => { const held = slot.held; slot.held = null; return held },
+        forceAbort: () => { slot.held = null },
+        interruptForHandoff: () => { slot.held = null },
+      },
+    }
+  }
+
+  it('marks a steered message durably queued BEFORE the send is acknowledged', async () => {
+    // A steer is a user message pushed into a RUNNING turn, so for the length of
+    // that turn the backend's memory is its only other home. A crash there lost
+    // it outright: acknowledged to the user, never answered, nowhere on disk. The
+    // marker is written optimistically at accept time and cleared later only on
+    // evidence of delivery — at-least-once, because the other direction loses
+    // messages.
+    const sessionId = 'sess_steer_crash'
+    const first = new SessionManager()
+    const managed = seed(first, sessionId)
+    const backend = steeringBackend()
+    managed.agent = backend.agent
+
+    let ackedAt: string | undefined
+    ;(first as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void })
+      .setProcessing(managed, true)
+    await first.sendMessage(
+      sessionId, 'steered and then the lights went out',
+      undefined, undefined, { skillSlugs: [SKILL_SLUG] }, undefined, undefined,
+      (id) => { ackedAt = readFileSync(getSessionFilePath(root, sessionId), 'utf-8').includes('"isQueued":true') ? id : undefined },
+    )
+
+    // The ack was only given once the marker was already on disk.
+    expect(ackedAt).toBeDefined()
+    const line = readFileSync(getSessionFilePath(root, sessionId), 'utf-8')
+      .trim().split('\n').slice(1).find((l) => l.includes('lights went out'))!
+    const stored = JSON.parse(line) as Record<string, unknown>
+    expect(stored.isQueued).toBe(true)
+    expect(stored.queuedSkillSlugs).toEqual([SKILL_SLUG])
+
+    // The process dies here — no turn end, no reconcile. A new one recovers it.
+    const second = new SessionManager()
+    const revived = createManagedSession(
+      { id: sessionId, name: 'Replay session', sessionStatus: 'todo', createdAt: Date.now() },
+      workspace(),
+    ) as unknown as Record<string, unknown>
+    revived.messageQueue = []
+    ;(second as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, revived)
+    const turn = fakeTurnBoundary(second)
+    await (second as unknown as {
+      ensureMessagesLoaded(m: unknown): Promise<void>
+    }).ensureMessagesLoaded(revived)
+
+    expect((revived.messageQueue as Array<{ messageId?: string; options?: { skillSlugs?: string[] } }>)
+      .map((q) => q.options?.skillSlugs)).toEqual([[SKILL_SLUG]])
+    await turn.at
+    await quiesce(second)
+  }, 30000)
+
+  it('queues both of two undelivered steers, exactly once each', async () => {
+    // The slot holds one. The first steer is overwritten the moment the second
+    // is accepted — it can never be delivered — so it goes back in the queue
+    // there and then, and the second is settled at turn end. Neither is dropped
+    // and neither is duplicated.
+    const sessionId = 'sess_two_steers'
     const sm = new SessionManager()
     const managed = seed(sm, sessionId)
+    const backend = steeringBackend()
+    managed.agent = backend.agent
     const turns = sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void }
-
-    const steer = { held: null as string | null }
-    managed.agent = {
-      redirect: (text: string) => { steer.held = text; return true },
-      takeUndeliveredSteer: () => { const held = steer.held; steer.held = null; return held },
-    }
-
-    // The turn end replays the queue as soon as it promotes into it, which would
-    // shift the entry out before it can be inspected. Held, because what is
-    // under test is WHICH envelope was promoted, not the replay.
     let replayed = 0
     ;(sm as unknown as { processNextQueuedMessage(id: string): void })
       .processNextQueuedMessage = () => { replayed++ }
+
+    turns.setProcessing(managed, true)
+    await sm.sendMessage(sessionId, 'first steer', undefined, undefined, { skillSlugs: [SKILL_SLUG] })
+    await sm.sendMessage(sessionId, 'second steer')
+
+    // The overwritten one is already back in the queue; the live one is not.
+    expect((managed.messageQueue as Array<{ message: string }>).map((q) => q.message)).toEqual(['first steer'])
+
+    await (sm as unknown as {
+      onProcessingStopped(id: string, reason: string): Promise<void>
+    }).onProcessingStopped(sessionId, 'complete')
+
+    const queued = managed.messageQueue as Array<{ message: string; options?: { skillSlugs?: string[] } }>
+    expect(queued.map((q) => q.message)).toEqual(['first steer', 'second steer'])
+    // Each kept its own options rather than the other's.
+    expect(queued[0]!.options?.skillSlugs).toEqual([SKILL_SLUG])
+    expect(queued[1]!.options?.skillSlugs).toBeUndefined()
+    // Both messages carry the durable marker, once each.
+    const marked = (managed.messages as Array<{ content?: string; isQueued?: boolean }>)
+      .filter((m) => m.isQueued).map((m) => m.content)
+    expect(marked).toEqual(['first steer', 'second steer'])
+    expect(replayed).toBe(1)
+  }, 30000)
+
+  it('keeps two same-text steers apart by id, attachments and options', async () => {
+    // Identical text is the case where a correlation mistake is invisible: both
+    // envelopes report the same words, and only the id, the attachments and the
+    // options say which message was actually re-queued.
+    const sessionId = 'sess_same_text_steers'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId)
+    const backend = steeringBackend()
+    managed.agent = backend.agent
+    const turns = sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void }
+    ;(sm as unknown as { processNextQueuedMessage(id: string): void }).processNextQueuedMessage = () => {}
 
     turns.setProcessing(managed, true)
     await sm.sendMessage(sessionId, 'do the thing', undefined, [
@@ -436,66 +492,104 @@ describe('a queued send crossing a process boundary', () => {
     await sm.sendMessage(sessionId, 'do the thing', undefined, [
       { id: 'att-second', name: 'second.txt' } as never,
     ], undefined)
+    await (sm as unknown as {
+      onProcessingStopped(id: string, reason: string): Promise<void>
+    }).onProcessingStopped(sessionId, 'complete')
 
     const sameText = (managed.messages as Array<{ id: string; content?: string }>)
       .filter((m) => m.content === 'do the thing')
-    expect(sameText).toHaveLength(2)
-
-    await (sm as unknown as {
-      onProcessingStopped(id: string, reason: string): Promise<void>
-    }).onProcessingStopped(sessionId, 'complete')
-
-    // The SECOND message is the one that comes back, with its own attachments
-    // and its own (empty) slugs.
-    const queue = managed.messageQueue as Array<{ messageId?: string; storedAttachments?: Array<{ id: string }>; options?: unknown }>
-    expect(queue).toHaveLength(1)
-    expect(queue[0]!.messageId).toBe(sameText[1]!.id)
-    expect(queue[0]!.storedAttachments?.[0]?.id).toBe('att-second')
-    expect(queue[0]!.options).toBeUndefined()
-
-    // And the first is left exactly as it was: answered, not re-queued.
-    const first = (managed.messages as Array<{ id: string; isQueued?: boolean }>)
-      .find((m) => m.id === sameText[0]!.id)
-    expect(first?.isQueued).toBeFalsy()
-    // The turn end did try to replay it — the promotion is not a dead end.
-    expect(replayed).toBe(1)
+    const queued = managed.messageQueue as Array<{ messageId?: string; storedAttachments?: Array<{ id: string }>; options?: unknown }>
+    expect(queued.map((q) => q.messageId)).toEqual([sameText[0]!.id, sameText[1]!.id])
+    expect(queued.map((q) => q.storedAttachments?.[0]?.id)).toEqual(['att-first', 'att-second'])
+    expect(queued[0]!.options).toMatchObject({ skillSlugs: [SKILL_SLUG] })
+    expect(queued[1]!.options).toBeUndefined()
   }, 30000)
 
-  it('does not re-queue a steer from an earlier turn', async () => {
-    // The envelopes are per-TURN. A steer that was delivered is not coming back,
-    // and leaving its envelope behind meant the next undelivered steer with the
-    // same text matched the OLD one — re-queueing a message that had already
-    // been answered.
-    const sessionId = 'sess_steer_stale'
+  it('clears only the delivered steer\'s marker, and only on evidence', async () => {
+    // A null answer from the slot is the ONE thing that may drop a provisional
+    // marker, and it speaks for the most recent steer alone. Clearing the whole
+    // list on it would silently discard an earlier steer nothing ever answered.
+    const sessionId = 'sess_steer_delivered'
     const sm = new SessionManager()
     const managed = seed(sm, sessionId)
+    const backend = steeringBackend()
+    managed.agent = backend.agent
     const turns = sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void }
-    managed.agent = { redirect: () => true }
+    ;(sm as unknown as { processNextQueuedMessage(id: string): void }).processNextQueuedMessage = () => {}
 
-    // Turn 1: the steer IS delivered, and the turn finalises.
     turns.setProcessing(managed, true)
-    await sm.sendMessage(sessionId, 'same words', undefined, undefined, undefined)
-    const firstId = (managed.messages as Array<{ id: string; content?: string }>)
-      .find((m) => m.content === 'same words')!.id
+    await sm.sendMessage(sessionId, 'this one gets delivered', undefined, undefined, { skillSlugs: [SKILL_SLUG] })
+    const steered = (managed.messages as Array<{ id: string; content?: string; isQueued?: boolean; queuedSkillSlugs?: string[] }>)
+      .find((m) => m.content === 'this one gets delivered')!
+    // Provisional until proven otherwise.
+    expect(steered.isQueued).toBe(true)
+
+    // A tool call fires and the steer reaches the model.
+    backend.deliver()
     await (sm as unknown as {
       onProcessingStopped(id: string, reason: string): Promise<void>
     }).onProcessingStopped(sessionId, 'complete')
 
-    // Turn 2: the same words again, this time undelivered.
-    turns.setProcessing(managed, true)
-    await sm.sendMessage(sessionId, 'same words', undefined, undefined, undefined)
-    const secondId = (managed.messages as Array<{ id: string; content?: string }>)
-      .filter((m) => m.content === 'same words').at(-1)!.id
-    expect(secondId).not.toBe(firstId)
+    // Marker gone, nothing queued, and the clear reached disk.
+    expect(steered.isQueued).toBeFalsy()
+    expect(steered.queuedSkillSlugs).toBeUndefined()
+    expect(managed.messageQueue as unknown[]).toHaveLength(0)
+    await sm.flushAllSessions()
+    sessionPersistenceQueue.reopenAfterFlushAll()
+    const line = readFileSync(getSessionFilePath(root, sessionId), 'utf-8')
+      .trim().split('\n').slice(1).find((l) => l.includes('this one gets delivered'))!
+    expect((JSON.parse(line) as Record<string, unknown>).isQueued).toBeFalsy()
+  }, 30000)
 
-    await (sm as unknown as {
-      processEvent(m: unknown, e: unknown): Promise<void>
-    }).processEvent(managed, { type: 'steer_undelivered', message: 'same words' })
+  it('clears only the newest marker even if several envelopes are outstanding', () => {
+    // An INVARIANT, pinned against a state the call graph cannot currently
+    // produce: every steer promotes its predecessor as it takes the slot, so
+    // reconcile normally sees at most one envelope. The state is built directly
+    // here because the rule it protects is not about today's call graph — a null
+    // answer speaks for the most recent steer ALONE, and clearing the whole list
+    // on it would silently discard an earlier steer nothing ever answered.
+    const sessionId = 'sess_multi_envelope'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId)
+    ;(sm as unknown as { processNextQueuedMessage(id: string): void }).processNextQueuedMessage = () => {}
+    // Delivered: the slot is empty when asked.
+    managed.agent = { takeUndeliveredSteer: () => null }
+    managed.messages = [
+      { id: 'older', role: 'user', content: 'older steer', timestamp: 1, isQueued: true },
+      { id: 'newest', role: 'user', content: 'newest steer', timestamp: 2, isQueued: true },
+    ]
+    managed.pendingSteers = [
+      { message: 'older steer', messageId: 'older' },
+      { message: 'newest steer', messageId: 'newest' },
+    ]
 
-    // The message that comes back is THIS turn's, not the one already answered.
-    const queue = managed.messageQueue as Array<{ messageId?: string }>
-    expect(queue.map((q) => q.messageId)).toEqual([secondId])
-    turns.setProcessing(managed, false, 'no-tail')
+    ;(sm as unknown as { reconcilePendingSteers(m: unknown): void }).reconcilePendingSteers(managed)
+
+    // The newest was delivered, so its marker goes. The older one was never
+    // answered by anything and is queued, marker intact.
+    const byId = Object.fromEntries((managed.messages as Array<{ id: string; isQueued?: boolean }>)
+      .map((m) => [m.id, m.isQueued]))
+    expect(byId.newest).toBeFalsy()
+    expect(byId.older).toBe(true)
+    expect((managed.messageQueue as Array<{ messageId?: string }>).map((q) => q.messageId)).toEqual(['older'])
+  })
+
+  it('re-queues a steer when the user stops the turn instead of answering it', async () => {
+    // Stopping is not delivering. `forceAbort` clears the slot, so the question
+    // has to be asked before it — one of the sites the enumeration covers.
+    const sessionId = 'sess_steer_stopped'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId)
+    const backend = steeringBackend()
+    managed.agent = backend.agent
+    ;(sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void })
+      .setProcessing(managed, true)
+    await sm.sendMessage(sessionId, 'steered then stopped')
+
+    await sm.cancelProcessing(sessionId)
+
+    expect((managed.messageQueue as Array<{ message: string }>).map((q) => q.message))
+      .toEqual(['steered then stopped'])
   }, 30000)
 
   it('opens a session whose queued message has a corrupted slug field', async () => {
@@ -542,8 +636,7 @@ describe('a queued send crossing a process boundary', () => {
     // Let hydration's scheduled replay reach its boundary and unwind, rather
     // than leaving it running.
     await turn.at
-    await turn.settled()
-    expectNoLeakedWork(sm)
+    await quiesce(sm)
   }, 20000)
 
   it('keeps the durable marker when the replay is refused by a shutdown', async () => {

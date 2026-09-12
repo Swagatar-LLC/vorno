@@ -1112,11 +1112,15 @@ interface SendAdmission {
  * Existence stays `loadSkillBySlug`'s question, which it already answers and
  * tolerates a miss on.
  *
- * The shape matches the repo's slug convention — lowercase alphanumeric with
- * hyphens, no leading hyphen. Deliberately not a call to `isValidSlug`, and
- * slightly looser than it: that predicate also forbids a TRAILING hyphen, which
- * this does not, because the job here is to reject anything that is not a plain
- * name rather than to police cosmetics on a directory the user owns. **Compatibility, stated rather than discovered later:** a
+ * The shape is a PATH-SAFE DIRECTORY NAME — letters, digits, underscore,
+ * hyphen — not the repo's lowercase slug convention, and the difference is
+ * deliberate. A skill is a directory the user created, and `My_Skill` or
+ * `Commit` are names the mention parser already accepts and `loadSkillBySlug`
+ * already finds. Enforcing the cosmetic half of the slug rule here would have
+ * silently stopped pre-enabling their sources, on the live path as well as the
+ * replayed one. What the check is FOR is the other half: no separator, no dot,
+ * no space, nothing empty — so the value stays a name and cannot become a
+ * route. **Compatibility, stated rather than discovered later:** a
  * skill DIRECTORY may be named anything the filesystem allows, and one named
  * with an underscore or a capital (`My_Skill`) is mentionable today. Such a
  * skill still runs; what it loses is the source PRE-ENABLE, on the live path as
@@ -1124,7 +1128,7 @@ interface SendAdmission {
  * — the two-turn penalty, not a failure. Widening to `[a-z0-9_-]` is a
  * one-character change if that trade turns out to be the wrong way round.
  */
-const SKILL_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/
+const SAFE_SKILL_DIRECTORY_NAME = /^[A-Za-z0-9_-]+$/
 
 export function normalizeQueuedSkillSlugs(slugs: unknown): string[] | undefined {
   // `Array.isArray` FIRST, and the parameter is `unknown` for the same reason:
@@ -1138,7 +1142,7 @@ export function normalizeQueuedSkillSlugs(slugs: unknown): string[] | undefined 
   for (const raw of slugs) {
     if (typeof raw !== 'string') continue
     const slug = raw.trim()
-    if (!SKILL_SLUG_PATTERN.test(slug)) continue
+    if (!SAFE_SKILL_DIRECTORY_NAME.test(slug)) continue
     if (!normalized.includes(slug)) normalized.push(slug)
   }
   return normalized.length ? normalized : undefined
@@ -1588,32 +1592,40 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Turn an accepted-but-undelivered steer back into a queued message.
+   * Record a steer the backend ACCEPTED, and mark its message provisionally
+   * queued — before the caller is told the send landed.
    *
-   * The message was accepted, ACKed and persisted, then pushed into a running
-   * turn instead of queued. If that turn ends without delivering it, it has to
-   * become a queued message after all — as the SAME message, keeping its id,
-   * attachments and canonical options, so the transcript does not grow a
-   * duplicate and the replay pre-enables the same sources.
-   *
-   * `messageQueue` alone cannot carry that: it is runtime state. So the marker
-   * and the slugs go onto the persisted message, which is what the cold-load
-   * scan replays from, and the persist is picked up by shutdown's candidate scan
-   * — the session is processing, and now holds a queued entry as well.
-   *
-   * @returns true when a message was promoted
+   * A steer is a user message pushed into a RUNNING turn rather than queued, so
+   * for the length of that turn its only home is the backend's memory. If the
+   * process dies there, the message is gone: ACKed to the user, never answered,
+   * nowhere on disk. So it is marked queued IMMEDIATELY and optimistically —
+   * provisional, because the steer will probably be delivered and the marker
+   * will then be cleared. The trade is deliberate and one-directional: a crash
+   * replays a message that may already have been seen (at-least-once), where the
+   * alternative loses one that was not.
    */
-  private promoteUndeliveredSteer(managed: ManagedSession, steerText: string): boolean {
-    // findLAST, because the backend holds ONE steer slot and the newest write
-    // wins it (`redirect` assigns, it does not append). Two steers with the same
-    // text in one turn therefore mean the text we were handed belongs to the
-    // SECOND envelope — matching the first would re-queue the wrong message id,
-    // with the earlier send's attachments and options.
-    const pendingIndex = managed.pendingSteers?.findLastIndex(p => p.message === steerText) ?? -1
-    const envelope = pendingIndex >= 0 ? managed.pendingSteers!.splice(pendingIndex, 1)[0] : undefined
-    const original = envelope ? managed.messages.find(m => m.id === envelope.messageId) : undefined
-    if (!envelope || !original) return false
+  private recordAcceptedSteer(
+    managed: ManagedSession,
+    userMessage: Message,
+    envelope: { message: string; attachments?: FileAttachment[]; storedAttachments?: StoredAttachment[]; options?: SendMessageOptions },
+  ): void {
+    userMessage.isQueued = true
+    userMessage.queuedSkillSlugs = envelope.options?.skillSlugs
+    ;(managed.pendingSteers ??= []).push({ ...envelope, messageId: userMessage.id })
+  }
 
+  /**
+   * Put an undelivered steer's message back in the runtime queue.
+   *
+   * The durable marker is already on it — that happened when the steer was
+   * accepted — so this adds the runtime half and nothing else. Same message, same
+   * id, same attachments and options, so the transcript does not grow a
+   * duplicate and the replay pre-enables the same sources.
+   */
+  private promoteSteerEnvelope(managed: ManagedSession, envelope: NonNullable<ManagedSession['pendingSteers']>[number]): void {
+    const original = managed.messages.find(m => m.id === envelope.messageId)
+    if (!original) return
+    if (managed.messageQueue.some(q => q.messageId === envelope.messageId)) return
     original.isQueued = true
     original.queuedSkillSlugs = envelope.options?.skillSlugs
     managed.messageQueue.push({
@@ -1624,7 +1636,71 @@ export class SessionManager implements ISessionManager {
       messageId: envelope.messageId,
     })
     this.persistSession(managed)
-    return true
+  }
+
+  /** Drop the provisional marker from a steer we have evidence WAS delivered. */
+  private clearProvisionalSteer(managed: ManagedSession, envelope: NonNullable<ManagedSession['pendingSteers']>[number]): void {
+    const original = managed.messages.find(m => m.id === envelope.messageId)
+    if (!original?.isQueued) return
+    original.isQueued = false
+    original.queuedSkillSlugs = undefined
+    this.persistSession(managed)
+  }
+
+  /**
+   * Settle every outstanding steer against the backend's ONE pending slot.
+   *
+   * Called wherever that slot is about to be lost — turn end, user stop,
+   * shutdown, a handoff interrupt — because the backend will never volunteer the
+   * answer: `chat()` yields its notice from a `finally`, and the send loop
+   * returns on `complete`, which abandons the generator and discards it. The
+   * question has to be ASKED while it can still be answered.
+   *
+   * The slot holds at most one steer and the newest write wins it, so:
+   *
+   * - a non-null answer means that steer was never delivered — promote it, and
+   *   promote anything else still outstanding, because a steer the slot no
+   *   longer holds was overwritten and can never be delivered either;
+   * - a null answer is AFFIRMATIVE EVIDENCE that the most recent steer was
+   *   delivered, and is the only thing that may clear a provisional marker. It
+   *   clears THAT ONE, not every envelope: a blanket clear would silently drop
+   *   an earlier steer that nothing ever answered.
+   *
+   * Asking also takes: the backend forgets, so two callers cannot both act on
+   * one answer.
+   */
+  private reconcilePendingSteers(managed: ManagedSession): void {
+    const undelivered = managed.agent?.takeUndeliveredSteer?.() ?? null
+    const envelopes = managed.pendingSteers
+    if (!envelopes?.length) return
+    managed.pendingSteers = undefined
+
+    if (undelivered !== null) {
+      // Nothing here was delivered: one is still sitting in the slot, and
+      // anything older than it was overwritten to put it there.
+      for (const envelope of envelopes) this.promoteSteerEnvelope(managed, envelope)
+      sessionLog.info(`Re-queued ${envelopes.length} undelivered steer(s) for session ${managed.id}`)
+      return
+    }
+
+    const delivered = envelopes[envelopes.length - 1]!
+    for (const envelope of envelopes.slice(0, -1)) this.promoteSteerEnvelope(managed, envelope)
+    this.clearProvisionalSteer(managed, delivered)
+  }
+
+  /**
+   * A new steer is about to take the slot, or a steer attempt just failed and
+   * the backend may have cleared it: either way nothing already outstanding can
+   * still be delivered.
+   *
+   * Promoted WITHOUT asking the backend, deliberately — the slot's current
+   * contents belong to the steer that is arriving, not to these.
+   */
+  private promoteOverwrittenSteers(managed: ManagedSession): void {
+    const envelopes = managed.pendingSteers
+    if (!envelopes?.length) return
+    managed.pendingSteers = undefined
+    for (const envelope of envelopes) this.promoteSteerEnvelope(managed, envelope)
   }
 
   /**
@@ -2949,6 +3025,11 @@ export class SessionManager implements ISessionManager {
     )
     for (const managed of active) {
       try {
+        // Same reason as every other abort site: the abort clears the steer
+        // slot, so the question is asked while it can still be answered. On this
+        // path the promoted message also reaches disk, because the session is a
+        // final-persist candidate.
+        this.reconcilePendingSteers(managed)
         managed.agent?.forceAbort(AbortReason.UserStop)
       } catch (error) {
         sessionLog.error(`Shutdown: failed to abort turn for ${managed.id}:`, error)
@@ -7190,6 +7271,11 @@ export class SessionManager implements ISessionManager {
 
     // If processing is in progress, force-abort via Query.close() and wait for cleanup
     if (managed.isProcessing && managed.agent) {
+      // The ONE abort site that does not reconcile the steer slot first, and the
+      // omission is deliberate: this session and its file are being deleted, so
+      // re-queueing a message into it would be queueing work for a transcript
+      // that is about to stop existing. Named here so the enumeration is
+      // complete rather than silently short by one.
       managed.agent.forceAbort(AbortReason.UserStop)
       // Brief wait for the query to finish tearing down before we delete session files.
       // Prevents file corruption from overlapping writes during rapid delete operations.
@@ -7468,19 +7554,18 @@ export class SessionManager implements ISessionManager {
 
       const delivery = resolveMidStreamDeliveryOutcome(behavior, steered)
 
+      // The backend holds ONE steer slot. Whatever was in it is gone now —
+      // overwritten by this steer if it was accepted, and possibly cleared by
+      // the backend's own abort fallback if it was not — so anything still
+      // outstanding can never be delivered and goes back in the queue.
+      this.promoteOverwrittenSteers(managed)
+
       if (steered) {
-        // Remembered because `steer_undelivered` carries only the text. Without
-        // the envelope that event re-queued a bare string: a NEW message with a
-        // new id (so the transcript grew a duplicate), no attachments, and no
-        // skill slugs — and nothing durable, since `messageQueue` dies with the
-        // process. Recorded here, consumed there.
-        ;(managed.pendingSteers ??= []).push({
-          message,
-          messageId: userMessage.id,
-          attachments,
-          storedAttachments,
-          options,
-        })
+        // Marked provisionally queued HERE, before the persist and the ack a few
+        // lines down. For the length of this turn the steer's only other home is
+        // the backend's memory, so a crash in between would lose a message the
+        // user was told had landed.
+        this.recordAcceptedSteer(managed, userMessage, { message, attachments, storedAttachments, options })
       }
 
       // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
@@ -8084,6 +8169,10 @@ export class SessionManager implements ISessionManager {
 
     // Force-abort via Query.close() - sends soft interrupt to the backend
     if (managed.agent) {
+      // BEFORE the abort: `forceAbort` clears the backend's steer slot, and a
+      // steer accepted into this turn has not been delivered — stopping is not
+      // the same as answering it. Asked here or it is never asked.
+      this.reconcilePendingSteers(managed)
       managed.agent.forceAbort(AbortReason.UserStop)
     }
 
@@ -8290,6 +8379,9 @@ export class SessionManager implements ISessionManager {
     sessionLog.info(`Interrupting for plan submission in session ${managed.id}`)
     const finalization = this.claimTurnFinalization(managed.id)
     try {
+      // A handoff interrupt clears the steer slot too, and a plan pause is not a
+      // delivery: whatever was steered into this turn goes back in the queue.
+      this.reconcilePendingSteers(managed)
       managed.agent.interruptForHandoff(AbortReason.PlanSubmitted)
       this.setProcessing(managed, false, finalization)
 
@@ -8334,6 +8426,8 @@ export class SessionManager implements ISessionManager {
       if (managed.isProcessing && managed.agent) {
         sessionLog.info(`Interrupting for auth request in session ${managed.id}`)
         finalization = this.claimTurnFinalization(managed.id)
+        // Same as the plan handoff: pausing for auth does not deliver a steer.
+        this.reconcilePendingSteers(managed)
         managed.agent.interruptForHandoff(AbortReason.AuthRequest)
         this.setProcessing(managed, false, finalization)
 
@@ -8395,23 +8489,13 @@ export class SessionManager implements ISessionManager {
         this.setProcessing(managed, false, finalization)
         managed.stopRequested = false  // Reset for next turn
 
-        // ASK the backend whether it is still holding a steer it never
-        // delivered, because it will never get to TELL us: `chat()` yields that
-        // notice from its `finally`, and this handler is reached from a `return`
-        // that abandons the generator, which discards anything it yields on the
-        // way out. An accepted, ACKed user message was being dropped here every
-        // time a Claude turn ended without a tool call firing.
-        //
-        // Synchronous, and deliberately in this handler's synchronous prefix:
-        // the generator's `finally` runs when the iterator is closed, which is
-        // after this call and would otherwise clear the backend's copy first.
-        const undelivered = managed.agent?.takeUndeliveredSteer?.() ?? null
-        if (undelivered && this.promoteUndeliveredSteer(managed, undelivered)) {
-          sessionLog.info(`Re-queued an undelivered steer for session ${sessionId}`)
-        }
-        // A steer that was delivered is not coming back; a stale envelope would
-        // re-queue a message that already ran.
-        managed.pendingSteers = undefined
+        // Settle the steer slot while the backend can still answer. Deliberately
+        // in this handler's SYNCHRONOUS prefix: the generator's `finally` runs
+        // when the iterator is closed, which is after this point, and it would
+        // clear the backend's copy first. A null answer here is the affirmative
+        // evidence that the last steer was delivered — the only thing allowed to
+        // drop a provisional marker.
+        this.reconcilePendingSteers(managed)
 
         // 1b. Orphan backstop: with the default per-turn subprocess model, any
         // background sub-agent still marked `running` dies when this turn's
@@ -10373,11 +10457,13 @@ export class SessionManager implements ISessionManager {
         // SAME message it already is, not as a new one.
         sessionLog.info(`Steer message undelivered, re-queuing for session ${sessionId}`)
         // Reachable only when something drains the generator to its natural end.
-        // The usual path returns on `complete` and never sees this event — which
-        // is why the turn-end PULL in `onProcessingStopped` is the guarantee and
-        // this is the courtesy. Both go through the same promotion, and the
-        // first one to run takes the envelope, so they cannot double-queue.
-        if (!this.promoteUndeliveredSteer(managed, event.message)) {
+        // The usual path returns on `complete` and never sees this event, which
+        // is why correctness rests on the turn-end reconcile and not on this.
+        // Same routine either way, and it takes the backend's answer as it goes,
+        // so whichever runs first leaves the other nothing to double-queue.
+        const outstanding = managed.pendingSteers?.length ?? 0
+        this.reconcilePendingSteers(managed)
+        if (outstanding === 0) {
           // No envelope, or it was already promoted at turn end. Re-queue the
           // text alone rather than dropping it — the old shape, kept for a steer
           // this manager did not record.

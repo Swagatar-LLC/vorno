@@ -235,6 +235,50 @@ orphaning instead of superseding at turn start. The auth-retry site is the one
 stop site with no test of its own — its tail is two synchronous statements and
 the supersede backstop bounds a leak there — recorded rather than implied away.
 
+### Review 21 — steers are durable from the moment they are accepted
+
+The previous rounds treated an undelivered steer as something to recover at turn
+end. That still loses it: between the ACK and the turn end the message exists
+only in the backend's memory, so a crash there drops a message the user was told
+had landed. The model is now PROVISIONAL and durable from the accept:
+
+1. **Marked at accept, before the ACK.** `isQueued` + canonical
+   `queuedSkillSlugs` are written and flushed before `onAck`, so a crash replays
+   it. Optimistic on purpose — most steers are delivered and the marker is then
+   cleared — and one-directional: a replayed duplicate is recoverable, a lost
+   message is not.
+2. **Overwritten steers are promoted immediately.** The slot holds one and the
+   newest write wins, so the previous envelope can never be delivered; it goes
+   back in the queue at that instant, including when a steer attempt FAILS,
+   because the backend's own abort fallback may have cleared the slot.
+3. **A null answer is the only thing that clears a marker**, and it speaks for
+   the most recent steer alone. Clearing the whole list on it would silently
+   discard an earlier steer nothing ever answered.
+4. **Every site that loses the slot reconciles first**, enumerated: turn end,
+   user stop (`cancelProcessing`), the shutdown abort loop, the plan handoff and
+   the auth handoff. `deleteSession` is the one deliberate omission and says so
+   in-line — that session's file is going away, so queueing work into it is
+   queueing for a transcript that is about to stop existing.
+5. **The event path shares the routine** and correctness no longer depends on it;
+   asking takes, so whichever of the two runs first leaves the other nothing.
+6. **Skill names are path-safe rather than lowercase.** `[A-Za-z0-9_-]+` keeps
+   `My_Skill` and `Commit` pre-enabling their sources — the compatibility cost
+   flagged last round, now removed rather than documented — while still refusing
+   separators, dots, spaces and empties. Live and replay share the one
+   normalizer.
+
+Five mutations killed: no marker at accept; overwritten steer not promoted; a
+null answer clearing every envelope; no reconcile before the user-stop abort;
+and the older first-match correlation. The clear-all mutation survived its first
+pass because the two-envelope state cannot be reached through the call graph —
+it is now pinned by a direct test that says so in its own comment rather than
+pretending the state is ordinary.
+
+Fixture waits moved from "the admission map is momentarily empty" to STABLE
+quiescence: idleness has to hold across consecutive turns of the loop before it
+counts, because the empty instant between one replay settling and the next being
+admitted is not quiescence.
+
 ### Review 19 — the last places the two paths disagreed
 
 1. **An undelivered steer came back as a different message, and not durably.** A
@@ -920,6 +964,14 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 21 (architecture P1s): a steer lived only in the
+  backend's memory between its ACK and the turn end, so a crash there lost an
+  acknowledged message. Steers are now marked durably provisional at accept,
+  overwritten ones are promoted immediately, and a null slot answer — the only
+  evidence of delivery — clears that one marker and no other. Reconcile runs at
+  every site that loses the slot (turn end, user stop, shutdown, both handoffs;
+  delete deliberately excluded). Skill names relaxed to path-safe
+  `[A-Za-z0-9_-]+`, so `My_Skill` keeps its pre-enable.
 - `2026-09-12` — review 20 (security P3): the steer promotion matched the FIRST
   envelope with a given text while the backend's single slot holds the LATEST,
   so two same-text steers in one turn re-queued the wrong message id and the
