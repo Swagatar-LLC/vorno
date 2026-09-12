@@ -109,6 +109,7 @@ import { listLabels, loadLabelConfig, isValidLabelId } from '@craft-agent/shared
 // The pending-plan-bearing reader is deliberately off the sessions barrel: it
 // carries `draftInputSnapshot` (unsent user text), and the host's startup
 // hydration is the only caller that may hold it. See sessions/internal.ts.
+import { readSessionHeader } from '@craft-agent/shared/sessions'
 import { listSessionsWithPendingPlan as listStoredSessions } from '@craft-agent/shared/sessions/internal'
 import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
@@ -6427,12 +6428,27 @@ export class SessionManager implements ISessionManager {
     results.forEach((result, i) => {
       if (result.status !== 'rejected') return
       const { id, managed } = updates[i]!
-      // Put the flag BACK. The clear at the top was optimistic, and this write
-      // is why it was optimistic: disk still says unread, so leaving memory
-      // saying read would broadcast a badge state no restart agrees with — the
-      // count would silently reappear next launch with nothing to explain it.
-      // Memory tracks disk, including when disk refuses.
-      managed.hasUnread = true
+      // Re-read the flag from DISK rather than assuming it back to `true`.
+      //
+      // The clear at the top was optimistic and this write is why; memory has
+      // to track disk, including when disk refuses. But a blind
+      // `hasUnread = true` after an await is a clobber: the user may have
+      // opened this session while the batch was running, and that read may have
+      // saved successfully — reverting would resurrect a badge for something
+      // they just read.
+      //
+      // Asking the file avoids needing every one of the nine `hasUnread`
+      // writers to cooperate with an epoch, which is the version of this that
+      // silently rots the first time somebody adds a tenth. One header line per
+      // FAILED session, and failures are rare by construction.
+      try {
+        const onDisk = readSessionHeader(getSessionFilePath(managed.workspace.rootPath, id))
+        managed.hasUnread = onDisk?.hasUnread ?? false
+      } catch (readError) {
+        // Cannot establish the truth, so do not invent one: leave memory as it
+        // is and let the failure below say so.
+        sessionLog.warn(`Could not re-read unread state for ${id} after a failed write:`, readError)
+      }
       failures.push(`${id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`)
     })
 

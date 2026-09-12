@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { getSessionFilePath, writeSessionJsonl, type StoredSession } from '@craft-agent/shared/sessions'
@@ -106,5 +106,31 @@ describe('markAllSessionsRead', () => {
     expect(summaries()).toBe(1)
 
     rmSync(getSessionFilePath(root, 'broken-1') + '.tmp', { recursive: true, force: true })
+  })
+
+  it('does not clobber a read that succeeded while the batch was running', async () => {
+    // The rollback runs after an await, so it must not blindly assert "unread".
+    // A user can open a session mid-batch; that read saves successfully, and
+    // re-marking it unread would resurrect a badge for something they just
+    // read. So the rollback asks the FILE what is true instead of assuming.
+    const racer = seed('raced-1')
+    mkdirSync(getSessionFilePath(root, 'raced-1') + '.tmp', { recursive: true })
+
+    // The batch's write for this session will fail. Meanwhile the session is
+    // genuinely read and that state reaches disk — simulated by writing the
+    // header directly, which is what a successful concurrent save leaves.
+    const filePath = getSessionFilePath(root, 'raced-1')
+    const lines = readFileSync(filePath, 'utf-8').split('\n')
+    const header = JSON.parse(lines[0]!) as Record<string, unknown>
+    header.hasUnread = false
+    writeFileSync(filePath, [JSON.stringify(header), ...lines.slice(1)].join('\n'))
+
+    await expect(sm.markAllSessionsRead(WORKSPACE_ID)).rejects.toThrow(/raced-1/)
+
+    // Disk says read, so memory says read — the failed write is reported, but
+    // it does not overwrite a newer truth.
+    expect(racer.hasUnread).toBe(false)
+
+    rmSync(getSessionFilePath(root, 'raced-1') + '.tmp', { recursive: true, force: true })
   })
 })
