@@ -1068,12 +1068,19 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       // Code only. `reason` is returned to the caller and logged for debugging;
       // it must not reach the durable file, which by definition has seen no
       // validated input at this point.
+      // Throttled: this row is reachable by any transport client with no lease,
+      // so an unthrottled append turns the audit file into a disk-filling
+      // primitive. The broker's rate limits cannot help — they need a valid
+      // lease, which a malformed payload does not have.
       await appendPageActionAudit({
         event: 'page_action_rejected',
         workspaceId: workspace.id,
         origin: 'sandboxed-page',
         code: 'malformed-request',
-      }, { onError: (error) => log.warn(`Failed to audit malformed page action: ${error}`) })
+      }, {
+        throttleKey: `malformed:${workspace.id}`,
+        onError: (error) => log.warn(`Failed to audit malformed page action: ${error}`),
+      })
       log.debug(`Malformed page action on ${workspace.id}: ${reason}`)
       return { requestId: 'unknown', ok: false, error: `malformed-request: ${reason}`, durationMs: 0 }
     }

@@ -73,8 +73,30 @@ const log = createLogger('page-action-broker');
  */
 export async function appendPageActionAudit(
   payload: Record<string, unknown>,
-  options: { auditLogPath?: string; onError?: (error: unknown) => void } = {},
+  options: {
+    auditLogPath?: string;
+    onError?: (error: unknown) => void;
+    /**
+     * Bound how many rows this key may write per minute.
+     *
+     * Supply it for any row an UNAUTHENTICATED caller can provoke. Refusals are
+     * worth auditing — a probe that leaves no trace is the thing an audit log
+     * exists to prevent — but a refusal that always writes turns the log into a
+     * disk-filling primitive for anyone who can reach the RPC, because the
+     * cheapest refusals happen before the rate limits (which need a valid lease
+     * this caller does not have).
+     *
+     * Suppressed rows are counted, not dropped silently: the first row of the
+     * next window carries the count, so the burst is still visible.
+     */
+    throttleKey?: string;
+  } = {},
 ): Promise<void> {
+  if (options.throttleKey) {
+    const verdict = admitThrottledAudit(options.throttleKey);
+    if (!verdict.write) return;
+    if (verdict.suppressed > 0) payload = { ...payload, suppressedSincePrevious: verdict.suppressed };
+  }
   try {
     const auditLogPath = options.auditLogPath ?? join(CONFIG_DIR, 'logs', 'page-actions.jsonl');
     await mkdir(dirname(auditLogPath), { recursive: true });
@@ -87,6 +109,48 @@ export async function appendPageActionAudit(
     if (options.onError) options.onError(error);
     else log.warn(`[PageActionBroker] Failed to write audit log: ${error}`);
   }
+}
+
+
+/** Rows per key per window before suppression kicks in. */
+const MAX_THROTTLED_AUDIT_ROWS_PER_WINDOW = 20;
+const THROTTLED_AUDIT_WINDOW_MS = 60_000;
+
+/**
+ * Sliding-window budget for audit rows an untrusted caller can provoke.
+ *
+ * Module-scoped because there is one audit file per process, and the thing
+ * being protected is that file rather than any one broker instance.
+ */
+const throttledAuditWindows = new Map<string, { startedAt: number; written: number; suppressed: number }>();
+
+function admitThrottledAudit(key: string): { write: boolean; suppressed: number } {
+  const now = Date.now();
+  const window = throttledAuditWindows.get(key);
+  if (!window || now - window.startedAt >= THROTTLED_AUDIT_WINDOW_MS) {
+    // New window. Carry the previous window's suppressed count onto this first
+    // row so a burst leaves a number behind instead of a silence.
+    const suppressed = window?.suppressed ?? 0;
+    throttledAuditWindows.set(key, { startedAt: now, written: 1, suppressed: 0 });
+    // Keep the map from growing with one entry per workspace seen forever.
+    if (throttledAuditWindows.size > 256) {
+      for (const [candidate, state] of throttledAuditWindows) {
+        if (now - state.startedAt >= THROTTLED_AUDIT_WINDOW_MS) throttledAuditWindows.delete(candidate);
+      }
+    }
+    return { write: true, suppressed };
+  }
+  if (window.written < MAX_THROTTLED_AUDIT_ROWS_PER_WINDOW) {
+    window.written++;
+    return { write: true, suppressed: 0 };
+  }
+  window.suppressed++;
+  return { write: false, suppressed: 0 };
+}
+
+/** Test seam: forget every window so a suite starts from a clean budget. */
+export function resetPageAuditThrottleForTests(): void {
+  throttledAuditWindows.clear();
 }
 
 /** Default render-lease lifetime; re-mounting a page issues a fresh lease */
@@ -1124,7 +1188,7 @@ export class PageActionBroker {
         grantId: request.grantId,
         invocation: invocationSummary,
         code,
-      });
+      }, `rejected:${effectiveAuthority?.workspaceId ?? 'unknown'}`);
       // `reason` goes to the caller only. It interpolates the request path
       // ("Path /patients/… does not match the granted pattern") and other
       // caller-supplied content, so persisting it would put exactly the payload
@@ -1544,10 +1608,11 @@ export class PageActionBroker {
    * Append an audit event (fire-and-forget, mirrors privileged-execution-broker:
    * audit failures are logged but never fail the action).
    */
-  private async appendAudit(payload: Record<string, unknown>): Promise<void> {
+  private async appendAudit(payload: Record<string, unknown>, throttleKey?: string): Promise<void> {
     await appendPageActionAudit(payload, {
       auditLogPath: this.auditLogPath,
       onError: (error) => log.warn(`[PageActionBroker] Failed to write audit log: ${error}`),
+      ...(throttleKey ? { throttleKey } : {}),
     });
   }
 }

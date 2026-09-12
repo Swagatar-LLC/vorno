@@ -143,6 +143,7 @@ export {
   PageActionBroker,
   MAX_LIVE_LEASES,
   appendPageActionAudit,
+  resetPageAuditThrottleForTests,
   type PageActionBrokerOptions,
   type PageActionExecutors,
   type PageActionValidationErrorCode,

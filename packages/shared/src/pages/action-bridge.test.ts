@@ -29,6 +29,7 @@ import {
   PAGE_ACTIVATION_TICKET_TTL_CEILING_MS,
   PageActionBroker,
   appendPageActionAudit,
+  resetPageAuditThrottleForTests,
   canonicalPageActionHash,
   type PageActionExecutors,
 } from './action-bridge.ts';
@@ -54,6 +55,9 @@ describe('pages/action-bridge', () => {
     auditPath = join(tempDir, 'page-actions.jsonl');
     clock = { now: 1_000_000 };
     disk = { page: null, permissionMode: 'ask' };
+    // The audit throttle is process-scoped (one audit file per process), so a
+    // suite that did not reset it would leak budget between tests.
+    resetPageAuditThrottleForTests();
   });
 
   afterEach(() => {
@@ -2170,6 +2174,60 @@ describe('pages/action-bridge', () => {
       const executed = (await readAudit()).find((e) => e.event === 'page_action_executed');
       expect(executed?.invocation).toEqual({ kind: 'mcp', toolName: 'create_issue' });
       expect(executed?.sourceSlug).toBe('linear');
+    });
+  });
+
+  describe('audit write budget', () => {
+    it('bounds rows an unauthenticated caller can provoke, and counts the rest', async () => {
+      // Refusals must be auditable — a probe that leaves no trace defeats the
+      // log — but a refusal that ALWAYS writes is a disk-filling primitive for
+      // anyone who can reach the RPC. The broker's rate limits cannot help
+      // here: they need a valid lease, which this caller does not have.
+      const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
+      const page = makePage();
+      disk.page = page;
+
+      // 200 requests naming a lease that does not exist.
+      for (let i = 0; i < 200; i++) {
+        const result = await broker.executeAction(
+          page,
+          { ...makeRequest({ leaseId: 'ghost', nonce: 'ghost' } as PageRenderLease), requestId: `req_${i}` },
+          AUTHORITY,
+        );
+        expect(result.ok).toBe(false);
+      }
+
+      const audit = await readAudit();
+      const rejections = audit.filter((e) => e.event === 'page_action_rejected');
+      // Bounded, not unbounded.
+      expect(rejections.length).toBeLessThanOrEqual(20);
+      expect(rejections.length).toBeGreaterThan(0);
+      // Every caller still got a real refusal; only the WRITING is bounded.
+      expect(rejections[0]?.code).toBe('lease-not-found');
+    });
+
+    it('carries the suppressed count onto the next window', async () => {
+      const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
+      const page = makePage();
+      disk.page = page;
+      const probe = async (n: number) => {
+        for (let i = 0; i < n; i++) {
+          await broker.executeAction(
+            page,
+            { ...makeRequest({ leaseId: 'ghost', nonce: 'ghost' } as PageRenderLease), requestId: `p_${Math.random()}` },
+            AUTHORITY,
+          );
+        }
+      };
+
+      await probe(50);
+      // A burst leaves a number behind rather than a silence: the window rolls
+      // and the first row of the next one reports what was dropped.
+      resetPageAuditThrottleForTests();
+      await probe(1);
+
+      const audit = await readAudit();
+      expect(audit.some((e) => e.event === 'page_action_rejected')).toBe(true);
     });
   });
 
