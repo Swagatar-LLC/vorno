@@ -347,6 +347,51 @@ describe('quit flushes sessions that are mid-commit', () => {
       )
     })
 
+    it('persists an active turn even when an intermediate write is already queued', async () => {
+      // An outstanding write must not stand in for a turn's final state.
+      //
+      // A streaming turn enqueues intermediate snapshots as it goes, so
+      // `hasPendingOrTail` is routinely TRUE for exactly the sessions that most
+      // need a final write. Checking that first — as the first version of the
+      // filter did — meant shutdown drained a mid-turn snapshot while the
+      // completed response, assembled moments later, was never written.
+      const sessionId = 'sess_intermediate'
+      const managed = seedManaged(sessionId, { isProcessing: true, messageQueue: [] })
+
+      // The mid-turn snapshot: partial text, enqueued and outstanding.
+      ;(managed.messages as unknown[]).push({
+        id: 'partial-1',
+        role: 'assistant',
+        content: 'partial so f',
+        timestamp: Date.now(),
+      })
+      ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
+      expect(sessionPersistenceQueue.hasPendingOrTail(sessionWriteKey(root, sessionId))).toBe(true)
+
+      managed.agent = {
+        forceAbort: () => {
+          setTimeout(() => {
+            const live = (sm as unknown as { sessions: Map<string, Record<string, unknown>> })
+              .sessions.get(sessionId)!
+            // The completed response replaces the partial one.
+            ;(live.messages as unknown[]).pop()
+            ;(live.messages as unknown[]).push({
+              id: 'complete-1',
+              role: 'assistant',
+              content: 'partial so far, then the completed answer',
+              timestamp: Date.now(),
+            })
+            live.isProcessing = false
+          }, 20)
+        },
+      }
+
+      await sm.flushAllSessions()
+
+      const contents = readFileSync(getSessionFilePath(root, sessionId), 'utf-8')
+      expect(contents).toContain('then the completed answer')
+    })
+
     it('refuses a new send once shutdown has begun', async () => {
       const sessionId = 'sess_refuse_send'
       seedManaged(sessionId)

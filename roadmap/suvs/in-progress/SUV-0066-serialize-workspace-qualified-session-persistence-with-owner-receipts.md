@@ -126,6 +126,8 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       turn that will not finish fails the shutdown instead of being closed over.
 - [x] A final write superseded by a watcher reconciliation does not fail the
       shutdown — receipts distinguish `cancelled` from `failed`.
+- [x] An active turn's final state is persisted even when an intermediate
+      write is already queued for it.
 - [x] 200 cold sessions are byte-identical after a quit — no rewrite, no
       `lastUsedAt` restamp, no hydration — while a session with queued work or
       an active turn still has its final state persisted, including a turn that
@@ -158,6 +160,13 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
    drain carries it. Evaluated BEFORE quiescing — aborting turns is what makes
    every session look idle — which also removes a dependency on
    `onProcessingStopped` always enqueueing.
+   Greptile then caught the filter's precedence backwards: it checked
+   `hasPendingOrTail` before activity, and a streaming turn enqueues
+   intermediate snapshots — so the check was true for exactly the sessions that
+   most needed a final write, and shutdown drained a mid-turn snapshot while the
+   completed response was never written. Activity is now checked first; an
+   outstanding write proves some state is on its way, not that it is the state
+   shutdown is waiting for.
 2. **`cancelled` split into `superseded` and `deleted`.** They were one value
    until a caller needed to retry one and never the other: `saveSession` now
    reapplies its patch ONCE on a supersede (the queue's held observation merges

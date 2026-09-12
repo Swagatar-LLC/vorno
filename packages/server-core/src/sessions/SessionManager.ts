@@ -2681,20 +2681,33 @@ export class SessionManager implements ISessionManager {
    *   deliberately does not replay it, so it has to survive to be replayed
    *   after a restart.
    *
-   * Anything with a write already queued or in flight is skipped too, and that
-   * is not a compromise: `flushAll` DRAINS that write, so the state is already
-   * on its way. Re-persisting would mean writing the record twice, the second
-   * time from a snapshot no newer than the first.
+   * **Activity is checked FIRST, and an outstanding write does not override
+   * it.** Getting that precedence backwards was a real bug: an active turn
+   * enqueues intermediate snapshots as it streams, so `hasPendingOrTail` is
+   * routinely true for exactly the sessions that most need a final write — and
+   * skipping them meant shutdown drained a mid-turn snapshot while the
+   * completed state, assembled moments later by the stop handler, was never
+   * written. A queued write proves that SOME state is on its way, not that it
+   * is the state shutdown is waiting for.
+   *
+   * For an IDLE session the two answers coincide, and both mean skip: a queued
+   * write is the latest state (nothing is changing it any more) and `flushAll`
+   * drains it, while nothing queued means there is nothing to write. The
+   * distinction is kept in the log because those are different reasons and a
+   * reader debugging a missing write needs to know which one applied.
    */
   private collectSessionsNeedingFinalPersist(): ManagedSession[] {
     const needed: ManagedSession[] = []
     for (const managed of this.sessions.values()) {
-      if (sessionPersistenceQueue.hasPendingOrTail(this.writeKeyFor(managed))) {
-        // Already covered — the drain carries it.
-        continue
-      }
+      // Active work first. Its final state does not exist yet, so nothing
+      // already queued can be standing in for it.
       if (managed.isProcessing || managed.messageQueue.length > 0) {
         needed.push(managed)
+        continue
+      }
+      // Idle from here. Skipped either way; the reason differs.
+      if (sessionPersistenceQueue.hasPendingOrTail(this.writeKeyFor(managed))) {
+        sessionLog.debug(`Shutdown: ${managed.id} is idle with a write outstanding; the drain carries it`)
       }
     }
     return needed
