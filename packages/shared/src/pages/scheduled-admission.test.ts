@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PageConfig, PageRefreshSpec } from '@craft-agent/core';
 import { admitScheduledPageRefresh, scheduledPolicyRefusal } from './scheduled-admission.ts';
+import { pageActionOriginPolicy } from './types.ts';
 
 const DIGEST = 'a'.repeat(64);
 
@@ -115,6 +116,38 @@ describe('pages/scheduled-admission', () => {
         requiresActivationTicket: false,
         requiresFirstUseConfirmation: false,
       })).toBeNull();
+    });
+
+    // The three above prove the HELPER. They cannot prove the helper is wired
+    // in, and an earlier revision shipped it exported, tested, and never
+    // called — the tests passed because they called it directly. These two
+    // flip the live row and go through `admitScheduledPageRefresh`, so they
+    // fail if the call site disappears again.
+    it('refuses through admission when the live row demands an activation ticket', async () => {
+      const row = pageActionOriginPolicy('scheduled-refresh')!;
+      const restore = { ...row };
+      row.requiresActivationTicket = true;
+      try {
+        const result = await refusal(makePage());
+        expect(result.code).toBe('activation-required');
+        expect(audit().some((e) => e.code === 'activation-required')).toBe(true);
+      } finally {
+        Object.assign(row, restore);
+      }
+      // Restored, so the ordinary path still admits.
+      expect((await admit(makePage())).ok).toBe(true);
+    });
+
+    it('refuses through admission when the live row demands a confirmation', async () => {
+      const row = pageActionOriginPolicy('scheduled-refresh')!;
+      const restore = { ...row };
+      row.requiresFirstUseConfirmation = true;
+      try {
+        expect((await refusal(makePage())).code).toBe('first-use-confirmation-required');
+      } finally {
+        Object.assign(row, restore);
+      }
+      expect((await admit(makePage())).ok).toBe(true);
     });
   });
 

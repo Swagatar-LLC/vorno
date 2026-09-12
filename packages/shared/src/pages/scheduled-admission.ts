@@ -103,7 +103,7 @@ export async function admitScheduledPageRefresh(
   // The durable row carries closed codes and bounded identifiers only.
   // `reason` is returned to the caller and surfaced in the blocked-run message,
   // where it can name the script or the mismatch; it is not persisted, because
-  // it interpolates content. See `summarizeInvocation` for the full contract.
+  // it interpolates content. See `describeApprovedAction` for the full contract.
   const audit = (code: string) =>
     appendPageActionAudit(
       {
@@ -123,6 +123,15 @@ export async function admitScheduledPageRefresh(
     await audit(code);
     return { ok: false, code, reason };
   };
+
+  // The origin policy, ENFORCED rather than displayed. An origin missing from
+  // the table stops everything; a row demanding something a cron tick cannot
+  // produce — an activation ticket, a first-use confirmation — stops this run
+  // rather than letting it proceed while the table says otherwise.
+  const policy = pageActionOriginPolicy(authority.origin);
+  if (!policy) return refuse('origin-unattributed', 'The scheduled origin has no policy');
+  const unsatisfiable = scheduledPolicyRefusal(policy);
+  if (unsatisfiable) return refuse(unsatisfiable.code, unsatisfiable.reason);
 
   // Pages is a per-workspace capability and the matcher that scheduled this run
   // may be older than the setting. A workspace that turned Pages off between
