@@ -598,6 +598,12 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     })
   }
 
+  /**
+   * @param workspaceId MUST be the resolved `workspace.id`, never a caller's
+   * name-or-id spelling: it becomes the broker's audit scope, and the broker is
+   * cached per rootPath, so an alias supplied by whoever happened to call first
+   * would scope every later row for that workspace.
+   */
   async function getBroker(workspaceId: string, workspaceRootPath: string): Promise<PageActionBroker> {
     assertAvailable(workspaceRootPath)
     const existing = brokers.get(workspaceRootPath)
@@ -1035,7 +1041,11 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const content = loadPageContent(workspace.rootPath, pageSlug)
     if (content === null) throw new Error(`Page has no content: ${pageSlug}`)
 
-    const broker = await getBroker(workspaceId, workspace.rootPath)
+    // Canonical id, never the caller's spelling. `workspaceId` here is a
+    // name-or-id lookup key, and the broker is cached per rootPath — so the
+    // first caller's alias would become this workspace's audit scope for the
+    // life of the process, and two aliases would look like two tenants.
+    const broker = await getBroker(workspace.id, workspace.rootPath)
     const contentDigest = computePageContentDigest(content)
     const lease = broker.createLease({ pageSlug, contentDigest })
     // Transport clients may create leases, but only the sender-derived IPC
@@ -1103,7 +1113,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const page = loadPageConfig(workspace.rootPath, request.pageSlug)
     if (!page) return malformed('Page not found')
 
-    const broker = await getBroker(workspaceId, workspace.rootPath)
+    const broker = await getBroker(workspace.id, workspace.rootPath)
     // Authority is built HERE, from the resolved workspace and the transport
     // this call arrived on — never read off `request`. Everything reaching this
     // channel is a relay for page JS, including the WebUI and any direct

@@ -1345,6 +1345,50 @@ describe('Pages RPC workspace capability gate', () => {
       })
     })
 
+    test('resolves a workspace alias to the same broker and lease store', async () => {
+      // `workspaceId` on these channels is a name-or-id lookup key. Brokers are
+      // cached per rootPath, so an alias and an id reach the same instance —
+      // this pins that, which is what a caller observes.
+      //
+      // It does NOT cover the related fix in the same commit: the broker's
+      // audit SCOPE is fixed at construction from whoever called first, so
+      // passing a raw alias there would scope every later row for that
+      // workspace. That is not observable from this layer — the scope appears
+      // only as a throttle key, never in a row — and the property it protects
+      // (one workspace cannot suppress another's rows) is covered by the
+      // cross-workspace test in `action-bridge.test.ts`. Said plainly rather
+      // than left to look like coverage this test does not provide.
+      //
+      // The fixture normally names a workspace after its own id, leaving no
+      // distinct alias; give this one a display name. The per-test
+      // `registerTestWorkspaces()` restores the default.
+      writeWorkspace(ROOT_A, WORKSPACE_A, true, 'Pages Enabled Alias')
+      const invoke = createHarness('approve')
+      const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+        name: 'Alias page', content: '<p>alias</p>',
+      }) as { slug: string }
+
+      // Mint under the NAME.
+      const byName = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, 'Pages Enabled Alias', page.slug) as {
+        lease: { leaseId: string; nonce: string }
+      }
+
+      // Spend it under the ID. Reaching `grant-not-found` proves both calls hit
+      // the same broker: a separate one would not know this lease at all and
+      // would answer `lease-not-found`.
+      const result = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, {
+        requestId: 'req_alias',
+        pageSlug: page.slug,
+        leaseId: byName.lease.leaseId,
+        nonce: byName.lease.nonce,
+        grantId: 'grant_missing',
+        invocation: { kind: 'api', method: 'GET', path: '/items' },
+      }) as { ok: boolean; error?: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('grant-not-found')
+      expect(result.error).not.toContain('lease-not-found')
+    })
+
     test('refuses a malformed cancel instead of throwing', async () => {
       const invoke = createHarness('approve')
       const { lease } = await seedScriptGrant(invoke)

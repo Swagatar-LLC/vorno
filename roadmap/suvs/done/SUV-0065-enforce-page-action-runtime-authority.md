@@ -201,16 +201,14 @@ future owner will meet.
   an ADR-level change, not an eviction-order tweak.
 
   **Until then this is benign only while re-mounting stays cheap and
-  unbudgeted, and that coupling is easy to break by accident.** A per-caller lease creation budget
-  was written and removed during this SUV precisely because it keys on
-  `clientId`, a client-asserted handshake field: it bounded nothing a
-  reconnecting caller could not reset, while its bucket map grew with that same
-  churn. Reintroducing any creation budget — per caller, per workspace, or
+  unbudgeted, and that coupling is easy to break by accident.** A per-caller
+  lease creation budget was written and removed during this SUV precisely
+  because it keys on `clientId`, a client-asserted handshake field: it bounded
+  nothing a reconnecting caller could not reset, while its bucket map grew with
+  that same churn. Reintroducing any creation budget — per caller, per workspace, or
   global — converts this residual from "re-mount and carry on" into "cannot
   re-mount", which is a genuine denial of service against the user. Anyone
-  proposing one must say what happens to recovery first. Real isolation needs
-  per-lease ownership on a trusted host path, which is an ADR-level change, not
-  an eviction-order or rate-limit tweak.
+  proposing one must say what happens to recovery first.
 
 - **Whether a real in-frame click is visible to `input-event` is unknown.**
   Measured only for synthesized input; see the evidence record. It fails as a
