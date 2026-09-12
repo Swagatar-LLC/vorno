@@ -574,6 +574,59 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(after.lastReadMessageId).toBe('theirs-too');
     });
 
+    it('the disk-divergence branch cannot reverse the app-wins decision', async () => {
+      // The previous version of this suite proved the per-field rule only when
+      // disk happened to agree with our baseline: it passed the observed header
+      // to `supersedePendingWrites` without ever writing it to disk, so the
+      // disk-divergence branch never ran. With the edit really on disk, the old
+      // code applied the observation per field and then merged the WHOLE disk
+      // header over the result, restoring the value the app had since changed.
+      await write('rev1', (r) => { (r as unknown as { name: string }).name = 'ours'; }).tail;
+      const file = getSessionFilePath(root, 'rev1');
+
+      // A real external edit, on disk, touching two fields.
+      const lines = readFileSync(file, 'utf-8').split('\n');
+      const header = JSON.parse(lines[0]!) as Record<string, unknown>;
+      header.name = 'theirs';
+      header.lastReadMessageId = 'theirs-too';
+      writeFileSync(file, [JSON.stringify(header), ...lines.slice(1)].join('\n'));
+      queue.supersedePendingWrites(k('rev1'), header as never);
+
+      // Disk genuinely diverges from our baseline now, so the disk branch runs.
+      await write('rev1', (r) => { (r as unknown as { name: string }).name = 'ours, newer'; }).tail;
+
+      const after = JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+      expect(after.name).toBe('ours, newer');
+      expect(after.lastReadMessageId).toBe('theirs-too');
+    });
+
+    it('prefers disk over a remembered observation when both diverge', async () => {
+      // Ranking matters when the two external sources disagree about a field the
+      // app has not touched. Disk's divergence is happening now; the observation
+      // is a memory of an earlier look at the same writer. Freshest wins.
+      await write('rank1').tail;
+      const file = getSessionFilePath(root, 'rank1');
+
+      const read = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+      const put = (h: Record<string, unknown>) => {
+        const lines = readFileSync(file, 'utf-8').split('\n');
+        writeFileSync(file, [JSON.stringify(h), ...lines.slice(1)].join('\n'));
+      };
+
+      // Observed at time T.
+      const earlier = read();
+      earlier.lastReadMessageId = 'observed-earlier';
+      queue.supersedePendingWrites(k('rank1'), earlier as never);
+
+      // Disk moved on again after that, to a different value.
+      const later = read();
+      later.lastReadMessageId = 'on-disk-later';
+      put(later);
+
+      await write('rank1').tail;
+      expect(read().lastReadMessageId).toBe('on-disk-later');
+    });
+
     it('drops an observation that has aged out instead of replaying it', async () => {
       // An observation is normally discharged by the write that lands it, but a
       // session that is never written again would hold one for the life of the

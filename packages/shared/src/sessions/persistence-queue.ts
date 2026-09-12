@@ -47,30 +47,51 @@ function getHeaderMetadataSignature(header: SessionHeader): string {
 }
 
 /**
- * Apply a held observation field by field, letting a later in-app edit win.
+ * Decide every externally-owned metadata field, in one place.
  *
- * The question asked of each field is "has anything local happened to it since
- * we looked?". If the outgoing value still equals what we had at observation
- * time, nothing has, and the external value applies. If it has moved, the app
- * changed it after the observation and must not be overwritten by a value that
- * was already stale when it was stored.
+ * Three sources can have an opinion and they are ranked by what each one can
+ * actually know:
  *
- * With no local baseline there is no evidence of a local change, so external
- * applies — the same default the disk merge has always used.
+ * 1. **The app, if it moved the field since we observed it.** A held
+ *    observation is remembered across time, so replaying it would let an older
+ *    remote value beat an edit the user made afterwards — the session renames
+ *    itself back a beat after they renamed it. A field the app has moved since
+ *    the observation belongs to the app, over both other sources.
+ * 2. **Disk, when it diverged from our last write.** That divergence IS an
+ *    external mutation, and it is more recent than anything remembered.
+ * 3. **The observation**, which is the only surviving copy when a stale write
+ *    has already committed over the edit on disk.
+ *
+ * With no observation, rule 1 never fires and rule 2 reduces to the wholesale
+ * "disk preserved" behaviour this queue has always had — unchanged.
  */
-function applyObservation(localHeader: SessionHeader, observation: ExternalObservation): SessionHeader {
-  const outgoing = getHeaderMetadataFields(localHeader)
-  const baseline = observation.localAtObservation
-  const merged: SessionHeader = { ...localHeader }
+function resolveExternalMetadata({
+  local,
+  disk,
+  observation,
+}: {
+  local: SessionHeader
+  disk?: SessionHeader
+  observation?: ExternalObservation
+}): SessionHeader {
+  if (!disk && !observation) return local
+
+  const outgoing = getHeaderMetadataFields(local)
+  const baseline = observation?.localAtObservation
+  const diskFields = disk ? getHeaderMetadataFields(disk) : undefined
+  const resolved: SessionHeader = { ...local }
 
   for (const field of EXTERNAL_METADATA_FIELDS) {
-    const localMoved =
+    const movedLocally =
       baseline !== undefined &&
       JSON.stringify(outgoing[field] ?? null) !== JSON.stringify(baseline[field] ?? null)
-    if (localMoved) continue
-    ;(merged as unknown as Record<string, unknown>)[field] = observation.external[field]
+    // Rule 1: the app wins outright, including over disk.
+    if (movedLocally) continue
+
+    const external = diskFields ? diskFields[field] : observation?.external[field]
+    ;(resolved as unknown as Record<string, unknown>)[field] = external
   }
-  return merged
+  return resolved
 }
 
 function mergeHeaderWithExternalMetadata(localHeader: SessionHeader, diskHeader: SessionHeader): SessionHeader {
@@ -598,9 +619,7 @@ class SessionPersistenceQueue {
         this.pendingExternalMetadata.delete(key)
         debug(`[PersistenceQueue] Dropped stale external observation for ${data.id}`)
       }
-      const localHeader = observedExternal
-        ? applyObservation(createSessionHeader(storageSession), observedExternal)
-        : createSessionHeader(storageSession)
+      const localHeader = createSessionHeader(storageSession)
       const localSig = getHeaderMetadataSignature(localHeader)
       const diskHeader = readSessionHeader(filePath)
       const previousSig = this.lastWrittenHeaderSignature.get(key)
@@ -614,9 +633,19 @@ class SessionPersistenceQueue {
       // signature, which indicates an external mutation.
       const hasMetadataMismatch = !!diskHeader && !!diskSig && diskSig !== localSig
       const hasExternalMetadataChange = !!diskHeader && !!diskSig && !!previousSig && diskSig !== previousSig
-      const header = hasExternalMetadataChange && diskHeader
-        ? mergeHeaderWithExternalMetadata(localHeader, diskHeader)
-        : localHeader
+
+      // ONE merge point, deliberately.
+      //
+      // There were two: the observation was applied first, and then the disk
+      // branch merged the whole external header over the result — silently
+      // reversing the observation's per-field decision and restoring a value
+      // the app had since changed. Two merges that can disagree about the same
+      // field is the defect; resolving every field in one place is the fix.
+      const header = resolveExternalMetadata({
+        local: localHeader,
+        disk: hasExternalMetadataChange ? diskHeader : undefined,
+        observation: observedExternal,
+      })
 
       if (hasMetadataMismatch) {
         const baseline = previousSig ? `, previousSig=${previousSig.slice(0, 12)}` : ', previousSig=<none>'

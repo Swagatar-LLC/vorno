@@ -950,6 +950,36 @@ This is the eleventh and twelfth instance of *the assertion was fine, the
 construction did not reach the path* — and both were caught by injection rather
 than by review, which is now the only method in this SUV that has never missed.
 
+## Round 26 — two merges that disagreed about the same field
+
+`2026-09-12` — Greptile, 4/5 on the round-25 head, with a precise finding:
+the observation merge let a later in-app edit win, and then the disk-divergence
+branch merged the **whole** external header over the result and put the stale
+value back.
+
+Correct. `write` had two merge points. The second overwrote all seven fields
+from disk whenever disk diverged, which silently reversed the first's per-field
+decision. There is now **one** resolver, and the three sources are ranked by
+what each can actually know:
+
+1. **The app**, for any field it has moved since the observation — over both
+   other sources, because a remembered value must not beat a later edit.
+2. **Disk**, when it diverged from our last write: that divergence is happening
+   now, and is fresher than a memory.
+3. **The observation**, which is the only surviving copy once a stale write has
+   committed over the edit on disk.
+
+With no observation held, rule 1 cannot fire and rule 2 reduces to the wholesale
+"disk preserved" behaviour this queue has always had — unchanged, and pinned by
+an injection that swaps the ranking.
+
+**My round-25 test could not have caught this.** It passed the observed header
+to `supersedePendingWrites` without ever writing it to disk, so disk never
+diverged and the second merge never ran. The rule it was checking was real; the
+branch that breaks it was not reachable from the setup. Thirteenth instance, and
+the sharpest one yet: *a test that constructs the input by hand instead of
+through the mechanism will miss whatever the mechanism does on the way.*
+
 ## Residuals
 
 - **External `permissionMode` edits are not mirrored into memory.** The file
