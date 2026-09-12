@@ -9,6 +9,7 @@
  */
 
 import type {
+  PageActionHttpMethod as PageActionHttpMethodValue,
   PageActionDescriptor,
   PageActionGrant,
   PageActionInvocation,
@@ -241,6 +242,97 @@ export function hasPathTraversal(path: string): boolean {
     return true; // malformed percent-encoding — treat as unsafe
   }
   return decoded.split(/[/\\]/).includes('..');
+}
+
+
+// ============================================================================
+// Untrusted invocation parsing
+// ============================================================================
+
+/** Bounds shared by every untrusted invocation, wherever it arrives from. */
+const MAX_INVOCATION_ID_CHARS = 128;
+const MAX_INVOCATION_PATH_CHARS = 2048;
+const MAX_INVOCATION_TOOL_NAME_CHARS = 256;
+const MAX_INVOCATION_OBJECT_DEPTH = 8;
+
+const INVOCATION_HTTP_METHODS: readonly string[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+
+function isInvocationObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function withinInvocationDepth(value: unknown, depth: number): boolean {
+  if (depth < 0) return false;
+  if (Array.isArray(value)) return value.every(v => withinInvocationDepth(v, depth - 1));
+  if (typeof value === 'object' && value !== null) {
+    return Object.values(value).every(v => withinInvocationDepth(v, depth - 1));
+  }
+  return true;
+}
+
+/**
+ * Parse an untrusted value into a `PageActionInvocation`, or null.
+ *
+ * **The whole kind-specific shape, not just `kind`.** A guard that checked only
+ * the discriminant and cast the rest would admit an api invocation whose `path`
+ * is a number, and the first `path.startsWith(...)` in validation throws —
+ * outside the executor's error handling, so the caller gets an unaudited
+ * transport error instead of a refusal. Validating the arms here is what makes
+ * "malformed input is a result, not a crash" true.
+ *
+ * One definition on purpose: the renderer bridge parses page-authored messages
+ * and the RPC host parses transport payloads, and the two must not disagree
+ * about what a well-formed invocation is. Pure and browser-safe.
+ */
+export function parsePageActionInvocation(value: unknown): PageActionInvocation | null {
+  if (!isInvocationObject(value)) return null;
+
+  if (value.kind === 'api') {
+    if (typeof value.method !== 'string' || !INVOCATION_HTTP_METHODS.includes(value.method)) return null;
+    if (typeof value.path !== 'string' || value.path.length === 0 || value.path.length > MAX_INVOCATION_PATH_CHARS) {
+      return null;
+    }
+    // Defence in depth: the broker re-checks authoritatively, but keeping `..`
+    // off timer- and onload-driven paths costs nothing here.
+    if (hasPathTraversal(value.path)) return null;
+    if (value.params !== undefined) {
+      if (!isInvocationObject(value.params)) return null;
+      if (!withinInvocationDepth(value.params, MAX_INVOCATION_OBJECT_DEPTH)) return null;
+    }
+    return {
+      kind: 'api',
+      method: value.method as PageActionHttpMethodValue,
+      path: value.path,
+      ...(value.params !== undefined ? { params: value.params as Record<string, unknown> } : {}),
+    };
+  }
+
+  if (value.kind === 'mcp') {
+    if (typeof value.toolName !== 'string' || value.toolName.length === 0) return null;
+    if (value.toolName.length > MAX_INVOCATION_TOOL_NAME_CHARS) return null;
+    if (value.args !== undefined) {
+      if (!isInvocationObject(value.args)) return null;
+      if (!withinInvocationDepth(value.args, MAX_INVOCATION_OBJECT_DEPTH)) return null;
+    }
+    return {
+      kind: 'mcp',
+      toolName: value.toolName,
+      ...(value.args !== undefined ? { args: value.args as Record<string, unknown> } : {}),
+    };
+  }
+
+  if (value.kind === 'script') {
+    // A bare trigger: script, runtime, and args all come from the matched grant
+    // and never from the caller, so there is deliberately nothing to validate.
+    return { kind: 'script' };
+  }
+
+  return null;
+}
+
+/** Whether an untrusted string is a plausible bounded identifier. */
+export function isBoundedPageActionId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_INVOCATION_ID_CHARS;
 }
 
 /**

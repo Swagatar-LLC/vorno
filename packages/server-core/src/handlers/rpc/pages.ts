@@ -3,7 +3,7 @@ import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { assertPagesEnabled, isPagesEnabled } from '@craft-agent/shared/pages/capability'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps, PageGrantRequester } from '../handler-deps'
-import { MAX_LIVE_LEASES, pageActionDescriptorSignature, type PageActionAuthority, type PageActionOrigin, type PageActionRequest, type PageActionBroker, type PageActionExecutors } from '@craft-agent/shared/pages'
+import { MAX_LIVE_LEASES, isBoundedPageActionId, pageActionDescriptorSignature, parsePageActionInvocation, type PageActionAuthority, type PageActionOrigin, type PageActionRequest, type PageActionBroker, type PageActionExecutors } from '@craft-agent/shared/pages'
 import { assertPageSourceUsable } from '../../pages/source-gate'
 
 export const HANDLED_CHANNELS = [
@@ -57,7 +57,7 @@ const MAX_PENDING_PAGE_GRANT_CONFIRMATIONS = 32
 function parsePageActionRequest(value: unknown, pageSlug?: string): PageActionRequest | null {
   if (typeof value !== 'object' || value === null) return null
   const candidate = value as Record<string, unknown>
-  const bounded = (field: unknown) => typeof field === 'string' && field.length > 0 && field.length <= 128
+  const bounded = isBoundedPageActionId
   if (!bounded(candidate.requestId) || !bounded(candidate.leaseId) || !bounded(candidate.nonce) || !bounded(candidate.grantId)) {
     return null
   }
@@ -66,10 +66,13 @@ function parsePageActionRequest(value: unknown, pageSlug?: string): PageActionRe
   // broker proves it against the lease. Both go through this one parser.
   const slug = pageSlug ?? (bounded(candidate.pageSlug) ? (candidate.pageSlug as string) : undefined)
   if (slug === undefined) return null
-  const invocation = candidate.invocation
-  if (typeof invocation !== 'object' || invocation === null || typeof (invocation as { kind?: unknown }).kind !== 'string') {
-    return null
-  }
+  // The WHOLE kind-specific shape, not just the discriminant. Casting after a
+  // `kind` check admits an api invocation whose `path` is a number, and the
+  // first `path.startsWith(...)` inside validation throws — outside this
+  // handler's guard, so the caller would get an unaudited transport error
+  // instead of the refusal this function exists to produce.
+  const invocation = parsePageActionInvocation(candidate.invocation)
+  if (!invocation) return null
   // Carried through, never minted here: a ticket is only ever valid if the
   // broker issued it, so an unparseable one simply fails redemption.
   const activationTicket = bounded(candidate.activationTicket) ? (candidate.activationTicket as string) : undefined
@@ -79,7 +82,7 @@ function parsePageActionRequest(value: unknown, pageSlug?: string): PageActionRe
     leaseId: candidate.leaseId as string,
     nonce: candidate.nonce as string,
     grantId: candidate.grantId as string,
-    invocation: invocation as PageActionRequest['invocation'],
+    invocation,
     ...(activationTicket !== undefined ? { activationTicket } : {}),
   }
 }

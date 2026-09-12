@@ -1094,7 +1094,35 @@ describe('Pages RPC workspace capability gate', () => {
 
     test('shape-guards the wire payload instead of throwing', async () => {
       const invoke = createHarness('approve')
-      await seedScriptGrant(invoke)
+      const { page, lease } = await seedScriptGrant(invoke)
+
+      // An API grant, so a malformed api invocation matches on kind and method
+      // and actually reaches the path helpers. Against a script grant the kind
+      // mismatch answers first and the reported throw is never provoked — a
+      // detail that made an earlier version of this test pass with the defect
+      // still in place.
+      const { addPageGrant, loadPageConfig } = await import('@craft-agent/shared/pages')
+      const apiGrant = addPageGrant(ROOT_A, page.slug, {
+        action: { kind: 'api', sourceSlug: 'github', method: 'GET', pathPattern: '/repos/.*' },
+        expectedContentDigest: loadPageConfig(ROOT_A, page.slug)!.contentDigest!,
+      })
+      const apiRequest = (invocation: unknown) => ({
+        requestId: `req_${Math.random().toString(36).slice(2)}`,
+        pageSlug: page.slug,
+        leaseId: lease.leaseId,
+        nonce: lease.nonce,
+        grantId: apiGrant.id,
+        invocation,
+      })
+      for (const badPath of [42, { toString: 'no' }, ['/x'], null, true]) {
+        const result = await invoke(
+          RPC_CHANNELS.pages.EXECUTE_ACTION,
+          WORKSPACE_A,
+          apiRequest({ kind: 'api', method: 'GET', path: badPath }),
+        ) as { ok: boolean; error?: string }
+        expect(result.ok).toBe(false)
+        expect(result.error).toContain('malformed-request')
+      }
 
       // This channel is reachable by any transport client, so its argument is
       // untrusted input regardless of what the handler signature claims. A
@@ -1107,6 +1135,16 @@ describe('Pages RPC workspace capability gate', () => {
         { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g' },
         { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash' },
         { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: 'nope' },
+        // The discriminant alone is not the shape. Each of these would have
+        // reached a string helper inside validation and thrown there, outside
+        // this handler's guard.
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api', method: 'GET', path: 42 } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api', method: 'GET', path: { toString: 'no' } } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api', method: 'TRACE', path: '/x' } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api', method: 'GET', path: '/x', params: 'nope' } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'mcp', toolName: 7 } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'mcp', toolName: 't', args: [1, 2] } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'session' } },
         { requestId: 'x'.repeat(500), leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api' } },
       ]) {
         const result = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, hostile) as {

@@ -35,8 +35,10 @@ export type {
 export {
   PAGE_ACTION_KINDS,
   PAGE_ACTION_ORIGINS,
+  isBoundedPageActionId,
   isMutatingPageAction,
   isPageGrantUsable,
+  parsePageActionInvocation,
   pageActionDescriptorSignature,
   pageActionOriginAllowsKind,
   pageActionOriginPolicy,
