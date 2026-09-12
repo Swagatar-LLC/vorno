@@ -154,14 +154,16 @@ interface PageCallbackDeliverySeam {
    */
   onProcessingStarted: () => void
   /**
-   * Phase two: the message is persisted and flushed to disk.
+   * Phase two: the durability question has an ANSWER — either way.
    *
-   * Separate because a crash between the two loses a message the page was told
-   * had landed. Reporting durability lets the caller distinguish "delivered and
-   * on disk" from "delivered, persistence degraded" instead of asserting the
-   * stronger claim for both.
+   * Separate from the commit because a crash between the two loses a message
+   * the page was told had landed. Called with `false` as promptly as with
+   * `true`: a failed write is a result, and leaving the caller to discover it
+   * by timing out would make a disk error look like a slow turn. The caller
+   * resolves on this, so a write failure returns at the moment it is known
+   * rather than at the end of the turn the message started.
    */
-  onDurable: () => void
+  onDurabilityResolved: (durable: boolean) => void
 }
 
 /** What `sendMessage` actually accepts: the wire shape plus the internal seam. */
@@ -5385,6 +5387,11 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await setStoredPendingPlanExecution(managed.workspace.rootPath, sessionId, planPath, draftInputSnapshot)
+      // Mirror, not cache: `persistSession` rebuilds the header from managed
+      // state, so a value that exists only on disk is dropped by the next
+      // persist from any writer. The mirror is what makes the field survive an
+      // ordinary session lifetime.
+      managed.pendingPlanExecution = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId) ?? undefined
       sessionLog.info(`Session ${sessionId}: set pending plan execution for ${planPath}`)
     }
   }
@@ -5411,6 +5418,7 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await markStoredPendingPlanExecutionDispatched(managed.workspace.rootPath, sessionId)
+      managed.pendingPlanExecution = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId) ?? undefined
       sessionLog.info(`Session ${sessionId}: marked pending plan execution as dispatched`)
     }
   }
@@ -5424,6 +5432,8 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+      // Both, or a later persist writes the dismissed plan straight back.
+      managed.pendingPlanExecution = undefined
       sessionLog.info(`Session ${sessionId}: cleared pending plan execution`)
     }
   }
@@ -6583,7 +6593,18 @@ export class SessionManager implements ISessionManager {
 
       const agent = managed.agent
       let steered = false
-      if (behavior === 'steer') {
+      // A send that got here via the accepted-turn marker has NO running turn
+      // to steer: the callback committed, but `setProcessing` has not run. A
+      // redirect would ask the backend to interrupt something that is not
+      // happening — on Claude it falls through to `forceAbort(Redirect)` — and
+      // the queued message would then be replayed carrying `wasInterrupted`,
+      // which injects the "previous response was interrupted and may be
+      // incomplete" reminder for a turn that had not even begun.
+      //
+      // So this send queues directly, exactly as 'queue' mode does, and leaves
+      // `wasInterrupted` alone.
+      const awaitingAcceptedTurn = !managed.isProcessing
+      if (behavior === 'steer' && !awaitingAcceptedTurn) {
         steered = agent?.redirect(message) ?? false
       }
       // For 'queue': skip redirect entirely. The current turn is undisturbed.
@@ -6592,6 +6613,7 @@ export class SessionManager implements ISessionManager {
         sessionId,
         behavior,
         steered,
+        awaitingAcceptedTurn,
         queueLengthBefore: managed.messageQueue.length,
         backend: agent ? agent.constructor.name : 'none',
         connectionSlug: connection?.slug,
@@ -6638,7 +6660,12 @@ export class SessionManager implements ISessionManager {
         // completion, so the replayed turn must NOT inject the "previous response
         // was interrupted" reminder (it would falsely tell the model its own
         // complete answer was cut off → confusion).
-        if (delivery.wasInterrupted) managed.wasInterrupted = true
+        // ...and never when nothing was interrupted because nothing was
+        // running. `resolveMidStreamDeliveryOutcome` reads a failed steer as an
+        // abort, which is right for a live turn and wrong for an accepted one
+        // that has not started — no `forceAbort` happened, so claiming one
+        // would put the reminder in front of a turn that was never cut off.
+        if (delivery.wasInterrupted && !awaitingAcceptedTurn) managed.wasInterrupted = true
       }
 
       this.persistSession(managed)
@@ -6684,22 +6711,6 @@ export class SessionManager implements ISessionManager {
       // window would audit delivered work as a timeout. Once this returns, the
       // action has succeeded and nothing downstream may relabel it.
       if (pageCallback) {
-        // Carry forward state that lives ONLY on the stored record.
-        //
-        // `headerToMetadata` strips `pendingPlanExecution` before
-        // `createManagedSession`, and `persistSession` rebuilds the header from
-        // managed via `pickSessionFields` — so a plan the user has not answered
-        // is dropped by the next persist from any writer. Not clearing it is
-        // therefore not enough: this write would destroy it anyway. Read
-        // synchronously (the storage accessor is sync) so nothing yields
-        // between the guard and the commit.
-        // Held only across the persist below, never beyond it. A long-lived
-        // copy on the managed session would outlive the stored one: the user
-        // send and the explicit-clear paths delete the STORED value only, so a
-        // later persist of that managed session would write the stale plan back
-        // and resurrect recovery state the user had already dismissed.
-        const pendingPlan = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
-        if (pendingPlan) managed.pendingPlanExecution = pendingPlan
         // Marks the accepted-but-not-started window for any send that arrives
         // before `setProcessing` — see `pageCallbackTurnPendingToken`.
         managed.pageCallbackTurnPendingToken = pageCallback.token
@@ -6716,11 +6727,6 @@ export class SessionManager implements ISessionManager {
       // genuinely on disk before we tell the renderer "accepted", and
       // `persistSession` is debounced (500ms). #616.
       this.persistSession(managed)
-      // `persistSession` snapshots the managed session synchronously via
-      // `pickSessionFields`, so the enqueued record already carries the plan and
-      // the mirror has done its whole job. Dropping it here is what keeps it
-      // from becoming a second, staler source of truth.
-      if (pageCallback) managed.pendingPlanExecution = undefined
       if (pageCallback) {
         // Checked flush, and `onDurable` only if it really succeeded. The
         // unchecked path resolves just as happily after a failed write, so
@@ -6728,8 +6734,14 @@ export class SessionManager implements ISessionManager {
         // saved when the disk had said otherwise.
         const receipt = await this.flushSessionChecked(managed.id)
         onAck?.(userMessage.id)
-        if (receipt.ok) pageCallback.onDurable()
-        else sessionLog.warn(`Page callback message not durable for ${sessionId}: ${receipt.error}`)
+        if (!receipt.ok) {
+          sessionLog.warn(`Page callback message not durable for ${sessionId}: ${receipt.error}`)
+        }
+        // Answered either way, and answered here. Resolving only on success
+        // left a failed write to surface as a stalled caller — the page would
+        // wait out the whole turn, or the broker's deadline, to learn something
+        // the disk had already said.
+        pageCallback.onDurabilityResolved(receipt.ok)
       } else {
         await this.flushSession(managed.id)
         onAck?.(userMessage.id)
@@ -8257,8 +8269,8 @@ export class SessionManager implements ISessionManager {
               onProcessingStarted: () => {
                 if (reservation) this.releasePageCallback(sessionId, reservation)
               },
-              onDurable: () => {
-                durable = true
+              onDurabilityResolved: (isDurable: boolean) => {
+                durable = isDurable
                 // Resolve HERE, not on send-settle. `sendMessage` does not
                 // return until the whole agent turn completes, so waiting for
                 // it made every callback as slow as the turn it started — the

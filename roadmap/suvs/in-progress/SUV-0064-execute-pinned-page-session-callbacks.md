@@ -532,6 +532,41 @@ than ship a third test that looks like coverage, it installs a successor entry
 while the older call is in flight and asserts the older call's cleanup leaves it
 alone — which is exactly the rule, and it reddens when the rule is removed.
 
+## Round 16 — the mirror made real, and the queue given one tail
+
+`2026-09-12` — final review. Six items; the two P1s replaced workarounds with
+the actual mechanism.
+
+- **Pending plan is a lifecycle mirror, not a rescue.** Hydrating it for the
+  callback's write alone fixed this feature and left the product defect in
+  place: the field was stripped by `headerToMetadata`, so any writer's next
+  persist dropped it. It now flows through metadata into the managed session at
+  load, and `set` / `markDispatched` / `clear` each update disk and mirror
+  together. The callback's temporary set-and-clear is gone. Tested across the
+  real startup projection and several later persists in a callback turn — and
+  the test is built from `listSessions` metadata rather than by assigning the
+  field, because assigning it bypasses the very projection that used to drop it.
+- **The persistence queue has one tail per session.** Debounced, flushed and
+  checked writes all chain onto it, so two writes for a session can never be in
+  flight against the shared `.tmp` at once — interleaved writers can rename a
+  half-written temp file over a good session and lose bytes with no error
+  anywhere. Receipts are keyed to a **generation**: a later write satisfies one
+  (it contains the snapshot), an older write completing does not, and a failure
+  settles its own generation immediately rather than leaving a caller to hang
+  until something else happens to supersede it. `writeInProgress` and its
+  ownership dance are deleted — the tail makes the race structurally impossible
+  rather than guarded.
+- **A user send into the accepted-turn window queues directly.** No redirect, so
+  no `forceAbort` against a turn that has not started, and `wasInterrupted`
+  stays false — otherwise the replayed turn injects "your previous response was
+  interrupted" in front of a turn that never began.
+- **A write failure resolves the callback at the receipt**, not at the end of
+  the turn or the broker's deadline. A failed write is an answer; making the
+  caller time out to learn it turns a disk error into what looks like a slow
+  turn.
+- Reservation-token release and the both-placeholder provenance fallback have
+  direct tests.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been
@@ -576,15 +611,11 @@ alone — which is exactly the rule, and it reddens when the rule is removed.
   Closing it properly means extending the digest to cover the grant descriptors
   themselves, which changes what "content changed" means for every existing
   grant kind and belongs in its own SUV rather than smuggled into this one.
-- **`pendingPlanExecution` is preserved on the callback write, and remains
-  fragile everywhere else.** `headerToMetadata` strips it before
-  `createManagedSession` and `persistSession` rebuilds the header from managed
-  via `pickSessionFields`, so a value written by `setPendingPlanExecution` is
-  dropped by the next persist from any writer. A callback now hydrates it
-  synchronously at its commit, so *this* feature cannot destroy a plan the user
-  has not answered — but the general defect is untouched and any other writer
-  still drops it. Fixing it properly means either stopping the metadata
-  projection from stripping the field or teaching the persistence queue to merge
-  disk-only fields, and both change behaviour for every session writer. That
-  belongs with whoever owns the Accept-and-Compact recovery path, not smuggled
-  into this SUV.
+- **`pendingPlanExecution` is now a real managed mirror, and the general defect
+  is fixed rather than sidestepped.** It was stripped by `headerToMetadata`, so
+  it lived only on disk and the next persist from ANY writer silently dropped
+  it. The first fix here hydrated it for the callback's write alone, which
+  rescued this feature and left the product bug intact. It now flows through
+  metadata into the managed session at load, and every owner
+  (`set`/`markDispatched`/`clear`) updates disk and mirror together — so the
+  field survives an ordinary session lifetime, and a dismissal stays dismissed.

@@ -8,10 +8,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SessionPersistenceQueue } from '../persistence-queue.ts';
+import { getSessionFilePath } from '../storage.ts';
 import type { StoredSession } from '../types.ts';
 
 describe('SessionPersistenceQueue.flushChecked', () => {
@@ -92,29 +93,48 @@ describe('SessionPersistenceQueue.flushChecked', () => {
     expect(receipt.ok).toBe(false);
   });
 
-  it('does not untrack a NEWER write when an older flush settles', async () => {
-    // Ownership again, one layer down. An older call's cleanup must not remove
-    // the tracking entry a newer write has since installed — after which a
-    // checked flush sees no pending and no in-flight work, and reports success
-    // over bytes still being written.
-    //
-    // The real interleaving cannot be produced in-process: the writes here
-    // settle far too quickly for one to still be running when the next
-    // registers. So the rule itself is exercised — a successor entry is
-    // installed while the older call is in flight, and the older call's
-    // cleanup must leave it alone.
-    const tracking = (queue as unknown as { writeInProgress: Map<string, Promise<void>> }).writeInProgress;
+  it('serialises writes so the newest enqueued state is what lands', async () => {
+    // Every write for a session shares one `.tmp` path, so concurrency there is
+    // a correctness problem rather than a fairness one: interleaved writers can
+    // rename a half-written temp file over a good session and lose the loser's
+    // bytes with no error anywhere. Two writes issued back to back must
+    // therefore land in order, with the newest winning.
+    const first = session('s5');
+    (first as unknown as { name: string }).name = 'older';
+    queue.enqueue(first);
+    const older = queue.flush('s5');
 
-    queue.enqueue(session('s5'));
-    const older = queue.flushChecked('s5');
-
-    // Stand in for a newer write registering before the older call settles.
-    const successor = Promise.resolve();
-    tracking.set('s5', successor);
+    const second = session('s5');
+    (second as unknown as { name: string }).name = 'newer';
+    const receipt = queue.enqueueChecked(second);
 
     await older;
+    expect(await receipt).toEqual({ ok: true });
 
-    expect(tracking.get('s5')).toBe(successor);
+    const written = readFileSync(getSessionFilePath(root, 's5'), 'utf-8');
+    expect(written).toContain('"name":"newer"');
+  });
+
+  it('ties a receipt to its own generation, not to somebody else\'s success', async () => {
+    // A receipt is satisfied by ITS generation or a later one — a newer
+    // snapshot contains this one — but never by an older write completing,
+    // which would let a caller borrow an answer it had not earned.
+    mkdirSync(join(root, 'sessions', 's6', 'session.jsonl.tmp'), { recursive: true });
+    const failing = queue.enqueueChecked(session('s6'));
+    expect(await failing).toMatchObject({ ok: false });
+
+    // Clear the blockage; the next generation gets its own, honest answer.
+    rmSync(join(root, 'sessions', 's6', 'session.jsonl.tmp'), { recursive: true, force: true });
+    expect(await queue.enqueueChecked(session('s6'))).toEqual({ ok: true });
+  });
+
+  it('settles waiting receipts when a session is cancelled', async () => {
+    // A cancelled session will never write. Anything waiting on it has to be
+    // told, or it hangs for the life of the process.
+    queue.enqueue(session('s7'));
+    const receipt = queue.flushChecked('s7');
+    queue.cancel('s7');
+    expect(await receipt).toMatchObject({ ok: false });
   });
 
   it('keeps reporting failure until a later write succeeds', async () => {

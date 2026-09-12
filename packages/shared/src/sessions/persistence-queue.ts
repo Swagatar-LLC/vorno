@@ -9,6 +9,14 @@ import { debug } from '../utils/debug.js'
 interface PendingWrite {
   data: StoredSession
   timer: ReturnType<typeof setTimeout>
+  /** Monotonic per session. A receipt is satisfied by this generation or later. */
+  generation: number
+}
+
+/** A caller waiting to learn whether its snapshot reached disk. */
+interface ReceiptWaiter {
+  generation: number
+  settle: (receipt: SessionWriteReceipt) => void
 }
 
 interface HeaderMetadataSignature {
@@ -61,7 +69,23 @@ export type SessionWriteReceipt = { ok: true } | { ok: false; error: string }
 
 class SessionPersistenceQueue {
   private pending = new Map<string, PendingWrite>()
-  private writeInProgress = new Map<string, Promise<void>>()
+  /**
+   * Per-session write tail. EVERY write — debounced, flushed, or checked —
+   * chains onto it, so two writes for one session can never be in flight at
+   * once.
+   *
+   * They share a single `.tmp` path, so concurrency there is not a fairness
+   * question but a correctness one: interleaved writers can rename a partially
+   * written temp file over a good session, and the loser's bytes vanish with no
+   * error anywhere. Serialising is what makes "the newest enqueued state wins"
+   * true rather than probable.
+   */
+  private tails = new Map<string, Promise<void>>()
+  /** Highest generation enqueued per session. */
+  private generations = new Map<string, number>()
+  /** Highest generation successfully written per session. */
+  private writtenGeneration = new Map<string, number>()
+  private receiptWaiters = new Map<string, ReceiptWaiter[]>()
   /**
    * Last write failure per session, cleared on the next success.
    *
@@ -82,26 +106,83 @@ class SessionPersistenceQueue {
    * Queue a session for persistence. If a write is already pending for this
    * session, it will be replaced with the new data and the timer reset.
    */
-  enqueue(session: StoredSession): void {
+  enqueue(session: StoredSession): number {
     const existing = this.pending.get(session.id)
     if (existing) {
       clearTimeout(existing.timer)
     }
 
+    const generation = (this.generations.get(session.id) ?? 0) + 1
+    this.generations.set(session.id, generation)
+
     const timer = setTimeout(() => {
-      // Tracked like the flush-driven writes are. Without this a checked flush
-      // arriving while a debounced write was mid-I/O saw no pending entry, found
-      // no in-progress write, and reported success before the bytes had landed.
-      const running = this.write(session.id).then(() => undefined)
-      this.writeInProgress.set(session.id, running)
-      void running.finally(() => {
-        if (this.writeInProgress.get(session.id) === running) {
-          this.writeInProgress.delete(session.id)
-        }
-      })
+      // Onto the tail like every other write, so the debounced path cannot race
+      // a flush for the same `.tmp`.
+      void this.runOnTail(session.id)
     }, this.debounceMs)
 
-    this.pending.set(session.id, { data: session, timer })
+    this.pending.set(session.id, { data: session, timer, generation })
+    return generation
+  }
+
+  /**
+   * Enqueue and hand back a receipt for THIS snapshot.
+   *
+   * Resolves when the enqueued generation — or any later one, which by
+   * definition contains it — has been written, and reports the failure if that
+   * write could not land. A caller that tells a user "saved" needs to wait on
+   * its own bytes rather than on whatever happened to be in the queue.
+   */
+  enqueueChecked(session: StoredSession): Promise<SessionWriteReceipt> {
+    const generation = this.enqueue(session)
+    return this.receiptFor(session.id, generation)
+  }
+
+  /** Resolve once `generation` (or later) has been written, or has failed. */
+  private receiptFor(sessionId: string, generation: number): Promise<SessionWriteReceipt> {
+    const written = this.writtenGeneration.get(sessionId) ?? 0
+    if (written >= generation) {
+      const prior = this.lastWriteFailure.get(sessionId)
+      return Promise.resolve(prior ? { ok: false, error: prior } : { ok: true })
+    }
+    return new Promise<SessionWriteReceipt>((settle) => {
+      const waiters = this.receiptWaiters.get(sessionId) ?? []
+      waiters.push({ generation, settle })
+      this.receiptWaiters.set(sessionId, waiters)
+    })
+  }
+
+  /**
+   * Run the pending write for a session on its serialised tail.
+   *
+   * Chained with `.then(fn, fn)` so one failed write does not strand every
+   * later write for that session behind a rejected promise.
+   */
+  private runOnTail(sessionId: string): Promise<void> {
+    const previous = this.tails.get(sessionId) ?? Promise.resolve()
+    const next = previous.then(
+      () => this.write(sessionId).then(() => undefined),
+      () => this.write(sessionId).then(() => undefined),
+    )
+    this.tails.set(sessionId, next)
+    void next.finally(() => {
+      // Only if still ours: a later write may already own the tail.
+      if (this.tails.get(sessionId) === next) this.tails.delete(sessionId)
+    })
+    return next
+  }
+
+  /** Settle every receipt this write satisfies, successfully or otherwise. */
+  private settleReceipts(sessionId: string, generation: number, receipt: SessionWriteReceipt): void {
+    const waiters = this.receiptWaiters.get(sessionId)
+    if (!waiters?.length) return
+    const remaining: ReceiptWaiter[] = []
+    for (const waiter of waiters) {
+      if (waiter.generation <= generation) waiter.settle(receipt)
+      else remaining.push(waiter)
+    }
+    if (remaining.length) this.receiptWaiters.set(sessionId, remaining)
+    else this.receiptWaiters.delete(sessionId)
   }
 
   /**
@@ -113,6 +194,7 @@ class SessionPersistenceQueue {
     if (!entry) return true
 
     this.pending.delete(sessionId)
+    const { generation } = entry
 
     try {
       const { data } = entry
@@ -182,99 +264,67 @@ class SessionPersistenceQueue {
       await rename(tmpFile, filePath)
       debug(`[PersistenceQueue] Wrote session ${sessionId}`)
       this.lastWriteFailure.delete(sessionId)
+      this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
+      this.settleReceipts(sessionId, generation, { ok: true })
       return true
     } catch (error) {
       console.error(`[PersistenceQueue] Failed to write session ${sessionId}:`, error)
       // Recorded, not thrown. Existing callers are fire-and-forget and must not
-      // start failing; `flushChecked` is the opt-in way to learn about this.
-      this.lastWriteFailure.set(sessionId, error instanceof Error ? error.message : String(error))
+      // start failing; a receipt is the opt-in way to learn about this.
+      const message = error instanceof Error ? error.message : String(error)
+      this.lastWriteFailure.set(sessionId, message)
+      // Marked attempted either way, so a waiter learns the outcome promptly
+      // instead of hanging until some later write happens to supersede it.
+      // Failure is an answer; silence is not.
+      this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
+      this.settleReceipts(sessionId, generation, { ok: false, error: message })
       return false
     }
   }
 
   /**
-   * Immediately flush a specific session if pending.
-   * Waits for any in-progress write to complete before starting a new one
-   * to prevent race conditions on the shared .tmp file.
+   * Immediately flush a specific session, on its serialised tail.
+   *
+   * Whatever is already running for this session finishes first and this write
+   * follows it — never alongside. They share one `.tmp` path, so concurrency
+   * there is a correctness problem rather than a fairness one: interleaved
+   * writers can rename a half-written temp file over a good session and lose
+   * the loser's bytes with no error anywhere.
    */
   async flush(sessionId: string): Promise<void> {
+    if (!this.pending.has(sessionId) && !this.tails.has(sessionId)) return
     const entry = this.pending.get(sessionId)
-    if (entry) {
-      clearTimeout(entry.timer)
-
-      // Wait for any in-progress write to complete first
-      const inProgress = this.writeInProgress.get(sessionId)
-      if (inProgress) {
-        await inProgress
-      }
-
-      // Start new write and track it
-      const writePromise = this.write(sessionId).then(() => undefined)
-      this.writeInProgress.set(sessionId, writePromise)
-
-      try {
-        await writePromise
-      } finally {
-        // Only if it is still ours. A debounced write can replace the tracked
-        // promise while this one settles, and an unconditional delete would
-        // untrack the NEWER write — after which a checked flush sees no pending
-        // and no in-flight work and reports success over bytes still being
-        // written. Same rule the timer cleanup follows.
-        if (this.writeInProgress.get(sessionId) === writePromise) {
-          this.writeInProgress.delete(sessionId)
-        }
-      }
-    }
+    if (entry) clearTimeout(entry.timer)
+    await this.runOnTail(sessionId)
   }
 
   /**
-   * Flush, and report whether the bytes actually reached disk.
+   * Flush, and report whether THIS caller's bytes reached disk.
    *
-   * `flush` cannot answer that question: `write` catches its own errors so the
-   * fire-and-forget callers keep working, so a failed write is indistinguishable
-   * from a successful one to anyone awaiting it. A caller that tells a user
-   * "delivered and saved" needs the difference, and guessing in the optimistic
-   * direction is the one answer it must never give.
+   * `flush` cannot answer that: `write` catches its own errors so the
+   * fire-and-forget callers that make up nearly all of this queue's traffic
+   * keep working, which leaves a failed write indistinguishable from a
+   * successful one to anyone awaiting it. A caller that tells a user
+   * "delivered and saved" needs the difference, and guessing optimistically is
+   * the one answer it must never give.
+   *
+   * The receipt is tied to a GENERATION, not to a moment. A later write
+   * satisfies it — a newer snapshot contains this one — while an older write
+   * completing does not, so the answer cannot be borrowed from somebody else's
+   * success.
    *
    * Deliberately additive: `flush` is untouched and every existing caller keeps
    * its best-effort behaviour.
    */
   async flushChecked(sessionId: string): Promise<SessionWriteReceipt> {
+    const generation = this.pending.get(sessionId)?.generation ?? this.generations.get(sessionId) ?? 0
+    if (generation === 0) return { ok: true }
+
+    const receipt = this.receiptFor(sessionId, generation)
     const entry = this.pending.get(sessionId)
-    if (!entry) {
-      // Nothing QUEUED is not the same as nothing happening: `write` removes
-      // its pending entry before it touches the filesystem, so a write can be
-      // mid-I/O with the queue already empty. Reporting success here would tell
-      // the caller its bytes were on disk while they were still in flight — and
-      // if that write then fails, the claim was simply false.
-      const inProgress = this.writeInProgress.get(sessionId)
-      if (inProgress) await inProgress
-
-      // Either everything is on disk, or the last attempt failed and nobody has
-      // succeeded since — which still means this state is not durable.
-      const prior = this.lastWriteFailure.get(sessionId)
-      return prior ? { ok: false, error: prior } : { ok: true }
-    }
-
-    clearTimeout(entry.timer)
-    const inProgress = this.writeInProgress.get(sessionId)
-    if (inProgress) await inProgress
-
-    const writePromise = this.write(sessionId)
-    const tracked = writePromise.then(() => undefined)
-    this.writeInProgress.set(sessionId, tracked)
-    try {
-      const wrote = await writePromise
-      if (wrote) return { ok: true }
-      return { ok: false, error: this.lastWriteFailure.get(sessionId) ?? 'session write failed' }
-    } finally {
-      // Only if it is still ours — see the note in `flush`. Untracking a newer
-      // write here is exactly how a later checked flush comes to report success
-      // over work that has not finished.
-      if (this.writeInProgress.get(sessionId) === tracked) {
-        this.writeInProgress.delete(sessionId)
-      }
-    }
+    if (entry) clearTimeout(entry.timer)
+    void this.runOnTail(sessionId)
+    return receipt
   }
 
   /**
@@ -289,6 +339,11 @@ class SessionPersistenceQueue {
     }
     this.lastWrittenHeaderSignature.delete(sessionId)
     this.lastWriteFailure.delete(sessionId)
+    // A cancelled session will never write, so anything waiting on it must be
+    // told rather than left hanging for the life of the process.
+    this.settleReceipts(sessionId, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled' })
+    this.generations.delete(sessionId)
+    this.writtenGeneration.delete(sessionId)
   }
 
   /**

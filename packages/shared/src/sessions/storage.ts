@@ -414,8 +414,11 @@ function headerToMetadata(header: SessionHeader, workspaceRootPath: string): Ses
     const sdkCwd = header.sdkCwd ? expandPath(header.sdkCwd) : workingDir;
 
     // Destructure fields that don't exist on SessionMetadata or need overrides
+    // `pendingPlanExecution` is deliberately NOT destructured out any more: the
+    // managed session is built from this shape and the header is rebuilt from
+    // the managed session, so stripping it here meant the field lived only on
+    // disk until the next persist from any writer silently dropped it.
     const {
-      pendingPlanExecution: _pp,
       sessionStatus: _ss, workingDirectory: _wd, sdkCwd: _sc,
       workspaceRootPath: _wrp, ...headerFields
     } = header;

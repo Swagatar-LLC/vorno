@@ -19,6 +19,7 @@ import {
   writeSessionJsonl,
   type StoredSession,
 } from '@craft-agent/shared/sessions'
+import { listSessions } from '@craft-agent/shared/sessions'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
 
 const WORKSPACE_ID = 'ws_callback'
@@ -93,6 +94,24 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // Fail loudly here rather than let the real assertion below pass vacuously
     // against state that was never written.
     expect(getPendingPlanExecution(root, SESSION_ID)?.planPath).toBe('plans/do-the-thing.md')
+  }
+
+  /**
+   * Replace the managed session with one built from real `listSessions`
+   * metadata — the startup path. If `headerToMetadata` strips a field, it is
+   * missing here, which is the whole point.
+   */
+  function hydrateFromDisk(): Record<string, unknown> {
+    const meta = listSessions(root).find((m) => m.id === SESSION_ID)!
+    expect(meta).toBeDefined()
+    const managed = createManagedSession(
+      meta as never,
+      { id: WORKSPACE_ID, name: 'Callback WS', rootPath: root, createdAt: Date.now() } as never,
+    ) as unknown as Record<string, unknown>
+    managed.messagesLoaded = true
+    managed.messages = []
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(SESSION_ID, managed)
+    return managed
   }
 
   it('delivers and commits the message', async () => {
@@ -202,19 +221,52 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
    * reach. The fix hydrates it at the commit instead, so the assertion below is
    * about real behaviour.
    */
-  it('preserves a disk-only pending plan across a DELIVERED callback', async () => {
+  it('preserves a pending plan across a callback turn and its later persists', async () => {
     seed()
     await seedPendingPlan()
+    // Rebuild the managed session the way STARTUP does — from `listSessions`
+    // metadata — so the mirror has to survive `headerToMetadata` rather than
+    // being handed to it. Setting the field directly would bypass the very
+    // projection that used to drop it.
+    const managed = hydrateFromDisk()
 
     const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
     expect(outcome).toMatchObject({ ok: true })
+    expect(getPendingPlanExecution(root, SESSION_ID)).not.toBeNull()
 
-    // Re-read from disk: the plan the user is still deciding about survives a
-    // page's button being pressed.
+    // A callback turn writes more than once — title, labels, SDK id, token
+    // usage. Every one of those rebuilds the header from managed state, so a
+    // mirror that only survived the FIRST write would still lose the plan.
+    ;(managed as unknown as { name: string }).name = 'a generated title'
+    ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
+    await sm.flushSession(SESSION_ID)
+    ;(managed as unknown as { labels: string[] }).labels = ['triage']
+    ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
+    await sm.flushSession(SESSION_ID)
+
     const survived = getPendingPlanExecution(root, SESSION_ID)
     expect(survived).not.toBeNull()
     expect(survived!.planPath).toBe('plans/do-the-thing.md')
     expect(survived!.draftInputSnapshot).toBe('draft text')
+  })
+
+  it('keeps a dismissed plan absent across later persists', async () => {
+    seed()
+    await seedPendingPlan()
+    const managed = hydrateFromDisk()
+
+    // The user dismisses it through the owning API, which must clear BOTH — or
+    // the next persist writes the dismissed plan straight back and offers to
+    // resume work the user already moved past.
+    await sm.clearPendingPlanExecution(SESSION_ID)
+    expect(getPendingPlanExecution(root, SESSION_ID)).toBeNull()
+    expect(managed.pendingPlanExecution).toBeUndefined()
+
+    ;(managed as unknown as { name: string }).name = 'later write'
+    ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
+    await sm.flushSession(SESSION_ID)
+
+    expect(getPendingPlanExecution(root, SESSION_ID)).toBeNull()
   })
 
   it('reports durable:false when the write fails, and never claims otherwise', async () => {
@@ -247,29 +299,6 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // And the message is genuinely on disk, not merely reported as such.
     const reloaded = readFileSync(getSessionFilePath(root, SESSION_ID), 'utf-8')
     expect(reloaded).toContain(BODY)
-  })
-
-  it('does not resurrect a plan the user has since dismissed', async () => {
-    const managed = seed() as unknown as Record<string, unknown>
-    await seedPendingPlan()
-
-    // A callback delivers, which mirrors the stored plan onto the managed
-    // session so its write preserves it.
-    await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
-    expect(getPendingPlanExecution(root, SESSION_ID)).not.toBeNull()
-
-    // The mirror must not outlive that write. If it does, the user's own send
-    // clears the STORED value while the managed copy survives — and the next
-    // persist writes the dismissed plan back, offering to resume work the user
-    // already moved past.
-    expect(managed.pendingPlanExecution).toBeUndefined()
-
-    managed.isProcessing = false
-    managed.pageCallbackTurnPendingToken = undefined
-    await sm.sendMessage(SESSION_ID, 'user moves on').catch(() => {})
-    await new Promise((r) => setTimeout(r, 50))
-
-    expect(getPendingPlanExecution(root, SESSION_ID)).toBeNull()
   })
 
   it('a NON-callback send still clears pending plan execution', () => {
@@ -503,6 +532,93 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // Specifically THAT message queued — a length check would pass on anything
     // happening to be in the queue, including the callback's own turn.
     expect(managed.messageQueue.map((e) => e.message)).toContain('from the user')
+  })
+
+  it('a stale reservation owner cannot release its successor', () => {
+    const reserve = (sm as unknown as { reservePageCallback(id: string, t: symbol): symbol }).reservePageCallback.bind(sm)
+    const release = (sm as unknown as { releasePageCallback(id: string, t: symbol): void }).releasePageCallback.bind(sm)
+    const held = (sm as unknown as { pageCallbackReservations: Map<string, symbol> }).pageCallbackReservations
+
+    const first = Symbol('A')
+    const second = Symbol('B')
+    reserve(SESSION_ID, first)
+    // B takes over while A is still settling — A's deferred release must not
+    // clear it, or the next send sees an idle session and commits alongside B.
+    reserve(SESSION_ID, second)
+
+    release(SESSION_ID, first)
+    expect(held.get(SESSION_ID)).toBe(second)
+
+    release(SESSION_ID, second)
+    expect(held.has(SESSION_ID)).toBe(false)
+  })
+
+  it('resolves promptly with durable:false rather than waiting out the turn', async () => {
+    seed()
+    const original = (sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked
+    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = async () => ({
+      ok: false, error: 'ENOSPC: no space left on device',
+    })
+
+    // Make everything AFTER the receipt slow, so "resolved at the receipt" and
+    // "resolved when the send settled" are distinguishable rather than both
+    // being instant in this harness. It has to be an ASYNC hold: a synchronous
+    // spin blocks the event loop, so the already-resolved promise could not run
+    // either way and the measurement would prove nothing.
+    const smAny = sm as unknown as { getOrCreateAgent(...a: unknown[]): Promise<unknown> }
+    const originalGetAgent = smAny.getOrCreateAgent.bind(sm)
+    smAny.getOrCreateAgent = async () => {
+      await new Promise((r) => setTimeout(r, 300))
+      throw new Error('no agent in this harness')
+    }
+
+    try {
+      const started = Date.now()
+      const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+      // A write failure is an answer, and it has to come back at the moment it
+      // is known. Resolving only on success left the caller to discover a disk
+      // error by timing out, which makes it look like a slow turn — and lets
+      // the broker's deadline record a timeout over a delivered message.
+      expect(outcome).toMatchObject({ ok: true, durable: false })
+      expect(Date.now() - started).toBeLessThan(250)
+    } finally {
+      smAny.getOrCreateAgent = originalGetAgent
+      ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = original
+    }
+  })
+
+  it('queues a user send without claiming an interruption that never happened', async () => {
+    const managed = seed() as unknown as Record<string, unknown> & {
+      messageQueue: Array<{ message: string }>
+      wasInterrupted?: boolean
+      pageCallbackTurnPendingToken?: symbol
+    }
+
+    let releaseFlush!: () => void
+    const flushing = new Promise<void>((resolve) => { releaseFlush = resolve })
+    const original = (sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked
+    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = async () => {
+      await flushing
+      return { ok: true as const }
+    }
+
+    const callback = sm.tryDeliverPageCallback(SESSION_ID, 'from the page', { workspaceId: WORKSPACE_ID })
+    for (let i = 0; i < 50 && managed.pageCallbackTurnPendingToken === undefined; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    const userSend = sm.sendMessage(SESSION_ID, 'from the user').catch(() => {})
+    await new Promise((r) => setTimeout(r, 30))
+
+    releaseFlush()
+    await callback
+    await userSend
+    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = original
+
+    expect(managed.messageQueue.map((e) => e.message)).toContain('from the user')
+    // No turn was running, so nothing was interrupted. Claiming otherwise makes
+    // the replayed turn inject "your previous response was interrupted" in
+    // front of a turn that had not started.
+    expect(managed.wasInterrupted).toBeFalsy()
   })
 
   it('stands down for an announced ordinary send', async () => {
