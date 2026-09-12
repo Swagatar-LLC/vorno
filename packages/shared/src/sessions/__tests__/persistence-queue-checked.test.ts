@@ -92,6 +92,31 @@ describe('SessionPersistenceQueue.flushChecked', () => {
     expect(receipt.ok).toBe(false);
   });
 
+  it('does not untrack a NEWER write when an older flush settles', async () => {
+    // Ownership again, one layer down. An older call's cleanup must not remove
+    // the tracking entry a newer write has since installed — after which a
+    // checked flush sees no pending and no in-flight work, and reports success
+    // over bytes still being written.
+    //
+    // The real interleaving cannot be produced in-process: the writes here
+    // settle far too quickly for one to still be running when the next
+    // registers. So the rule itself is exercised — a successor entry is
+    // installed while the older call is in flight, and the older call's
+    // cleanup must leave it alone.
+    const tracking = (queue as unknown as { writeInProgress: Map<string, Promise<void>> }).writeInProgress;
+
+    queue.enqueue(session('s5'));
+    const older = queue.flushChecked('s5');
+
+    // Stand in for a newer write registering before the older call settles.
+    const successor = Promise.resolve();
+    tracking.set('s5', successor);
+
+    await older;
+
+    expect(tracking.get('s5')).toBe(successor);
+  });
+
   it('keeps reporting failure until a later write succeeds', async () => {
     const broken = session('s4');
     (broken as unknown as { workspaceRootPath: string }).workspaceRootPath = blockedRoot();

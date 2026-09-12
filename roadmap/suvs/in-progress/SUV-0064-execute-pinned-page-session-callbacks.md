@@ -514,6 +514,24 @@ mechanism.
   enqueued record already has it — and clearing the stored value clears any
   mirror too.
 
+## Round 15 — write tracking needed the same ownership rule
+
+`2026-09-12` — one P1, and the third appearance of one idea: **any state keyed
+by session and released after an await needs an owner.** The reservation needed
+it, the accepted-turn marker needed it, and now the queue's in-flight write
+tracking needs it. An older call's `finally` was deleting the entry
+unconditionally, so a newer write could be untracked — after which a checked
+flush sees no pending and no in-flight work and reports success over bytes still
+being written. Both `flush` and `flushChecked` now delete only their own entry.
+
+**The test is deliberately white-box, and the reason is recorded here rather
+than buried.** The real interleaving cannot be produced in-process: these writes
+settle far too quickly for one to still be running when the next registers, and
+two attempts at a "natural" version both passed with the fix removed. Rather
+than ship a third test that looks like coverage, it installs a successor entry
+while the older call is in flight and asserts the older call's cleanup leaves it
+alone — which is exactly the rule, and it reddens when the rule is removed.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

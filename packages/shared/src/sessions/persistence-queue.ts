@@ -215,7 +215,14 @@ class SessionPersistenceQueue {
       try {
         await writePromise
       } finally {
-        this.writeInProgress.delete(sessionId)
+        // Only if it is still ours. A debounced write can replace the tracked
+        // promise while this one settles, and an unconditional delete would
+        // untrack the NEWER write — after which a checked flush sees no pending
+        // and no in-flight work and reports success over bytes still being
+        // written. Same rule the timer cleanup follows.
+        if (this.writeInProgress.get(sessionId) === writePromise) {
+          this.writeInProgress.delete(sessionId)
+        }
       }
     }
   }
@@ -254,13 +261,19 @@ class SessionPersistenceQueue {
     if (inProgress) await inProgress
 
     const writePromise = this.write(sessionId)
-    this.writeInProgress.set(sessionId, writePromise.then(() => undefined))
+    const tracked = writePromise.then(() => undefined)
+    this.writeInProgress.set(sessionId, tracked)
     try {
       const wrote = await writePromise
       if (wrote) return { ok: true }
       return { ok: false, error: this.lastWriteFailure.get(sessionId) ?? 'session write failed' }
     } finally {
-      this.writeInProgress.delete(sessionId)
+      // Only if it is still ours — see the note in `flush`. Untracking a newer
+      // write here is exactly how a later checked flush comes to report success
+      // over work that has not finished.
+      if (this.writeInProgress.get(sessionId) === tracked) {
+        this.writeInProgress.delete(sessionId)
+      }
     }
   }
 
