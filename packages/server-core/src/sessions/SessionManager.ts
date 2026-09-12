@@ -9283,11 +9283,19 @@ export class SessionManager implements ISessionManager {
           },
           isHeadless: true,
         }, buildBackendHostRuntimeContext()) as AgentInstance
-        await agent.postInit()
+        // Marked BEFORE `postInit`, because `postInit` is what opens the
+        // connection: anything that leaves this block after it — a throw, or
+        // the shutdown re-check below — has a live backend to tear down, and
+        // only this flag tells the cleanup that it owns one.
         isTemporary = true
+        await agent.postInit()
         sessionLog.info(`[generateTitle] Created temporary agent for session ${managed.id}`)
       } catch (error) {
         sessionLog.error(`[generateTitle] Failed to create temporary agent:`, error)
+        // Destroyed here rather than left to the `finally` below, which this
+        // `return` never reaches. A failed `postInit` can still have opened
+        // something.
+        agent?.destroy()
         return
       }
     }
@@ -9298,6 +9306,15 @@ export class SessionManager implements ISessionManager {
     }
 
     try {
+      // Before the REQUEST, not just before its result. A quit can begin while
+      // `postInit` above is opening the connection, and a title asked for after
+      // that point is one whose answer is already destined for the discard
+      // below — so the provider is never asked. Inside the `try`, so the
+      // `finally` still tears down a temporary backend this path created.
+      if (this.shuttingDown) {
+        sessionLog.info(`[generateTitle] Skipped for session ${managed.id}: shutting down`)
+        return
+      }
       // Race-free language resolution from persisted UI language; undefined => auto-detect (#885).
       const titleLanguage = resolveTitleLanguageName()
       sessionLog.info(`[generateTitle] language at call time`, {

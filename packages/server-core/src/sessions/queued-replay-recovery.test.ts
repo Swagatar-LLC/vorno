@@ -151,6 +151,48 @@ describe('a title generated across a shutdown', () => {
     sm = new SessionManager()
   })
 
+  it('never asks the provider once the freeze has landed', async () => {
+    // Discarding the answer is not enough on its own: a quit can begin while the
+    // backend is still being stood up, and a title asked for after that point is
+    // one whose answer is already destined for the discard. So the request is
+    // not made at all — the check sits before it, inside the `try` whose
+    // `finally` tears down a temporary backend.
+    const sessionId = 'sess_title_no_request'
+    const filePath = getSessionFilePath(root, sessionId)
+    mkdirSync(dirname(filePath), { recursive: true })
+    writeSessionJsonl(filePath, {
+      id: sessionId,
+      workspaceRootPath: root,
+      name: 'Fallback name',
+      sessionStatus: 'todo',
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      messages: [{ role: 'user', content: 'hello' }],
+    } as unknown as StoredSession)
+
+    let asked = false
+    const managed = createManagedSession(
+      { id: sessionId, name: 'Fallback name', sessionStatus: 'todo', createdAt: Date.now() },
+      { id: 'ws_title', name: 'Title WS', rootPath: root, createdAt: Date.now() } as never,
+    ) as unknown as Record<string, unknown>
+    managed.messagesLoaded = true
+    managed.messages = [{ role: 'user', content: 'hello' }]
+    managed.messageQueue = []
+    managed.agent = { generateTitle: async () => { asked = true; return 'A Title' } }
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, managed)
+
+    await sm.flushAllSessions()
+    await (sm as unknown as {
+      generateTitle(m: unknown, msg: string): Promise<void>
+    }).generateTitle(managed, 'hello')
+
+    expect(asked).toBe(false)
+    expect(managed.name).toBe('Fallback name')
+
+    sessionPersistenceQueue.reopenAfterFlushAll()
+    rmSync(root, { recursive: true, force: true })
+  }, 20000)
+
   it('is discarded rather than applied, announced, or logged as a success', async () => {
     // `generateTitle` is fired un-awaited from the send path and is not one of
     // the producers `stopPersistenceProducers` stops — a quit cannot be held

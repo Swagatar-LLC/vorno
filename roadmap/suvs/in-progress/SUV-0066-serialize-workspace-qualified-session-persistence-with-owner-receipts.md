@@ -262,7 +262,15 @@ the supersede backstop bounds a leak there — recorded rather than implied away
    and the renderer disagreeing about the name. It now re-checks after its await
    and DISCARDS before mutating, persisting, announcing or logging success, and
    refuses to stand up a temporary backend once the freeze has landed, so the
-   provider handle is never opened rather than opened and abandoned. Bounded by
+   provider handle is never opened rather than opened and abandoned. Greptile
+   then found the gap between those two: a quit beginning while `postInit` was
+   opening the connection still let the REQUEST go out, to be discarded on
+   arrival — so the check is repeated immediately before the request, inside the
+   `try` whose `finally` tears the temporary backend down. That review also
+   surfaced a pre-existing leak beside it: a `postInit` that threw returned
+   without destroying the backend it had just created, because `isTemporary` was
+   only set after the await. It is set before it now, and the catch destroys.
+   Bounded by
    refusing rather than by being awaited, deliberately: the title is derived, and
    the fallback name the session already has is correct. The previous round
    recorded this as an accepted P3 residual; it is now fixed, and the residual
