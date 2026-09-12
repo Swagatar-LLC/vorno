@@ -1586,6 +1586,41 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * Turn an accepted-but-undelivered steer back into a queued message.
+   *
+   * The message was accepted, ACKed and persisted, then pushed into a running
+   * turn instead of queued. If that turn ends without delivering it, it has to
+   * become a queued message after all — as the SAME message, keeping its id,
+   * attachments and canonical options, so the transcript does not grow a
+   * duplicate and the replay pre-enables the same sources.
+   *
+   * `messageQueue` alone cannot carry that: it is runtime state. So the marker
+   * and the slugs go onto the persisted message, which is what the cold-load
+   * scan replays from, and the persist is picked up by shutdown's candidate scan
+   * — the session is processing, and now holds a queued entry as well.
+   *
+   * @returns true when a message was promoted
+   */
+  private promoteUndeliveredSteer(managed: ManagedSession, steerText: string): boolean {
+    const pendingIndex = managed.pendingSteers?.findIndex(p => p.message === steerText) ?? -1
+    const envelope = pendingIndex >= 0 ? managed.pendingSteers!.splice(pendingIndex, 1)[0] : undefined
+    const original = envelope ? managed.messages.find(m => m.id === envelope.messageId) : undefined
+    if (!envelope || !original) return false
+
+    original.isQueued = true
+    original.queuedSkillSlugs = envelope.options?.skillSlugs
+    managed.messageQueue.push({
+      message: envelope.message,
+      attachments: envelope.attachments,
+      storedAttachments: envelope.storedAttachments,
+      options: envelope.options,
+      messageId: envelope.messageId,
+    })
+    this.persistSession(managed)
+    return true
+  }
+
+  /**
    * Start the turn and hand shutdown-visibility over from the admission to it,
    * with NO GAP.
    *
@@ -8352,6 +8387,21 @@ export class SessionManager implements ISessionManager {
         // 1. Cleanup state
         this.setProcessing(managed, false, finalization)
         managed.stopRequested = false  // Reset for next turn
+
+        // ASK the backend whether it is still holding a steer it never
+        // delivered, because it will never get to TELL us: `chat()` yields that
+        // notice from its `finally`, and this handler is reached from a `return`
+        // that abandons the generator, which discards anything it yields on the
+        // way out. An accepted, ACKed user message was being dropped here every
+        // time a Claude turn ended without a tool call firing.
+        //
+        // Synchronous, and deliberately in this handler's synchronous prefix:
+        // the generator's `finally` runs when the iterator is closed, which is
+        // after this call and would otherwise clear the backend's copy first.
+        const undelivered = managed.agent?.takeUndeliveredSteer?.() ?? null
+        if (undelivered && this.promoteUndeliveredSteer(managed, undelivered)) {
+          sessionLog.info(`Re-queued an undelivered steer for session ${sessionId}`)
+        }
         // A steer that was delivered is not coming back; a stale envelope would
         // re-queue a message that already ran.
         managed.pendingSteers = undefined
@@ -10315,35 +10365,16 @@ export class SessionManager implements ISessionManager {
         // Re-queue it so it's sent as a normal message on the next turn — as the
         // SAME message it already is, not as a new one.
         sessionLog.info(`Steer message undelivered, re-queuing for session ${sessionId}`)
-        const pendingIndex = managed.pendingSteers?.findIndex(p => p.message === event.message) ?? -1
-        const envelope = pendingIndex >= 0 ? managed.pendingSteers!.splice(pendingIndex, 1)[0] : undefined
-        const original = envelope
-          ? managed.messages.find(m => m.id === envelope.messageId)
-          : undefined
-
-        if (envelope && original) {
-          // Durable BEFORE anything else can end the turn: the message was
-          // accepted and ACKed, so losing it here would be losing a message the
-          // user was told had landed. `messageQueue` cannot carry that promise —
-          // it is runtime state — so the flag and the slugs go onto the message,
-          // which is what the cold-load scan replays from. The persist is picked
-          // up by shutdown's candidate scan either way: this session is
-          // processing, and it now holds a queued entry as well.
-          original.isQueued = true
-          original.queuedSkillSlugs = envelope.options?.skillSlugs
-          managed.messageQueue.push({
-            message: envelope.message,
-            attachments: envelope.attachments,
-            storedAttachments: envelope.storedAttachments,
-            options: envelope.options,
-            messageId: envelope.messageId,
-          })
-          this.persistSession(managed)
-        } else {
-          // No envelope: a steer this manager did not record (a path that does
-          // not go through `sendMessage`). Falls back to the old shape — the
-          // text alone, replayed as a new message — rather than dropping it.
-          sessionLog.warn(`Undelivered steer for ${sessionId} has no recorded envelope; re-queuing text only`)
+        // Reachable only when something drains the generator to its natural end.
+        // The usual path returns on `complete` and never sees this event — which
+        // is why the turn-end PULL in `onProcessingStopped` is the guarantee and
+        // this is the courtesy. Both go through the same promotion, and the
+        // first one to run takes the envelope, so they cannot double-queue.
+        if (!this.promoteUndeliveredSteer(managed, event.message)) {
+          // No envelope, or it was already promoted at turn end. Re-queue the
+          // text alone rather than dropping it — the old shape, kept for a steer
+          // this manager did not record.
+          sessionLog.info(`Undelivered steer for ${sessionId} had no pending envelope; re-queuing text only`)
           managed.messageQueue.push({ message: event.message })
         }
         managed.wasInterrupted = true

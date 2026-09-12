@@ -516,6 +516,24 @@ export class ClaudeAgent extends BaseAgent {
   private pendingSteerMessage: string | null = null;
 
   /**
+   * Hand back a steer that was accepted into a turn and never delivered.
+   *
+   * The session layer calls this when the turn ends, because it will never be
+   * TOLD: the notice is yielded from `chat()`'s `finally`, and the consumer
+   * returns as soon as it sees `complete`, which abandons the generator and
+   * discards anything it yields on the way out.
+   *
+   * Taking it clears it, so the trailing yield — if anything is still draining
+   * this generator — finds nothing and the same message cannot be promoted
+   * twice.
+   */
+  takeUndeliveredSteer(): string | null {
+    const pending = this.pendingSteerMessage;
+    this.pendingSteerMessage = null;
+    return pending;
+  }
+
+  /**
    * WS2 keep-alive: when true, use one long-lived streaming-input `query()` per
    * session so background sub-agents survive across turns (instead of a fresh
    * per-turn subprocess that tears them down at turn end).
@@ -2440,6 +2458,10 @@ This is a branched conversation. All prior messages in this conversation are par
       // If a steer message was never delivered (no PreToolUse fired), notify the session
       // layer so it can re-queue the message for the next turn.
       const undeliveredSteer = this.pendingSteerMessage;
+      // Still yielded, because a consumer that drains this generator to its
+      // natural end does receive it. It is NOT the guarantee: the session layer
+      // returns on `complete`, which abandons the iterator and throws this away
+      // — see `takeUndeliveredSteer`, which is how that layer finds out.
       if (undeliveredSteer) {
         this.pendingSteerMessage = null;
         this.debug(`Steer message was not delivered (no tool call fired) — emitting steer_undelivered`);

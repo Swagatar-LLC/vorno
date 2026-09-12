@@ -299,6 +299,29 @@ them.
    per-turn and cleared in `onProcessingStopped`, because a delivered steer is
    not coming back and a stale one re-queues a message already answered.
 
+   **Greptile then found that the event never arrives at all, and it was right.**
+   `chat()` yields `steer_undelivered` from its `finally`, and the send loop
+   RETURNS the moment it sees `complete` — which abandons the generator, and an
+   abandoned generator's trailing yields are discarded. So every Claude turn that
+   ended without a tool call firing dropped an accepted, ACKed user message, both
+   before this SUV and after its first fix. The information cannot be pushed, so
+   it is PULLED: `AgentBackend.takeUndeliveredSteer()` (optional; Claude
+   implements it, native-steering backends have nothing to hand back) is called
+   at turn end, in `onProcessingStopped`'s SYNCHRONOUS prefix — the generator's
+   `finally` runs when the iterator closes, which is after that point and would
+   otherwise clear the backend's copy first. Taking it clears it, so the trailing
+   yield (if anything is still draining) cannot promote the same message twice.
+   The event handler stays as the courtesy path for a consumer that drains
+   naturally; both go through one promotion routine.
+
+   The test for this is narrow on purpose and its limit is stated: it drives the
+   turn-end handler the loop really does reach and asserts the message survives
+   with NO `steer_undelivered` event processed at all. It does not re-prove that
+   the loop calls that handler on `complete` — that is existing, unchanged code.
+   A full fake backend driven through `sendMessage` was tried first and abandoned
+   when it hung on incidental backend surface; a test that needs a dozen stubs to
+   reach one assertion is testing the stubs.
+
 2. **Live and replayed sends could disagree about the slugs.** Normalizing at
    each persist site left the LIVE pre-enable — the one that reaches
    `loadSkillBySlug` FIRST — reading whatever the caller sent. There is one
@@ -895,6 +918,11 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 19b (Greptile P1): the `steer_undelivered` EVENT never
+  reaches the session layer — the send loop returns on `complete` and abandons
+  the generator, discarding its trailing yield — so every Claude turn that ended
+  without a tool call firing dropped an accepted, ACKed message. The answer is
+  now pulled at turn end via `takeUndeliveredSteer()` rather than waited for.
 - `2026-09-12` — review 19 (architecture P1/P2/P3): an undelivered steer was
   re-queued as a NEW, non-durable message, losing id, attachments and slugs — it
   now promotes the original through a per-turn envelope; skill slugs are

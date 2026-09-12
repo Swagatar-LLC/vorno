@@ -358,6 +358,53 @@ describe('a queued send crossing a process boundary', () => {
     expectNoLeakedWork(sm)
   }, 30000)
 
+  it('keeps an undelivered steer that the event stream never delivers', async () => {
+    // The order is the point. `chat()` yields `complete` and then yields
+    // `steer_undelivered` from its `finally`; the send loop returns as soon as
+    // it sees `complete`, which abandons the generator and throws that second
+    // event away. So the event handler is NOT the guarantee — this test never
+    // processes that event at all — and the turn-end handler the loop really
+    // does reach has to ASK the backend instead.
+    const sessionId = 'sess_steer_real_order'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId)
+    const turns = sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void }
+
+    // A backend that accepts the steer, never delivers it, and reports it only
+    // when asked — exactly the shape whose trailing yield gets discarded.
+    const steer = { held: null as string | null }
+    managed.agent = {
+      redirect: (text: string) => { steer.held = text; return true },
+      takeUndeliveredSteer: () => { const held = steer.held; steer.held = null; return held },
+    }
+
+    turns.setProcessing(managed, true)
+    await sm.sendMessage(sessionId, 'steered into the turn', undefined, undefined, {
+      skillSlugs: [SKILL_SLUG],
+    })
+    const steered = (managed.messages as Array<{ id: string; content?: string }>)
+      .find((m) => m.content === 'steered into the turn')!
+    // Accepted into the turn rather than queued — and the backend is holding it.
+    expect((managed.messageQueue as unknown[]).length).toBe(0)
+    expect(steer.held).toBe('steered into the turn')
+
+    // The turn ends the way the send loop ends it on `complete`: straight into
+    // this handler, with no further events consumed.
+    await (sm as unknown as {
+      onProcessingStopped(id: string, reason: string): Promise<void>
+    }).onProcessingStopped(sessionId, 'complete')
+
+    // Survived — as the same message, with its slugs, exactly once.
+    const queued = (managed.messages as Array<{ id: string; isQueued?: boolean; queuedSkillSlugs?: string[] }>)
+      .find((m) => m.id === steered.id)
+    expect(queued?.isQueued).toBe(true)
+    expect(queued?.queuedSkillSlugs).toEqual([SKILL_SLUG])
+    expect((managed.messages as Array<{ content?: string }>)
+      .filter((m) => m.content === 'steered into the turn')).toHaveLength(1)
+    // And the backend is no longer holding it, so nothing can promote it twice.
+    expect(steer.held).toBeNull()
+  }, 30000)
+
   it('does not re-queue a steer from an earlier turn', async () => {
     // The envelopes are per-TURN. A steer that was delivered is not coming back,
     // and leaving its envelope behind meant the next undelivered steer with the

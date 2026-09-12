@@ -382,6 +382,24 @@ export interface AgentBackend {
   setBackgroundEventSink?(sink: ((event: AgentEvent) => void) | null): void;
 
   /**
+   * Take back a steer the backend accepted but never delivered, if any.
+   *
+   * A steer is a user message pushed into a RUNNING turn. If nothing in that
+   * turn ever delivers it, the session layer has to re-queue it — and it cannot
+   * learn that from the event stream: `chat()` yields the notice from its
+   * `finally`, and the consumer returns as soon as it sees `complete`, which
+   * abandons the generator and discards anything it yields on the way out. So
+   * the answer is PULLED at turn end rather than pushed, by the one component
+   * that knows it.
+   *
+   * Returns the undelivered message and forgets it, so it is promoted exactly
+   * once. Backends that steer natively (the message reaches the model
+   * immediately, or not at all) have nothing to hand back and may leave this
+   * unimplemented.
+   */
+  takeUndeliveredSteer?(): string | null;
+
+  /**
    * Interrupt the current turn because control is being handed to the UI.
    *
    * Used for pause points like plan submission and auth requests, where the
