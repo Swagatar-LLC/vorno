@@ -342,6 +342,31 @@ is asserted against the real method.
   headless process, a test harness) returned `undefined` and silently removed
   the warning. A missing translation must degrade to English, never to nothing.
 
+## Round 8 — the announcement, and a self-inflicted slowdown
+
+`2026-09-12` — two P1s against round 7.
+
+- **A Set entry is a flag, and overlapping sends share it.** Two ordinary sends
+  for one session shared one key, so whichever finished first deleted it while
+  the other was still pre-handoff — and a callback could commit alongside the
+  survivor, which is the overlap the announcement exists to prevent. Now a
+  **refcount**, with the wrapper owning exactly one announce/withdraw pair; the
+  inner early releases are gone, because a second decrement would under-count an
+  overlapping send and reopen the window. Holding the announcement until the
+  turn ends costs nothing, since `isProcessing` refuses a callback from the
+  handover onward anyway.
+- **Resolving on send-settle made every callback as slow as the turn it
+  started.** `sendMessage` does not return until the agent turn completes, so
+  round 7's change to resolve there meant the broker held its mutating queue
+  slot for the whole turn and its deadline could not help — the caller was
+  blocked on work that had already succeeded. **Fixed:** the primitive resolves
+  at `onDurable`, which is the last thing it promises; everything after belongs
+  to the turn, not to the delivery. The send-settle path remains as the fallback
+  for a refusal or a throw before the flush. The broker's post-commit durability
+  wait is additionally bounded (`POST_COMMIT_DURABILITY_GRACE_MS`), because
+  "normally prompt" is not a guarantee to hold a queue slot on, and unknown
+  durability records as not-durable rather than claiming a flush nobody saw.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

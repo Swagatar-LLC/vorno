@@ -244,6 +244,55 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
       .resolves.toMatchObject({ ok: true })
   })
 
+  it('does not wait for the whole turn — it resolves once the message is durable', async () => {
+    seed()
+    // `sendMessage` does not return until the agent turn completes. If this
+    // primitive waited for that, every callback would be as slow as the turn it
+    // started, the broker would hold its mutating queue slot throughout, and
+    // its deadline could not help — the caller would be blocked on work that
+    // had already succeeded. Durability is the last thing this promises.
+    const started = Date.now()
+    const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+    expect(outcome.ok).toBe(true)
+    // Generous bound: the assertion is "does not await a turn", not a benchmark.
+    expect(Date.now() - started).toBeLessThan(5_000)
+  })
+
+  it('counts overlapping ordinary sends instead of sharing one flag', async () => {
+    // Two user sends for one session share a key. With a Set, whichever
+    // finished first deleted the shared entry while the other was still
+    // pre-handoff, and a callback could commit alongside the survivor — the
+    // exact overlap the announcement exists to prevent.
+    const counts = (sm as unknown as { ordinarySendsInFlight: Map<string, number> }).ordinarySendsInFlight
+    const announce = (sm as unknown as { announceOrdinarySend(id: string): void }).announceOrdinarySend.bind(sm)
+    const withdraw = (sm as unknown as { withdrawOrdinarySend(id: string): void }).withdrawOrdinarySend.bind(sm)
+
+    announce(SESSION_ID)
+    announce(SESSION_ID)
+    expect(counts.get(SESSION_ID)).toBe(2)
+
+    withdraw(SESSION_ID)
+    // One send finished; the other has not, so the session is still announced
+    // and a callback must still stand down.
+    expect(counts.has(SESSION_ID)).toBe(true)
+
+    withdraw(SESSION_ID)
+    expect(counts.has(SESSION_ID)).toBe(false)
+    // Over-withdrawing must not go negative or resurrect an entry.
+    withdraw(SESSION_ID)
+    expect(counts.has(SESSION_ID)).toBe(false)
+  })
+
+  it('stands down for an announced ordinary send', async () => {
+    seed()
+    ;(sm as unknown as { announceOrdinarySend(id: string): void }).announceOrdinarySend(SESSION_ID)
+
+    // A page yields to a person. The reverse never happens: nothing consults
+    // this set on a user's behalf, so no user send is ever delayed by it.
+    await expect(sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID }))
+      .resolves.toMatchObject({ ok: false, code: 'session-busy' })
+  })
+
   it('signals commit before it resolves, and reports durability separately', async () => {
     seed()
     const events: string[] = []

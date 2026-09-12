@@ -6382,14 +6382,14 @@ export class SessionManager implements ISessionManager {
     rpcContext?: { callerClientId?: string },
   ): Promise<void> {
     const announces = options?.pageCallback === undefined
-    if (announces) this.ordinarySendsInFlight.add(sessionId)
+    if (announces) this.announceOrdinarySend(sessionId)
     try {
       return await this.sendMessageInner(
         sessionId, message, attachments, storedAttachments, options,
         existingMessageId, _isAuthRetry, onAck, rpcContext,
       )
     } finally {
-      if (announces) this.ordinarySendsInFlight.delete(sessionId)
+      if (announces) this.withdrawOrdinarySend(sessionId)
     }
   }
 
@@ -6446,7 +6446,6 @@ export class SessionManager implements ISessionManager {
       // whichever arrives first), subsequent matching calls within the deadline drop.
       if (claimAutoRetryPending(managed, message) === 'drop') {
         sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
-        this.ordinarySendsInFlight.delete(sessionId)
         return
       }
 
@@ -6567,9 +6566,6 @@ export class SessionManager implements ISessionManager {
       // enqueues with a 500ms debounce. (#616 reliability fix.)
       await this.flushSession(managed.id)
       onAck?.(userMessage.id)
-      // Mid-stream returns without reaching the handover below, and the session
-      // is already processing — which is what a callback's guard reads anyway.
-      this.ordinarySendsInFlight.delete(sessionId)
       return
     }
 
@@ -6696,11 +6692,10 @@ export class SessionManager implements ISessionManager {
     }
 
     managed.lastMessageAt = Date.now()
-    // Handover. From here `isProcessing` is what a callback's guard reads, so
-    // the announcement has done its job and must not outlive it — a leaked
-    // entry would make this session permanently un-callable by any Page, which
-    // fails closed but is still a bug the user cannot diagnose.
-    this.ordinarySendsInFlight.delete(sessionId)
+    // No early release here. The wrapper owns exactly one announce/withdraw
+    // pair; decrementing again inside would under-count an overlapping send and
+    // reopen the window. Holding the announcement until the turn ends costs
+    // nothing — from this line on `isProcessing` refuses a callback anyway.
     this.setProcessing(managed, true)
     managed.streamingText = ''
     managed.streamingTurnId = undefined
@@ -7992,7 +7987,29 @@ export class SessionManager implements ISessionManager {
    * nothing else: a user pressing send during a callback's flush window still
    * saw an idle session, and both committed.
    */
-  private readonly ordinarySendsInFlight = new Set<string>()
+  private readonly ordinarySendsInFlight = new Map<string, number>()
+
+  /** Announce an ordinary send. Counted, because overlapping sends share a key. */
+  private announceOrdinarySend(sessionId: string): void {
+    this.ordinarySendsInFlight.set(sessionId, (this.ordinarySendsInFlight.get(sessionId) ?? 0) + 1)
+  }
+
+  /**
+   * Withdraw one announcement.
+   *
+   * A count rather than a flag because two ordinary sends for one session share
+   * a key: with a Set, whichever finished first deleted the shared entry while
+   * the other was still pre-handoff, and a callback could then commit alongside
+   * the survivor — the exact overlap the announcement exists to prevent.
+   * Idempotent per caller: the inner method releases early at the handover and
+   * the wrapper releases again on exit, and only the first of those decrements.
+   */
+  private withdrawOrdinarySend(sessionId: string): void {
+    const outstanding = this.ordinarySendsInFlight.get(sessionId)
+    if (outstanding === undefined) return
+    if (outstanding <= 1) this.ordinarySendsInFlight.delete(sessionId)
+    else this.ordinarySendsInFlight.set(sessionId, outstanding - 1)
+  }
 
   private readonly sessionTargetLookup: WorkspaceSessionLookup = {
     getSessions: (workspaceId: string) =>
@@ -8066,7 +8083,18 @@ export class SessionManager implements ISessionManager {
                 // delivery cannot be cancelled, timed out, or relabelled.
                 options.onCommitted?.()
               },
-              onDurable: () => { durable = true },
+              onDurable: () => {
+                durable = true
+                // Resolve HERE, not on send-settle. `sendMessage` does not
+                // return until the whole agent turn completes, so waiting for
+                // it made every callback as slow as the turn it started — the
+                // broker held its mutating queue slot throughout and its
+                // deadline could not help, because the caller was blocked on
+                // work that had already succeeded. Durability is the last thing
+                // this primitive promises; everything after it belongs to the
+                // turn, not to the delivery.
+                resolve()
+              },
             },
           },
           undefined,
@@ -8076,11 +8104,9 @@ export class SessionManager implements ISessionManager {
           .catch((error) => {
             sessionLog.warn(`tryDeliverPageCallback: send failed for ${sessionId}: ${error}`)
           })
-          // Resolve on settle rather than at commit: the caller wants to know
-          // whether the message reached disk, and that answer only exists after
-          // the flush. A send that commits and then throws still reports
-          // success — the message is real either way — but reports it as
-          // non-durable rather than claiming more than happened.
+          // Fallback resolution for the paths that never reach durability: a
+          // guard refusal, or a throw before the flush. The durable path has
+          // already resolved by here, and resolving twice is a no-op.
           .finally(() => resolve())
       })
     } finally {

@@ -241,6 +241,16 @@ export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_PAGE = 60;
 export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_WORKSPACE = 120;
 
 /**
+ * How long the broker will wait for a committed delivery's durability answer
+ * after a deadline or cancel has already won the race.
+ *
+ * Short on purpose. The delivery resolves at durability, so the answer is
+ * normally already there; this exists so that a stuck flush cannot hold a
+ * mutating queue slot open indefinitely and defeat the deadline that got here.
+ */
+export const POST_COMMIT_DURABILITY_GRACE_MS = 2_000;
+
+/**
  * Stable outcome of an execution attempt, for the audit log.
  *
  * The audit records THIS and never `result.error`. An executor's message is
@@ -1749,8 +1759,17 @@ export class PageActionBroker {
         // promptly — the commit has happened, only the flush is outstanding —
         // and a failure here means the flush failed, which is exactly
         // `durable: false` rather than a missing field.
+        // Bounded. The delivery resolves at durability, so this normally
+        // settles at once — but "normally" is not a guarantee to hold a
+        // mutating queue slot on, and an unbounded await here would let a stuck
+        // flush defeat the very deadline that reached this branch. Unknown
+        // durability is recorded as not-durable: the conservative reading, and
+        // the one that does not claim a flush nobody observed.
         try {
-          const settled = await sessionWork;
+          const settled = await Promise.race([
+            sessionWork,
+            new Promise<null>((resolveUnknown) => setTimeout(() => resolveUnknown(null), POST_COMMIT_DURABILITY_GRACE_MS)),
+          ]);
           sessionDurable = settled?.ok === true ? settled.durable : false;
         } catch {
           sessionDurable = false;
