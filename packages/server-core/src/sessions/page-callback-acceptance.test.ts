@@ -376,7 +376,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // A marker left set with `isProcessing` false is the worst residue
     // available: every later user message queues behind a turn that will never
     // start, and the session goes quiet with no error the user can see.
-    expect(managed.pageCallbackTurnPending).toBeFalsy()
+    expect(managed.pageCallbackTurnPendingToken).toBeUndefined()
   })
 
   /**
@@ -391,7 +391,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     const managed = seed() as unknown as Record<string, unknown> & {
       messages: Array<{ role: string; content: string }>
       messageQueue: unknown[]
-      pageCallbackTurnPending?: boolean
+      pageCallbackTurnPendingToken?: symbol
     }
 
     await sm.tryDeliverPageCallback(SESSION_ID, 'from the page', { workspaceId: WORKSPACE_ID })
@@ -400,7 +400,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     await new Promise((r) => setTimeout(r, 50))
 
     // The push→handover gap: committed, but the turn has not started.
-    managed.pageCallbackTurnPending = true
+    managed.pageCallbackTurnPendingToken = Symbol('pending')
     managed.isProcessing = false
 
     await sm.sendMessage(SESSION_ID, 'from the user').catch(() => {})
@@ -410,6 +410,40 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     const users = managed.messages.filter((m) => m.role === 'user')
     expect(users.map((m) => m.content)).toContain('from the user')
     expect(managed.messageQueue.length).toBeGreaterThan(0)
+  })
+
+  it('does not let a finishing callback clear a newer callback\'s marker', async () => {
+    const managed = seed() as unknown as Record<string, unknown>
+
+    // Hold callback A inside its flush so it is genuinely still settling while
+    // callback B establishes its marker. Setting B's token after A had already
+    // finished would race nothing, and an earlier version of this test did
+    // exactly that — it passed with the ownership check removed.
+    let releaseFlush!: () => void
+    const flushing = new Promise<void>((resolve) => { releaseFlush = resolve })
+    const original = (sm as unknown as { flushSession: unknown }).flushSession
+    ;(sm as unknown as { flushSession: unknown }).flushSession = async () => { await flushing }
+
+    const aDelivery = sm.tryDeliverPageCallback(SESSION_ID, 'from A', { workspaceId: WORKSPACE_ID })
+
+    // Wait for A to commit — the marker is set at the push, before the flush.
+    for (let i = 0; i < 50 && managed.pageCallbackTurnPendingToken === undefined; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(managed.pageCallbackTurnPendingToken).toBeDefined()
+
+    // B commits while A is still inside the flush and takes over the marker.
+    const bToken = Symbol('callback-b')
+    managed.pageCallbackTurnPendingToken = bToken
+
+    releaseFlush()
+    await aDelivery
+    await new Promise((r) => setTimeout(r, 50))
+    ;(sm as unknown as { flushSession: unknown }).flushSession = original
+
+    // A's cleanup must leave B's marker alone. Clearing it would let the next
+    // send treat the session as idle and commit alongside B's turn.
+    expect(managed.pageCallbackTurnPendingToken).toBe(bToken)
   })
 
   it('stands down for an announced ordinary send', async () => {

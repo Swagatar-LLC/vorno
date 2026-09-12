@@ -444,6 +444,25 @@ handover — so the marker was cleared by the handover and the test passed with
 the fix removed. It now injects a throw in `flushSession`, squarely inside the
 window, and reddens when the clearing is taken out.
 
+## Round 12 — one identity for both pieces of per-delivery state
+
+`2026-09-12` — one P1, and the same class as the reservation token a round
+earlier: the accepted-turn marker was session-wide with no ownership. Callback A
+finishing while callback B had already committed cleared B's marker, and the
+next send would then treat the session as idle and commit alongside B's turn.
+
+Both pieces of per-delivery state now share **one token**, minted per delivery
+and carried on the seam: the reservation and the marker are set with it, and
+each is cleared only by the holder. That they were two mechanisms with one
+identity — rather than two identities to keep in step — is the point; a second
+token would just be the same bug waiting in a new place.
+
+The test needed two attempts and the first was worthless. It set B's marker
+after awaiting A, by which time A's cleanup had already run, so there was no
+race and it passed with the ownership check removed. It now holds A inside its
+flush so A is genuinely mid-settle when B takes over, and reddens when the check
+is taken out.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

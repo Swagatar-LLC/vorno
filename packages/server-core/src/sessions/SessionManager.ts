@@ -121,6 +121,15 @@ import { pageCallbackRefusal, type PageCallbackRefusalCode } from './page-callba
  */
 interface PageCallbackDeliverySeam {
   /**
+   * Identity of THIS delivery, shared by its reservation and its accepted-turn
+   * marker.
+   *
+   * Both are session-keyed and both are released after an await, so both can
+   * race a successor: callback A finishing must not clear state that callback B
+   * has since established. Only the holder of the matching token may clear.
+   */
+  token: symbol
+  /**
    * Evaluated SYNCHRONOUSLY at `sendMessage`'s decision point. Returning a code
    * refuses, having mutated nothing; returning null commits. An `async` guard
    * would reintroduce the exact window this exists to close.
@@ -975,8 +984,12 @@ interface ManagedSession {
    * User priority is preserved where it belongs: BEFORE the callback commits, a
    * user send wins and the callback stands down. After it commits, there is a
    * turn to be behind, so the user's message queues rather than racing it.
+   *
+   * Holds the owning delivery's token rather than a bare flag: A finishing
+   * while B has already committed must not clear B's marker, or a send would
+   * treat the session as idle and commit alongside B's turn.
    */
-  pageCallbackTurnPending?: boolean
+  pageCallbackTurnPendingToken?: symbol
   // Flag to prevent infinite retry loops (reset at start of each sendMessage)
   authRetryAttempted?: boolean
   // Flag indicating auth retry is in progress (to prevent complete handler from interfering)
@@ -6424,7 +6437,13 @@ export class SessionManager implements ISessionManager {
         // no-op — and it is the only place that covers every failure path at
         // once.
         const target = this.sessions.get(sessionId)
-        if (target) target.pageCallbackTurnPending = false
+        const token = options?.pageCallback?.token
+        // Only if it is still OURS. A later callback may have committed while
+        // this send was settling, and clearing its marker would let the next
+        // send commit alongside a turn that has not started.
+        if (target && token !== undefined && target.pageCallbackTurnPendingToken === token) {
+          target.pageCallbackTurnPendingToken = undefined
+        }
       }
     }
   }
@@ -6534,7 +6553,7 @@ export class SessionManager implements ISessionManager {
     // callback that has committed has an accepted turn, so a send arriving now
     // belongs behind it exactly as it would behind a running one. Without this
     // the user's message commits alongside and two turns start.
-    if (managed.isProcessing || managed.pageCallbackTurnPending === true) {
+    if (managed.isProcessing || managed.pageCallbackTurnPendingToken !== undefined) {
       const connection = resolveSessionConnection(managed.llmConnection, undefined)
       // Fallback to 'steer' when no connection is resolvable — preserves
       // today's exact behavior (call redirect, take whatever it returns).
@@ -6645,7 +6664,7 @@ export class SessionManager implements ISessionManager {
       if (pageCallback) {
         // Marks the accepted-but-not-started window for any send that arrives
         // before `setProcessing` — see `pageCallbackTurnPending`.
-        managed.pageCallbackTurnPending = true
+        managed.pageCallbackTurnPendingToken = pageCallback.token
         pageCallback.markCommitted()
       }
 
@@ -6746,8 +6765,11 @@ export class SessionManager implements ISessionManager {
     // would mean a stuck turn leaks a reservation nobody clears. Token-scoped
     // and idempotent; the wrapper's backstop then finds nothing to do.
     if (pageCallback) pageCallback.onProcessingStarted()
-    // `isProcessing` now covers the window this flag stood in for.
-    managed.pageCallbackTurnPending = false
+    // `isProcessing` now covers the window this marker stood in for. Scoped to
+    // this delivery: a successor that has already committed keeps its own.
+    if (pageCallback && managed.pageCallbackTurnPendingToken === pageCallback.token) {
+      managed.pageCallbackTurnPendingToken = undefined
+    }
     this.setProcessing(managed, true)
     managed.streamingText = ''
     managed.streamingTurnId = undefined
@@ -8034,8 +8056,7 @@ export class SessionManager implements ISessionManager {
    * *later* callback's reservation and reopen the window for whatever arrives
    * next. Only the holder of the matching token may release.
    */
-  private reservePageCallback(sessionId: string): symbol {
-    const token = Symbol(sessionId)
+  private reservePageCallback(sessionId: string, token: symbol): symbol {
     this.pageCallbackReservations.set(sessionId, token)
     return token
   }
@@ -8138,6 +8159,8 @@ export class SessionManager implements ISessionManager {
     let refused: PageCallbackRefusalCode | null = null
     let committed = false
     let durable = false
+    /** One identity for this delivery's reservation and its accepted-turn marker. */
+    const deliveryToken = Symbol(sessionId)
     let reservation: symbol | undefined
     /**
      * The underlying send, settled independently of when the CALLER is
@@ -8166,12 +8189,13 @@ export class SessionManager implements ISessionManager {
           undefined,
           {
             pageCallback: {
+              token: deliveryToken,
               guard: () => {
                 refused = refusal()
                 // Reserve in the SAME synchronous frame that clears the
                 // session. A reservation taken any later is a reservation two
                 // callers can both pass.
-                if (!refused) reservation = this.reservePageCallback(sessionId)
+                if (!refused) reservation = this.reservePageCallback(sessionId, deliveryToken)
                 return refused
               },
               markCommitted: () => {
