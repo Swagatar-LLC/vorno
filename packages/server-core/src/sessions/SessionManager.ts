@@ -1666,7 +1666,15 @@ export class SessionManager implements ISessionManager {
       // (correctly) keeps that file — so disk no longer holds the edit, and the
       // baseline matches the stale file so nothing detects the divergence.
       sessionPersistenceQueue.supersedePendingWrites(this.writeKeyFor(managed), header)
-      this.persistSession(managed)
+      // The RECONCILIATION path, not the ordinary one. These two lines are one
+      // operation: the supersede above cancels the in-flight write so it cannot
+      // commit pre-edit state, and this write carries the merged result. During
+      // a shutdown drain an ordinary enqueue is refused — so using it here would
+      // mean the supersede destroyed the very edit it was absorbing, and the
+      // stale file would stand. Producers are stopped before the queue closes
+      // (`stopPersistenceProducers`), but a watcher event already dispatched can
+      // still arrive after the freeze, and this is what keeps it whole.
+      this.persistSessionForReconciliation(managed)
     }
 
     // Feed the automation differ from the just-applied in-memory state (not the raw
@@ -2319,25 +2327,51 @@ export class SessionManager implements ISessionManager {
     return sessionWriteKey(managed.workspace.rootPath, managed.id)
   }
 
+  /**
+   * Persist the merged result of absorbing an external metadata edit.
+   *
+   * Separate from `persistSession` only so it can take the queue's
+   * reconciliation path, which survives a shutdown freeze. Behaviourally
+   * identical otherwise. Do NOT reach for this to get an ordinary write past a
+   * closing queue — the exemption is justified by the supersede that precedes
+   * it, and nothing else.
+   */
+  private persistSessionForReconciliation(managed: ManagedSession): void {
+    if (!managed.messagesLoaded) {
+      this.hydrateMessagesForColdPersist(managed)
+    }
+    try {
+      sessionPersistenceQueue.enqueueReconciliation(this.buildStoredSessionForPersist(managed))
+    } catch (error) {
+      sessionLog.error(`Failed to queue reconciliation write for ${managed.id}:`, error)
+    }
+  }
+
+  /**
+   * Build the record this session would persist right now.
+   *
+   * Shared by the ordinary and reconciliation paths so the two cannot diverge
+   * — a difference here would only ever show up as one of them writing a
+   * subtly different record than the other.
+   */
+  private buildStoredSessionForPersist(managed: ManagedSession): StoredSession {
+    // Filter out transient status messages (progress indicators like "Compacting...")
+    // Error messages are now persisted with rich fields for diagnostics
+    const persistableMessages = managed.messages.filter(m => m.role !== 'status')
+    return {
+      ...pickSessionFields(managed),
+      workspaceRootPath: managed.workspace.rootPath,
+      createdAt: managed.createdAt ?? Date.now(),
+      lastUsedAt: Date.now(),
+      messages: persistableMessages.map(messageToStored),
+      tokenUsage: managed.tokenUsage ?? DEFAULT_TOKEN_USAGE,
+    } as StoredSession
+  }
+
   private enqueuePersist(managed: ManagedSession): void {
     try {
-      // Filter out transient status messages (progress indicators like "Compacting...")
-      // Error messages are now persisted with rich fields for diagnostics
-      const persistableMessages = managed.messages.filter(m =>
-        m.role !== 'status'
-      )
-
-      const storedSession: StoredSession = {
-        ...pickSessionFields(managed),
-        workspaceRootPath: managed.workspace.rootPath,
-        createdAt: managed.createdAt ?? Date.now(),
-        lastUsedAt: Date.now(),
-        messages: persistableMessages.map(messageToStored),
-        tokenUsage: managed.tokenUsage ?? DEFAULT_TOKEN_USAGE,
-      } as StoredSession
-
       // Queue for async persistence with debouncing
-      sessionPersistenceQueue.enqueue(storedSession)
+      sessionPersistenceQueue.enqueue(this.buildStoredSessionForPersist(managed))
     } catch (error) {
       sessionLog.error(`Failed to queue session ${managed.id} for persistence:`, error)
     }
@@ -2364,8 +2398,63 @@ export class SessionManager implements ISessionManager {
     await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
   }
 
-  // Flush all pending sessions (call on app quit).
+  /**
+   * Stop everything that can still ENQUEUE a session write.
+   *
+   * Must run before the persistence queue closes, and that ordering is the
+   * whole point of it being a separate method. The queue refuses writes once
+   * closing — deliberately, so shutdown can reach quiescence — which means a
+   * producer still running during the drain does not merely arrive late, it is
+   * REFUSED. The case that bites is the watcher: an fs event during the drain
+   * reaches `applyExternalSessionMetadata`, which supersedes the in-flight
+   * write (cancelling it) and then persists the merged replacement — and if
+   * that replacement is refused, the supersede has cancelled a write and
+   * nothing has taken its place, so an external metadata edit is lost and the
+   * stale file stands.
+   *
+   * Idempotent: every collection is cleared, so a second call finds nothing.
+   * `cleanup` calls it too, for callers that never flush.
+   */
+  private stopPersistenceProducers(): void {
+    // Stop all ConfigWatchers (file system watchers)
+    for (const [path, watcher] of this.configWatchers) {
+      watcher.stop()
+      sessionLog.info(`Stopped config watcher for ${path}`)
+    }
+    this.configWatchers.clear()
+
+    // Dispose all AutomationSystems (includes scheduler, handlers, and event loggers)
+    for (const [workspacePath, automationSystem] of this.automationSystems) {
+      try {
+        automationSystem.dispose()
+        sessionLog.info(`Disposed AutomationSystem for ${workspacePath}`)
+      } catch (error) {
+        sessionLog.error(`Failed to dispose AutomationSystem for ${workspacePath}:`, error)
+      }
+    }
+    this.automationSystems.clear()
+
+    // Stop the idle agent-runtime TTL sweep
+    if (this.idleSweepTimer) {
+      clearInterval(this.idleSweepTimer)
+      this.idleSweepTimer = null
+    }
+  }
+
+  /**
+   * Flush all pending sessions (call on app quit).
+   *
+   * Producers first, then the queue. Closing the queue while watchers and
+   * schedulers are live turns their writes into refusals rather than into work
+   * the drain picks up — see `stopPersistenceProducers`. Doing it here rather
+   * than in each host means the three quit paths (electron, standalone server,
+   * headless server) cannot get the order wrong independently.
+   *
+   * Propagates the queue's failure: if it cannot reach quiescence it throws,
+   * and a caller must not report a flush it did not get.
+   */
   async flushAllSessions(): Promise<void> {
+    this.stopPersistenceProducers()
     await sessionPersistenceQueue.flushAll()
   }
 
@@ -10202,29 +10291,9 @@ export class SessionManager implements ISessionManager {
   cleanup(): void {
     sessionLog.info('Cleaning up resources...')
 
-    // Stop all ConfigWatchers (file system watchers)
-    for (const [path, watcher] of this.configWatchers) {
-      watcher.stop()
-      sessionLog.info(`Stopped config watcher for ${path}`)
-    }
-    this.configWatchers.clear()
-
-    // Dispose all AutomationSystems (includes scheduler, handlers, and event loggers)
-    for (const [workspacePath, automationSystem] of this.automationSystems) {
-      try {
-        automationSystem.dispose()
-        sessionLog.info(`Disposed AutomationSystem for ${workspacePath}`)
-      } catch (error) {
-        sessionLog.error(`Failed to dispose AutomationSystem for ${workspacePath}:`, error)
-      }
-    }
-    this.automationSystems.clear()
-
-    // Stop the idle agent-runtime TTL sweep
-    if (this.idleSweepTimer) {
-      clearInterval(this.idleSweepTimer)
-      this.idleSweepTimer = null
-    }
+    // Idempotent, and normally already done by `flushAllSessions` — a caller
+    // that only calls `cleanup` still gets the producers stopped.
+    this.stopPersistenceProducers()
 
     // Clear all pending delta flush timers
     for (const [sessionId, timer] of this.deltaFlushTimers) {

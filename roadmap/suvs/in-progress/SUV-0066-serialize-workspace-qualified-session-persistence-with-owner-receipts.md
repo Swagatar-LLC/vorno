@@ -46,9 +46,14 @@ external metadata edit cannot be reverted by a write already in flight.
     when an external edit happens, and is dropped only on deletion.
   - An observation is released only by its owning successful commit or by
     explicit deletion — never on a timer.
-  - `flushAll` is shutdown: freeze intake (`closing`, refusing producers with a
-    failed receipt), drain queued keys **and** active tails to true quiescence,
-    and THROW rather than report a success it did not achieve.
+  - `flushAll` is shutdown: freeze ORDINARY intake (`closing`, refusing
+    producers with a failed receipt), drain queued keys **and** active tails to
+    true quiescence, and THROW rather than report a success it did not achieve.
+    `enqueueReconciliation` is exempt — a supersede and its replacement are one
+    operation, so refusing the replacement would make absorbing an external edit
+    destroy it. Producers are also stopped before the close
+    (`stopPersistenceProducers`), inside `flushAllSessions`, so all three hosts
+    inherit the ordering.
 - `packages/shared/src/sessions/{storage,types,index}.ts` — header passthrough
   for `pendingPlanExecution`, key-aware `saveSession`, exports; the public list
   readers strip the draft at runtime and `sessions/internal.ts` carries the
@@ -104,6 +109,10 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
 - [x] A producer arriving after shutdown starts is refused with a receipt that
       says so; `flushAll` throws rather than reporting false success; reopening
       is explicit.
+- [x] A watcher reconciliation arriving DURING the drain still lands — the
+      shutdown waits for it — while an ordinary write at the same instant is
+      refused; an endless reconciliation cycle fails the shutdown rather than
+      extending it; and `flushAllSessions` stops the producers before closing.
 - [x] A stale hook disposer cannot clear a newer owner's hooks, and the seam
       refuses outside a test runner.
 - [x] Ids that name one file share one key and tail (`nested/same` == `same`),
@@ -117,6 +126,29 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       3 rounds on the round-1 fixes, and 6 on the round-2 fixes — all caught.
 
 ## Review findings
+
+### Review 5 — Greptile P1 on the shutdown freeze
+
+Freezing intake (review 4, item 3) introduced a defect of its own, and Greptile
+caught it: `flushAll` closed the queue while SessionManager's watchers were
+still running, so a watcher-triggered reconciliation during the drain had its
+supersede accepted and its replacement write REFUSED. The net effect of
+absorbing an external edit became destroying it — the cancelled write was gone
+and the stale file stood.
+
+Fixed on both levels, because either alone leaves a gap:
+
+- **`enqueueReconciliation`** is exempt from the freeze. A supersede and its
+  replacement are two halves of one operation; only that path is exempt, and it
+  is bounded by the same drain rounds, so a watcher stuck in a cycle fails the
+  shutdown loudly rather than extending it.
+- **`stopPersistenceProducers()`** runs at the top of `flushAllSessions`, before
+  the close. Doing it inside SessionManager means the three quit paths cannot
+  get the order wrong independently — which is what the alternative fix would
+  have required proving.
+
+The exemption is what covers a watcher event already dispatched when the freeze
+lands; the ordering is what stops the race from being routine.
 
 ### Review 4 — architecture final + security final
 
@@ -314,6 +346,10 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 5 (Greptile P1): the review-4 shutdown freeze refused
+  the replacement half of a watcher reconciliation, so absorbing an external
+  edit during quit destroyed it. Fixed with a narrow reconciliation exemption
+  plus producer-stopping inside `flushAllSessions`; both halves mutation-tested.
 - `2026-09-12` — review 4 (architecture final + security final): the round-3
   pending-plan narrowing was type-level only and is now a runtime strip behind
   an off-barrel internal reader; the hook seam became a guarded token/disposer;

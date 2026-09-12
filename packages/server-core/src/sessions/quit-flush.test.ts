@@ -101,4 +101,81 @@ describe('quit flushes sessions that are mid-commit', () => {
 
     await driven
   })
+
+  it('waits for a watcher reconciliation that arrives during the drain', async () => {
+    // The hole freezing intake opened, at the level it actually lives.
+    //
+    // `applyExternalSessionMetadata` supersedes the in-flight write (so it
+    // cannot commit pre-edit state) and then persists the merged result. Those
+    // are two halves of one operation: if the shutdown freeze refuses the
+    // second, absorbing an external edit DESTROYS it — the cancelled write is
+    // gone and the stale file stands. So that persist takes the queue's
+    // reconciliation path, and the drain waits for it.
+    const filePath = getSessionFilePath(root, SESSION_ID)
+    mkdirSync(dirname(filePath), { recursive: true })
+    writeSessionJsonl(filePath, {
+      id: SESSION_ID,
+      workspaceRootPath: root,
+      name: 'Original',
+      sessionStatus: 'todo',
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      messages: [{ role: 'user', content: 'transcript' }],
+    } as unknown as StoredSession)
+
+    const managed = createManagedSession(
+      { id: SESSION_ID, name: 'Original', sessionStatus: 'todo', createdAt: Date.now() },
+      { id: WORKSPACE_ID, name: 'Quit WS', rootPath: root, createdAt: Date.now() } as never,
+    ) as unknown as Record<string, unknown>
+    managed.messagesLoaded = true
+    managed.messages = [{ role: 'user', content: 'transcript' }]
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(SESSION_ID, managed)
+
+    const header = () =>
+      JSON.parse(readFileSync(filePath, 'utf-8').split('\n')[0]!) as Record<string, unknown>
+
+    // `permissionMode` is the one merged field the reconciliation does not copy
+    // into memory, so the merge is the only route by which it can reach disk —
+    // which makes it the only field that proves the replacement really landed.
+    let reconciled = false
+    disposeHooks = installSingletonCommitHooksForTesting({
+      afterRename: () => {
+        if (reconciled) return
+        reconciled = true
+        const observed = { ...header(), name: 'Renamed during quit', permissionMode: 'safe' }
+        ;(sm as unknown as {
+          applyExternalSessionMetadata(m: unknown, h: unknown): boolean
+        }).applyExternalSessionMetadata(
+          (sm as unknown as { sessions: Map<string, unknown> }).sessions.get(SESSION_ID),
+          observed,
+        )
+      },
+    })
+
+    ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
+    await sm.flushAllSessions()
+    disposeHooks?.()
+    disposeHooks = undefined
+
+    expect(reconciled).toBe(true)
+    // The edit is on disk: the shutdown waited for the replacement instead of
+    // refusing it and exiting over the stale file.
+    expect(header().permissionMode).toBe('safe')
+    expect(sessionPersistenceQueue.isClosing).toBe(true)
+  })
+
+  it('stops the producers before it closes the queue', async () => {
+    // Ordering belongs here rather than in each host, so the three quit paths
+    // (electron, standalone server, headless server) cannot get it wrong
+    // independently. A watcher left running during the drain does not merely
+    // arrive late — its write is refused.
+    const watchers = (sm as unknown as { configWatchers: Map<string, { stop(): void }> }).configWatchers
+    let stopped = false
+    watchers.set(root, { stop: () => { stopped = true } })
+
+    await sm.flushAllSessions()
+
+    expect(stopped).toBe(true)
+    expect(watchers.size).toBe(0)
+  })
 })

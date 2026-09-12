@@ -592,13 +592,42 @@ class SessionPersistenceQueue {
    * session, it will be replaced with the new data and the timer reset.
    */
   enqueue(session: StoredSession): number {
-    return this.enqueueEntry(session, false)
+    return this.enqueueEntry(session, { checked: false, reconciliation: false })
   }
 
-  /** Shared by both entry points; `checked` decides whether it may be coalesced into. */
-  private enqueueEntry(session: StoredSession, checked: boolean): number {
+  /**
+   * Enqueue the REPLACEMENT write that follows a supersede. Accepted during a
+   * shutdown drain, when an ordinary write is not.
+   *
+   * The exception exists because a supersede and its replacement are two halves
+   * of one operation. `applyExternalSessionMetadata` cancels the in-flight write
+   * (so it cannot commit pre-edit state) and then persists the merged result. If
+   * the first half is allowed and the second refused, the net effect of
+   * absorbing an external edit is to DESTROY it: the write that would have
+   * carried it is cancelled, nothing replaces it, and the stale file stands.
+   * Freezing intake must not turn a reconciliation into data loss.
+   *
+   * Narrow on purpose. This is not "writes we like": it is the one path whose
+   * refusal is worse than its acceptance, and it is bounded by the same drain
+   * rounds as everything else — a watcher that keeps producing past them fails
+   * the shutdown loudly rather than extending it forever.
+   */
+  enqueueReconciliation(session: StoredSession): number {
+    return this.enqueueEntry(session, { checked: false, reconciliation: true })
+  }
+
+  /**
+   * Shared by every entry point.
+   *
+   * `checked` decides whether the entry may be coalesced into (I4);
+   * `reconciliation` decides whether it survives a shutdown freeze.
+   */
+  private enqueueEntry(
+    session: StoredSession,
+    { checked, reconciliation }: { checked: boolean; reconciliation: boolean },
+  ): number {
     const key = sessionWriteKey(session.workspaceRootPath, session.id)
-    if (this.closing) {
+    if (this.closing && !reconciliation) {
       // Refused, not queued. Returning the current generation keeps the
       // signature honest for `enqueue`'s fire-and-forget callers; a checked
       // caller gets a failed receipt from `enqueueChecked` below, which is the
@@ -675,7 +704,7 @@ class SessionPersistenceQueue {
         receipt: Promise.resolve({ ok: false, error: 'session write refused: queue is closing' }),
       }
     }
-    const generation = this.enqueueEntry(session, true)
+    const generation = this.enqueueEntry(session, { checked: true, reconciliation: false })
     return { key, generation, receipt: this.receiptFor(key, generation) }
   }
 
@@ -1313,10 +1342,17 @@ class SessionPersistenceQueue {
    *
    * So it does two things in order, and either finishes or throws:
    *
-   * 1. **Freezes intake** (`closing`). Draining while producers keep enqueueing
-   *    is chasing a moving target; refusing new work first is what makes
-   *    quiescence reachable at all. Refused callers are told — see
+   * 1. **Freezes ORDINARY intake** (`closing`). Draining while producers keep
+   *    enqueueing is chasing a moving target; refusing new work first is what
+   *    makes quiescence reachable at all. Refused callers are told — see
    *    `enqueueChecked`.
+   *
+   *    One path is exempt: `enqueueReconciliation`, the replacement write that
+   *    follows a supersede. Refusing that half would make absorbing an external
+   *    edit DESTROY it, because the supersede has already cancelled the write
+   *    that would have carried it. It is drained like anything else, and it is
+   *    bounded by the same rounds, so a watcher that keeps producing fails the
+   *    shutdown rather than extending it forever.
    * 2. **Drains to true quiescence** — queued keys AND active tails, because a
    *    write already lifted onto its tail is precisely the one a quit must wait
    *    for: it may sit between the unlink and the rename, where the session has

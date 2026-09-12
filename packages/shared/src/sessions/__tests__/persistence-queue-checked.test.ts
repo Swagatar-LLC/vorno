@@ -208,6 +208,68 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(queue.pendingCount).toBe(0);
     });
 
+    it('lets a supersede replacement land during the drain, but not an ordinary write', async () => {
+      // The hole the freeze opened. A supersede and its replacement are two
+      // halves of one operation: the supersede cancels the in-flight write so
+      // it cannot commit pre-edit state, and the replacement carries the merged
+      // result. Allow the first and refuse the second and absorbing an external
+      // edit DESTROYS it — the stale file stands with nothing to replace it.
+      //
+      // So the reconciliation path is exempt from the freeze and the ordinary
+      // one is not, and shutdown waits for it.
+      await write('recon1', (r) => { r.name = 'stale' }).tail;
+      const file = getSessionFilePath(root, 'recon1');
+
+      let reconciled = false;
+      let ordinaryRefused: SessionWriteReceipt | undefined;
+      hooks = {
+        // Mid-drain: `closing` is already set by `flushAll`.
+        afterRename: (key) => {
+          if (reconciled) return;
+          reconciled = true;
+          // The watcher's supersede-then-persist pair.
+          queue.supersedePendingWrites(key);
+          queue.enqueueReconciliation(
+            Object.assign(session('recon1'), { name: 'external edit' }) as StoredSession,
+          );
+          // An ordinary producer at the same instant is still refused.
+          const ordinary = queue.enqueueChecked(session('recon1'));
+          void ordinary.receipt.then((r) => { ordinaryRefused = r });
+        },
+      };
+
+      queue.enqueueChecked(session('recon1'));
+      await queue.flushAll();
+      hooks = undefined;
+
+      expect(reconciled).toBe(true);
+      // The shutdown WAITED for the replacement rather than closing over it.
+      expect(readFileSync(file, 'utf-8')).toContain('"name":"external edit"');
+      expect(queue.pendingCount).toBe(0);
+      // And the ordinary write at the same moment was refused, not queued.
+      await new Promise((r) => setTimeout(r, 10));
+      expect(ordinaryRefused).toEqual({
+        ok: false,
+        error: 'session write refused: queue is closing',
+      });
+    });
+
+    it('fails the shutdown if reconciliation never settles, rather than looping forever', async () => {
+      // The exemption is bounded by the same rounds as everything else. A
+      // watcher stuck in a supersede/persist cycle must fail the shutdown
+      // loudly, not extend it indefinitely or be silently dropped.
+      hooks = {
+        afterRename: (key) => {
+          queue.supersedePendingWrites(key);
+          queue.enqueueReconciliation(session('recon2'));
+        },
+      };
+      queue.enqueueChecked(session('recon2'));
+
+      await expect(queue.flushAll()).rejects.toThrow(/did not reach quiescence/);
+      hooks = undefined;
+    });
+
     it('reopening is explicit, so a closed queue accepts work again only on request', async () => {
       // A real quit exits and never reopens. This exists for a test process
       // sharing one queue across suites, and for a host that aborts a shutdown
