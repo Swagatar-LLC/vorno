@@ -27,8 +27,11 @@ external metadata edit cannot be reverted by a write already in flight.
     JSON tuple. Injective where the session file path is not.
   - One per-key write tail. Every write chains onto it; a shared `.tmp` path
     makes concurrency a correctness problem, not a fairness one.
-  - Generation-scoped owner receipts (`enqueueChecked` → `SessionWriteHandle`),
-    so a caller learns about the write it made rather than "the latest write".
+  - Owner receipts over a per-key FIFO (`enqueueChecked` → `SessionWriteHandle`).
+    Ordinary writes still coalesce into a trailing ordinary entry; a checked
+    entry is never coalesced into, and receipts settle on the exact generation,
+    so a receipt attests its own bytes rather than borrowing a later write's
+    success. `ok: true` means committed, not power-loss durable.
   - Cancellation as two per-intent watermarks: `cancelForDeletion` discards a
     committed artifact, `supersedePendingWrites` never does. Re-checked at
     every commit boundary, and the check is **stage-aware** — between the
@@ -37,6 +40,11 @@ external metadata edit cannot be reverted by a write already in flight.
   - `resolveExternalMetadata` — one merge point, per-field authority
     (app-since-observation > disk-since-our-write > retained observation > local).
   - `lastWrittenHeaderSignature` outlives quiescence; dropped only on deletion.
+    Set speculatively before the write for fs.watch self-echo detection, and
+    **restored on every non-committing branch** — only a successful rename
+    advances the committed baseline.
+  - `flushAll` awaits queued keys **and active tails**, looping to quiescence,
+    so quit cannot return with a session mid-commit.
 - `packages/shared/src/sessions/{storage,types,index}.ts` — header passthrough
   for `pendingPlanExecution`, key-aware `saveSession`, exports.
 - `packages/server-core/src/sessions/SessionManager.ts` — `writeKeyFor` and all
@@ -75,11 +83,56 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
 - [x] Observation baseline resolves both directions: an external edit landing
       during an uncommitted local change wins, and an in-app change made after
       the observation wins, on both merge-only fields.
+- [x] Quit waits: `flushAll` and the real `SessionManager.flushAllSessions()`
+      both return only after a write caught between the unlink and the rename
+      has committed, and `flushAll` picks up work queued while it drains.
+- [x] A write that fails or is abandoned does not advance the committed
+      baseline: the next local write of B lands B rather than reverting to
+      disk's A, including for a supersede carrying no observed header.
+- [x] A checked receipt never reports success for a snapshot that was replaced,
+      and consecutive ordinary writes still coalesce to one disk write.
+- [x] `diagnostics()` exposes every per-key map; an aged-out observation for a
+      session that is never written again is swept by unrelated activity.
 - [x] Mutation harness run against every guard: 12 rounds pre-review (10 caught,
       1 fixed by adding the cold-load test, 1 labelled an unreachable backstop),
-      plus 3 rounds on the review fixes, each confirmed to fail without its fix.
+      3 rounds on the round-1 fixes, and 6 on the round-2 fixes — all caught.
 
 ## Review findings
+
+### Round 2 — independent review
+
+Four more findings, three of them correctness. Each was reproduced with a
+failing test before being fixed, and each fix is mutation-verified.
+
+1. **`flushAll` walked past writes already in flight.** It listed only queued
+   keys, and `flush` returns immediately for a key it cannot see — so quit
+   returned while a session was mid-commit, possibly between the unlink and the
+   rename where the session has no file at all. Now the union of queued keys and
+   active tails, looped until a round finds nothing, with a bounded round count
+   so a pathological producer cannot hang quit. Probed at the queue level and
+   through the real `SessionManager.flushAllSessions()` wiring.
+2. **The self-echo baseline advanced speculatively and was never rolled back.**
+   It is set before the write on purpose (fs.watch fires during unlink/rename
+   and those events must read as ours), which makes it a claim about bytes that
+   may never land. Left standing after a failed or abandoned write, the next
+   write read the untouched file on disk as an external edit and the merge handed
+   disk the win — so one failed write silently reverted the app's own unsaved
+   change. The prior value is now captured before the try and restored on every
+   non-committing branch.
+3. **A checked receipt could report success for a snapshot that never
+   existed.** With one coalescing slot per session, an ordinary `persistSession`
+   landing between a checked enqueue and its write replaced it, and any later
+   generation satisfied the receipt. Queued writes are now a FIFO per key:
+   ordinary writes still coalesce into a trailing ordinary entry, a checked
+   entry is never coalesced into, and receipts settle on the exact generation.
+4. **Bounds and terminology.** `diagnostics()` now covers every per-key map
+   (three were absent, so nothing was watching them); held observations are
+   swept on TTL from every public entry point rather than only by the next write
+   for their own session; and the receipt no longer claims durability it does
+   not provide — `ok: true` means committed, with the missing `fsync` recorded
+   as a residual instead of implied away.
+
+### Round 1 — Greptile
 
 Greptile returned 3/5 with two P1s and a P2. All three were valid; the first was
 reproduced before being fixed.
@@ -110,6 +163,18 @@ activity.
 
 ## Residuals
 
+- **`ok: true` is committed, not power-loss durable.** No `fsync` on the temp
+  file or the parent directory, so bytes and directory entry may still be in the
+  page cache. Deliberate: this queue carries every session state change in the
+  app, and two syncs per write buys a guarantee no current caller asks for.
+  Revisit if a caller ever needs crash-consistency rather than write success.
+- **Held observations are swept on activity, not on a timer.** Bounded whenever
+  the queue is used at all, including by other sessions. With zero activity
+  anywhere the process is idle and the entries are inert; a `setInterval` on a
+  module singleton was judged the worse trade.
+- Exact-generation receipt matching is unreachable-by-construction today given
+  the FIFO, and is kept as defence against coalescing being reintroduced.
+
 - `commitHooks` is a public mutable test seam on a module singleton. Not
   reachable by a Page, a script action, or any RPC — no wire representation —
   but tightening it to a build-stripped seam is recorded, not silently accepted.
@@ -130,3 +195,8 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review round 2 (independent): quit walked past in-flight
+  writes, the speculative self-echo baseline was never rolled back, and a
+  checked receipt could attest a snapshot that was replaced before it was
+  written. All three reproduced first, fixed, and mutation-verified; bounds and
+  durability wording corrected alongside.

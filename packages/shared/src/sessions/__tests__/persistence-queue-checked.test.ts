@@ -129,6 +129,112 @@ describe('SessionPersistenceQueue checked writes', () => {
     expect((await write('f1').receipt).ok).toBe(true);
   });
 
+  describe('quit', () => {
+    it('flushAll waits for a write that is mid-commit with nothing queued', async () => {
+      // What a quit has to wait for is precisely the write already lifted off
+      // the queue onto its tail — it is mid-commit, possibly between the unlink
+      // and the rename, which is the one window where the session has no file
+      // at all. Listing only queued keys walked straight past it, and `flush`
+      // returns immediately for a key it cannot see, so quit returned while a
+      // session's file was missing from disk.
+      let renamed = false;
+      // The hold is released on a timer rather than after `flushAll` returns.
+      // Releasing it afterwards would deadlock — which is itself the proof that
+      // this now waits.
+      queue.commitHooks = {
+        beforeRename: async () => { await new Promise((r) => setTimeout(r, 120)) },
+        afterRename: () => { renamed = true },
+      };
+      const handle = queue.enqueueChecked(session('quit1'));
+      const tail = queue.driveChecked(handle.key);
+      await new Promise((r) => setTimeout(r, 20));
+      // The state the old implementation could not see: in flight, not queued.
+      expect(queue.hasPending(k('quit1'))).toBe(false);
+
+      await queue.flushAll();
+      expect(renamed).toBe(true);
+
+      await tail;
+      queue.commitHooks = undefined;
+      expect(existsSync(getSessionFilePath(root, 'quit1'))).toBe(true);
+    });
+
+    it('flushAll keeps going for work that appears while it is draining', async () => {
+      // One pass over the initial key set is not quiescence: finishing a write
+      // can produce more, and a pass that only read the first union would leave
+      // it behind. Here a commit enqueues a second session mid-flush.
+      let queuedMore = false;
+      queue.commitHooks = {
+        afterRename: () => {
+          if (queuedMore) return;
+          queuedMore = true;
+          queue.enqueue(session('quit3'));
+        },
+      };
+      queue.enqueueChecked(session('quit2'));
+      await queue.flushAll();
+      queue.commitHooks = undefined;
+
+      expect(queuedMore).toBe(true);
+      // Both on disk, and nothing left outstanding.
+      expect(existsSync(getSessionFilePath(root, 'quit2'))).toBe(true);
+      expect(existsSync(getSessionFilePath(root, 'quit3'))).toBe(true);
+      expect(queue.pendingCount).toBe(0);
+    });
+  });
+
+  describe('receipt integrity', () => {
+    it('never reports success for a snapshot that was replaced, only for its own', async () => {
+      // The receipt is a claim about ITS bytes. With one coalescing slot per
+      // session, an ordinary `persistSession` landing between a checked enqueue
+      // and its write took its place — and the receipt then reported success
+      // for bytes that were never written, because any later generation
+      // satisfied it. An optimistic durability answer is the one answer this
+      // must never give.
+      const landed: string[] = [];
+      queue.commitHooks = {
+        afterRename: () => {
+          const header = JSON.parse(
+            readFileSync(getSessionFilePath(root, 'own1'), 'utf-8').split('\n')[0]!,
+          ) as Record<string, unknown>;
+          landed.push(String(header.name));
+        },
+      };
+
+      const checked = queue.enqueueChecked(
+        Object.assign(session('own1'), { name: 'A' }) as StoredSession,
+      );
+      // An ordinary write that does NOT contain A's change.
+      queue.enqueue(Object.assign(session('own1'), { name: 'B' }) as StoredSession);
+      await queue.driveChecked(checked.key);
+      queue.commitHooks = undefined;
+
+      const receipt = await checked.receipt;
+      // Truthful either way: success only if A's bytes actually landed.
+      if (receipt.ok) expect(landed).toContain('A');
+      // And in this design they do land — the checked entry is not replaceable,
+      // so the ordinary write queues behind it rather than over it.
+      expect(receipt).toEqual({ ok: true });
+      expect(landed).toEqual(['A', 'B']);
+    });
+
+    it('still coalesces consecutive ordinary writes', async () => {
+      // The reason this queue exists. Only checked entries are protected from
+      // replacement; a run of ordinary writes must still collapse to one, or
+      // every keystroke-driven persist becomes a separate disk write.
+      let writes = 0;
+      queue.commitHooks = { afterRename: () => { writes++ } };
+      queue.enqueue(Object.assign(session('coal1'), { name: 'one' }) as StoredSession);
+      queue.enqueue(Object.assign(session('coal1'), { name: 'two' }) as StoredSession);
+      queue.enqueue(Object.assign(session('coal1'), { name: 'three' }) as StoredSession);
+      await queue.flush(k('coal1'));
+      queue.commitHooks = undefined;
+
+      expect(writes).toBe(1);
+      expect(readFileSync(getSessionFilePath(root, 'coal1'), 'utf-8')).toContain('"name":"three"');
+    });
+  });
+
   describe('two workspaces holding the same session id', () => {
     // Session ids are minted per workspace, and a copied or restored workspace
     // keeps the ids it came with. Every map in this queue used to be keyed by
@@ -871,6 +977,108 @@ describe('SessionPersistenceQueue checked writes', () => {
         expect(read()[field]).toBe('ours-newer');
       });
     }
+
+    /**
+     * The self-echo baseline is set BEFORE the write, so that fs.watch events
+     * fired during the unlink and rename are recognised as our own. That makes
+     * it speculative until the rename lands, and a speculative value left
+     * standing after a write that never committed is a live defect: it claims
+     * "this is what we last wrote" about bytes that do not exist, and the next
+     * write reads it as the answer to "did somebody else change this file?".
+     * The untouched file on disk then looks like an external edit, and the
+     * merge hands disk the win over the local state being saved — so one
+     * failed write silently reverts the app's own unsaved change.
+     *
+     * Both non-committing routes are covered, because they restore from
+     * different places in the code.
+     */
+    for (const route of ['a failed write', 'an abandoned write'] as const) {
+      it(`does not advance the committed baseline after ${route}`, async () => {
+        await write('sig6', (r) => { r.name = 'A' }).tail;
+        const file = getSessionFilePath(root, 'sig6');
+        const read = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+        expect(read().name).toBe('A');
+
+        if (route === 'a failed write') {
+          // A directory where the temp file goes: the write throws.
+          mkdirSync(file + '.tmp', { recursive: true });
+          await write('sig6', (r) => { r.name = 'B' }).tail;
+          rmSync(file + '.tmp', { recursive: true, force: true });
+        } else {
+          // Superseded before the unlink, and deliberately with NO observed
+          // header — nothing is held that could rescue the value, so the
+          // baseline is the only thing standing between local state and disk.
+          queue.commitHooks = { beforeUnlink: (key) => { queue.supersedePendingWrites(key) } };
+          await write('sig6', (r) => { r.name = 'B' }).tail;
+          queue.commitHooks = undefined;
+        }
+
+        // Disk still holds A and nothing external ever touched it. The next
+        // local write of B must land B.
+        expect(read().name).toBe('A');
+        await write('sig6', (r) => { r.name = 'B' }).tail;
+        expect(read().name).toBe('B');
+      });
+    }
+
+    it('keeps the baseline describing a committed file a supersede chose to keep', async () => {
+      // The other edge of the rollback. A supersede landing AFTER the rename is
+      // the one abandon path that deliberately leaves the file in place, so
+      // those bytes ARE ours and the baseline must go on describing them.
+      // Rolling back there is the desync the rollback exists to prevent: the
+      // next write would read its own committed bytes as a foreign edit and
+      // hand disk authority over local state.
+      await write('sig7', (r) => { r.name = 'first' }).tail;
+
+      queue.commitHooks = { afterRename: (key) => { queue.supersedePendingWrites(key) } };
+      const handle = write('sig7', (r) => { r.name = 'kept-by-supersede' });
+      await handle.tail;
+      queue.commitHooks = undefined;
+
+      // Cancelled, and its bytes are nonetheless what is on disk.
+      expect(await handle.receipt).toMatchObject({ ok: false });
+      const onDisk = readFileSync(getSessionFilePath(root, 'sig7'), 'utf-8').split('\n')[0]!;
+      expect(onDisk).toContain('"name":"kept-by-supersede"');
+
+      // The baseline agrees with the file, so nothing reads it as external.
+      const header = JSON.parse(onDisk) as Record<string, unknown>;
+      expect(queue.getLastWrittenSignature(k('sig7'))).toBe(
+        JSON.stringify({
+          name: header.name,
+          labels: header.labels,
+          isFlagged: header.isFlagged,
+          sessionStatus: header.sessionStatus,
+          permissionMode: header.permissionMode,
+          hasUnread: header.hasUnread,
+          lastReadMessageId: header.lastReadMessageId,
+        }),
+      );
+    });
+
+    it('sweeps an aged-out observation for a session that is never written again', async () => {
+      // The observation map is the one that grows on a path which need not end
+      // in a write, so "the next write drops it" is not a bound. Activity
+      // anywhere sweeps it — here, another session's write.
+      await write('sweep1').tail;
+      const header = JSON.parse(
+        readFileSync(getSessionFilePath(root, 'sweep1'), 'utf-8').split('\n')[0]!,
+      ) as Record<string, unknown>;
+      queue.supersedePendingWrites(k('sweep1'), header as never);
+      expect(queue.diagnostics().pendingExternalMetadata).toBe(1);
+
+      // Age it past the bound. The clock cannot be advanced here and sleeping
+      // out five minutes is not a test, so the timestamp is planted — the one
+      // field the passage of time would have set.
+      const held = (queue as unknown as {
+        pendingExternalMetadata: Map<string, { observedAt: number }>
+      }).pendingExternalMetadata;
+      held.get(k('sweep1'))!.observedAt -= 6 * 60_000;
+
+      // 'sweep1' is never written again; an unrelated session's write is what
+      // collects it.
+      await write('other').tail;
+      expect(queue.diagnostics().pendingExternalMetadata).toBe(0);
+    });
 
     it('KEEPS the signature baseline through a supersede', async () => {
       // The other half of the asymmetry, and the one with teeth. A supersede

@@ -9,8 +9,17 @@ import { debug } from '../utils/debug.js'
 interface PendingWrite {
   data: StoredSession
   timer: ReturnType<typeof setTimeout>
-  /** Monotonic per session. A receipt is satisfied by this generation or later. */
+  /** Monotonic per session. A receipt is settled by THIS generation alone. */
   generation: number
+  /**
+   * Whether somebody holds a receipt against this exact snapshot.
+   *
+   * A checked entry is never coalesced into, because its receipt is a claim
+   * about ITS bytes. An ordinary entry has no such claim, so a newer ordinary
+   * write may still replace it wholesale — that coalescing is why this queue
+   * exists, and it is preserved for the traffic that makes up almost all of it.
+   */
+  checked: boolean
 }
 
 /** A caller waiting to learn whether its snapshot reached disk. */
@@ -252,7 +261,33 @@ type ExternalObservation = {
  */
 const OBSERVATION_MAX_AGE_MS = 5 * 60_000
 
-/** Outcome of a checked persist. `ok:false` carries the reason for the audit. */
+/**
+ * How many times `flushAll` will re-take the union before giving up.
+ *
+ * Quit must not hang on a producer that keeps enqueueing, but it also must not
+ * abandon real writes. A normal quit converges in one or two rounds.
+ */
+const FLUSH_ALL_MAX_ROUNDS = 50
+
+/**
+ * Outcome of a checked persist. `ok:false` carries the reason for the audit.
+ *
+ * **`ok: true` means COMMITTED, not power-loss durable, and the distinction is
+ * deliberate rather than sloppy.** It means this snapshot's bytes were written
+ * to a temp file and renamed over the session file without error, so any reader
+ * now sees them and no partial state is visible. It does **not** mean the data
+ * would survive a power cut or a kernel panic in the seconds afterwards: there
+ * is no `fsync` on the temp file or on the parent directory, so the bytes and
+ * the directory entry may still be in the page cache.
+ *
+ * Adding those fsyncs was considered and rejected for now: this queue carries
+ * every session state change in the app, debounced but constant, and two syncs
+ * per write is a real cost to pay for a guarantee no current caller asks for —
+ * the callers that hold receipts want to know the write SUCCEEDED, not that it
+ * survives unplugging the machine. Recorded as a residual on SUV-0066 so the
+ * next person reads a stated limit instead of inferring a guarantee from the
+ * word "durable".
+ */
 export type SessionWriteReceipt = { ok: true } | { ok: false; error: string }
 
 /**
@@ -285,7 +320,22 @@ export interface SessionWriteHandle {
  * would otherwise write to the same .tmp file concurrently.
  */
 class SessionPersistenceQueue {
-  private pending = new Map<SessionWriteKey, PendingWrite>()
+  /**
+   * Queued writes per session, oldest first.
+   *
+   * A LIST rather than the single coalescing slot this used to be, because a
+   * checked write's receipt attests its own snapshot and a replaced snapshot
+   * never reaches disk. With one slot, an ordinary `persistSession` landing
+   * between a checked enqueue and its write silently took its place, and the
+   * receipt then reported success for bytes that were never written — an
+   * optimistic durability answer, which is the one answer it must never give.
+   *
+   * Ordinary writes still coalesce, into the trailing entry, so the common
+   * case costs exactly what it did before: back-to-back state changes for one
+   * session collapse to a single write. A checked entry ends the run — the
+   * next ordinary write queues behind it instead of over it.
+   */
+  private queued = new Map<SessionWriteKey, PendingWrite[]>()
   /**
    * Per-session write tail. EVERY write — debounced, flushed, or checked —
    * chains onto it, so two writes for one session can never be in flight at
@@ -414,11 +464,15 @@ class SessionPersistenceQueue {
    * session, it will be replaced with the new data and the timer reset.
    */
   enqueue(session: StoredSession): number {
+    return this.enqueueEntry(session, false)
+  }
+
+  /** Shared by both entry points; `checked` decides whether it may be coalesced into. */
+  private enqueueEntry(session: StoredSession, checked: boolean): number {
+    this.sweepStaleObservations()
     const key = sessionWriteKey(session.workspaceRootPath, session.id)
-    const existing = this.pending.get(key)
-    if (existing) {
-      clearTimeout(existing.timer)
-    }
+    const list = this.queued.get(key) ?? []
+    const trailing = list[list.length - 1]
 
     const generation = (this.generations.get(key) ?? 0) + 1
     this.generations.set(key, generation)
@@ -429,7 +483,20 @@ class SessionPersistenceQueue {
       void this.runOnTail(key)
     }, this.debounceMs)
 
-    this.pending.set(key, { data: session, timer, generation })
+    // An ordinary write replaces a trailing ordinary one — the coalescing this
+    // queue is for. It may NOT replace a checked one: somebody is waiting to
+    // learn whether those exact bytes landed, and replacing them makes that
+    // question unanswerable except by lying.
+    if (!checked && trailing && !trailing.checked) {
+      clearTimeout(trailing.timer)
+      // The replaced generation is gone and nothing will write it. Nobody can
+      // be holding a receipt for it (only `enqueueChecked` hands those out, and
+      // those entries are never replaced), so there is nothing to settle.
+      list[list.length - 1] = { data: session, timer, generation, checked: false }
+    } else {
+      list.push({ data: session, timer, generation, checked })
+    }
+    this.queued.set(key, list)
     // The newest local state we have been handed, for the observation baseline.
     // Recorded here rather than at commit time because a debounced write is
     // local state that already exists — see `lastEnqueuedMetadata`.
@@ -440,7 +507,7 @@ class SessionPersistenceQueue {
   /**
    * Enqueue and hand back a receipt for THIS snapshot.
    *
-   * `flush` cannot report durability: `write` catches its own errors so the
+   * `flush` cannot report whether a write committed: `write` catches its own errors so the
    * fire-and-forget callers that make up nearly all of this queue's traffic
    * keep working, which leaves a failed write indistinguishable from a
    * successful one to anyone awaiting it. A caller that tells a user
@@ -458,7 +525,7 @@ class SessionPersistenceQueue {
    */
   enqueueChecked(session: StoredSession): SessionWriteHandle {
     const key = sessionWriteKey(session.workspaceRootPath, session.id)
-    const generation = this.enqueue(session)
+    const generation = this.enqueueEntry(session, true)
     return { key, generation, receipt: this.receiptFor(key, generation) }
   }
 
@@ -500,7 +567,7 @@ class SessionPersistenceQueue {
     // It is here because the cost of being wrong is a permanent hang, and the
     // invariant — never park on work nothing will finish — should hold by
     // construction rather than by audit of the callers.
-    if (!this.pending.has(key) && !this.tails.has(key)) {
+    if (!this.queued.has(key) && !this.tails.has(key)) {
       const prior = this.lastWriteFailure.get(key)
       return Promise.resolve(
         prior ? { ok: false, error: prior } : { ok: false, error: 'session write cancelled' },
@@ -515,7 +582,75 @@ class SessionPersistenceQueue {
   }
 
   /**
-   * Run the pending write for a session on its serialised tail.
+   * Write every entry queued for this session, oldest first.
+   *
+   * A loop rather than one write per tail run, because a session can now hold
+   * several entries: a checked write is not coalesced into, so an ordinary
+   * write queues behind it instead of replacing it. One `flush` has to cover
+   * all of them or it would return with work still outstanding.
+   *
+   * Re-reads the queue each time round, so an entry enqueued during a commit
+   * is picked up by the same drain rather than waiting out its own debounce.
+   */
+  /**
+   * Drop observations that have aged past the bound, across ALL sessions.
+   *
+   * An observation is normally discharged by the write that lands it, and one
+   * that ages out is dropped by the next write for its own session. Neither
+   * helps a session that is never written again: the entry then sits there for
+   * the life of the process, and it is the one map here that grows on a path
+   * which does not have to end in a write (`supersedePendingWrites`).
+   *
+   * Swept from every public entry point rather than on a timer. A
+   * `setInterval` on a module singleton is a lifecycle hazard for a bound this
+   * cheap to enforce — it has to be created, unref'd, and torn down, and it
+   * keeps a reference to the queue forever. Sweeping on activity means the map
+   * is bounded whenever the queue is used at all, including by OTHER sessions,
+   * which is the real scenario: one session goes quiet while the app keeps
+   * working. With no activity anywhere the process is idle and the entries are
+   * inert — a residual stated in the SUV rather than papered over.
+   *
+   * Linear in the number of held observations, which is at most one per session
+   * that received an external edit. Nothing to prune is the overwhelmingly
+   * common case and costs one `size` check.
+   */
+  private sweepStaleObservations(): void {
+    if (!this.pendingExternalMetadata.size) return
+    const now = Date.now()
+    for (const [key, held] of this.pendingExternalMetadata) {
+      if (now - held.observedAt > OBSERVATION_MAX_AGE_MS) {
+        this.pendingExternalMetadata.delete(key)
+        debug('[PersistenceQueue] Swept stale external observation')
+      }
+    }
+  }
+
+  /** Stop every queued entry's debounce for this session; the caller drives them. */
+  private clearQueuedTimers(key: SessionWriteKey): void {
+    for (const entry of this.queued.get(key) ?? []) clearTimeout(entry.timer)
+  }
+
+  private async drainQueued(key: SessionWriteKey): Promise<void> {
+    // Bounded to the work that existed when this drain BEGAN, deliberately. An
+    // entry enqueued mid-drain — by a commit hook, or by a `persistSession`
+    // that a watcher event triggered — is new work with its own debounce, and
+    // sweeping it in here would move when it lands relative to the caller that
+    // queued it. Not hypothetical: `applyExternalSessionMetadata` supersedes
+    // and then persists from inside a commit boundary, and pulling that
+    // replacement into the same drain made it consume the held observation one
+    // write earlier than its caller expected, which wiped a merge-only field.
+    //
+    // Quit still catches late work: `flushAll` loops over a fresh union until a
+    // round comes back empty, which is where "keep going until quiescent"
+    // belongs.
+    let remaining = this.queued.get(key)?.length ?? 0
+    while (remaining-- > 0 && this.queued.get(key)?.length) {
+      await this.write(key)
+    }
+  }
+
+  /**
+   * Run the queued writes for a session on its serialised tail.
    *
    * Chained with `.then(fn, fn)` so one failed write does not strand every
    * later write for that session behind a rejected promise.
@@ -523,8 +658,8 @@ class SessionPersistenceQueue {
   private runOnTail(key: SessionWriteKey): Promise<void> {
     const previous = this.tails.get(key) ?? Promise.resolve()
     const next = previous.then(
-      () => this.write(key).then(() => undefined),
-      () => this.write(key).then(() => undefined),
+      () => this.drainQueued(key),
+      () => this.drainQueued(key),
     )
     this.tails.set(key, next)
     void next.finally(() => {
@@ -554,12 +689,12 @@ class SessionPersistenceQueue {
    * A session with an unresolved write failure is never retired — see below.
    */
   private retireIfQuiescent(key: SessionWriteKey): void {
-    if (this.pending.has(key)) return
+    if (this.queued.has(key)) return
     if (this.tails.has(key)) return
     if (this.receiptWaiters.get(key)?.length) return
     // An unresolved write failure outlives quiescence. Retiring it turns "the
-    // last write failed" into "nothing is outstanding, all good" — a durability
-    // claim built out of deleted evidence. It clears on the next successful
+    // last write failed" into "nothing is outstanding, all good" — a claim
+    // about what is on disk, built out of deleted evidence. It clears on the next successful
     // write, and retirement proceeds then.
     //
     // Honest scope: this guard has no live reader. Every receipt belongs to a
@@ -604,8 +739,9 @@ class SessionPersistenceQueue {
 
   /** Per-session bookkeeping sizes, for tests that assert nothing leaks. */
   diagnostics(): Record<string, number> {
+    this.sweepStaleObservations()
     return {
-      pending: this.pending.size,
+      queued: this.queued.size,
       tails: this.tails.size,
       generations: this.generations.size,
       writtenGeneration: this.writtenGeneration.size,
@@ -613,16 +749,53 @@ class SessionPersistenceQueue {
       receiptWaiters: this.receiptWaiters.size,
       lastWriteFailure: this.lastWriteFailure.size,
       lastWrittenHeaderSignature: this.lastWrittenHeaderSignature.size,
+      // Every per-key map appears here, including the three that used to be
+      // absent. A leak test can only assert on what it can see, so an omitted
+      // map is a map nothing is watching — `lastEnqueuedMetadata` and
+      // `pendingExternalMetadata` in particular grow on paths that do not
+      // necessarily end in a write.
+      lastWrittenMetadata: this.lastWrittenMetadata.size,
+      lastEnqueuedMetadata: this.lastEnqueuedMetadata.size,
+      pendingExternalMetadata: this.pendingExternalMetadata.size,
     }
   }
 
-  /** Settle every receipt this write satisfies, successfully or otherwise. */
-  private settleReceipts(key: SessionWriteKey, generation: number, receipt: SessionWriteReceipt): void {
+  /**
+   * Settle receipts, matching EXACTLY the generation that produced this outcome.
+   *
+   * Not "every generation at or below it". A receipt is a claim about one
+   * snapshot's bytes, and borrowing a later write's success to answer it
+   * assumes the later snapshot contained the earlier one — true for the callers
+   * we have, and not something a durability answer may rest on. With each
+   * checked snapshot now getting its own uncoalesced write, the exact question
+   * always has an exact answer.
+   *
+   * Cancellation is the one range operation, and it passes `through` to cover
+   * every generation the watermark reached.
+   *
+   * Honest standing: with checked snapshots no longer coalescable, `exact` and
+   * the old `<=` are indistinguishable today. Entries are shifted oldest-first
+   * and every settle site passes the entry's own generation, so a waiter for
+   * generation M is always answered by M's own outcome before any later one
+   * runs; the only route that skips a generation's write is cancellation, which
+   * uses `through`. Switching this back to `<=` changes no test. It stays
+   * because "a receipt may be answered by a LATER write's success" is the
+   * assumption that produced the false positives in the first place, and it
+   * should be untrue by construction rather than by the FIFO staying the way it
+   * is.
+   */
+  private settleReceipts(
+    key: SessionWriteKey,
+    generation: number,
+    receipt: SessionWriteReceipt,
+    match: 'exact' | 'through' = 'exact',
+  ): void {
     const waiters = this.receiptWaiters.get(key)
     if (!waiters?.length) return
     const remaining: ReceiptWaiter[] = []
     for (const waiter of waiters) {
-      if (waiter.generation <= generation) waiter.settle(receipt)
+      const covered = match === 'exact' ? waiter.generation === generation : waiter.generation <= generation
+      if (covered) waiter.settle(receipt)
       else remaining.push(waiter)
     }
     if (remaining.length) this.receiptWaiters.set(key, remaining)
@@ -634,10 +807,10 @@ class SessionPersistenceQueue {
    * Uses atomic write (write-to-temp-then-rename) to prevent corruption on crash.
    */
   private async write(key: SessionWriteKey): Promise<boolean> {
-    const entry = this.pending.get(key)
-    if (!entry) return true
-
-    this.pending.delete(key)
+    const list = this.queued.get(key)
+    const entry = list?.shift()
+    if (!list || !entry) return true
+    if (!list.length) this.queued.delete(key)
     const { generation } = entry
 
     // Cancelled between enqueue and execution: do not write at all. Nothing was
@@ -648,6 +821,18 @@ class SessionPersistenceQueue {
       this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
       this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled' })
       return false
+    }
+
+    // Captured before the try so the catch can roll back too. The baseline is
+    // set speculatively mid-write (for fs.watch self-echo detection), and every
+    // branch that fails to commit has to put it back — see the set site below.
+    const priorSignature = this.lastWrittenHeaderSignature.get(key)
+    const priorMetadata = this.lastWrittenMetadata.get(key)
+    const restoreBaseline = () => {
+      if (priorSignature === undefined) this.lastWrittenHeaderSignature.delete(key)
+      else this.lastWrittenHeaderSignature.set(key, priorSignature)
+      if (priorMetadata === undefined) this.lastWrittenMetadata.delete(key)
+      else this.lastWrittenMetadata.set(key, priorMetadata)
     }
 
     try {
@@ -737,6 +922,19 @@ class SessionPersistenceQueue {
       // during unlink/rename are correctly identified as self-writes.
       // Without this, onSessionMetadataChange sees the stale signature
       // and reverts in-memory metadata on idle sessions.
+      //
+      // That makes the baseline SPECULATIVE until the rename lands, and a
+      // speculative baseline that is never rolled back is a live defect rather
+      // than an untidiness. It claims "this is what we last wrote" about bytes
+      // that never reached disk, and the next write reads it as the answer to
+      // "did somebody else change this file since?" — so the unchanged file on
+      // disk looks like an external edit, and the merge hands disk the win over
+      // the local state it was trying to save. One failed write and the app
+      // reverts its own unsaved change to whatever is on disk.
+      //
+      // So the prior value is captured before the try and restored on every
+      // branch that does not commit (see `restoreBaseline`). Only a successful
+      // rename lets the speculative value stand as the committed baseline.
       const finalSignature = getHeaderMetadataSignature(header)
       this.lastWrittenHeaderSignature.set(key, finalSignature)
       this.lastWrittenMetadata.set(key, getHeaderMetadataFields(header))
@@ -805,6 +1003,20 @@ class SessionPersistenceQueue {
           try { await unlink(filePath) } catch { /* may not exist */ }
         }
         debug(`[PersistenceQueue] Abandoned cancelled write for session ${data.id} (stage=${stage})`)
+        // Roll the baseline back only when this generation left NOTHING on
+        // disk. The rule is "does the file out there hold our bytes", and there
+        // is exactly one abandon path where it does: a supersede after the
+        // rename, which deliberately keeps the committed file. The baseline
+        // then describes disk correctly and restoring it would be the very
+        // desync this rollback exists to prevent — the next write would read
+        // its own committed bytes as somebody else's edit.
+        //
+        // Everywhere else — cancelled before the write, abandoned with the
+        // target already removed, or a deletion that unlinked the result —
+        // nothing of this generation is on disk and the prior value is the
+        // truth about what we last committed.
+        const ourBytesAreOnDisk = stage === 'committed' && !discardCommitted
+        if (!ourBytesAreOnDisk) restoreBaseline()
         this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
         this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled' })
         return true
@@ -839,6 +1051,11 @@ class SessionPersistenceQueue {
       // Recorded, not thrown. Existing callers are fire-and-forget and must not
       // start failing; a receipt is the opt-in way to learn about this.
       const message = error instanceof Error ? error.message : String(error)
+      // The write did not land, so the speculative baseline is a claim about
+      // bytes that do not exist. Left standing, the NEXT write reads the
+      // untouched file as an external edit and lets disk overwrite the local
+      // state this one failed to save.
+      restoreBaseline()
       this.lastWriteFailure.set(key, message)
       // Marked attempted either way, so a waiter learns the outcome promptly
       // instead of hanging until some later write happens to supersede it.
@@ -859,9 +1076,9 @@ class SessionPersistenceQueue {
    * the loser's bytes with no error anywhere.
    */
   async flush(key: SessionWriteKey): Promise<void> {
-    if (!this.pending.has(key) && !this.tails.has(key)) return
-    const entry = this.pending.get(key)
-    if (entry) clearTimeout(entry.timer)
+    this.sweepStaleObservations()
+    if (!this.queued.has(key) && !this.tails.has(key)) return
+    this.clearQueuedTimers(key)
     await this.runOnTail(key)
   }
 
@@ -881,8 +1098,8 @@ class SessionPersistenceQueue {
    * write does on its way out, which settles just after the receipt.
    */
   driveChecked(key: SessionWriteKey): Promise<void> {
-    const entry = this.pending.get(key)
-    if (entry) clearTimeout(entry.timer)
+    this.sweepStaleObservations()
+    this.clearQueuedTimers(key)
     return this.runOnTail(key)
   }
 
@@ -956,11 +1173,13 @@ class SessionPersistenceQueue {
    * waiting on the generations it now covers.
    */
   private stopPendingWrites(key: SessionWriteKey, intent: 'delete' | 'supersede'): void {
-    const entry = this.pending.get(key)
-    if (entry) {
-      clearTimeout(entry.timer)
-      this.pending.delete(key)
-      debug(`[PersistenceQueue] Cancelled pending write for session ${entry.data.id}`)
+    this.sweepStaleObservations()
+    const queued = this.queued.get(key)
+    if (queued?.length) {
+      const id = queued[0]!.data.id
+      this.clearQueuedTimers(key)
+      this.queued.delete(key)
+      debug(`[PersistenceQueue] Cancelled ${queued.length} pending write(s) for session ${id}`)
     }
     // Set regardless of whether anything was pending: the write that matters
     // here is the one already on the tail, which `pending` no longer holds.
@@ -994,22 +1213,49 @@ class SessionPersistenceQueue {
     // Anything holding a receipt for a cancelled generation must be told rather
     // than left hanging, and telling them is also what makes the session
     // eligible for retirement — the order is load-bearing, not cosmetic.
-    this.settleReceipts(key, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled' })
+    this.settleReceipts(key, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled' }, 'through')
   }
 
   /**
-   * Flush all pending sessions. Call this on app quit.
+   * Flush every session with outstanding work. Call this on app quit.
+   *
+   * The union of QUEUED and IN-FLIGHT, not just the queued ones. A write that
+   * has already been lifted off the queue onto its tail is exactly the write a
+   * quit must wait for — it is mid-commit, possibly between the unlink and the
+   * rename — and listing only queued keys walked straight past it. `flush`
+   * returns immediately for a key it cannot see, so quit returned while a
+   * session's file was still absent from disk.
+   *
+   * Looped rather than a single pass, because finishing one write can produce
+   * more: a commit hook or a concurrent `persistSession` can queue work while
+   * the first pass is awaiting, and a pass that only read the initial key set
+   * would leave it behind. Each round takes a fresh union and the loop ends
+   * when a round finds nothing, which is the real definition of quiescent.
+   *
+   * The bound exists so a pathological producer cannot hang quit forever. It is
+   * generous — a normal quit settles in one or two rounds — and it is reported
+   * rather than swallowed, because silently abandoning writes at quit is the
+   * failure this method exists to prevent.
    */
   async flushAll(): Promise<void> {
-    const keys = [...this.pending.keys()]
-    await Promise.all(keys.map(key => this.flush(key)))
+    for (let round = 0; round < FLUSH_ALL_MAX_ROUNDS; round++) {
+      const keys = new Set([...this.queued.keys(), ...this.tails.keys()])
+      if (!keys.size) return
+      await Promise.all([...keys].map(key => this.flush(key)))
+    }
+    const stragglers = new Set([...this.queued.keys(), ...this.tails.keys()])
+    if (stragglers.size) {
+      console.error(
+        `[PersistenceQueue] flushAll gave up with ${stragglers.size} session(s) still writing after ${FLUSH_ALL_MAX_ROUNDS} rounds`,
+      )
+    }
   }
 
   /**
    * Check if a session has a pending write.
    */
   hasPending(key: SessionWriteKey): boolean {
-    return this.pending.has(key)
+    return this.queued.has(key)
   }
 
   /**
@@ -1024,7 +1270,7 @@ class SessionPersistenceQueue {
    * Get count of pending writes.
    */
   get pendingCount(): number {
-    return this.pending.size
+    return this.queued.size
   }
 }
 
