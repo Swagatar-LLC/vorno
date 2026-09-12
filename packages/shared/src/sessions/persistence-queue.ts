@@ -67,6 +67,20 @@ function mergeHeaderWithExternalMetadata(localHeader: SessionHeader, diskHeader:
 /** Outcome of a checked persist. `ok:false` carries the reason for the audit. */
 export type SessionWriteReceipt = { ok: true } | { ok: false; error: string }
 
+/**
+ * A claim on one specific enqueued snapshot.
+ *
+ * The generation is the point. A parameterless "is the latest write done yet"
+ * cannot be answered truthfully once bookkeeping has been retired — it has to
+ * reconstruct which generation the caller meant, and after a cancel there is
+ * nothing left to reconstruct from, so it guesses optimistically. Holding a
+ * handle removes the guess: the caller asks about the write it actually made.
+ */
+export interface SessionWriteHandle {
+  generation: number
+  receipt: Promise<SessionWriteReceipt>
+}
+
 class SessionPersistenceQueue {
   private pending = new Map<string, PendingWrite>()
   /**
@@ -163,23 +177,42 @@ class SessionPersistenceQueue {
   /**
    * Enqueue and hand back a receipt for THIS snapshot.
    *
-   * Resolves when the enqueued generation — or any later one, which by
-   * definition contains it — has been written, and reports the failure if that
-   * write could not land. A caller that tells a user "saved" needs to wait on
-   * its own bytes rather than on whatever happened to be in the queue.
+   * `flush` cannot report durability: `write` catches its own errors so the
+   * fire-and-forget callers that make up nearly all of this queue's traffic
+   * keep working, which leaves a failed write indistinguishable from a
+   * successful one to anyone awaiting it. A caller that tells a user
+   * "delivered and saved" needs the difference, and guessing optimistically is
+   * the one answer it must never give.
+   *
+   * The receipt is tied to a GENERATION, not to a moment. A later write
+   * satisfies it — a newer snapshot contains this one — while an older write
+   * completing does not, so the answer cannot be borrowed from somebody else's
+   * success, and a caller waits on its own bytes rather than on whatever
+   * happened to be in the queue.
+   *
+   * Deliberately additive: `flush` and `enqueue` are untouched and every
+   * existing caller keeps its best-effort behaviour.
    */
-  enqueueChecked(session: StoredSession): Promise<SessionWriteReceipt> {
+  enqueueChecked(session: StoredSession): SessionWriteHandle {
     const generation = this.enqueue(session)
-    return this.receiptFor(session.id, generation)
+    return { generation, receipt: this.receiptFor(session.id, generation) }
   }
 
   /** Resolve once `generation` (or later) has been written, or has failed. */
   private receiptFor(sessionId: string, generation: number): Promise<SessionWriteReceipt> {
-    // Cancelled generations are TERMINAL and answer immediately. Waiting would
-    // hang: `write` returns early when there is no pending entry, which is
-    // exactly the state `cancel` leaves behind, so nothing would ever arrive to
-    // settle this. A caller asking about work that has been cancelled deserves
-    // the answer now, not at process exit.
+    // Cancelled generations are TERMINAL and answer immediately, rather than
+    // parking a waiter that nothing would settle: `write` returns early when
+    // there is no pending entry, which is exactly the state `cancel` leaves
+    // behind.
+    //
+    // Unreachable through the public API today, and deliberately kept anyway —
+    // same standing as the backstop twenty lines below. What makes it
+    // unreachable is arithmetic in a different method: `enqueue` mints
+    // `generations.get(id) + 1` and `cancel` sets the watermark to
+    // `generations.get(id)`, so a freshly minted generation is always strictly
+    // above it. No black-box test can reach this branch, and none pretends to;
+    // it is here because the invariant — never report success for a cancelled
+    // generation — should survive someone changing that arithmetic.
     if ((this.cancelledThrough.get(sessionId) ?? 0) >= generation) {
       return Promise.resolve({ ok: false, error: 'session write cancelled' })
     }
@@ -260,18 +293,37 @@ class SessionPersistenceQueue {
     if (this.pending.has(sessionId)) return
     if (this.tails.has(sessionId)) return
     if (this.receiptWaiters.get(sessionId)?.length) return
-    // An unresolved write failure is the one piece of state that must outlive
-    // quiescence. It IS the answer to the next checked flush, and retiring it
-    // turns "the last write failed" into "nothing is outstanding, all good" —
-    // a durability claim built out of deleted evidence. It clears on the next
-    // successful write, and retirement can proceed then.
+    // An unresolved write failure outlives quiescence. Retiring it turns "the
+    // last write failed" into "nothing is outstanding, all good" — a durability
+    // claim built out of deleted evidence. It clears on the next successful
+    // write, and retirement proceeds then.
+    //
+    // Honest scope: this guard has no live reader as of the removal of the
+    // parameterless `flushChecked`, which used to ask about durability after
+    // quiescence and was the caller this protected. Every receipt now belongs
+    // to a generation minted by `enqueueChecked`, and that path leaves a
+    // pending entry, so it settles from `write`'s own failure handling rather
+    // than from this map. The guard stays because deleting a record of failure
+    // is the wrong default for the next reader, not because one exists today;
+    // `retirement-keeps-failure-evidence` pins it as state, not as behaviour.
+    //
+    // The cost is one map entry per session whose last write failed and which
+    // is never written again — bounded by real write failures, not by traffic.
     if (this.lastWriteFailure.has(sessionId)) return
 
     this.generations.delete(sessionId)
     this.writtenGeneration.delete(sessionId)
     this.cancelledThrough.delete(sessionId)
     this.lastWriteFailure.delete(sessionId)
-    this.lastWrittenHeaderSignature.delete(sessionId)
+    // `lastWrittenHeaderSignature` is deliberately NOT retired here. It is not
+    // generation bookkeeping — it is the live baseline for "did somebody else
+    // change this header since we last wrote it", and it has to outlive
+    // quiescence because that is exactly when an external edit happens. Drop it
+    // and two things break at once: the next write sees no previous signature,
+    // concludes nothing external changed, and clobbers the other writer's
+    // metadata; and `ConfigWatcher` loses its self-echo baseline and treats our
+    // own write as a foreign change. It is removed only on explicit cancel,
+    // where the session itself is going away.
   }
 
   /** Per-session bookkeeping sizes, for tests that assert nothing leaks. */
@@ -462,32 +514,24 @@ class SessionPersistenceQueue {
   }
 
   /**
-   * Flush, and report whether THIS caller's bytes reached disk.
+   * Drive a session's tail now, so a held handle settles without waiting out
+   * the debounce.
    *
-   * `flush` cannot answer that: `write` catches its own errors so the
-   * fire-and-forget callers that make up nearly all of this queue's traffic
-   * keep working, which leaves a failed write indistinguishable from a
-   * successful one to anyone awaiting it. A caller that tells a user
-   * "delivered and saved" needs the difference, and guessing optimistically is
-   * the one answer it must never give.
+   * Deliberately says nothing about the OUTCOME. The caller already holds a
+   * receipt for the write it cares about; any success/failure this returned
+   * would be an answer about "the latest write", and that ambiguity is what
+   * made the previous parameterless `flushChecked` unsound — after a cancel it
+   * had no way to know which generation was meant and defaulted to optimism.
    *
-   * The receipt is tied to a GENERATION, not to a moment. A later write
-   * satisfies it — a newer snapshot contains this one — while an older write
-   * completing does not, so the answer cannot be borrowed from somebody else's
-   * success.
-   *
-   * Deliberately additive: `flush` is untouched and every existing caller keeps
-   * its best-effort behaviour.
+   * The returned promise is the tail: a caller that needs the write to be
+   * FINISHED rather than merely decided can wait on it. The receipt answers
+   * "did my bytes land"; the tail additionally covers the cleanup an abandoned
+   * write does on its way out, which settles just after the receipt.
    */
-  async flushChecked(sessionId: string): Promise<SessionWriteReceipt> {
-    const generation = this.pending.get(sessionId)?.generation ?? this.generations.get(sessionId) ?? 0
-    if (generation === 0) return { ok: true }
-
-    const receipt = this.receiptFor(sessionId, generation)
+  driveChecked(sessionId: string): Promise<void> {
     const entry = this.pending.get(sessionId)
     if (entry) clearTimeout(entry.timer)
-    void this.runOnTail(sessionId)
-    return receipt
+    return this.runOnTail(sessionId)
   }
 
   /**

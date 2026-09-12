@@ -40,6 +40,39 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
+  type WriteHandle = { generation: number; receipt: Promise<{ ok: boolean; error?: string }> }
+
+  /**
+   * Replace a private SessionManager method, refusing to stub something that
+   * isn't there.
+   *
+   * A monkeypatch keyed by a string survives a rename in silence: the stub
+   * lands on a property nothing calls, the real path runs, and the test passes
+   * while proving nothing. That is not hypothetical here — five tests in this
+   * file went on stubbing `flushSessionChecked` after it was replaced by
+   * `persistSessionChecked`, and all five stayed green because the assertions
+   * were fine and the construction no longer reached the path. The `typeof`
+   * check turns the next rename into a red test instead of a quiet one.
+   *
+   * `make` receives the bound original so a stub can wrap rather than replace —
+   * holding a real write is more faithful than inventing a fake result.
+   */
+  function stubMethod(key: string, make: (original: (...a: never[]) => unknown) => unknown): () => void {
+    const holder = sm as unknown as Record<string, unknown>
+    const original = holder[key]
+    if (typeof original !== 'function') {
+      throw new Error(
+        `SessionManager.${key} is not a method — this stub would be a silent no-op. ` +
+          'Was it renamed? Point the test at the seam that actually runs.',
+      )
+    }
+    const bound = (original as (...a: never[]) => unknown).bind(sm)
+    holder[key] = make(bound)
+    return () => {
+      holder[key] = original
+    }
+  }
+
   function seed(over: Record<string, unknown> = {}) {
     const filePath = getSessionFilePath(root, SESSION_ID)
     mkdirSync(dirname(filePath), { recursive: true })
@@ -71,17 +104,14 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
   }
 
   /**
-   * Real pending-plan state, written through the storage API the product uses.
+   * Real pending-plan state, written through the storage API the product uses
+   * and left ONLY where the product leaves it — on the stored record.
    *
    * An earlier version of this wrote an invented `*.pending-plan.json` path and
    * asserted it still existed — which proved nothing, because
    * `clearStoredPendingPlanExecution` never touches such a file. The state
    * actually lives on `pendingPlanExecution` inside the session record, so the
    * only assertion worth making reads it back through `getPendingPlanExecution`.
-   */
-  /**
-   * Real pending-plan state, written through the storage API the product uses
-   * and left ONLY where the product leaves it — on the stored record.
    *
    * An earlier version also mirrored it onto the managed session. That state is
    * impossible: `headerToMetadata` strips `pendingPlanExecution` before
@@ -321,20 +351,20 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // The queue catches its own write errors, so an unchecked flush resolves
     // just as happily after a failed write. Without the checked receipt the
     // page would be told its message was saved while the disk said otherwise.
-    const original = (sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked
-    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = async () => ({
-      ok: false, error: 'ENOSPC: no space left on device',
-    })
+    //
+    // A REAL failure rather than a stubbed one: occupying the temp path with a
+    // directory makes the actual write fail with EISDIR. Nothing here can quietly
+    // stop reaching the path — if the injection ever stopped working the write
+    // would succeed and this assertion would flip.
+    mkdirSync(`${getSessionFilePath(root, SESSION_ID)}.tmp`, { recursive: true })
 
-    try {
-      const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
-      // Delivered — the message is really in the transcript — but explicitly
-      // not durable. Both halves matter: claiming failure would be as wrong as
-      // claiming durability.
-      expect(outcome).toMatchObject({ ok: true, durable: false })
-    } finally {
-      ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = original
-    }
+    const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+    // Delivered — the message is really in the transcript — but explicitly
+    // not durable. Both halves matter: claiming failure would be as wrong as
+    // claiming durability.
+    expect(outcome).toMatchObject({ ok: true, durable: false })
+    // And the claim matches the disk: the body never landed.
+    expect(readFileSync(getSessionFilePath(root, SESSION_ID), 'utf-8')).not.toContain(BODY)
   })
 
   it('reports durable:true only when the write really succeeded', async () => {
@@ -498,18 +528,17 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // Inject the throw where it actually matters: between the commit and the
     // `isProcessing` handover. The harness's own failure happens *after* the
     // handover, which already clears the marker — so using it would prove
-    // nothing. `flushSession` sits squarely in the window.
-    const original = (sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked
-    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = async () => {
+    // nothing. `persistSessionChecked` sits squarely in the window.
+    const restore = stubMethod('persistSessionChecked', () => () => {
       throw new Error('disk gone')
-    }
+    })
 
     try {
       const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
-      // Committed, but never flushed — so delivered and explicitly not durable.
+      // Committed, but never persisted — so delivered and explicitly not durable.
       expect(outcome).toMatchObject({ ok: true, durable: false })
     } finally {
-      ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = original
+      restore()
     }
     await new Promise((r) => setTimeout(r, 50))
 
@@ -540,11 +569,13 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // sending would prove nothing about the ordering the product produces.
     let releaseFlush!: () => void
     const flushing = new Promise<void>((resolve) => { releaseFlush = resolve })
-    const original = (sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked
-    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = async () => {
-      await flushing
-      return { ok: true as const }
-    }
+    // Wrap rather than replace: the real write still happens, and only the
+    // RECEIPT is held, so the callback sits in the accepted-but-not-started
+    // window with genuine state behind it.
+    const restore = stubMethod('persistSessionChecked', (original) => (managed: never) => {
+      const handle = original(managed) as WriteHandle
+      return { generation: handle.generation, receipt: flushing.then(() => handle.receipt) }
+    })
 
     const callback = sm.tryDeliverPageCallback(SESSION_ID, 'from the page', { workspaceId: WORKSPACE_ID })
 
@@ -568,7 +599,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     releaseFlush()
     await callback
     await userSend
-    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = original
+    restore()
 
     // The user is never dropped — both messages exist — but the user's is
     // queued behind the accepted turn rather than committing alongside it.
@@ -601,10 +632,10 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
 
   it('resolves promptly with durable:false rather than waiting out the turn', async () => {
     seed()
-    const original = (sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked
-    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = async () => ({
-      ok: false, error: 'ENOSPC: no space left on device',
-    })
+    const restore = stubMethod('persistSessionChecked', () => () => ({
+      generation: 1,
+      receipt: Promise.resolve({ ok: false, error: 'ENOSPC: no space left on device' }),
+    }))
 
     // Make everything AFTER the receipt slow, so "resolved at the receipt" and
     // "resolved when the send settled" are distinguishable rather than both
@@ -629,7 +660,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
       expect(Date.now() - started).toBeLessThan(250)
     } finally {
       smAny.getOrCreateAgent = originalGetAgent
-      ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = original
+      restore()
     }
   })
 
@@ -642,11 +673,13 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
 
     let releaseFlush!: () => void
     const flushing = new Promise<void>((resolve) => { releaseFlush = resolve })
-    const original = (sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked
-    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = async () => {
-      await flushing
-      return { ok: true as const }
-    }
+    // Wrap rather than replace: the real write still happens, and only the
+    // RECEIPT is held, so the callback sits in the accepted-but-not-started
+    // window with genuine state behind it.
+    const restore = stubMethod('persistSessionChecked', (original) => (managed: never) => {
+      const handle = original(managed) as WriteHandle
+      return { generation: handle.generation, receipt: flushing.then(() => handle.receipt) }
+    })
 
     const callback = sm.tryDeliverPageCallback(SESSION_ID, 'from the page', { workspaceId: WORKSPACE_ID })
     for (let i = 0; i < 50 && managed.pageCallbackTurnPendingToken === undefined; i++) {
@@ -658,7 +691,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     releaseFlush()
     await callback
     await userSend
-    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = original
+    restore()
 
     expect(managed.messageQueue.map((e) => e.message)).toContain('from the user')
     // No turn was running, so nothing was interrupted. Claiming otherwise makes

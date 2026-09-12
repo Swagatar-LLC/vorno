@@ -1,10 +1,11 @@
 /**
- * SUV-0064 — the checked persistence receipt.
+ * SUV-0064 — checked persistence: handles, serialisation, and cancellation.
  *
  * `flush` cannot report a failed write: `write` catches its own errors so the
- * queue's many fire-and-forget callers keep working. `flushChecked` is the
- * opt-in way to ask, and a caller that tells a user "delivered and saved"
- * depends on it never answering optimistically.
+ * queue's many fire-and-forget callers keep working. A caller that tells a user
+ * "delivered and saved" needs the difference, and it asks for it by holding a
+ * HANDLE on the write it made — not by asking "is the latest write done", which
+ * has no truthful answer once bookkeeping has been retired.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -15,7 +16,7 @@ import { SessionPersistenceQueue } from '../persistence-queue.ts';
 import { getSessionFilePath } from '../storage.ts';
 import type { StoredSession } from '../types.ts';
 
-describe('SessionPersistenceQueue.flushChecked', () => {
+describe('SessionPersistenceQueue checked writes', () => {
   let root: string;
   let queue: SessionPersistenceQueue;
 
@@ -32,10 +33,10 @@ describe('SessionPersistenceQueue.flushChecked', () => {
   /**
    * A root that cannot hold a sessions directory: a regular FILE sits where the
    * directory would go, so `mkdir` fails with ENOTDIR. A realistic disk failure
-   * rather than a synthetic bad path, and it exercises the same catch.
+   * rather than a synthetic bad path.
    */
   function blockedRoot(): string {
-    const blocker = join(root, 'blocker');
+    const blocker = join(root, `blocker-${Math.random().toString(36).slice(2)}`);
     writeFileSync(blocker, 'not a directory');
     return blocker;
   }
@@ -52,326 +53,281 @@ describe('SessionPersistenceQueue.flushChecked', () => {
     } as unknown as StoredSession;
   }
 
+  /** Enqueue, drive the tail, and hand back the claim on that exact write. */
+  function write(id: string, mutate?: (s: StoredSession) => void) {
+    const record = session(id);
+    mutate?.(record);
+    const handle = queue.enqueueChecked(record);
+    // `tail` is the write FINISHING, which is not the same instant as the
+    // receipt: an abandoned write settles its receipt and then finishes tidying
+    // up after itself, so filesystem assertions have to wait for the tail.
+    const tail = queue.driveChecked(id);
+    return { ...handle, tail };
+  }
+
   it('reports success for a write that really lands', async () => {
-    queue.enqueue(session('s1'));
-    await expect(queue.flushChecked('s1')).resolves.toEqual({ ok: true });
+    await expect(write('s1').receipt).resolves.toEqual({ ok: true });
+    expect(existsSync(getSessionFilePath(root, 's1'))).toBe(true);
   });
 
   it('reports the failure for a write that cannot land', async () => {
-    // An unwritable workspace root: the write throws inside the queue, which
-    // catches it — so `flush` would resolve as if nothing were wrong.
-    const broken = session('s2');
-    (broken as unknown as { workspaceRootPath: string }).workspaceRootPath = blockedRoot();
-    queue.enqueue(broken);
+    const receipt = await write('s2', (s) => {
+      (s as unknown as { workspaceRootPath: string }).workspaceRootPath = blockedRoot();
+    }).receipt;
 
-    const receipt = await queue.flushChecked('s2');
     expect(receipt.ok).toBe(false);
     expect(receipt.ok === false && receipt.error.length > 0).toBe(true);
-  });
-
-  it('does not report success while a write is still in flight', async () => {
-    // `write` removes its pending entry BEFORE touching the filesystem, so a
-    // checked flush arriving mid-I/O saw an empty queue. Returning `ok` there
-    // claimed the bytes were on disk while they were still travelling — and if
-    // that write then failed, the claim was simply false.
-    // The failure must happen at an ASYNC step, or there is no in-flight window
-    // to test: an ENOTDIR from `mkdir` is raised synchronously, so the whole
-    // write settles before anything else can observe it. A directory sitting
-    // where the temp FILE goes makes `writeFile` fail instead — after the
-    // pending entry is already gone and the I/O has genuinely begun.
-    mkdirSync(join(root, 'sessions', 's3', 'session.jsonl.tmp'), { recursive: true });
-    queue.enqueue(session('s3'));
-
-    // Start a write WITHOUT awaiting it. That clears the pending entry and
-    // registers the write as in progress, so the checked flush below finds an
-    // empty queue and must wait for the work already in flight. Without that
-    // wait it reports success before the failure is even known.
-    const inFlight = queue.flush('s3');
-    const receipt = await queue.flushChecked('s3');
-    await inFlight;
-
-    expect(receipt.ok).toBe(false);
   });
 
   it('serialises writes so the newest enqueued state is what lands', async () => {
     // Every write for a session shares one `.tmp` path, so concurrency there is
     // a correctness problem rather than a fairness one: interleaved writers can
     // rename a half-written temp file over a good session and lose the loser's
-    // bytes with no error anywhere. Two writes issued back to back must
-    // therefore land in order, with the newest winning.
-    const first = session('s5');
-    (first as unknown as { name: string }).name = 'older';
-    queue.enqueue(first);
-    const older = queue.flush('s5');
+    // bytes with no error anywhere.
+    const older = write('s3', (s) => { (s as unknown as { name: string }).name = 'older' });
+    const newer = write('s3', (s) => { (s as unknown as { name: string }).name = 'newer' });
 
-    const second = session('s5');
-    (second as unknown as { name: string }).name = 'newer';
-    const receipt = queue.enqueueChecked(second);
-
-    await older;
-    expect(await receipt).toEqual({ ok: true });
-
-    const written = readFileSync(getSessionFilePath(root, 's5'), 'utf-8');
-    expect(written).toContain('"name":"newer"');
+    await older.receipt;
+    expect(await newer.receipt).toEqual({ ok: true });
+    expect(newer.generation).toBeGreaterThan(older.generation);
+    expect(readFileSync(getSessionFilePath(root, 's3'), 'utf-8')).toContain('"name":"newer"');
   });
 
   it('ties a receipt to its own generation, not to somebody else\'s success', async () => {
-    // A receipt is satisfied by ITS generation or a later one — a newer
-    // snapshot contains this one — but never by an older write completing,
-    // which would let a caller borrow an answer it had not earned.
-    mkdirSync(join(root, 'sessions', 's6', 'session.jsonl.tmp'), { recursive: true });
-    const failing = queue.enqueueChecked(session('s6'));
-    expect(await failing).toMatchObject({ ok: false });
+    mkdirSync(join(root, 'sessions', 's4', 'session.jsonl.tmp'), { recursive: true });
+    expect(await write('s4').receipt).toMatchObject({ ok: false });
 
     // Clear the blockage; the next generation gets its own, honest answer.
-    rmSync(join(root, 'sessions', 's6', 'session.jsonl.tmp'), { recursive: true, force: true });
-    expect(await queue.enqueueChecked(session('s6'))).toEqual({ ok: true });
+    rmSync(join(root, 'sessions', 's4', 'session.jsonl.tmp'), { recursive: true, force: true });
+    expect(await write('s4').receipt).toEqual({ ok: true });
   });
 
-  it('settles waiting receipts when a session is cancelled', async () => {
-    // A cancelled session will never write. Anything waiting on it has to be
-    // told, or it hangs for the life of the process.
-    queue.enqueue(session('s7'));
-    const receipt = queue.flushChecked('s7');
-    queue.cancel('s7');
-    expect(await receipt).toMatchObject({ ok: false });
-  });
-
-  it('does not commit a write cancelled after it was queued onto the tail', async () => {
-    // `flush` chains onto the tail, so the write begins on a microtask — a
-    // cancel arriving first must stop it. This covers the cancel-before-start
-    // case.
+  it('keeps failing while the obstruction lasts, and recovers when it clears', async () => {
+    // What this proves: a persistently broken session never gets an optimistic
+    // receipt, and a fixed one is not stuck reporting the old failure.
     //
-    // The pre-rename check in `write` covers a DIFFERENT case: a cancel landing
-    // mid-I/O, after the temp file is written. That one is deliberately not
-    // asserted here, because this suite cannot construct it deterministically —
-    // the writes settle far too quickly — and a test that appeared to cover it
-    // would be worse than none. It is belt-and-braces for a real filesystem
-    // where `writeFile` takes measurable time.
-    queue.enqueue(session('s8'));
-    const running = queue.flush('s8');
-    queue.cancel('s8');
-    await running;
+    // What it does NOT prove, despite an earlier comment here claiming it: that
+    // retirement preserves failure evidence. Each write below fails on its own
+    // merits, so the assertions hold whether or not `retireIfQuiescent` keeps
+    // `lastWriteFailure`. That invariant is pinned separately, as state.
+    mkdirSync(join(root, 'sessions', 'f1', 'session.jsonl.tmp'), { recursive: true });
+    expect((await write('f1').receipt).ok).toBe(false);
 
-    expect(existsSync(getSessionFilePath(root, 's8'))).toBe(false);
-    // And no temp file left behind for a later reader to misread.
-    expect(existsSync(getSessionFilePath(root, 's8') + '.tmp')).toBe(false);
-  });
-
-  it('writes again normally after a cancelled session is re-enqueued', async () => {
-    // A cancel must not suppress every future write for the life of the
-    // process. It bounds itself to the generations that existed when it ran, so
-    // a later enqueue is simply a higher generation.
-    queue.enqueue(session('s9'));
-    queue.cancel('s9');
-
-    const receipt = await queue.enqueueChecked(session('s9'));
-    expect(receipt).toEqual({ ok: true });
-    expect(existsSync(getSessionFilePath(root, 's9'))).toBe(true);
-  });
-
-  it('abandons a write cancelled during the unlink boundary', async () => {
-    // Real writes take measurable time and a cancel genuinely lands mid-commit;
-    // an in-memory suite's writes settle far too fast to hit that by timing. The
-    // hook makes the window deterministic instead of hoping for it.
-    queue.commitHooks = { beforeUnlink: (id) => { queue.cancel(id) } };
-    queue.enqueue(session('c1'));
-    const receipt = queue.flushChecked('c1');
-    await queue.flush('c1');
-
-    expect(await receipt).toMatchObject({ ok: false });
-    expect(existsSync(getSessionFilePath(root, 'c1'))).toBe(false);
-    expect(existsSync(getSessionFilePath(root, 'c1') + '.tmp')).toBe(false);
-  });
-
-  it('abandons a write cancelled between the unlink and the rename', async () => {
-    // Asserted by whether the RENAME happened at all, not only by the final
-    // state on disk: the post-rename check would clean up after a rename that
-    // should never have occurred, so a state-only assertion passes with this
-    // boundary removed and proves nothing about it.
-    let renamed = false;
-    queue.commitHooks = {
-      beforeRename: (id) => { queue.cancel(id) },
-      afterRename: () => { renamed = true },
-    };
-    queue.enqueue(session('c2'));
-    const receipt = queue.flushChecked('c2');
-    await queue.flush('c2');
-
-    expect(renamed).toBe(false);
-    expect(await receipt).toMatchObject({ ok: false });
-    expect(existsSync(getSessionFilePath(root, 'c2'))).toBe(false);
-    expect(existsSync(getSessionFilePath(root, 'c2') + '.tmp')).toBe(false);
-  });
-
-  it('removes the artifact when the cancel lands AFTER the rename committed', async () => {
-    // The case a single pre-commit check misses entirely: the bytes are already
-    // on disk for a session the caller has deleted. The receipt must not say
-    // "cancelled" while that artifact could survive, so the removal happens
-    // before the receipt settles and before the tail releases.
-    queue.commitHooks = { afterRename: (id) => { queue.cancel(id) } };
-    queue.enqueue(session('c3'));
-    const receipt = queue.flushChecked('c3');
-    await queue.flush('c3');
-
-    expect(await receipt).toMatchObject({ ok: false });
-    expect(existsSync(getSessionFilePath(root, 'c3'))).toBe(false);
-    expect(existsSync(getSessionFilePath(root, 'c3') + '.tmp')).toBe(false);
-  });
-
-  it('answers a post-cancel flushChecked immediately instead of hanging', async () => {
-    queue.enqueue(session('c4'));
-    queue.cancel('c4');
-
-    // `write` returns early when nothing is pending — exactly what `cancel`
-    // leaves behind — so a receipt that waited for a write would wait forever.
-    // The answer here is `ok` because the cancel left nothing outstanding AND
-    // retired the session's bookkeeping; what matters is that it is an answer.
-    const receipt = await Promise.race([
-      queue.flushChecked('c4'),
-      new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 1_000)),
-    ]);
-    expect(receipt).not.toBe('timeout');
-  });
-
-  it('never registers a waiter nothing can satisfy', async () => {
-    // The hang regression, with a real 1.5s bound so it fails rather than
-    // stalling the suite. `cancel` empties `pending`, and `write` returns early
-    // with nothing pending WITHOUT settling anything — so a waiter parked for
-    // that generation would be answered by nobody, ever.
-    //
-    // This exercises the watermark path specifically (the cancelled generation
-    // answers terminally). The `receiptFor` backstop below it guards the same
-    // invariant for states the public API cannot currently produce, and is
-    // marked as such in the source rather than claimed as covered here.
-    queue.enqueue(session('w1'));
-    queue.cancel('w1');
-
-    const waiters = (queue as unknown as { receiptWaiters: Map<string, unknown[]> }).receiptWaiters;
-    const answer = await Promise.race([
-      queue.flushChecked('w1'),
-      new Promise<'hung'>((r) => setTimeout(() => r('hung'), 1_500)),
-    ]);
-
-    expect(answer).not.toBe('hung');
-    expect(waiters.has('w1')).toBe(false);
-  });
-
-  it('answers rather than waits when the snapshot is already gone', async () => {
-    // Same invariant from the other direction: a checked flush for a session
-    // with nothing pending and no tail has nothing to wait for, whether or not
-    // a cancel is what emptied it.
-    const answer = await Promise.race([
-      queue.flushChecked('never-existed'),
-      new Promise<'hung'>((r) => setTimeout(() => r('hung'), 1_500)),
-    ]);
-    expect(answer).not.toBe('hung');
-  });
-
-  it('reports cancelled — promptly — while the cancelled write is still in flight', async () => {
-    // The case where the watermark is still live, because retirement is blocked
-    // by the in-flight tail. A caller asking about a generation at or below it
-    // gets a terminal answer rather than waiting for a write that will never
-    // commit.
-    let held!: () => void;
-    const holding = new Promise<void>((resolve) => { held = resolve; });
-    queue.commitHooks = { beforeRename: async () => { await holding; } };
-
-    queue.enqueue(session('c6'));
-    const inFlight = queue.flush('c6');
     await new Promise((r) => setTimeout(r, 10));
-    queue.cancel('c6');
+    // A fresh handle on the same broken session still reports the failure.
+    expect((await write('f1').receipt).ok).toBe(false);
 
-    const receipt = await Promise.race([
-      queue.flushChecked('c6'),
-      new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 1_000)),
-    ]);
-    expect(receipt).not.toBe('timeout');
-    expect(receipt).toMatchObject({ ok: false });
-
-    held();
-    await inFlight;
-    queue.commitHooks = undefined;
+    rmSync(join(root, 'sessions', 'f1', 'session.jsonl.tmp'), { recursive: true, force: true });
+    expect((await write('f1').receipt).ok).toBe(true);
   });
 
-  it('a stale in-flight write cannot commit over a newer one', async () => {
-    // The reason cancellation is a watermark rather than a flag. With a flag,
-    // `enqueue` cleared it, so the stale write — held open here — reached its
-    // pre-commit check, found the flag gone, and committed.
-    //
-    // Neither the final file nor the receipt can show that. The tail
-    // serialises, so the newer write lands last either way; and `cancel`
-    // settles waiting receipts eagerly, so the stale receipt reads "cancelled"
-    // whether or not the write went on to commit. What has to be observed is
-    // whether the stale bytes were EVER on disk — so the file is sampled at
-    // each commit boundary.
-    const file = getSessionFilePath(root, 'c5');
-    const observed: string[] = [];
-    let holdFirst = true;
-    let held!: () => void;
-    const holding = new Promise<void>((resolve) => { held = resolve; });
+  describe('cancellation', () => {
+    it('abandons a write cancelled before it starts', async () => {
+      const handle = write('c0');
+      queue.cancel('c0');
 
-    queue.commitHooks = {
-      beforeUnlink: () => { if (existsSync(file)) observed.push(readFileSync(file, 'utf-8')) },
-      beforeRename: async () => {
-        if (!holdFirst) return;
-        holdFirst = false;
-        await holding;
-      },
-    };
+      expect(await handle.receipt).toMatchObject({ ok: false });
+      expect(existsSync(getSessionFilePath(root, 'c0'))).toBe(false);
+    });
 
-    const stale = session('c5');
-    (stale as unknown as { name: string }).name = 'stale';
-    queue.enqueue(stale);
-    const staleWrite = queue.flush('c5');
+    it('abandons a write cancelled during the unlink boundary', async () => {
+      // Real writes take measurable time and a cancel genuinely lands
+      // mid-commit; an in-memory suite's writes settle far too fast to hit that
+      // by timing. The hook makes the window deterministic.
+      queue.commitHooks = { beforeUnlink: (id) => { queue.cancel(id) } };
+      const handle = write('c1');
+      await handle.tail;
 
-    // Let the stale write reach the held boundary, then cancel and supersede.
-    await new Promise((r) => setTimeout(r, 10));
-    queue.cancel('c5');
-    const fresh = session('c5');
-    (fresh as unknown as { name: string }).name = 'fresh';
-    queue.enqueue(fresh);
+      expect(await handle.receipt).toMatchObject({ ok: false });
+      expect(existsSync(getSessionFilePath(root, 'c1'))).toBe(false);
+      expect(existsSync(getSessionFilePath(root, 'c1') + '.tmp')).toBe(false);
+    });
 
-    held();
-    await staleWrite;
-    await queue.flush('c5');
-    queue.commitHooks = undefined;
+    it('abandons a write cancelled between the unlink and the rename', async () => {
+      // Asserted by whether the RENAME happened at all, not only by the final
+      // state on disk: the post-rename check would clean up after a rename that
+      // should never have occurred, so a state-only assertion passes with this
+      // boundary removed and proves nothing about it.
+      let renamed = false;
+      queue.commitHooks = {
+        beforeRename: (id) => { queue.cancel(id) },
+        afterRename: () => { renamed = true },
+      };
+      const handle = write('c2');
+      await handle.tail;
 
-    // The stale bytes never reached disk at any point — not merely "not at the
-    // end".
-    expect(observed.some((snapshot) => snapshot.includes('"name":"stale"'))).toBe(false);
+      expect(renamed).toBe(false);
+      expect(await handle.receipt).toMatchObject({ ok: false });
+      expect(existsSync(getSessionFilePath(root, 'c2'))).toBe(false);
+      expect(existsSync(getSessionFilePath(root, 'c2') + '.tmp')).toBe(false);
+    });
 
-    const written = readFileSync(file, 'utf-8');
-    expect(written).toContain('"name":"fresh"');
-    expect(written).not.toContain('"name":"stale"');
+    it('removes the artifact when the cancel lands AFTER the rename committed', async () => {
+      // The case a single pre-commit check misses entirely: the bytes are
+      // already on disk for a session the caller has deleted. The receipt must
+      // not say "cancelled" while that artifact could survive, so removal
+      // happens before the receipt settles and before the tail releases.
+      queue.commitHooks = { afterRename: (id) => { queue.cancel(id) } };
+      const handle = write('c3');
+      await handle.tail;
+
+      expect(await handle.receipt).toMatchObject({ ok: false });
+      expect(existsSync(getSessionFilePath(root, 'c3'))).toBe(false);
+      expect(existsSync(getSessionFilePath(root, 'c3') + '.tmp')).toBe(false);
+    });
+
+    it('settles an outstanding handle instead of leaving it to hang', async () => {
+      // The hang regression, with a real 1.5s bound so it fails rather than
+      // stalling the suite. `cancel` empties `pending`, and `write` returns
+      // early with nothing pending WITHOUT settling anything — so a handle held
+      // across a cancel would be answered by nobody, ever.
+      const handle = queue.enqueueChecked(session('c4'));
+      queue.cancel('c4');
+
+      const answer = await Promise.race([
+        handle.receipt,
+        new Promise<'hung'>((r) => setTimeout(() => r('hung'), 1_500)),
+      ]);
+      expect(answer).not.toBe('hung');
+      expect(answer).toMatchObject({ ok: false });
+
+      const waiters = (queue as unknown as { receiptWaiters: Map<string, unknown[]> }).receiptWaiters;
+      expect(waiters.has('c4')).toBe(false);
+    });
+
+    it('a stale in-flight write cannot commit over a newer one', async () => {
+      // The reason cancellation is a watermark rather than a flag. With a flag,
+      // `enqueue` cleared it, so the stale write — held open here — reached its
+      // pre-commit check, found the flag gone, and committed.
+      //
+      // Neither the final file nor the receipt can show that. The tail
+      // serialises, so the newer write lands last either way; and `cancel`
+      // settles waiting receipts eagerly, so the stale receipt reads
+      // "cancelled" whether or not the write went on to commit. What has to be
+      // observed is whether the stale bytes were EVER on disk.
+      const file = getSessionFilePath(root, 'c5');
+      const observed: string[] = [];
+      let holdFirst = true;
+      let held!: () => void;
+      const holding = new Promise<void>((resolve) => { held = resolve });
+
+      queue.commitHooks = {
+        beforeUnlink: () => { if (existsSync(file)) observed.push(readFileSync(file, 'utf-8')) },
+        beforeRename: async () => {
+          if (!holdFirst) return;
+          holdFirst = false;
+          await holding;
+        },
+      };
+
+      const stale = write('c5', (s) => { (s as unknown as { name: string }).name = 'stale' });
+      await new Promise((r) => setTimeout(r, 10));
+      queue.cancel('c5');
+      const fresh = write('c5', (s) => { (s as unknown as { name: string }).name = 'fresh' });
+
+      held();
+      await stale.receipt;
+      await fresh.receipt;
+      queue.commitHooks = undefined;
+
+      expect(observed.some((snapshot) => snapshot.includes('"name":"stale"'))).toBe(false);
+      const written = readFileSync(file, 'utf-8');
+      expect(written).toContain('"name":"fresh"');
+      expect(written).not.toContain('"name":"stale"');
+    });
+
+    it('writes again normally after a cancelled session is re-enqueued', async () => {
+      // A cancel bounds itself to the generations that existed when it ran, so
+      // a later enqueue is simply a higher generation.
+      queue.enqueueChecked(session('c7'));
+      queue.cancel('c7');
+
+      expect(await write('c7').receipt).toEqual({ ok: true });
+      expect(existsSync(getSessionFilePath(root, 'c7'))).toBe(true);
+    });
   });
 
-  it('retires per-session bookkeeping so cancelled sessions do not leak', async () => {
-    const baseline = queue.diagnostics();
+  describe('bookkeeping', () => {
+    it('retires per-session state so cancelled sessions do not leak', async () => {
+      const baseline = queue.diagnostics();
 
-    for (let i = 0; i < 25; i++) {
-      queue.enqueue(session(`gone-${i}`));
-      await queue.flush(`gone-${i}`);
-      queue.cancel(`gone-${i}`);
-    }
+      for (let i = 0; i < 25; i++) {
+        // The tail, not the receipt: retirement is only allowed to run once
+        // nothing is in flight, so a snapshot taken while the last write is
+        // still finishing would be measuring the wrong instant rather than a
+        // leak.
+        await write(`gone-${i}`).tail;
+        queue.cancel(`gone-${i}`);
+      }
 
-    // Every map is keyed by session id, so without retirement each deleted
-    // session leaves an entry in all of them for the life of the process.
-    expect(queue.diagnostics()).toEqual(baseline);
-  });
+      // Every map is keyed by session id, so without retirement each deleted
+      // session leaves an entry in all of them for the life of the process.
+      expect(queue.diagnostics()).toEqual(baseline);
+    });
 
-  it('keeps reporting failure until a later write succeeds', async () => {
-    const broken = session('s4');
-    (broken as unknown as { workspaceRootPath: string }).workspaceRootPath = blockedRoot();
-    queue.enqueue(broken);
-    expect((await queue.flushChecked('s4')).ok).toBe(false);
+    it('retirement-keeps-failure-evidence: a failed write is not retired away', async () => {
+      // Scope, stated plainly: this pins STATE, not behaviour. With
+      // `flushChecked` removed there is no caller that reads `lastWriteFailure`
+      // after quiescence — every receipt now belongs to a generation that
+      // leaves a pending entry and settles from `write`'s own failure handling.
+      // So no black-box assertion can show a wrong ANSWER if the guard goes;
+      // what it can show is that the record of the failure still exists, which
+      // is the invariant the guard is there to hold for the next reader.
+      mkdirSync(join(root, 'sessions', 'ev1', 'session.jsonl.tmp'), { recursive: true });
+      expect((await write('ev1').receipt).ok).toBe(false);
+      await write('ev1').tail;
 
-    // Nothing pending now, but the last attempt failed — the session's state is
-    // still not durable, and saying otherwise would be the optimistic answer
-    // this exists to prevent.
-    expect((await queue.flushChecked('s4')).ok).toBe(false);
+      // Quiescent: nothing pending, tail drained, no waiters. Retirement has
+      // run and must have declined to take the failure with it.
+      expect(queue.diagnostics().lastWriteFailure).toBe(1);
 
-    queue.enqueue(session('s4'));
-    expect((await queue.flushChecked('s4')).ok).toBe(true);
+      // And it is not kept forever: a successful write clears it, after which
+      // the session retires like any other.
+      rmSync(join(root, 'sessions', 'ev1', 'session.jsonl.tmp'), { recursive: true, force: true });
+      expect((await write('ev1').receipt).ok).toBe(true);
+      await write('ev1').tail;
+      expect(queue.diagnostics().lastWriteFailure).toBe(0);
+    });
+
+    it('keeps the header-signature baseline across ordinary quiescence', async () => {
+      // This one is NOT generation bookkeeping. It is the live baseline for
+      // "did somebody else change this header since we last wrote it", and it
+      // has to outlive quiescence because that is exactly when an external edit
+      // happens. Retiring it would make the next write conclude nothing changed
+      // and clobber the other writer, and would strip `ConfigWatcher` of its
+      // self-echo baseline.
+      await write('sig1').receipt;
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(queue.getLastWrittenSignature('sig1')).toBeDefined();
+    });
+
+    it('preserves an external metadata edit made while the queue was idle', async () => {
+      await write('sig2', (s) => { (s as unknown as { name: string }).name = 'ours' }).receipt;
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Somebody else edits the header on disk while nothing is in flight.
+      const file = getSessionFilePath(root, 'sig2');
+      const lines = readFileSync(file, 'utf-8').split('\n');
+      const header = JSON.parse(lines[0]!) as Record<string, unknown>;
+      header.name = 'renamed externally';
+      header.labels = ['triage'];
+      lines[0] = JSON.stringify(header);
+      writeFileSync(file, lines.join('\n'));
+
+      // A later local write carrying only content changes must not revert it.
+      await write('sig2', (s) => { (s as unknown as { name: string }).name = 'ours' }).receipt;
+
+      const after = JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+      expect(after.name).toBe('renamed externally');
+      expect(after.labels).toEqual(['triage']);
+    });
+
+    it('drops the signature baseline on explicit cancellation', () => {
+      // The session is going away, so the baseline goes with it.
+      queue.enqueueChecked(session('sig3'));
+      queue.cancel('sig3');
+      expect(queue.getLastWrittenSignature('sig3')).toBeUndefined();
+    });
   });
 });

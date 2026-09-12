@@ -65,6 +65,7 @@ import {
   getSessionFilePath,
   generateSessionId,
   sessionPersistenceQueue,
+  type SessionWriteHandle,
   getHeaderMetadataSignature,
   writeSessionJsonl,
   serializeSession,
@@ -2341,25 +2342,39 @@ export class SessionManager implements ISessionManager {
 
   // Build the StoredSession snapshot and hand it to the persistence queue.
   // Caller must ensure `managed.messagesLoaded` is true.
+  /**
+   * Build the record this session would persist right now.
+   *
+   * Split out so the checked path enqueues the SAME snapshot as the ordinary
+   * one. Two constructions would be two chances to diverge, and the divergence
+   * would only show up as a callback reporting durability for a record that did
+   * not match what an ordinary persist writes.
+   */
+  private buildStoredSession(managed: ManagedSession): StoredSession {
+    // Filter out transient status messages (progress indicators like "Compacting...")
+    // Error messages are now persisted with rich fields for diagnostics
+    const persistableMessages = managed.messages.filter(m => m.role !== 'status')
+    return {
+      ...pickSessionFields(managed),
+      workspaceRootPath: managed.workspace.rootPath,
+      createdAt: managed.createdAt ?? Date.now(),
+      lastUsedAt: Date.now(),
+      messages: persistableMessages.map(messageToStored),
+      tokenUsage: managed.tokenUsage ?? DEFAULT_TOKEN_USAGE,
+    } as StoredSession
+  }
+
+  /** Enqueue and return a claim on that exact snapshot. */
+  private enqueuePersistChecked(managed: ManagedSession): SessionWriteHandle {
+    return sessionPersistenceQueue.enqueueChecked(this.buildStoredSession(managed))
+  }
+
   private enqueuePersist(managed: ManagedSession): void {
     try {
       // Filter out transient status messages (progress indicators like "Compacting...")
       // Error messages are now persisted with rich fields for diagnostics
-      const persistableMessages = managed.messages.filter(m =>
-        m.role !== 'status'
-      )
-
-      const storedSession: StoredSession = {
-        ...pickSessionFields(managed),
-        workspaceRootPath: managed.workspace.rootPath,
-        createdAt: managed.createdAt ?? Date.now(),
-        lastUsedAt: Date.now(),
-        messages: persistableMessages.map(messageToStored),
-        tokenUsage: managed.tokenUsage ?? DEFAULT_TOKEN_USAGE,
-      } as StoredSession
-
       // Queue for async persistence with debouncing
-      sessionPersistenceQueue.enqueue(storedSession)
+      sessionPersistenceQueue.enqueue(this.buildStoredSession(managed))
     } catch (error) {
       sessionLog.error(`Failed to queue session ${managed.id} for persistence:`, error)
     }
@@ -2373,16 +2388,28 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Flush and report whether the bytes reached disk.
+   * Persist and hand back a claim on THIS write.
    *
-   * `flushSession` cannot: the queue catches its own write errors so its many
-   * fire-and-forget callers keep working, which makes a failed write
-   * indistinguishable from a successful one to anyone awaiting it. A Page
-   * callback tells its page the message was delivered AND saved, so it needs
-   * the difference — and "assume it worked" is the one answer it must not give.
+   * `flushSession` cannot report a failure: the queue catches its own write
+   * errors so its many fire-and-forget callers keep working, which leaves a
+   * failed write indistinguishable from a successful one to anyone awaiting it.
+   * A Page callback tells its page the message was delivered AND saved, so it
+   * needs the difference.
+   *
+   * It takes a HANDLE rather than asking "is the latest write done", because
+   * that question has no truthful answer once bookkeeping has been retired —
+   * there is nothing left to reconstruct which generation the caller meant, and
+   * the honest-looking default is optimistic. Holding the handle means the
+   * caller waits on the write it actually made.
    */
-  async flushSessionChecked(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
-    return sessionPersistenceQueue.flushChecked(sessionId)
+  private persistSessionChecked(managed: ManagedSession): SessionWriteHandle {
+    if (!managed.messagesLoaded) {
+      this.hydrateMessagesForColdPersist(managed)
+    }
+    const handle = this.enqueuePersistChecked(managed)
+    // Drive the tail so the handle settles without waiting out the debounce.
+    sessionPersistenceQueue.driveChecked(managed.id)
+    return handle
   }
 
   // Flush all pending sessions (call on app quit).
@@ -6745,13 +6772,16 @@ export class SessionManager implements ISessionManager {
       // Persist + flush before announcing — the user message must be
       // genuinely on disk before we tell the renderer "accepted", and
       // `persistSession` is debounced (500ms). #616.
-      this.persistSession(managed)
+      // A callback holds a claim on its own write; every other sender keeps the
+      // existing fire-and-forget persist.
+      const persistHandle = pageCallback ? this.persistSessionChecked(managed) : undefined
+      if (!pageCallback) this.persistSession(managed)
       if (pageCallback) {
         // Checked flush, and `onDurable` only if it really succeeded. The
         // unchecked path resolves just as happily after a failed write, so
         // firing durability off it would have the page told its message was
         // saved when the disk had said otherwise.
-        const receipt = await this.flushSessionChecked(managed.id)
+        const receipt = await persistHandle!.receipt
         onAck?.(userMessage.id)
         if (!receipt.ok) {
           sessionLog.warn(`Page callback message not durable for ${sessionId}: ${receipt.error}`)

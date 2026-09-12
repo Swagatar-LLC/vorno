@@ -325,6 +325,7 @@ export async function saveSession(session: StoredSession): Promise<void> {
  * Use this during active sessions to avoid blocking the main thread.
  */
 export { sessionPersistenceQueue, getHeaderMetadataSignature } from './persistence-queue.js'
+export type { SessionWriteHandle, SessionWriteReceipt } from './persistence-queue.js'
 
 /**
  * Load session by ID

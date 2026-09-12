@@ -480,10 +480,11 @@ mechanism.
 - **`durable: true` could be a lie.** The persistence queue catches its own
   write errors so its fire-and-forget callers keep working, which made a failed
   write indistinguishable from a successful one to anyone awaiting `flush`. Added
-  `flushChecked` — additive, with `flush` and every existing caller untouched —
+  a checked path — additive, with `flush` and every existing caller untouched —
   which reports the actual write outcome, and `onDurable` now fires only on a
-  verified success. An injected write failure reports `durable: false`, and the
-  audit never says otherwise.
+  verified success. A real write failure reports `durable: false`, and the audit
+  never says otherwise. *(Shipped first as `flushChecked`; round 22 replaced it
+  with the owner-held `enqueueChecked` handle.)*
 - **The callback-first/user-second interleaving test was passing for the wrong
   reason.** It released the callback's flush before the user send reached its
   branch, so the send queued on `isProcessing` and the marker was never
@@ -522,7 +523,14 @@ it, the accepted-turn marker needed it, and now the queue's in-flight write
 tracking needs it. An older call's `finally` was deleting the entry
 unconditionally, so a newer write could be untracked — after which a checked
 flush sees no pending and no in-flight work and reports success over bytes still
-being written. Both `flush` and `flushChecked` now delete only their own entry.
+being written. Both `flush` and the checked path were made to delete only their
+own entry.
+
+*(Superseded in round 21 and gone by round 22: the separate in-flight write map
+no longer exists. One tail per session now serialises every write, so "is a write
+in progress" is answered by the tail's existence rather than by a map that could
+be cleaned up by the wrong owner. The white-box successor test described below
+went with it; the property it protected is now structural.)*
 
 **The test is deliberately white-box, and the reason is recorded here rather
 than buried.** The real interleaving cannot be produced in-process: these writes
@@ -629,7 +637,10 @@ one you mean" rather than "say whether".
 - **A post-cancel `flushChecked` could hang.** `write` returns early when
   nothing is pending — exactly what `cancel` leaves behind — so a receipt that
   waited for a write waited forever. A generation at or below the watermark now
-  answers terminally and at once.
+  answers terminally and at once. *(Round 22 removed `flushChecked` entirely and
+  replaced it with an owner-held handle; both guards survive as structural
+  backstops, and round 22 records that neither is reachable from the surviving
+  API.)*
 - **Per-session bookkeeping is retired** once the tail has drained with nothing
   pending and nobody waiting. Six maps keyed by session id would otherwise hold
   an entry for every session ever written, including every deleted one.
@@ -656,10 +667,16 @@ session whose write had failed went quiet and the next checked flush read that
 absence as success — a durability claim assembled out of deleted evidence.
 
 An unresolved write failure is now the one piece of state that outlives
-quiescence. It **is** the answer to the next checked flush; it clears on the
-next successful write, and retirement proceeds from there. A failed session
-therefore holds two map entries until it is either retried or cancelled, which
-is bounded by real failures rather than by session count.
+quiescence. It clears on the next successful write, and retirement proceeds from
+there. A failed session therefore holds two map entries until it is either
+retried or cancelled, which is bounded by real failures rather than by session
+count.
+
+*(Amended in round 22: the clause "it **is** the answer to the next checked
+flush" stopped being true when round 22 deleted the parameterless `flushChecked`
+that asked that question. The retention is kept, and is now documented as a
+structural invariant with no live reader rather than as a behaviour. See round
+22.)*
 
 Worth stating as a pattern, because this SUV has now produced it twice: a
 cleanup that is correct about lifetime can still be wrong about *meaning*.
@@ -675,7 +692,9 @@ the work has stopped.
   generation answers terminally; and `receiptFor` now refuses to register a
   waiter at all when there is no pending entry and no tail, because `write`
   returns early in exactly that state without settling anything. Regression is
-  timeout-bounded (1.5s) so it fails rather than stalling the suite.
+  timeout-bounded (1.5s) so it fails rather than stalling the suite. *(The
+  timeout-bounded regression still reddens in round 22, now via `cancel`'s
+  settling of outstanding handles.)*
 - **The slow-write fixture proves watermark-vs-flag properly.** Neither the
   final file nor the receipt can show the difference — the tail serialises so
   the newer write lands last either way, and `cancel` settles waiting receipts
@@ -715,6 +734,61 @@ Three lessons, in order of how much they generalise:
 A private learning belongs in `vorno-internal:learnings/` per the repo rule, and
 cannot be written from this worktree — flagged to the orchestrator rather than
 left undone.
+
+## Round 22 — the baseline is not bookkeeping, and the owner holds the receipt
+
+`2026-09-12` — architecture review of the retirement and receipt work.
+
+- **`lastWrittenHeaderSignature` was being retired with the generation maps, and
+  it is not the same kind of state.** It is the live baseline for "did somebody
+  else change this header since we last wrote it", and quiescence is precisely
+  when an external edit happens — so retiring it at quiescence deleted the
+  baseline at the moment it was about to be needed. Two things broke together:
+  the next local write saw no previous signature, concluded nothing external had
+  changed, and clobbered the other writer's name/labels/status; and
+  `ConfigWatcher` lost its self-echo baseline and read our own write as a foreign
+  change. It now survives quiescence and successful writes, and is dropped only
+  on explicit cancel or session deletion. Covered end to end: local write → tail
+  drain → external metadata edit → later local content persist, with the external
+  edit still present and the signature still held.
+- **A parameterless flush cannot truthfully answer "did it land" after
+  retirement.** Once the bookkeeping is gone there is nothing left to reconstruct
+  *which* generation the caller meant, and the honest-looking default is
+  optimism. `flushChecked` is deleted. `enqueueChecked` now returns a
+  `SessionWriteHandle` — `{ generation, receipt }` — so a caller waits on the
+  write it actually made, and `driveChecked` drives the tail while deliberately
+  reporting no outcome at all. `cancel` resolves every outstanding handle false
+  before retiring anything, so no handle outlives the state that would answer it.
+
+**Two guards are kept that no black-box test can reach, and the file now says
+so.** `receiptFor`'s watermark branch and its no-work backstop are both
+unreachable through the surviving API — `enqueue` mints `generations.get(id) + 1`
+while `cancel` sets the watermark to `generations.get(id)`, so a fresh generation
+is always strictly above it. They stay because the cost of being wrong is a
+permanent hang or a false durability claim, but the comments no longer imply
+coverage that does not exist. Injecting a regression into the watermark branch
+changes no test, and that is now documented rather than mistaken for safety.
+
+**The same applies to round 20's failure-evidence retention.** Deleting
+`flushChecked` removed its only reader. The guard is kept — deleting a record of
+failure is the wrong default — but it is now pinned as *state*
+(`retirement-keeps-failure-evidence`), with the test saying in its own body what
+it does and does not prove.
+
+**Five tests were stubbing a method that no longer existed.** They monkeypatched
+`flushSessionChecked` by string key long after it became `persistSessionChecked`;
+the stubs landed on a property nothing called, the real path ran, and all five
+stayed green. The seventh instance in this SUV of *the assertion was fine, the
+construction did not reach the path* — and the first where the construction was
+broken by my own rename. They now target the real seam through a `stubMethod`
+helper that throws if the target is not a function, so the next rename reddens
+instead of going quiet; the two that only needed a failed write use a **real**
+one (a directory occupying the temp path) and assert the body is absent from
+disk, which cannot silently stop working.
+
+Each fix in this round was falsified by injecting its regression: seven
+injections, six caught by a named test, one documented as structurally
+unreachable.
 
 ## Residuals
 

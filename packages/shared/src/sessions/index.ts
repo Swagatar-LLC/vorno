@@ -81,6 +81,8 @@ export {
   getMostRecentPlanFile,
   // Async persistence queue
   sessionPersistenceQueue,
+  type SessionWriteHandle,
+  type SessionWriteReceipt,
   // Header metadata signature (for self-triggered event suppression)
   getHeaderMetadataSignature,
 } from './storage.ts';
