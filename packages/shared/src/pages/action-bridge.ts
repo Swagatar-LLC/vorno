@@ -175,6 +175,31 @@ const PAGE_ACTION_RATE_WINDOW_MS = 60_000;
  * recover by re-mounting, new mounts always work.
  */
 export const MAX_LIVE_LEASES = 256;
+/**
+ * Lease creations allowed per workspace per minute.
+ *
+ * `pages:createLease` is transport-reachable and, before this, unbounded: each
+ * call minted a lease AND wrote a `page_lease_created` row, and past
+ * `MAX_LIVE_LEASES` it also evicted one and wrote a second row — so a flood
+ * amplified two audit lines per request, on a durable file, with no lease
+ * needed to get in.
+ *
+ * Sixty is generous for the thing this actually serves: a lease is minted when
+ * a Page mounts and when its content changes. A user opening dashboards does
+ * not approach it; a loop does so immediately. The budget is per broker, and
+ * there is one broker per workspace, so reconnecting or changing client id does
+ * not reset it — the state lives on the host side of the boundary.
+ */
+export const PAGE_LEASE_CREATIONS_PER_MINUTE_PER_WORKSPACE = 60;
+
+/** Thrown by `createLease` when the workspace's lease budget is spent. */
+export class PageLeaseRateLimitedError extends Error {
+  readonly code = 'PAGE_LEASE_RATE_LIMITED';
+  constructor() {
+    super('PAGE_LEASE_RATE_LIMITED: too many render leases for this workspace');
+    this.name = 'PageLeaseRateLimitedError';
+  }
+}
 
 /**
  * ADR-0033 §3 caps activation-ticket lifetime at 10 seconds. The cap is the
@@ -244,7 +269,7 @@ export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_WORKSPACE = 120;
  *
  * Outcomes and rejection codes are closed enums. That is narrower than the
  * audit row as a whole, which also carries bounded identifiers — see
- * `summarizeInvocation` for the full contract.
+ * `describeApprovedAction` for the full contract.
  */
 export type PageActionOutcomeCode =
   | 'ok'
@@ -522,6 +547,8 @@ export class PageActionBroker {
   private readonly startTimesByPage = new Map<string, number[]>();
   /** Workspace-wide start timestamps (this broker serves exactly one workspace) */
   private startTimesByWorkspace: number[] = [];
+  /** Lease-creation timestamps within the sliding window, workspace-wide */
+  private leaseCreationTimes: number[] = [];
   /** ticketId → the single-use activation record the broker holds */
   private readonly tickets = new Map<string, PageActivationTicket>();
   /**
@@ -574,6 +601,15 @@ export class PageActionBroker {
    */
   createLease(input: CreateLeaseInput): PageRenderLease {
     this.pruneExpiredLeases();
+
+    // Refused BEFORE anything is created, audited, or evicted. Checking after
+    // would leave the amplification intact: the refusal itself would be the
+    // second row, and the eviction it triggered would be the third.
+    this.leaseCreationTimes = this.withinWindow(this.leaseCreationTimes);
+    if (this.leaseCreationTimes.length >= PAGE_LEASE_CREATIONS_PER_MINUTE_PER_WORKSPACE) {
+      throw new PageLeaseRateLimitedError();
+    }
+    this.leaseCreationTimes.push(this.now());
 
     if (this.leases.size >= MAX_LIVE_LEASES) {
       let oldest: PageRenderLease | undefined;
@@ -1218,7 +1254,7 @@ export class PageActionBroker {
       // ("Path /patients/… does not match the granted pattern") and other
       // caller-supplied content, so persisting it would put exactly the payload
       // the audit summary strips back into the same file. The row keeps the
-      // closed `code` instead; see `summarizeInvocation` for what a row may
+      // closed `code` instead; see `describeApprovedAction` for what a row may
       // and may not carry.
       return {
         requestId: request.requestId,

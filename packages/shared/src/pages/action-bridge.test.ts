@@ -20,6 +20,7 @@ import {
   MAX_AUDITED_IDENTIFIER_CHARS,
   MAX_LIVE_LEASES,
   MAX_OUTSTANDING_TICKETS_PER_LEASE,
+  PAGE_LEASE_CREATIONS_PER_MINUTE_PER_WORKSPACE,
   PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE,
   PAGE_ACTION_MAX_IN_FLIGHT_PER_LEASE,
   PAGE_ACTION_MAX_QUEUED_MUTATING_PER_LEASE,
@@ -1373,12 +1374,15 @@ describe('pages/action-bridge', () => {
       const page = makePage({ grants: [grant] });
       disk.page = page;
 
-      // Fresh lease every call: the per-lease budget never binds, so what stops
-      // this is the page ceiling above it — the one a re-mount cannot reset.
+      // Re-mount every 25 actions, which is what defeats the 30/minute
+      // per-lease budget without pretending a client mints a lease per click.
+      // What stops this is the page ceiling above the lease — the one a
+      // re-mount cannot reset.
       let accepted = 0;
       let pageLimited = false;
+      let lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       for (let i = 0; i < PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_PAGE + 5; i++) {
-        const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+        if (i > 0 && i % 25 === 0) lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
         const result = await broker.executeAction(page, makeRequest(lease), AUTHORITY);
         if (result.ok) accepted++;
         else if (result.error?.includes('for this page')) pageLimited = true;
@@ -1393,9 +1397,13 @@ describe('pages/action-bridge', () => {
       let workspaceLimited = false;
       outer: for (const slug of ['other', 'third', 'fourth']) {
         const other = makePage({ slug, grants: [grant] });
+        // Re-mount periodically rather than per action, for the same reason as
+        // above: one lease per click is not a client, it is a way to dodge the
+        // per-lease budget, and it now collides with the lease budget too.
+        let otherLease = broker.createLease({ pageSlug: slug, contentDigest: DIGEST_V1 });
         for (let i = 0; i < PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_PAGE; i++) {
-          const lease = broker.createLease({ pageSlug: slug, contentDigest: DIGEST_V1 });
-          const result = await broker.executeAction(other, makeRequest(lease, { pageSlug: slug }), AUTHORITY);
+          if (i > 0 && i % 25 === 0) otherLease = broker.createLease({ pageSlug: slug, contentDigest: DIGEST_V1 });
+          const result = await broker.executeAction(other, makeRequest(otherLease, { pageSlug: slug }), AUTHORITY);
           if (!result.ok && result.error?.includes('for this workspace')) { workspaceLimited = true; break outer; }
         }
       }
@@ -1403,8 +1411,9 @@ describe('pages/action-bridge', () => {
 
       // The window slides.
       clock.now += 61_000;
-      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-      expect((await broker.executeAction(page, makeRequest(lease), AUTHORITY)).ok).toBe(true);
+      disk.page = page;
+      const recovered = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      expect((await broker.executeAction(page, makeRequest(recovered), AUTHORITY)).ok).toBe(true);
     });
   });
 
@@ -2266,20 +2275,100 @@ describe('pages/action-bridge', () => {
     });
   });
 
+  describe('lease lifecycle budget', () => {
+    it('bounds lease creation per workspace and writes no rows past the budget', async () => {
+      // `pages:createLease` needs no lease to reach and wrote up to TWO durable
+      // rows per call — a creation, plus an eviction once the store was full.
+      // A flood therefore amplified into the audit file at 2x with nothing to
+      // stop it.
+      const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
+
+      let created = 0;
+      let refused = 0;
+      for (let i = 0; i < 500; i++) {
+        try {
+          broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+          created++;
+        } catch (error) {
+          refused++;
+          expect((error as Error).message).toContain('PAGE_LEASE_RATE_LIMITED');
+        }
+      }
+      expect(created).toBe(PAGE_LEASE_CREATIONS_PER_MINUTE_PER_WORKSPACE);
+      expect(refused).toBe(500 - PAGE_LEASE_CREATIONS_PER_MINUTE_PER_WORKSPACE);
+
+      const audit = await readAudit();
+      const lifecycle = audit.filter(
+        (e) => e.event === 'page_lease_created' || e.event === 'page_lease_evicted',
+      );
+      // No double-row amplification: one row per admitted creation, and the
+      // store cap is never reached because the budget binds first.
+      expect(lifecycle.length).toBe(PAGE_LEASE_CREATIONS_PER_MINUTE_PER_WORKSPACE);
+      expect(audit.some((e) => e.event === 'page_lease_evicted')).toBe(false);
+    });
+
+    it('refuses before creating, so a spent budget mints nothing', async () => {
+      const broker = makeBroker();
+      for (let i = 0; i < PAGE_LEASE_CREATIONS_PER_MINUTE_PER_WORKSPACE; i++) {
+        broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      }
+      const before = broker.leaseCount;
+      expect(() => broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 })).toThrow('PAGE_LEASE_RATE_LIMITED');
+      expect(broker.leaseCount).toBe(before);
+    });
+
+    it('is workspace-scoped state, so a reconnecting client cannot reset it', async () => {
+      // The budget lives on the broker, and there is one broker per workspace.
+      // Nothing a client can change about itself — id, connection, transport —
+      // is an input to it.
+      const broker = makeBroker();
+      for (let i = 0; i < PAGE_LEASE_CREATIONS_PER_MINUTE_PER_WORKSPACE; i++) {
+        broker.createLease({ pageSlug: `page-${i}`, contentDigest: DIGEST_V1 });
+      }
+      // A different page is still the same workspace.
+      expect(() => broker.createLease({ pageSlug: 'somewhere-else', contentDigest: DIGEST_V2 })).toThrow('PAGE_LEASE_RATE_LIMITED');
+
+      // …and the window slides, so legitimate use recovers.
+      clock.now += 61_000;
+      expect(broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 }).leaseId).toBeTruthy();
+    });
+
+    it('releases only a lease that exists, and audits nothing otherwise', async () => {
+      const broker = makeBroker();
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+
+      // Releasing an unknown lease is a no-op, not a row: otherwise release is
+      // its own unbounded audit-write primitive.
+      broker.releaseLease('never-existed');
+      broker.releaseLease(lease.leaseId);
+      broker.releaseLease(lease.leaseId);
+
+      const released = (await readAudit()).filter((e) => e.event === 'page_lease_released');
+      expect(released).toHaveLength(1);
+    });
+  });
+
   describe('lease store cap', () => {
     it('evicts the oldest lease past MAX_LIVE_LEASES (audited) and keeps new mounts working', async () => {
       const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
-      const page = makePage();
+      // Long-lived grant: this test spans simulated minutes to spread lease
+      // creation across windows, which would otherwise expire the 60-second
+      // default out from under the assertions at the end.
+      const page = makePage({ grants: [makeGrant({ expiresAt: clock.now + 3_600_000 })] });
       disk.page = page;
 
       const first = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       for (let i = 1; i < MAX_LIVE_LEASES; i++) {
-        clock.now += 1; // strictly increasing issuedAt → deterministic oldest
+        // Two seconds apart: strictly increasing `issuedAt` keeps "oldest"
+        // deterministic, and spacing them keeps the per-minute lease budget out
+        // of the way of the store cap this test is actually about. Well inside
+        // the 12h lease TTL.
+        clock.now += 2_000;
         broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       }
       expect(broker.leaseCount).toBe(MAX_LIVE_LEASES);
 
-      clock.now += 1;
+      clock.now += 2_000;
       const newest = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       expect(broker.leaseCount).toBe(MAX_LIVE_LEASES);
 

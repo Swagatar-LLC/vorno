@@ -1025,6 +1025,8 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
     const broker = await getBroker(workspaceId, workspace.rootPath)
     const contentDigest = computePageContentDigest(content)
+    // Propagates PAGE_LEASE_RATE_LIMITED as a stable, actionable message. The
+    // renderer surfaces it; a flood gets it instead of a lease.
     const lease = broker.createLease({ pageSlug, contentDigest })
     // Transport clients may create leases, but only the sender-derived IPC
     // grant entry point can bind one to consent authority.
@@ -1108,13 +1110,20 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   server.handle(RPC_CHANNELS.pages.CANCEL_ACTION, async (
     _ctx,
     workspaceId: string,
-    requestId: string,
-    leaseId?: string,
-    nonce?: string,
+    requestId: unknown,
+    leaseId?: unknown,
+    nonce?: unknown,
   ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return false
-    if (typeof leaseId !== 'string' || typeof nonce !== 'string') return false
+    // Every argument is caller-supplied and this channel needs no lease to
+    // reach. Bounded-string checks happen HERE, before the broker hashes the
+    // request id for the audit row: `createHash().update(x)` on a non-string
+    // throws, which would turn a malformed cancel into a transport error and an
+    // unaudited crash instead of a refusal — and an unbounded one would hand
+    // the hasher a payload.
+    if (!isBoundedPageActionId(requestId)) return false
+    if (!isBoundedPageActionId(leaseId) || !isBoundedPageActionId(nonce)) return false
     return brokers.get(workspace.rootPath)?.cancelAction(leaseId, nonce, requestId) ?? false
   })
 
