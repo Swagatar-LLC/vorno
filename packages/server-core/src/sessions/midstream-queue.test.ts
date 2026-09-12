@@ -95,11 +95,20 @@ describe('mid-stream queue runtime invariants', () => {
     await new Promise<void>(resolve => setImmediate(resolve))
 
     const replayed = managed.messages.find(message => message.id === 'queued-user')
-    expect(replayed?.isQueued).toBe(false)
     expect(replayed?.timestamp).toBeGreaterThan(priorFinalTimestamp)
+    // The PERSISTED message stays queued through the handoff (SUV-0066): the
+    // send is deferred to the next tick, and clearing the durable marker here
+    // left a gap where the runtime queue had dropped the message, disk said it
+    // was not queued, and nothing was running it yet. It is released only once a
+    // replay owns the turn — which never happens here, because the send is
+    // mocked.
+    expect(replayed?.isQueued).toBe(true)
 
     const processingEvent = events.find(event => event.type === 'user_message')
     expect(processingEvent?.status).toBe('processing')
+    // The copy the renderer gets says `processing` and is not marked queued.
+    // Display and durability are allowed to differ for exactly this tick.
+    expect(processingEvent?.message.isQueued).toBe(false)
     expect(processingEvent?.message.timestamp).toBe(replayed?.timestamp)
     expect(processingEvent?.optimisticMessageId).toBe('optimistic-user')
     expect(sendMessage).toHaveBeenCalledTimes(1)

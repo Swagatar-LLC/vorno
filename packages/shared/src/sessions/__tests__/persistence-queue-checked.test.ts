@@ -349,6 +349,42 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(queue.diagnostics().failedSnapshots).toBe(0);
     });
 
+    it('discards a failed write that was DELETED while it ran, and never resurrects it', async () => {
+      // Cancellation outranks failure, and the intent has to be re-read after
+      // the attempt because the attempt spans awaits. Retaining evidence for a
+      // generation that was deleted mid-write meant the shutdown retry would
+      // write the deleted session's file back — resurrection, which is worse
+      // than the lost write the retry exists to prevent.
+      const file = getSessionFilePath(root, 'gonefail');
+      hooks = {
+        beforeUnlink: (key) => {
+          // The delete lands while this write is in flight, and the write then
+          // fails. Both halves of the race, in one hook.
+          queue.cancelForDeletion(key);
+          throw new Error('disk went away mid-commit');
+        },
+      };
+      const handle = queue.enqueueChecked(session('gonefail'));
+      const tail = queue.driveChecked(handle.key);
+      const receipt = await handle.receipt;
+      // The TAIL, not just the receipt: a cancellation settles waiters the
+      // moment it lands, which is before the failing write has finished tidying
+      // up after itself. Asserting on the filesystem in between is a race.
+      await tail;
+      hooks = undefined;
+
+      // Answered as deleted, not as failed: the caller must not retry a delete.
+      expect(receipt).toMatchObject({ ok: false, reason: 'deleted' });
+      // No evidence retained, and the scratch file tidied.
+      expect(queue.diagnostics().failedSnapshots).toBe(0);
+      expect(queue.diagnostics().closingWriteFailures).toBe(0);
+      expect(existsSync(file + '.tmp')).toBe(false);
+
+      // And the shutdown retry has nothing to resurrect.
+      await queue.flushAll();
+      expect(existsSync(file)).toBe(false);
+    });
+
     it('fails the shutdown if reconciliation never settles, rather than looping forever', async () => {
       // The exemption is bounded by the same rounds as everything else. A
       // watcher stuck in a supersede/persist cycle must fail the shutdown

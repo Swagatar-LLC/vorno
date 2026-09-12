@@ -235,6 +235,63 @@ orphaning instead of superseding at turn start. The auth-retry site is the one
 stop site with no test of its own — its tail is two synchronous statements and
 the supersede backstop bounds a leak there — recorded rather than implied away.
 
+### Review 17 — the edges of the fixes from review 16
+
+1. **A delete racing a failing write left evidence, and the retry resurrected the
+   session.** Review 16's retained snapshot is right, and it was missing the
+   other half: the intent has to be RE-READ in the catch, because the attempt
+   spans awaits and the check at the top of `write` answered for an instant that
+   has passed. A `cancelForDeletion` landing while a write failed left a retained
+   snapshot for a session that no longer existed, and `flushAll` then wrote its
+   file back. Cancellation now outranks failure — the receipt settles `deleted`
+   rather than `failed`, the temp file is tidied, no evidence is retained, and
+   the shutdown retry has nothing to resurrect. A supersede is the same rule with
+   a gentler reason: the replacement write owns that state.
+
+2. **The replay handoff had a gap of its own.** `processNextQueuedMessage`
+   shifted the entry out of the runtime queue and cleared the persisted
+   `isQueued` BEFORE handing the message to a deferred send — so for that tick
+   the queue had dropped it, disk said it was not queued, and nothing was running
+   it. A quit landing there saw an idle session and the message was gone. It now
+   claims the send admission SYNCHRONOUSLY before giving anything up and passes
+   it into the deferred `sendMessage` (adopted, never claimed twice), and the
+   durable marker is released only once a replay owns the turn. A quit in the gap
+   therefore waits for that send to refuse or to take one, and a refusal leaves
+   the marker true: at-least-once, never lost. The renderer still gets
+   `status: 'processing'` with an `isQueued: false` copy for that tick — display
+   and durability are allowed to differ there, and only there.
+
+3. **Badges were the wrong source for the slugs.** Review 16 reconstructed
+   `skillSlugs` from the message's skill badges, which works for a send typed in
+   the input and not at all for an automation or CLI send — those carry
+   `options.skillSlugs` and no badges. So a presentation detail was deciding
+   whether a replayed turn pre-enabled its sources. `Message.queuedSkillSlugs` is
+   now the canonical copy, normalized from the original options on the way out
+   and re-normalized on the way in, written with `isQueued` and cleared with it.
+   `skillSlugsFromBadges` is deleted rather than kept as a fallback: a second
+   source of truth for the same answer is how the two hydration paths came to
+   disagree in the first place.
+
+4. **The tests were replaced, not extended.** Review 16's coverage asserted the
+   recovery helper built the right object — the seam, which is what I flagged as
+   the limit at the time. It is now a process-boundary fixture: a real send with
+   `skillSlugs` and no badges, queued by a real turn, written to the real JSONL,
+   hydrated cold by a SECOND `SessionManager`, replayed against a real
+   `SKILL.md` declaring `requiredSources` and a real source `config.json` — and
+   the assertion is that the source is enabled before the turn. The turn itself
+   is the only fake, and the scheduled replay is awaited rather than left
+   running.
+
+Six mutations, each killed: failure outranking cancellation; the slugs not
+persisted; recovery ignoring them; the marker cleared in the gap; no admission
+claimed before the gap; the marker never released.
+
+Known upgrade gap, stated: a message queued by a build older than this one has
+no `queuedSkillSlugs`, so its replay pre-enables nothing and the agent discovers
+the skill at runtime — the two-turn penalty that existed before this work. One
+launch wide, and not worth a badge-shaped fallback that would reintroduce the
+second source of truth.
+
 ### Review 16 — three producers that acted past the edges of the shutdown
 
 1. **A failed ordinary write's bytes existed nowhere.** The queue shifts an entry
@@ -733,6 +790,14 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 17 (architecture P1/P2/P3): a delete racing a failing
+  write left retained evidence the shutdown retry then RESURRECTED, so
+  cancellation now outranks failure in the catch; the replay handoff cleared the
+  durable marker before anything owned the send, so the admission is claimed
+  synchronously and the marker released only when a turn owns it; and the skill
+  slugs moved off badges onto a canonical persisted `queuedSkillSlugs`, since
+  automation and CLI sends have no badges at all. The seam-level replay tests
+  were replaced by a real process-boundary fixture. Six mutations killed.
 - `2026-09-12` — review 16 (architecture P1/P2/P3): a failed ordinary write's
   bytes existed nowhere afterwards, so the exact snapshot is now retained (and
   not swept by retirement) and retried by `flushAll` before it may report a

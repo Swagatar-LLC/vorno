@@ -317,6 +317,20 @@ export interface Message {
   isPending?: boolean;
   // Queued: user message that is waiting to be processed (sent during ongoing response)
   isQueued?: boolean;
+  /**
+   * The skill slugs this message was SENT with, kept only while it is queued.
+   *
+   * `SendMessageOptions` is not persisted, so a queued message replayed after a
+   * restart lost the slugs its send carried and skipped the source pre-enabling
+   * `[skill:…]` exists to trigger. This is the canonical copy — normalized and
+   * validated from the original options, never reconstructed from `badges`,
+   * which are display metadata and are not a contract.
+   *
+   * Written with `isQueued` and cleared with it, atomically, once a replay
+   * genuinely owns the turn. A message that is not queued does not carry it.
+   */
+  queuedSkillSlugs?: string[];
+
   // Intermediate text (commentary between tool calls, not final response)
   isIntermediate?: boolean;
   // Hidden: a system-generated message that must reach the model (it drives a
@@ -468,6 +482,20 @@ export interface StoredMessage {
   authWorkspace?: string;
   // Queued: user message that is waiting to be processed (persisted for recovery)
   isQueued?: boolean;
+  /**
+   * The skill slugs this message was SENT with, kept only while it is queued.
+   *
+   * `SendMessageOptions` is not persisted, so a queued message replayed after a
+   * restart lost the slugs its send carried and skipped the source pre-enabling
+   * `[skill:…]` exists to trigger. This is the canonical copy — normalized and
+   * validated from the original options, never reconstructed from `badges`,
+   * which are display metadata and are not a contract.
+   *
+   * Written with `isQueued` and cleared with it, atomically, once a replay
+   * genuinely owns the turn. A message that is not queued does not carry it.
+   */
+  queuedSkillSlugs?: string[];
+
 }
 
 /**

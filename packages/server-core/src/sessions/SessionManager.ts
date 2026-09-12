@@ -1077,37 +1077,33 @@ interface SendAdmission {
 }
 
 /**
- * The skill mentions a persisted user message carried, recovered from its badges.
+ * The skill slugs a queued message may carry across a restart.
  *
- * A queued message that outlives its process is replayed from `managed.messages`,
- * and its `options` are NOT persisted — so the skill slugs the original send
- * passed were silently dropped and the replay skipped the source pre-enabling
- * that `[skill:…]` exists to trigger. The badges ARE persisted, so the slugs are
- * recoverable from them.
+ * Normalized from the ORIGINAL `SendMessageOptions.skillSlugs` — never from
+ * badges. Badges are display metadata: they exist to render a chip, they are
+ * absent entirely on automation and CLI sends, and treating them as a contract
+ * made a presentation detail load-bearing for whether a replayed turn
+ * pre-enabled its sources.
  *
- * Parsed from `rawText` against the same bracket form the input builds
- * (`[skill:slug]` or `[skill:workspaceId:slug]`), and a badge that does not
- * match that form contributes nothing. That is the security half, not a
- * formality: these slugs reach `loadSkillBySlug`, which builds a filesystem
- * path out of them, and a badge is content — it travels with a message and
- * nothing revalidates it on the way back in. `[\w-]+` cannot express a path
- * separator or a `..`, so the recovered value is a name and not a route.
- * `label` is deliberately not a fallback: it is a display string.
- *
- * Existence is somebody else's question — `loadSkillBySlug` already answers it
- * and tolerates a miss — so this stays pure and shape-only.
+ * Validation is not a formality even on this path. The value round-trips
+ * through a JSONL file a user can edit, and on the way back in it reaches
+ * `loadSkillBySlug`, which builds a filesystem path out of it — so the shape
+ * check runs on write AND on read, and `[\w-]+` cannot express a separator or
+ * a `..`. Existence stays `loadSkillBySlug`'s question, which it already
+ * answers and tolerates a miss on.
  */
-const SKILL_MENTION_PATTERN = /^\[skill:(?:[^\]:]+:)?([\w-]+)\]$/
+const SKILL_SLUG_PATTERN = /^[\w-]+$/
 
-export function skillSlugsFromBadges(badges: ContentBadge[] | undefined): string[] | undefined {
-  if (!badges?.length) return undefined
-  const slugs: string[] = []
-  for (const badge of badges) {
-    if (badge.type !== 'skill') continue
-    const slug = SKILL_MENTION_PATTERN.exec(badge.rawText ?? '')?.[1]
-    if (slug && !slugs.includes(slug)) slugs.push(slug)
+export function normalizeQueuedSkillSlugs(slugs: readonly unknown[] | undefined): string[] | undefined {
+  if (!slugs?.length) return undefined
+  const normalized: string[] = []
+  for (const raw of slugs) {
+    if (typeof raw !== 'string') continue
+    const slug = raw.trim()
+    if (!SKILL_SLUG_PATTERN.test(slug)) continue
+    if (!normalized.includes(slug)) normalized.push(slug)
   }
-  return slugs.length ? slugs : undefined
+  return normalized.length ? normalized : undefined
 }
 
 const PI_SDK_MESSAGE_ID_CACHE_LIMIT = 256
@@ -1516,15 +1512,17 @@ export class SessionManager implements ISessionManager {
 
     sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
     for (const msg of orphanedQueued) {
-      const skillSlugs = skillSlugsFromBadges(msg.badges)
+      // Re-normalized on the way in: this came off disk, and the file is one a
+      // user can edit.
+      const skillSlugs = normalizeQueuedSkillSlugs(msg.queuedSkillSlugs)
       managed.messageQueue.push({
         message: msg.content,
         messageId: msg.id,
         attachments: undefined,  // Attachments already stored on disk
         storedAttachments: msg.attachments,
-        // Rebuilt from what survived, not carried: `options` is not persisted.
-        // Only `skillSlugs` is reconstructed, because it is the only member with
-        // an effect the replay would otherwise silently drop.
+        // Rebuilt from the canonical `queuedSkillSlugs`, not from badges:
+        // `options` is not persisted, and only this member has an effect the
+        // replay would otherwise silently drop.
         options: skillSlugs ? { skillSlugs } : undefined,
       })
     }
@@ -7231,20 +7229,28 @@ export class SessionManager implements ISessionManager {
      * directly (tests, intra-server flows) to leave the existing pin in place.
      */
     rpcContext?: { callerClientId?: string },
+    /**
+     * An admission the caller already claimed, synchronously, before it gave up
+     * control. `processNextQueuedMessage` uses this: it has to own the send
+     * BEFORE it hands the message to a deferred call, or the gap between the
+     * two is a window where nothing holds the work. Omitted by every ordinary
+     * caller, which claims here instead — and never claimed twice.
+     */
+    admission?: SendAdmission,
   ): Promise<void> {
-    // Refused BEFORE anything is mutated. The queue's own closing state would
-    // catch the write at the end, but by then the message is in
-    // `managed.messages`, a turn may have started, and the only honest report
-    // left is a failure. Refusing here means nothing happened.
-    this.assertNotShuttingDown(`send a message to ${sessionId}`)
-    // Admitted in the SAME tick as that check, before the first await — see
-    // `admitSend`. Settled in the `finally` so a throw from any pre-mutation
-    // await releases it too; the body settles it earlier, at the instant a turn
-    // takes ownership.
-    const admission = this.admitSend(sessionId)
+    // Claimed BEFORE the refusal check, and released by the `finally` below
+    // whichever way that check goes — see `admitSend`. A caller-supplied
+    // admission is adopted rather than duplicated, and is settled here too,
+    // because this is where its work actually ends.
+    const claim = admission ?? this.admitSend(sessionId)
     try {
+      // Refused BEFORE anything is mutated. The queue's own closing state would
+      // catch the write at the end, but by then the message is in
+      // `managed.messages`, a turn may have started, and the only honest report
+      // left is a failure. Refusing here means nothing happened.
+      this.assertNotShuttingDown(`send a message to ${sessionId}`)
       await this.runAdmittedSend(
-        admission,
+        claim,
         sessionId,
         message,
         attachments,
@@ -7256,7 +7262,7 @@ export class SessionManager implements ISessionManager {
         rpcContext,
       )
     } finally {
-      admission.settle()
+      claim.settle()
     }
   }
 
@@ -7389,6 +7395,13 @@ export class SessionManager implements ISessionManager {
         // queue-after-abort (backend already aborted) — the replay path in
         // processNextQueuedMessage is identical.
         managed.messageQueue.push({ message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId })
+        // `messageQueue` is RUNTIME state that dies with the process, so these
+        // two fields on the persisted message are what actually carry a queued
+        // send across a crash or a quit: the marker the cold-load scan looks
+        // for, and the slugs its replay needs. Written together, cleared
+        // together, and only once a replay owns the turn.
+        userMessage.isQueued = true
+        userMessage.queuedSkillSlugs = normalizeQueuedSkillSlugs(options?.skillSlugs)
         // Only claim interruption when a steer attempt actually aborted the
         // in-flight turn. In 'queue' mode the current turn runs to natural
         // completion, so the replayed turn must NOT inject the "previous response
@@ -7527,6 +7540,7 @@ export class SessionManager implements ISessionManager {
     if (this.shuttingDown) {
       sessionLog.info(`Not starting a turn for ${sessionId}: shutting down; queued for replay`)
       userMessage.isQueued = true
+      userMessage.queuedSkillSlugs = normalizeQueuedSkillSlugs(options?.skillSlugs)
       managed.messageQueue.push({
         message, attachments, storedAttachments, options,
         messageId: userMessage.id,
@@ -7538,6 +7552,17 @@ export class SessionManager implements ISessionManager {
 
     managed.lastMessageAt = Date.now()
     this.beginTurnFromAdmittedSend(managed, admission)
+    // The durable replay marker is released HERE and nowhere earlier: a turn now
+    // owns this message, so it can no longer be lost by a refusal or a crash in
+    // the gap before one. `processNextQueuedMessage` used to clear it as it
+    // handed the message to a deferred send, which is the gap — the runtime
+    // queue had dropped it, disk said it was not queued, and nothing was running
+    // it yet. Cleared as a pair with the slugs it was written with.
+    if (userMessage.isQueued) {
+      userMessage.isQueued = false
+      userMessage.queuedSkillSlugs = undefined
+      this.persistSession(managed)
+    }
     managed.streamingText = ''
     managed.streamingTurnId = undefined
     managed.processingGeneration++
@@ -8424,6 +8449,16 @@ export class SessionManager implements ISessionManager {
       return
     }
 
+    // OWNED FIRST, synchronously, before the runtime queue gives the message up
+    // and before any marker moves. The send itself is deferred to the next tick,
+    // and the gap between those two things was a hole: the entry had been
+    // shifted out of `messageQueue`, disk had been told the message was no
+    // longer queued, and nothing yet held the work — so a quit landing there saw
+    // an idle session and the message was simply gone. With the admission taken
+    // here, that quit waits for this send to refuse or to take a turn, and the
+    // durable marker stays true until a turn genuinely owns it.
+    const admission = this.admitSend(sessionId)
+
     const next = managed.messageQueue.shift()!
     sessionLog.info('replay queued', {
       sessionId,
@@ -8435,8 +8470,6 @@ export class SessionManager implements ISessionManager {
     if (next.messageId) {
       const existingMessage = managed.messages.find(m => m.id === next.messageId)
       if (existingMessage) {
-        // Clear isQueued flag and persist - prevents re-queueing if crash during processing
-        existingMessage.isQueued = false
         // Re-stamp so this replayed message sorts AFTER the previous turn's
         // finalized assistant reply. It was created mid-stream (an earlier
         // timestamp) while queued; groupMessagesByTurn sorts by timestamp, so
@@ -8444,10 +8477,14 @@ export class SessionManager implements ISessionManager {
         existingMessage.timestamp = this.monotonic()
         this.persistSession(managed)
 
+        // The renderer is told `processing`, and the copy it gets says so —
+        // while the PERSISTED message keeps `isQueued` until the replay owns a
+        // turn. The status is the display answer; the flag is the durability
+        // one, and they are allowed to differ for exactly this tick.
         this.sendEvent({
           type: 'user_message',
           sessionId,
-          message: existingMessage,
+          message: { ...existingMessage, isQueued: false, queuedSkillSlugs: undefined },
           status: 'processing',
           optimisticMessageId: next.optimisticMessageId
         }, managed.workspace.id)
@@ -8462,7 +8499,11 @@ export class SessionManager implements ISessionManager {
         next.attachments,
         next.storedAttachments,
         next.options,
-        next.messageId
+        next.messageId,
+        undefined,
+        undefined,
+        undefined,
+        admission,
       ).catch(err => {
         sessionLog.error('replay failed', {
           sessionId,

@@ -1057,6 +1057,9 @@ class SessionPersistenceQueue {
       return false
     }
 
+    // Hoisted so the catch can tidy the artifact a failed attempt may have left
+    // behind. Assigned as soon as the path is known.
+    let tmpFile: string | undefined
     try {
       const { data } = entry
       ensureSessionsDir(data.workspaceRootPath)
@@ -1141,7 +1144,10 @@ class SessionPersistenceQueue {
       // nothing else.
       this.inFlightSignature.set(key, getHeaderMetadataSignature(header))
 
-      const tmpFile = filePath + '.tmp'
+      // `tmpPath` is the narrowed local every line below uses; `tmpFile` exists
+      // only so the catch knows what to clean up.
+      const tmpPath = filePath + '.tmp'
+      tmpFile = tmpPath
 
       /**
        * Abandon this generation if it has been cancelled, leaving NOTHING of it
@@ -1193,7 +1199,7 @@ class SessionPersistenceQueue {
 
         // The temp file is this generation's private scratch space and is
         // always ours to remove, under either intent.
-        try { await unlink(tmpFile) } catch { /* may not exist */ }
+        try { await unlink(tmpPath) } catch { /* may not exist */ }
         if (stage === 'committed' && discardCommitted) {
           // Deletion only. The rename already happened, so remove what it
           // produced — otherwise a session the caller deleted stays on disk.
@@ -1232,7 +1238,7 @@ class SessionPersistenceQueue {
         return true
       }
 
-      await writeFile(tmpFile, lines.join('\n') + '\n', 'utf-8')
+      await writeFile(tmpPath, lines.join('\n') + '\n', 'utf-8')
       await this.commitHooks?.beforeUnlink?.(key)
       if (await abandonIfCancelled('intact')) return false
 
@@ -1241,7 +1247,7 @@ class SessionPersistenceQueue {
       await this.commitHooks?.beforeRename?.(key)
       if (await abandonIfCancelled('target-removed')) return false
 
-      await rename(tmpFile, filePath)
+      await rename(tmpPath, filePath)
       // COMMITTED. The bytes are on disk, so this is the one place the baseline
       // advances — including when the cancellation check just below abandons
       // this generation under a keep-the-file intent, because that path leaves
@@ -1270,6 +1276,34 @@ class SessionPersistenceQueue {
       return true
     } catch (error) {
       console.error(`[PersistenceQueue] Failed to write session ${entry.data.id}:`, error)
+      // CANCELLATION OUTRANKS FAILURE, and it has to be re-read here because
+      // the attempt spanned awaits: `cancelForDeletion` or
+      // `supersedePendingWrites` may have landed while it ran, and the check at
+      // the top of this method answered for an instant that has passed.
+      //
+      // Without this, a delete racing a failing write left retained evidence
+      // for a session that no longer exists — and `flushAll` would then RETRY
+      // it, writing the deleted session's file back. Resurrection is a worse
+      // outcome than the lost write the retry exists to prevent. A supersede is
+      // the same question with a gentler answer: the replacement write owns
+      // this state, so retrying ours would put stale bytes back.
+      const watermark = this.cancelledThrough.get(key)
+      if (cancelledThroughGeneration(watermark) >= generation) {
+        const reason = cancellationReasonFor(watermark, generation)
+        debug(`[PersistenceQueue] Failed write for ${entry.data.id} was already ${reason}; discarding it`)
+        // Best-effort: the attempt may have left a temp file. The TARGET is not
+        // touched — a delete has already unlinked it, and a supersede's
+        // replacement is about to write it.
+        if (tmpFile) { try { await unlink(tmpFile) } catch { /* may not exist */ } }
+        this.inFlightSignature.delete(key)
+        // No evidence, for a cancelled generation there is nothing to evidence.
+        this.failedSnapshots.delete(key)
+        this.closingWriteFailures.delete(key)
+        this.lastWriteFailure.delete(key)
+        this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
+        this.settleReceipts(key, generation, { ok: false, error: `session write ${reason}`, reason })
+        return false
+      }
       // Recorded, not thrown. Existing callers are fire-and-forget and must not
       // start failing; a receipt is the opt-in way to learn about this.
       const message = error instanceof Error ? error.message : String(error)
