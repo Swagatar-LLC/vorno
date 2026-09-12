@@ -19,7 +19,7 @@ import {
   buildPageInitMessage,
   descriptorSignature,
   grantIdsEqual,
-  isMutatingInvocation,
+  isMutatingPageAction,
   isSafeExternalUrl,
   parsePageBridgeMessage,
   reconcileGrantSummaries,
@@ -43,8 +43,11 @@ import {
  *   echoes it on every privileged request.
  * - Every incoming message must come from this frame's contentWindow with an
  *   opaque origin and parse against the strict schema in shared/page-bridge.
- * - Mutating actions (api non-GET) additionally require fresh user activation,
- *   which real clicks inside the frame propagate to this window.
+ * - Mutating actions additionally require a host-minted activation ticket. The
+ *   classification is the SHARED one (only api GET is exempt), and the ticket
+ *   is minted by Electron main from a gesture main itself observed — see
+ *   roadmap/evidence/SUV-0065 for why no renderer-visible activation signal is
+ *   trustworthy here. This component asks; it cannot vouch.
  * - Grant requests never mint anything by themselves: `pages:requestGrant`
  *   reaches the Electron-main host's native confirmation surface, then the
  *   host binds an accepted descriptor to the current content digest. Denied
@@ -73,7 +76,14 @@ function sandboxForKind(kind: PageKind): string {
   return kind === 'static' ? '' : 'allow-scripts allow-forms'
 }
 
-/** Transient user activation, propagated from clicks inside the frame. */
+/**
+ * Transient user activation as the RENDERER sees it.
+ *
+ * Kept for `open-url` only, and deliberately not used to gate privileged
+ * actions: the SUV-0065 experiment measured this reading as `true` after a
+ * click anywhere in the window, so it is a courtesy check against timer-driven
+ * link-outs, never proof that the Page was clicked.
+ */
 function hasUserActivation(): boolean {
   const nav = navigator as Navigator & { userActivation?: { isActive?: boolean } }
   return nav.userActivation?.isActive === true
@@ -199,11 +209,7 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
         reject('nonce-mismatch: request nonce does not match the render lease')
         return
       }
-      const mutating = isMutatingInvocation(msg.invocation)
-      if (mutating && !hasUserActivation()) {
-        reject('user-activation-required: mutating actions need a fresh user gesture')
-        return
-      }
+      const mutating = isMutatingPageAction(msg.invocation)
       const limited = limiter.canStart(Date.now(), mutating)
       if (limited) {
         reject(`${limited}: too many page actions in flight`)
@@ -220,7 +226,28 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
           grantId: msg.grantId,
           invocation: msg.invocation,
         }
-        const result: PageActionResult = await window.electronAPI.executePageAction(workspaceId, request)
+        // A mutating action gets its proof of interaction from the host, for
+        // this exact request, before it is sent. The broker refuses without one
+        // regardless, so this is the path that makes a legitimate click work —
+        // not the check that makes an illegitimate one fail.
+        //
+        // Only the desktop build can mint: the gesture is observed by Electron
+        // main, and the WebUI has no main process to observe it. Saying so
+        // here turns what would otherwise be a raw "not a function" into the
+        // actual reason, and the refusal itself still comes from the broker.
+        if (mutating && typeof window.electronAPI.requestPageActivation !== 'function') {
+          reject('activation-unavailable: this action needs the desktop app, which can confirm a real click')
+          return
+        }
+        const activated = mutating
+          ? {
+              ...request,
+              activationTicket: (
+                await window.electronAPI.requestPageActivation(workspaceId, pageSlug, request)
+              ).ticketId,
+            }
+          : request
+        const result: PageActionResult = await window.electronAPI.executePageAction(workspaceId, activated)
         postToFrame(buildPageActionResultMessage(result))
       } catch (err) {
         reject(err instanceof Error ? err.message : 'Action failed')
@@ -339,7 +366,7 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
           break
         case 'action-cancel':
           if (msg.nonce === lease.nonce) {
-            void window.electronAPI.cancelPageAction(workspaceId, msg.requestId)
+            void window.electronAPI.cancelPageAction(workspaceId, msg.requestId, lease.leaseId, lease.nonce)
           }
           break
         case 'open-url':
@@ -361,11 +388,14 @@ export function PageFrame({ workspaceId, page, lease, content, snapshot, classNa
   // release (PageView) invalidates the rest server-side.
   useEffect(() => {
     const limiter = limiterRef.current!
+    // Capture the lease this cleanup belongs to: cancellation is lease-bound,
+    // and by the time an unmount runs, `lease` may already be the next render's.
+    const { leaseId, nonce } = leaseRef.current
     return () => {
       grantRequestQueueRef.current = []
       pendingGrantSignaturesRef.current.clear()
       for (const requestId of limiter.inFlightIds) {
-        void window.electronAPI.cancelPageAction(workspaceId, requestId)
+        void window.electronAPI.cancelPageAction(workspaceId, requestId, leaseId, nonce)
       }
     }
   }, [workspaceId])

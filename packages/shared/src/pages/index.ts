@@ -11,6 +11,9 @@
 // Types (core page types re-exported plus storage-layer shapes)
 export type {
   PageKind,
+  PageActionOrigin,
+  PageActionAuthority,
+  PageActionOriginPolicy,
   PageScriptRuntime,
   PageRefreshSpec,
   PageRefreshStatus,
@@ -29,7 +32,17 @@ export type {
   CreatePageInput,
   LoadedPage,
 } from './types.ts';
-export { isPageGrantUsable, pageActionDescriptorSignature } from './types.ts';
+export {
+  PAGE_ACTION_KINDS,
+  PAGE_ACTION_ORIGINS,
+  isBoundedPageActionId,
+  isMutatingPageAction,
+  isPageGrantUsable,
+  parsePageActionInvocation,
+  pageActionDescriptorSignature,
+  pageActionOriginAllowsKind,
+  pageActionOriginPolicy,
+} from './types.ts';
 
 // Storage
 export {
@@ -130,6 +143,7 @@ export {
   PageActionBroker,
   MAX_LIVE_LEASES,
   appendPageActionAudit,
+  resetPageAuditThrottleForTests,
   type PageActionBrokerOptions,
   type PageActionExecutors,
   type PageActionValidationErrorCode,

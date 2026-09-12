@@ -25,7 +25,8 @@ import {
   isPathWithinDirectory,
 } from '@craft-agent/session-tools-core';
 import { createLogger } from '../utils/debug.ts';
-import { assertPageRefreshGrant, loadPageConfig, recordPageRefresh } from '../pages/storage.ts';
+import { loadPageConfig, recordPageRefresh } from '../pages/storage.ts';
+import { admitScheduledPageRefresh } from '../pages/scheduled-admission.ts';
 import { HISTORY_FIELD_MAX_LENGTH } from './constants.ts';
 import type { ScriptAction, ScriptActionResult } from './types.ts';
 
@@ -116,20 +117,30 @@ export async function executeScriptAction(
   // the process before it starts.
   if (action.page) {
     const page = loadPageConfig(ctx.workspaceRootPath, action.page);
-    if (!page?.refresh || !action.grantId || page.refresh.grantId !== action.grantId) {
+    if (!page?.refresh || !action.grantId) {
       return blockedResult(action, 'Page refresh grant is missing, revoked, or no longer current');
     }
-    try {
-      assertPageRefreshGrant(page, page.refresh);
-      if (
-        page.refresh.script !== action.script ||
-        (page.refresh.runtime ?? 'bun') !== (action.runtime ?? 'bun') ||
-        !stringArraysEqual(page.refresh.args, action.args)
-      ) {
-        return blockedResult(action, 'Cached page refresh no longer matches its approved grant');
-      }
-    } catch (error) {
-      return blockedResult(action, error instanceof Error ? error.message : 'Page refresh grant is no longer usable');
+    // The `scheduled-refresh` origin of ADR-0033 §2, admitted through the same
+    // authority the broker uses rather than a lookalike check local to this
+    // file. A cron run has no render to lease and none is invented; what
+    // applies without one — origin policy, permission mode, grant existence,
+    // digest binding, expiry, and descriptor identity — all still applies, and
+    // the decision is audited either way.
+    const admission = await admitScheduledPageRefresh({
+      workspaceRootPath: ctx.workspaceRootPath,
+      page,
+      refresh: page.refresh,
+      grantId: action.grantId,
+    });
+    if (!admission.ok) return blockedResult(action, `${admission.code}: ${admission.reason}`);
+    // The cached matcher is not authority either: it can name a script the
+    // approved grant no longer describes.
+    if (
+      page.refresh.script !== action.script ||
+      (page.refresh.runtime ?? 'bun') !== (action.runtime ?? 'bun') ||
+      !stringArraysEqual(page.refresh.args, action.args)
+    ) {
+      return blockedResult(action, 'Cached page refresh no longer matches its approved grant');
     }
   }
 

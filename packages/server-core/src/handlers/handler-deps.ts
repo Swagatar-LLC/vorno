@@ -51,6 +51,39 @@ export type PageGrantHostRequest = (
 ) => Promise<PageActionGrant | null>
 
 /**
+ * The host-only entry point for minting an activation ticket (ADR-0033 §3).
+ *
+ * It takes the same shape as grant consent for the same reason: the caller
+ * proves nothing, the host asserts everything. The host reached here only
+ * because IT observed a user gesture — the renderer cannot claim activation,
+ * and a transport client cannot reach this at all.
+ *
+ * `request` arrives as `unknown` and is parsed inside: it crossed an IPC
+ * boundary from a renderer, so it is untrusted input that happens to describe
+ * a privileged call.
+ */
+export type PageActivationHostRequest = (
+  requester: PageGrantRequester,
+  workspaceId: string,
+  pageSlug: string,
+  request: unknown,
+) => Promise<{ ticketId: string; expiresAt: number }>
+
+/**
+ * What a host renders for a script grant's first use on a render.
+ *
+ * Distinct from `PageGrantConfirmationSpec` even though both describe a
+ * descriptor: that one asks "may this page ever do X", this one asks "run X
+ * now". Collapsing them would make the second question inherit the first's
+ * copy, and "allow" and "run now" are not the same consent.
+ */
+export interface PageActionConfirmationSpec {
+  workspace: { id: string; name: string }
+  page: { slug: string; name: string }
+  action: PageActionDescriptor
+}
+
+/**
  * Generic handler dependency bag.
  * Concrete hosts specialize these generics to their runtime implementations.
  *
@@ -79,6 +112,22 @@ export interface HandlerDeps<
   isPageGrantRequesterCurrent?: (requester: PageGrantRequester, workspaceId: string) => boolean
   /** Registers the host-only grant entry point; transport RPC must not use it. */
   registerPageGrantHostRequest?: (request: PageGrantHostRequest) => void
+  /**
+   * Registers the host-only activation entry point. A host that does not
+   * register one cannot mint tickets, so on that host every mutating Page
+   * action is refused — the failure direction ADR-0033 requires when trusted
+   * interaction cannot be established.
+   */
+  registerPageActivationHostRequest?: (request: PageActivationHostRequest) => void
+  /**
+   * Host-rendered "run this now" confirmation for a script grant's first use
+   * on a render. Absent hosts refuse rather than run unconfirmed.
+   */
+  confirmPageAction?: (
+    requester: PageGrantRequester,
+    spec: PageActionConfirmationSpec,
+    signal: AbortSignal,
+  ) => Promise<boolean>
   /**
    * Receives a callback the host invokes when a render stops existing, passing
    * the `{ webContentsId, renderGeneration }` it is retiring.

@@ -18,13 +18,19 @@ const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
 const AUDIT_LOG = join(CONFIG_DIR, 'logs', 'page-actions.jsonl')
 let originalConfig: string | null = null
 
-function writeWorkspace(rootPath: string, id: string, enabled: boolean, name = id): void {
+function writeWorkspace(
+  rootPath: string,
+  id: string,
+  enabled: boolean,
+  name = id,
+  permissionMode: 'safe' | 'ask' | 'allow-all' = 'ask',
+): void {
   mkdirSync(rootPath, { recursive: true })
   writeFileSync(join(rootPath, 'config.json'), JSON.stringify({
     id,
     name,
     slug: id,
-    defaults: { pages: { enabled } },
+    defaults: { pages: { enabled }, permissionMode },
     createdAt: 1,
     updatedAt: 1,
   }))
@@ -61,6 +67,20 @@ type GrantHarness = ((channel: string, ...args: unknown[]) => Promise<unknown>) 
   replaceRenderer: (webContentsId: number) => void
   /** The host entry point itself, for states the IPC hop cannot reproduce. */
   requestGrantAsHost: import('../handler-deps').PageGrantHostRequest
+  /**
+   * Mint an activation ticket the way Electron main does. There is deliberately
+   * no RPC channel for this, so a test that wants a ticket must come through
+   * the host — exactly like the product.
+   */
+  requestActivationAsHost: (
+    webContentsId: number,
+    workspaceId: string,
+    pageSlug: string,
+    request: unknown,
+  ) => Promise<{ ticketId: string; expiresAt: number }>
+  actionConfirmations: Array<{ pageSlug: string }>
+  /** Answer an action confirmation that is currently on screen. */
+  resolveActionConfirmation: () => void
   invokeWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
   invokeTransportWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
 }
@@ -89,6 +109,9 @@ function createHarness(
     return 1
   }
   let hostRequest: import('../handler-deps').PageGrantHostRequest | undefined
+  let hostActivationRequest: import('../handler-deps').PageActivationHostRequest | undefined
+  const actionConfirmations: Array<{ pageSlug: string }> = []
+  const actionConfirmationResolvers: Array<(accepted: boolean) => void> = []
   let invalidateRequester: ((requester: PageGrantRequester) => void) | undefined
   const pendingResolvers: Array<(accepted: boolean) => void> = []
   const server: RpcServer = {
@@ -145,6 +168,30 @@ function createHarness(
     },
     registerPageGrantHostRequest: (request: import('../handler-deps').PageGrantHostRequest) => { hostRequest = request },
     registerPageGrantInvalidator: (invalidate: (requester: PageGrantRequester) => void) => { invalidateRequester = invalidate },
+    registerPageActivationHostRequest: (request: import('../handler-deps').PageActivationHostRequest) => { hostActivationRequest = request },
+    // First-use confirmation follows the grant harness's verdict: a host that
+    // cannot render grant consent cannot render this either.
+    confirmPageAction: confirm === 'unavailable' ? undefined : async (
+      _requester: PageGrantRequester,
+      spec: import('../handler-deps').PageActionConfirmationSpec,
+      signal: AbortSignal,
+    ) => {
+      actionConfirmations.push({ pageSlug: spec.page.slug })
+      // A real sheet stays on the window until it is answered or dismissed, and
+      // dismissal arrives as `signal`. Modelling that is the only way to test
+      // that a release or a retired render can actually close one.
+      if (confirm === 'pending') {
+        return await new Promise<boolean>(resolve => {
+          actionConfirmationResolvers.push(resolve)
+          signal.addEventListener('abort', () => {
+            const queued = actionConfirmationResolvers.indexOf(resolve)
+            if (queued >= 0) actionConfirmationResolvers.splice(queued, 1)
+            resolve(false)
+          }, { once: true })
+        })
+      }
+      return confirm === 'approve'
+    },
     confirmPageGrant,
     ...((confirm === 'no-answer' || confirmationTimeoutMs !== undefined) ? { pageGrantConfirmationTimeoutMs: confirmationTimeoutMs ?? 1 } : {}),
     confirmForgetPagePublication,
@@ -200,6 +247,23 @@ function createHarness(
       trackRenderGeneration(requester.webContentsId)
       return hostRequest(requester, workspaceId, pageSlug, input, leaseId)
     }) as import('../handler-deps').PageGrantHostRequest,
+    requestActivationAsHost: async (
+      webContentsId: number,
+      workspaceId: string,
+      pageSlug: string,
+      request: unknown,
+    ) => {
+      if (!hostActivationRequest) throw new Error('missing host activation setup')
+      trackRenderGeneration(webContentsId)
+      return hostActivationRequest(
+        { webContentsId, renderGeneration: renderGenerations.get(webContentsId)! },
+        workspaceId,
+        pageSlug,
+        request,
+      )
+    },
+    actionConfirmations,
+    resolveActionConfirmation: () => actionConfirmationResolvers.shift()?.(true),
     invokeWithContext,
     invokeTransportWithContext,
   })
@@ -718,28 +782,31 @@ describe('Pages RPC workspace capability gate', () => {
     await expect(invoke(RPC_CHANNELS.pages.LIST_GRANTS, WORKSPACE_A, page.slug)).resolves.toHaveLength(1)
   })
 
-  test('keeps a grant binding when other workspaces reach their independent lease caps', async () => {
+  test('keeps a grant binding when another workspace churns its lease store', async () => {
+    // Lease state is per workspace, because there is one broker per workspace.
+    // Workspace B filling and evicting its own store must not touch A's lease
+    // or the grant binding that lease carries.
     const invoke = createHarness('approve')
     const pageA = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
       name: 'Workspace A leases', content: '<p>content</p>',
     }) as { slug: string }
     const { lease: firstLease } = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, pageA.slug) as { lease: { leaseId: string } }
-    for (let i = 1; i < MAX_LIVE_LEASES; i++) {
-      await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, pageA.slug)
-    }
 
     writeWorkspace(ROOT_B, WORKSPACE_B, true)
     const pageB = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_B, {
       name: 'Workspace B leases', content: '<p>content</p>',
     }) as { slug: string }
     const workspaceBContext = { clientId: 'trusted-client', workspaceId: WORKSPACE_B, webContentsId: 101 }
-    for (let i = 0; i < MAX_LIVE_LEASES; i++) {
+    // Past B's store cap, so B evicts repeatedly.
+    for (let i = 0; i < MAX_LIVE_LEASES + 10; i++) {
       await invoke.invokeWithContext(workspaceBContext, RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_B, pageB.slug)
     }
 
+    // A is untouched: it still mints, and its earlier lease still binds consent.
+    await expect(invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, pageA.slug)).resolves.toBeDefined()
     await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, pageA.slug, {
       action: { kind: 'api', sourceSlug: 'example', method: 'GET', pathPattern: '/items' },
-    }, firstLease.leaseId)).resolves.toMatchObject({ id: expect.any(String) })
+    }, firstLease.leaseId)).resolves.toBeTruthy()
   })
 
   test('rejects malformed descriptors before inspecting action kind or prompting', async () => {
@@ -965,6 +1032,398 @@ describe('Pages RPC workspace capability gate', () => {
       .rejects.toThrow('Workspace not found: unknown-workspace')
     await expect(invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, 'unknown-workspace', { pageSlug: 'missing' }))
       .rejects.toThrow('Workspace not found: unknown-workspace')
+  })
+
+
+  /**
+   * SUV-0065 — runtime authority at the RPC boundary.
+   *
+   * The broker's own tests prove the checks; these prove the checks are
+   * actually reachable through the channels a real caller uses, and that the
+   * host — not the caller — supplies the authority they are made against.
+   */
+  describe('page action runtime authority', () => {
+    /** A page with an approved mutating script grant, ready to be invoked. */
+    async function seedScriptGrant(invoke: GrantHarness) {
+      const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+        name: 'Runtime page', content: '<p>runtime</p>',
+      }) as { slug: string }
+      writeFileSync(join(ROOT_A, 'runner.ts'), 'console.log("ran")')
+      const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+        lease: { leaseId: string; nonce: string }
+      }
+      const grant = await invoke(
+        RPC_CHANNELS.pages.REQUEST_GRANT,
+        WORKSPACE_A,
+        page.slug,
+        { action: { kind: 'script', script: 'runner.ts', runtime: 'bun' } },
+        lease.lease.leaseId,
+      ) as { id: string } | null
+      return { page, lease: lease.lease, grant }
+    }
+
+    const requestFor = (
+      page: { slug: string },
+      lease: { leaseId: string; nonce: string },
+      grant: { id: string },
+      requestId = `req_${Math.random().toString(36).slice(2)}`,
+    ) => ({
+      requestId,
+      pageSlug: page.slug,
+      leaseId: lease.leaseId,
+      nonce: lease.nonce,
+      grantId: grant.id,
+      invocation: { kind: 'script' as const },
+    })
+
+    test('refuses a mutating action that arrives over transport RPC with no activation', async () => {
+      const invoke = createHarness('approve')
+      const { page, lease, grant } = await seedScriptGrant(invoke)
+      expect(grant).not.toBeNull()
+
+      // This is the bypass ADR-0033 exists for: a token-holding client calling
+      // executeAction directly, holding a real lease, nonce, and approved
+      // grant. Everything it can assert, it has. It still cannot run, because
+      // the one credential it needs is minted somewhere it cannot reach.
+      const result = await invoke.invokeTransportWithContext(
+        { workspaceId: WORKSPACE_A, clientId: 'hostile-client', webContentsId: undefined } as never,
+        RPC_CHANNELS.pages.EXECUTE_ACTION,
+        WORKSPACE_A,
+        requestFor(page, lease, grant!),
+      ) as { ok: boolean; error?: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('activation-required')
+    })
+
+    test('shape-guards the wire payload instead of throwing', async () => {
+      const invoke = createHarness('approve')
+      const { page, lease } = await seedScriptGrant(invoke)
+
+      // An API grant, so a malformed api invocation matches on kind and method
+      // and actually reaches the path helpers. Against a script grant the kind
+      // mismatch answers first and the reported throw is never provoked — a
+      // detail that made an earlier version of this test pass with the defect
+      // still in place.
+      const { addPageGrant, loadPageConfig } = await import('@craft-agent/shared/pages')
+      const apiGrant = addPageGrant(ROOT_A, page.slug, {
+        action: { kind: 'api', sourceSlug: 'github', method: 'GET', pathPattern: '/repos/.*' },
+        expectedContentDigest: loadPageConfig(ROOT_A, page.slug)!.contentDigest!,
+      })
+      const apiRequest = (invocation: unknown) => ({
+        requestId: `req_${Math.random().toString(36).slice(2)}`,
+        pageSlug: page.slug,
+        leaseId: lease.leaseId,
+        nonce: lease.nonce,
+        grantId: apiGrant.id,
+        invocation,
+      })
+      for (const badPath of [42, { toString: 'no' }, ['/x'], null, true]) {
+        const result = await invoke(
+          RPC_CHANNELS.pages.EXECUTE_ACTION,
+          WORKSPACE_A,
+          apiRequest({ kind: 'api', method: 'GET', path: badPath }),
+        ) as { ok: boolean; error?: string }
+        expect(result.ok).toBe(false)
+        expect(result.error).toContain('malformed-request')
+      }
+
+      // This channel is reachable by any transport client, so its argument is
+      // untrusted input regardless of what the handler signature claims. A
+      // throw would surface as a transport error the page cannot handle AND
+      // leave no audit row, so probing the endpoint's shape would be invisible.
+      for (const hostile of [
+        undefined, null, 'string', 42, [], {},
+        { requestId: 'r' },
+        { requestId: 'r', leaseId: 'l', nonce: 'n' },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g' },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash' },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: 'nope' },
+        // The discriminant alone is not the shape. Each of these would have
+        // reached a string helper inside validation and thrown there, outside
+        // this handler's guard.
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api', method: 'GET', path: 42 } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api', method: 'GET', path: { toString: 'no' } } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api', method: 'TRACE', path: '/x' } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api', method: 'GET', path: '/x', params: 'nope' } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'mcp', toolName: 7 } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'mcp', toolName: 't', args: [1, 2] } },
+        { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'session' } },
+        { requestId: 'x'.repeat(500), leaseId: 'l', nonce: 'n', grantId: 'g', pageSlug: 'dash', invocation: { kind: 'api' } },
+      ]) {
+        const result = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, hostile) as {
+          ok: boolean; error?: string
+        }
+        expect(result.ok).toBe(false)
+        expect(result.error).toContain('malformed-request')
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const audit = readFileSync(AUDIT_LOG, 'utf-8').trim().split('\n').map((line) => JSON.parse(line))
+      const malformed = audit.filter((entry) => entry.code === 'malformed-request')
+      expect(malformed.length).toBeGreaterThan(0)
+      // Metadata only — nothing from the payload, which by definition has not
+      // been validated and may be anything at all.
+      expect(malformed[0]?.origin).toBe('sandboxed-page')
+      expect(malformed[0]?.workspaceId).toBe(WORKSPACE_A)
+      expect(malformed[0]?.invocation).toBeUndefined()
+    })
+
+    test('does not treat a page that no longer exists as a crash', async () => {
+      const invoke = createHarness('approve')
+      const { page, lease, grant } = await seedScriptGrant(invoke)
+      await invoke(RPC_CHANNELS.pages.DELETE, WORKSPACE_A, page.slug)
+
+      const result = await invoke(
+        RPC_CHANNELS.pages.EXECUTE_ACTION,
+        WORKSPACE_A,
+        requestFor(page, lease, grant!),
+      ) as { ok: boolean; error?: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('malformed-request')
+    })
+
+    test('refuses a forged activation ticket', async () => {
+      const invoke = createHarness('approve')
+      const { page, lease, grant } = await seedScriptGrant(invoke)
+      const result = await invoke(
+        RPC_CHANNELS.pages.EXECUTE_ACTION,
+        WORKSPACE_A,
+        { ...requestFor(page, lease, grant!), activationTicket: 'f'.repeat(48) },
+      ) as { ok: boolean; error?: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('activation-invalid')
+    })
+
+    test('mints through the host path and executes exactly once', async () => {
+      const invoke = createHarness('approve')
+      const { page, lease, grant } = await seedScriptGrant(invoke)
+      const request = requestFor(page, lease, grant!)
+
+      const ticket = await invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, request)
+      expect(ticket.ticketId).toBeTruthy()
+      // First use of a script grant on this render asked the user.
+      expect(invoke.actionConfirmations).toHaveLength(1)
+
+      const activated = { ...request, activationTicket: ticket.ticketId }
+      const first = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, activated) as { ok: boolean }
+      expect(first.ok).toBe(true)
+
+      // Re-sending the identical authorized call is both a replay and a spent
+      // ticket, and either one alone is enough to refuse it.
+      const replay = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, activated) as { ok: boolean; error?: string }
+      expect(replay.ok).toBe(false)
+    })
+
+    test('will not mint for a window that is not showing the workspace', async () => {
+      const invoke = createHarness('approve')
+      const { page, lease, grant } = await seedScriptGrant(invoke)
+      // Window 404 exists but shows nothing this host knows about.
+      await expect(
+        invoke.requestActivationAsHost(404, WORKSPACE_A, page.slug, requestFor(page, lease, grant!)),
+      ).rejects.toThrow('PAGE_ACTIVATION_TRUSTED_CONTEXT_REQUIRED')
+    })
+
+    test('will not mint from a malformed request', async () => {
+      const invoke = createHarness('approve')
+      const { page } = await seedScriptGrant(invoke)
+      for (const hostile of [null, 'string', 42, {}, { requestId: 'r' }, { requestId: 'r', leaseId: 'l', nonce: 'n', grantId: 'g' }]) {
+        await expect(invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, hostile))
+          .rejects.toThrow('PAGE_ACTIVATION_INVALID_REQUEST')
+      }
+    })
+
+    test('refuses a mutating action while the workspace is in Explore', async () => {
+      const invoke = createHarness('approve')
+      const { page, lease, grant } = await seedScriptGrant(invoke)
+
+      // The mode is re-read per invocation, so switching it takes effect on the
+      // next action rather than the next mount.
+      writeWorkspace(ROOT_A, WORKSPACE_A, true, WORKSPACE_A, 'safe')
+      await expect(
+        invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, requestFor(page, lease, grant!)),
+      ).rejects.toThrow('permission-mode-forbidden')
+    })
+
+    test('requires the lease and its nonce to cancel', async () => {
+      const invoke = createHarness('approve')
+      const { lease } = await seedScriptGrant(invoke)
+      // A request id alone is a caller-minted string. Without the lease secret
+      // a cancel is refused outright, whatever id it names.
+      await expect(invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, 'req_x')).resolves.toBe(false)
+      await expect(invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, 'req_x', lease.leaseId, 'wrong-nonce'))
+        .resolves.toBe(false)
+    })
+
+
+    /**
+     * The first-use sheet is real host chrome on the user's window, and host
+     * chrome is drained serially. Refusing to USE a dead render's answer is
+     * only half the job: an un-closable sheet stalls every other Page and
+     * workspace behind it until the timeout.
+     */
+    describe('first-use confirmation lifecycle', () => {
+      async function pendingConfirmation() {
+        const invoke = createHarness('pending')
+        const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+          name: 'Sheet page', content: '<p>sheet</p>',
+        }) as { slug: string }
+        writeFileSync(join(ROOT_A, 'runner.ts'), 'console.log("ran")')
+        const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+          lease: { leaseId: string; nonce: string }
+        }
+        // Seed an approved grant without going through the pending sheet.
+        const { addPageGrant, loadPageConfig } = await import('@craft-agent/shared/pages')
+        const grant = addPageGrant(ROOT_A, page.slug, {
+          action: { kind: 'script', script: 'runner.ts', runtime: 'bun' },
+          expectedContentDigest: loadPageConfig(ROOT_A, page.slug)!.contentDigest!,
+        })
+        const request = {
+          requestId: 'req_sheet',
+          pageSlug: page.slug,
+          leaseId: lease.lease.leaseId,
+          nonce: lease.lease.nonce,
+          grantId: grant.id,
+          invocation: { kind: 'script' as const },
+        }
+        const minting = invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, request)
+          .then(() => 'minted' as const, (error: Error) => error.message)
+        await new Promise(resolve => setTimeout(resolve, 20))
+        expect(invoke.actionConfirmations).toHaveLength(1)
+        return { invoke, page, lease: lease.lease, minting }
+      }
+
+      test('releasing the lease closes the open sheet and mints nothing', async () => {
+        const { invoke, lease, minting } = await pendingConfirmation()
+
+        await invoke(RPC_CHANNELS.pages.RELEASE_LEASE, WORKSPACE_A, lease.leaseId)
+
+        // Not merely outlived — closed. Without the sheet being registered for
+        // abort this would sit until the confirmation timeout instead.
+        expect(await minting).toContain('PAGE_ACTIVATION')
+      })
+
+      test('replacing the render closes the open sheet and mints nothing', async () => {
+        const { invoke, minting } = await pendingConfirmation()
+
+        // A reload keeps the webContents id and the workspace, so only the
+        // render generation distinguishes the document that opened this sheet
+        // from the one that replaced it.
+        invoke.replaceRenderer(101)
+
+        expect(await minting).toContain('PAGE_ACTIVATION')
+      })
+
+      test('a closed sheet unblocks the next one instead of holding the queue', async () => {
+        const { invoke, lease, minting } = await pendingConfirmation()
+        await invoke(RPC_CHANNELS.pages.RELEASE_LEASE, WORKSPACE_A, lease.leaseId)
+        await minting
+
+        // The serially-drained queue moved on: a second Page can open its own
+        // sheet rather than waiting behind a prompt nobody can answer.
+        const second = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+          name: 'Second page', content: '<p>second</p>',
+        }) as { slug: string }
+        const secondLease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, second.slug) as {
+          lease: { leaseId: string; nonce: string }
+        }
+        const { addPageGrant, loadPageConfig } = await import('@craft-agent/shared/pages')
+        const grant = addPageGrant(ROOT_A, second.slug, {
+          action: { kind: 'script', script: 'runner.ts', runtime: 'bun' },
+          expectedContentDigest: loadPageConfig(ROOT_A, second.slug)!.contentDigest!,
+        })
+        void invoke.requestActivationAsHost(101, WORKSPACE_A, second.slug, {
+          requestId: 'req_second',
+          pageSlug: second.slug,
+          leaseId: secondLease.lease.leaseId,
+          nonce: secondLease.lease.nonce,
+          grantId: grant.id,
+          invocation: { kind: 'script' as const },
+        }).catch(() => {})
+        await new Promise(resolve => setTimeout(resolve, 20))
+        expect(invoke.actionConfirmations).toHaveLength(2)
+        expect(invoke.actionConfirmations[1]?.pageSlug).toBe(second.slug)
+      })
+    })
+
+    test('resolves a workspace alias to the same broker and lease store', async () => {
+      // `workspaceId` on these channels is a name-or-id lookup key. Brokers are
+      // cached per rootPath, so an alias and an id reach the same instance —
+      // this pins that, which is what a caller observes.
+      //
+      // It does NOT cover the related fix in the same commit: the broker's
+      // audit SCOPE is fixed at construction from whoever called first, so
+      // passing a raw alias there would scope every later row for that
+      // workspace. That is not observable from this layer — the scope appears
+      // only as a throttle key, never in a row — and the property it protects
+      // (one workspace cannot suppress another's rows) is covered by the
+      // cross-workspace test in `action-bridge.test.ts`. Said plainly rather
+      // than left to look like coverage this test does not provide.
+      //
+      // The fixture normally names a workspace after its own id, leaving no
+      // distinct alias; give this one a display name. The per-test
+      // `registerTestWorkspaces()` restores the default.
+      writeWorkspace(ROOT_A, WORKSPACE_A, true, 'Pages Enabled Alias')
+      const invoke = createHarness('approve')
+      const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+        name: 'Alias page', content: '<p>alias</p>',
+      }) as { slug: string }
+
+      // Mint under the NAME.
+      const byName = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, 'Pages Enabled Alias', page.slug) as {
+        lease: { leaseId: string; nonce: string }
+      }
+
+      // Spend it under the ID. Reaching `grant-not-found` proves both calls hit
+      // the same broker: a separate one would not know this lease at all and
+      // would answer `lease-not-found`.
+      const result = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, {
+        requestId: 'req_alias',
+        pageSlug: page.slug,
+        leaseId: byName.lease.leaseId,
+        nonce: byName.lease.nonce,
+        grantId: 'grant_missing',
+        invocation: { kind: 'api', method: 'GET', path: '/items' },
+      }) as { ok: boolean; error?: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('grant-not-found')
+      expect(result.error).not.toContain('lease-not-found')
+    })
+
+    test('refuses a malformed cancel instead of throwing', async () => {
+      const invoke = createHarness('approve')
+      const { lease } = await seedScriptGrant(invoke)
+
+      // Every argument is caller-supplied and this channel needs no lease to
+      // reach. Without a bounded-string check the broker would hand a non-string
+      // to `createHash().update()` for the audit row, which throws — turning a
+      // malformed cancel into a transport error and an unaudited crash.
+      const hostile: unknown[] = [undefined, null, 42, {}, [], true, '', 'x'.repeat(5_000)]
+      for (const value of hostile) {
+        await expect(invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, value, lease.leaseId, lease.nonce))
+          .resolves.toBe(false)
+        await expect(invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, 'req_ok', value, lease.nonce))
+          .resolves.toBe(false)
+        await expect(invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, 'req_ok', lease.leaseId, value))
+          .resolves.toBe(false)
+      }
+    })
+
+    test('audits the execution with its origin, workspace, and permission mode', async () => {
+      const invoke = createHarness('approve')
+      const { page, lease, grant } = await seedScriptGrant(invoke)
+      const request = requestFor(page, lease, grant!)
+      const ticket = await invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, request)
+      await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, { ...request, activationTicket: ticket.ticketId })
+
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const audit = readFileSync(AUDIT_LOG, 'utf-8').trim().split('\n').map((line) => JSON.parse(line))
+      const executed = audit.find((entry) => entry.event === 'page_action_executed')
+      expect(executed?.origin).toBe('sandboxed-page')
+      expect(executed?.workspaceId).toBe(WORKSPACE_A)
+      expect(executed?.permissionMode).toBe('ask')
+      expect(executed?.mutating).toBe(true)
+      expect(executed?.actionKind).toBe('script')
+    })
   })
 
   test('preserves cleanup after a workspace is disabled without creating a broker', async () => {

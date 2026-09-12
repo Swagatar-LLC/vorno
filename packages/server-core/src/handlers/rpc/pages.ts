@@ -3,7 +3,7 @@ import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { assertPagesEnabled, isPagesEnabled } from '@craft-agent/shared/pages/capability'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps, PageGrantRequester } from '../handler-deps'
-import { MAX_LIVE_LEASES, pageActionDescriptorSignature, type PageActionRequest, type PageActionBroker, type PageActionExecutors } from '@craft-agent/shared/pages'
+import { MAX_LIVE_LEASES, isBoundedPageActionId, pageActionDescriptorSignature, parsePageActionInvocation, type PageActionAuthority, type PageActionOrigin, type PageActionRequest, type PageActionBroker, type PageActionExecutors } from '@craft-agent/shared/pages'
 import { assertPageSourceUsable } from '../../pages/source-gate'
 
 export const HANDLED_CHANNELS = [
@@ -40,6 +40,52 @@ const PAGE_GRANT_MESSAGE_MAX_CHARS = 200
 const PAGE_GRANT_IDENTITY_MAX_CHARS = 100
 /** Bound queued consent work while an OS-native modal serializes requests. */
 const MAX_PENDING_PAGE_GRANT_CONFIRMATIONS = 32
+
+/**
+ * Parse the request an activation is being asked for.
+ *
+ * It crossed IPC from a renderer, so it is untrusted input that happens to
+ * describe a privileged call. Only the fields the ticket binds are read, and
+ * `pageSlug` is taken from the host's own argument rather than from the
+ * payload: a renderer that could name the page in the body could ask for a
+ * ticket against a page other than the one it is rendering.
+ *
+ * The invocation is passed through structurally and re-validated by the broker
+ * against the grant. Duplicating the descriptor schema here would create a
+ * second definition of a valid invocation, and the two would drift.
+ */
+function parsePageActionRequest(value: unknown, pageSlug?: string): PageActionRequest | null {
+  if (typeof value !== 'object' || value === null) return null
+  const candidate = value as Record<string, unknown>
+  const bounded = isBoundedPageActionId
+  if (!bounded(candidate.requestId) || !bounded(candidate.leaseId) || !bounded(candidate.nonce) || !bounded(candidate.grantId)) {
+    return null
+  }
+  // The activation path is handed the page by the host and ignores the payload's
+  // claim; the execute path has no such argument, so it reads the field and the
+  // broker proves it against the lease. Both go through this one parser.
+  const slug = pageSlug ?? (bounded(candidate.pageSlug) ? (candidate.pageSlug as string) : undefined)
+  if (slug === undefined) return null
+  // The WHOLE kind-specific shape, not just the discriminant. Casting after a
+  // `kind` check admits an api invocation whose `path` is a number, and the
+  // first `path.startsWith(...)` inside validation throws — outside this
+  // handler's guard, so the caller would get an unaudited transport error
+  // instead of the refusal this function exists to produce.
+  const invocation = parsePageActionInvocation(candidate.invocation)
+  if (!invocation) return null
+  // Carried through, never minted here: a ticket is only ever valid if the
+  // broker issued it, so an unparseable one simply fails redemption.
+  const activationTicket = bounded(candidate.activationTicket) ? (candidate.activationTicket as string) : undefined
+  return {
+    requestId: candidate.requestId as string,
+    pageSlug: slug,
+    leaseId: candidate.leaseId as string,
+    nonce: candidate.nonce as string,
+    grantId: candidate.grantId as string,
+    invocation,
+    ...(activationTicket !== undefined ? { activationTicket } : {}),
+  }
+}
 
 /** Keep page-authored prose visibly distinct from host-rendered identity/action. */
 function sanitizePageGrantMessage(description: string | undefined): string | undefined {
@@ -384,6 +430,180 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     }
   }
 
+  /**
+   * Build the host's assertion about one invocation (ADR-0033 §2).
+   *
+   * Re-resolved per call rather than cached on the broker: a workspace's
+   * permission mode can change between two actions on the same render, and the
+   * second one has to see it. Reading it from disk here is what makes
+   * "revalidates permission mode on every invocation" true instead of aspirational.
+   *
+   * **Absent and corrupt are different.** Absent (`undefined`) is a legacy
+   * workspace that never set the field, and the product contract resolves that
+   * to `ask` (`config/storage.ts`); reading it as Explore would refuse a
+   * capability the user never restricted, in every workspace that left the
+   * setting alone. A value that is PRESENT but unrecognized is corruption or a
+   * downgrade from a future version — something was stored and cannot be
+   * honoured — and the only safe reading of an unhonourable restriction is the
+   * most restrictive one. An unreadable config is the same class.
+   *
+   * The security boundary is the approved, digest-bound grant plus the
+   * activation ticket; permission mode is an additional restriction layered
+   * over those, which is why absence may default permissively and corruption
+   * may not.
+   */
+  async function resolveAuthority(
+    workspace: { id: string; rootPath: string },
+    origin: PageActionOrigin,
+  ): Promise<PageActionAuthority> {
+    const permissionMode = await resolveWorkspacePermissionMode(workspace.rootPath)
+    return { workspaceId: workspace.id, origin, permissionMode }
+  }
+
+  async function resolveWorkspacePermissionMode(
+    workspaceRootPath: string,
+  ): Promise<PageActionAuthority['permissionMode']> {
+    // Read BEFORE normalization: `loadWorkspaceConfig` drops an unparseable
+    // value to `undefined`, which would make a corrupted `safe` read as "never
+    // set" and default permissively.
+    const { readStoredPermissionMode } = await import('@craft-agent/shared/workspaces')
+    const stored = readStoredPermissionMode(workspaceRootPath)
+    if (stored.state === 'valid') return stored.mode
+    if (stored.state === 'absent') return 'ask'
+    return 'safe'
+  }
+
+  /**
+   * Mint an activation ticket. Registered for the host only, exactly like grant
+   * consent, and for the same reason: `requester` originates in Electron's
+   * `ipcMain` `event.sender`, and the gesture that justifies the ticket was
+   * observed by the main process. Neither fact can be asserted over the wire,
+   * so there is deliberately no RPC channel that reaches this.
+   */
+  const requestPageActivationFromHost = async (
+    requester: PageGrantRequester,
+    workspaceId: string,
+    pageSlug: string,
+    rawRequest: unknown,
+  ): Promise<{ ticketId: string; expiresAt: number }> => {
+    const workspace = getWorkspaceByNameOrId(workspaceId)
+    if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+    assertAvailable(workspace.rootPath)
+    const canonicalWorkspaceId = workspace.id
+    if (deps.isPageGrantRequesterCurrent?.(requester, canonicalWorkspaceId) !== true) {
+      throw new Error('PAGE_ACTIVATION_TRUSTED_CONTEXT_REQUIRED')
+    }
+
+    const request = parsePageActionRequest(rawRequest, pageSlug)
+    if (!request) throw new Error('PAGE_ACTIVATION_INVALID_REQUEST')
+
+    const { loadPageConfig } = await import('@craft-agent/shared/pages')
+    const page = loadPageConfig(workspace.rootPath, pageSlug)
+    if (!page) throw new Error(`Page not found: ${pageSlug}`)
+
+    const expectedContentDigest = page.contentDigest
+    if (!expectedContentDigest) throw new Error(`Page "${pageSlug}" has no content yet`)
+
+    const broker = await getBroker(canonicalWorkspaceId, workspace.rootPath)
+    // Bind this lease to the observed requester, exactly as grant consent does.
+    // A render that inherited an existing grant has never been through the
+    // grant path, so without this its lease has no owner recorded and the
+    // window re-checks around the confirmation sheet would have nothing to
+    // compare against — refusing every legitimate first use.
+    if (!bindLeaseRequester(
+      workspace.rootPath, request.leaseId, canonicalWorkspaceId, pageSlug, expectedContentDigest, requester,
+    )) throw new Error('PAGE_ACTIVATION_TRUSTED_CONTEXT_REQUIRED')
+
+    const authority = await resolveAuthority(workspace, 'sandboxed-page')
+    const outcome = await broker.mintActivationTicket(page, request, authority, {
+      // Queued behind the same serialized host surface as grant consent, so a
+      // Page cannot stack native chrome by asking for many first uses at once.
+      confirmFirstUse: () => confirmPageActionFirstUse(
+        requester, workspace, page, request.grantId, request.leaseId, expectedContentDigest,
+      ),
+    })
+    if (!outcome.ok) throw new Error(`PAGE_ACTIVATION_REFUSED: ${outcome.code}`)
+    return { ticketId: outcome.ticketId, expiresAt: outcome.expiresAt }
+  }
+  deps.registerPageActivationHostRequest?.(requestPageActivationFromHost)
+
+  /** Host-rendered "run this now", on the shared confirmation queue. */
+  async function confirmPageActionFirstUse(
+    requester: PageGrantRequester,
+    workspace: { id: string; name: string; rootPath: string },
+    page: import('@craft-agent/core').PageConfig,
+    grantId: string,
+    leaseId: string,
+    expectedContentDigest: string,
+  ): Promise<boolean> {
+    const leaseKey = leaseKeyFor(workspace.rootPath, leaseId)
+    const confirm = deps.confirmPageAction
+    if (!confirm) return false
+    if (pendingHostConfirmationCount >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) {
+      throw new Error('PAGE_GRANT_CONFIRMATION_QUEUE_FULL')
+    }
+    // Show the descriptor as it stands on disk right now. The broker re-reads
+    // and re-validates it after this resolves, so the dialog and the execution
+    // cannot end up describing different commands.
+    const grant = page.grants?.find((candidate) => candidate.id === grantId)
+    if (!grant) return false
+    pendingHostConfirmationCount++
+    return await new Promise<boolean>((resolve, reject) => {
+      grantConfirmationQueue.push(async () => {
+        const deadline = new AbortController()
+        let timer: ReturnType<typeof setTimeout> | undefined
+        try {
+          // Re-check before opening. This request may have waited behind other
+          // native chrome, and a render that has since reloaded or died must
+          // not be shown a sheet whose answer can no longer be used.
+          if (!isLeaseRequesterCurrent(
+            workspace.rootPath, leaseId, workspace.id, page.slug, expectedContentDigest, requester,
+          )) throw new Error('PAGE_ACTIVATION_TRUSTED_CONTEXT_REQUIRED')
+
+          const confirmation = confirm(requester, {
+            workspace: { id: workspace.id, name: sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace') },
+            page: { slug: page.slug, name: sanitizePageGrantIdentity(page.name, 'Unnamed page') },
+            action: grant.action,
+          }, deadline.signal)
+          // Published for exactly as long as the sheet is open, keyed the same
+          // way grant consent is. Without this, releasing the lease or retiring
+          // the render made the ANSWER unusable but left the sheet on the
+          // user's window — and because host chrome is drained serially, every
+          // other Page and workspace queued behind a prompt nobody can answer.
+          activeConfirmations.set(leaseKey, { deadline, requester })
+          const timeout = new Promise<never>((_resolve, rejectTimeout) => {
+            timer = setTimeout(() => { deadline.abort(); rejectTimeout(new Error('confirmation timed out')) },
+              deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
+          })
+          const accepted = await Promise.race([confirmation, timeout])
+          // An answer given after the render stopped existing belongs to
+          // nothing. The broker re-validates page state after this resolves;
+          // this re-validates the WINDOW, which the broker cannot see.
+          if (accepted && !isLeaseRequesterCurrent(
+            workspace.rootPath, leaseId, workspace.id, page.slug, expectedContentDigest, requester,
+          )) { resolve(false); return }
+          resolve(accepted)
+        } catch (error) {
+          reject(error)
+        } finally {
+          if (timer) clearTimeout(timer)
+          if (activeConfirmations.get(leaseKey)?.deadline === deadline) {
+            activeConfirmations.delete(leaseKey)
+          }
+          deadline.abort()
+          pendingHostConfirmationCount--
+        }
+      })
+      drainGrantConfirmationQueue()
+    })
+  }
+
+  /**
+   * @param workspaceId MUST be the resolved `workspace.id`, never a caller's
+   * name-or-id spelling: it becomes the broker's audit scope, and the broker is
+   * cached per rootPath, so an alias supplied by whoever happened to call first
+   * would scope every later row for that workspace.
+   */
   async function getBroker(workspaceId: string, workspaceRootPath: string): Promise<PageActionBroker> {
     assertAvailable(workspaceRootPath)
     const existing = brokers.get(workspaceRootPath)
@@ -418,6 +638,40 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         executeScript: createPagesScriptExecutor({ workspaceRootPath, log }),
       },
       permissionsContext: { workspaceRootPath, activeSourceSlugs },
+      // Host-resolved, never client-supplied: it scopes the audit write budget,
+      // so one workspace cannot flood another's lifecycle rows out of the log.
+      workspaceId,
+      // The broker invalidates leases on its own schedule — eviction, expiry,
+      // release — and host state outlives them: a native first-use sheet stays
+      // on the window and the lease→requester binding stays in its map. Closing
+      // the sheet is the part that matters, because host chrome drains serially
+      // and an un-closable prompt stalls every other Page and workspace.
+      onLeaseDropped: (leaseId: string) => {
+        abortActiveConfirmation(leaseKeyFor(workspaceRootPath, leaseId))
+        deleteLeaseRequester(workspaceRootPath, leaseId)
+      },
+      // The broker does no IO, but it must not act on a stale view either: an
+      // action that waited for a slot was admitted against state read before
+      // the wait. This re-reads grants, digest, and expiry from disk AND
+      // re-resolves the workspace permission mode, immediately before the
+      // executor runs — so a switch to Explore during the wait refuses rather
+      // than executing, which reloading only the page would have missed.
+      loadCurrentAdmission: async (pageSlug: string) => {
+        const { loadPageConfig } = await import('@craft-agent/shared/pages')
+        const page = loadPageConfig(workspaceRootPath, pageSlug)
+        if (!page) return null
+        // Pages can be disabled mid-flight too; a queued action must not
+        // outlive the capability that allowed it.
+        if (!isPagesEnabled(workspaceRootPath)) return null
+        return {
+          page,
+          authority: {
+            workspaceId,
+            origin: 'sandboxed-page' as const,
+            permissionMode: await resolveWorkspacePermissionMode(workspaceRootPath),
+          },
+        }
+      },
     })
     brokers.set(workspaceRootPath, broker)
     log.info(`Created page action broker for workspace ${workspaceId}`)
@@ -522,6 +776,9 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     assertAvailable(workspace.rootPath)
     const { savePageContent } = await import('@craft-agent/shared/pages')
     const updated = savePageContent(workspace.rootPath, pageSlug, content)
+    // New content invalidates grants by digest, but an already-minted ticket
+    // holds its own copy of the old digest, so it has to be withdrawn here.
+    brokers.get(workspace.rootPath)?.invalidateActivationsForPage(pageSlug)
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
     await broadcastChanged(workspaceId, workspace.rootPath)
     deps.sessionManager.enqueuePageThumbnail(workspaceId, workspace.rootPath, pageSlug)
@@ -762,6 +1019,9 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const { revokePageGrant } = await import('@craft-agent/shared/pages')
     const removed = revokePageGrant(workspace.rootPath, pageSlug, grantId)
     if (removed) {
+      // Revocation is immediate by contract, which means it also has to reach
+      // any unspent ticket already issued against this grant.
+      brokers.get(workspace.rootPath)?.invalidateActivationsForPage(pageSlug, grantId)
       deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
       await broadcastChanged(workspaceId, workspace.rootPath)
       log.info(`Revoked page grant ${grantId} on ${pageSlug}`)
@@ -781,7 +1041,11 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const content = loadPageContent(workspace.rootPath, pageSlug)
     if (content === null) throw new Error(`Page has no content: ${pageSlug}`)
 
-    const broker = await getBroker(workspaceId, workspace.rootPath)
+    // Canonical id, never the caller's spelling. `workspaceId` here is a
+    // name-or-id lookup key, and the broker is cached per rootPath — so the
+    // first caller's alias would become this workspace's audit scope for the
+    // life of the process, and two aliases would look like two tenants.
+    const broker = await getBroker(workspace.id, workspace.rootPath)
     const contentDigest = computePageContentDigest(content)
     const lease = broker.createLease({ pageSlug, contentDigest })
     // Transport clients may create leases, but only the sender-derived IPC
@@ -805,25 +1069,82 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
 
   // Execute a granted source action. Page config is re-read from disk per
   // request so revocations and content changes apply immediately.
-  server.handle(RPC_CHANNELS.pages.EXECUTE_ACTION, async (_ctx, workspaceId: string, request: PageActionRequest) => {
+  server.handle(RPC_CHANNELS.pages.EXECUTE_ACTION, async (_ctx, workspaceId: string, rawRequest: unknown) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     assertAvailable(workspace.rootPath)
-    const { loadPageConfig } = await import('@craft-agent/shared/pages')
+    const { appendPageActionAudit, loadPageConfig } = await import('@craft-agent/shared/pages')
+
+    /**
+     * Refusals a malformed payload produces, shaped like every other action
+     * result rather than thrown.
+     *
+     * This channel is reachable by any transport client, so its argument is
+     * untrusted input — not a `PageActionRequest` because the signature says
+     * so. Throwing would surface as a transport error the page cannot handle
+     * and, worse, would leave no audit row: an attacker probing the shape of
+     * this endpoint would do so invisibly. Every refusal is recorded, with
+     * metadata only, since by definition nothing here has been validated.
+     */
+    const malformed = async (reason: string) => {
+      // Code only. `reason` is returned to the caller and logged for debugging;
+      // it must not reach the durable file, which by definition has seen no
+      // validated input at this point.
+      // Throttled: this row is reachable by any transport client with no lease,
+      // so an unthrottled append turns the audit file into a disk-filling
+      // primitive. The broker's rate limits cannot help — they need a valid
+      // lease, which a malformed payload does not have.
+      await appendPageActionAudit({
+        event: 'page_action_rejected',
+        workspaceId: workspace.id,
+        origin: 'sandboxed-page',
+        code: 'malformed-request',
+      }, {
+        throttleKey: `malformed:${workspace.id}`,
+        onError: (error) => log.warn(`Failed to audit malformed page action: ${error}`),
+      })
+      log.debug(`Malformed page action on ${workspace.id}: ${reason}`)
+      return { requestId: 'unknown', ok: false, error: `malformed-request: ${reason}`, durationMs: 0 }
+    }
+
+    const request = parsePageActionRequest(rawRequest)
+    if (!request) return malformed('Request does not match the page action shape')
 
     const page = loadPageConfig(workspace.rootPath, request.pageSlug)
-    if (!page) throw new Error(`Page not found: ${request.pageSlug}`)
+    if (!page) return malformed('Page not found')
 
-    const broker = await getBroker(workspaceId, workspace.rootPath)
-    return broker.executeAction(page, request)
+    const broker = await getBroker(workspace.id, workspace.rootPath)
+    // Authority is built HERE, from the resolved workspace and the transport
+    // this call arrived on — never read off `request`. Everything reaching this
+    // channel is a relay for page JS, including the WebUI and any direct
+    // client, so the origin is `sandboxed-page` for all of them. A mutating one
+    // still needs a ticket it cannot mint, which is what makes the bypass
+    // attempt fail rather than merely look different.
+    return broker.executeAction(page, request, await resolveAuthority(workspace, 'sandboxed-page'))
   })
 
   // Cancellation is cleanup: it remains available after Pages is disabled and
-  // never creates a broker when no productive action is in flight.
-  server.handle(RPC_CHANNELS.pages.CANCEL_ACTION, async (_ctx, workspaceId: string, requestId: string) => {
+  // never creates a broker when no productive action is in flight. The lease
+  // and its nonce are required — a request id alone is a caller-minted string,
+  // so accepting it as authority let anyone abort anyone's action.
+  server.handle(RPC_CHANNELS.pages.CANCEL_ACTION, async (
+    _ctx,
+    workspaceId: string,
+    requestId: unknown,
+    leaseId?: unknown,
+    nonce?: unknown,
+  ) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return false
-    return brokers.get(workspace.rootPath)?.cancelAction(requestId) ?? false
+    // Every argument is caller-supplied and this channel needs no lease to
+    // reach. Bounded-string checks happen HERE, before the broker hashes the
+    // request id for the audit row: `createHash().update(x)` on a non-string
+    // throws, which would turn a malformed cancel into a transport error and an
+    // unaudited crash instead of a refusal — and an unbounded one would hand
+    // the hasher a payload.
+    if (!isBoundedPageActionId(requestId)) return false
+    if (!isBoundedPageActionId(leaseId) || !isBoundedPageActionId(nonce)) return false
+    return brokers.get(workspace.rootPath)?.cancelAction(leaseId, nonce, requestId) ?? false
   })
 
   // ------------------------------------------------------------------

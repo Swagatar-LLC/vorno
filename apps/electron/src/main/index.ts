@@ -91,7 +91,7 @@ import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient } from '@craf
 import type { PlatformServices } from '../runtime/platform'
 import { createElectronPlatform } from './platform'
 import type { HandlerDeps } from './handlers/handler-deps'
-import type { PageGrantHostRequest } from '@craft-agent/server-core/handlers'
+import type { PageActivationHostRequest, PageGrantHostRequest } from '@craft-agent/server-core/handlers'
 import {
   createRenderGenerationTracker,
   formatPageGrantDescriptor,
@@ -99,6 +99,7 @@ import {
   isRequesterCurrent,
   type RenderIdentity,
 } from './page-grant-identity'
+import { createUserGestureTracker, handlePageActivationIpc } from './page-activation'
 import { forgetPublicationDetailKey } from './page-forget-consent'
 import { bootstrapServer, releaseServerLock } from '@craft-agent/server-core/bootstrap'
 import { createMessagingBootstrap, type MessagingBootstrapHandle } from '@craft-agent/messaging-gateway'
@@ -672,6 +673,7 @@ app.whenReady().then(async () => {
       const clientMap = new Map<number, string>()
       const resolveClientId = (wcId: number) => clientMap.get(wcId)
       let pageGrantHostRequest: PageGrantHostRequest | undefined
+      let pageActivationHostRequest: PageActivationHostRequest | undefined
 
       // ---------------------------------------------------------------------
       // Page grant render generations.
@@ -693,6 +695,27 @@ app.whenReady().then(async () => {
       const renderGenerations = createRenderGenerationTracker(
         (retired) => invalidatePageGrantRequester?.(retired),
       )
+
+      // ---------------------------------------------------------------------
+      // Page action user gestures (ADR-0033 §3).
+      //
+      // The activation experiment recorded in roadmap/evidence/SUV-0065 ruled
+      // out every renderer-visible signal: parent `navigator.userActivation`
+      // reads true for a click anywhere in the window, and `input-event`
+      // carries no frame identity. So the main process keeps its own record of
+      // the last activating gesture per render, and SPENDS it when it mints a
+      // ticket — that consumption is what makes "one privileged action per
+      // click" a property of the code rather than a hope about the renderer.
+      // ---------------------------------------------------------------------
+      const pageUserGestures = createUserGestureTracker(renderGenerations)
+      // Observation must be in place before the click, which rules out doing it
+      // lazily at the IPC hop. Top-level windows only: a `webview` or embedded
+      // view has no workspace mapping, so a gesture recorded for one could
+      // never be spent anyway and tracking it would just be listeners.
+      app.on('web-contents-created', (_event, contents) => {
+        if (contents.getType() !== 'window') return
+        pageUserGestures.observe(contents as never)
+      })
 
       // Read embedded server config (Server settings page)
       const { getServerConfig } = await import('@craft-agent/shared/config')
@@ -822,6 +845,12 @@ app.whenReady().then(async () => {
             registerPageGrantHostRequest: isHeadless ? undefined : (request) => {
               pageGrantHostRequest = request
             },
+            // Headless has no window to observe a gesture in, so it registers
+            // nothing and every mutating Page action there is refused for want
+            // of a ticket. That is the intended direction of failure.
+            registerPageActivationHostRequest: isHeadless ? undefined : (request) => {
+              pageActivationHostRequest = request
+            },
             registerPageGrantInvalidator: isHeadless ? undefined : (invalidate) => {
               invalidatePageGrantRequester = invalidate
             },
@@ -856,6 +885,34 @@ app.whenReady().then(async () => {
                   pageMessage: spec.pageMessage ?? i18n.t('pages.grants.confirm.noPageMessage'),
                 }),
                 buttons: [i18n.t('pages.grants.confirm.deny'), i18n.t('pages.grants.confirm.approve')],
+                defaultId: 0,
+                cancelId: 0,
+                signal,
+              })).response === 1
+            },
+            // First use of a script grant on a render: a separate question
+            // from "may this page ever do X", so it gets its own chrome rather
+            // than reusing the grant dialog's copy. Same sheet-parenting rule —
+            // without a parent window Electron ignores `signal` and the host's
+            // timeout becomes unenforceable.
+            confirmPageAction: isHeadless ? undefined : async (requester, spec, signal) => {
+              const win = windowManager?.getWindowByWebContentsId(requester.webContentsId)
+              if (
+                !win || win.isDestroyed() || signal.aborted ||
+                !renderGenerations.isCurrent(requester)
+              ) return false
+              const action = formatPageGrantDescriptor(spec.action)
+              return (await dialog.showMessageBox(win, {
+                type: 'warning',
+                title: i18n.t('pages.actions.confirm.title'),
+                message: i18n.t('pages.actions.confirm.message', { page: spec.page.name, workspace: spec.workspace.name }),
+                detail: i18n.t('pages.actions.confirm.detail', {
+                  workspace: spec.workspace.name,
+                  page: spec.page.name,
+                  pageSlug: spec.page.slug,
+                  action,
+                }),
+                buttons: [i18n.t('pages.actions.confirm.cancel'), i18n.t('pages.actions.confirm.run')],
                 defaultId: 0,
                 cancelId: 0,
                 signal,
@@ -961,6 +1018,20 @@ app.whenReady().then(async () => {
           tracker: renderGenerations,
           request: pageGrantHostRequest,
         }, event.sender, pageSlug, input, leaseId))
+
+      // Activation is privileged main-process IPC for the same reasons as
+      // consent, plus one of its own: the gesture that justifies a ticket is
+      // observed HERE. A renderer cannot assert it and a transport client
+      // cannot reach this channel at all, so there is deliberately no RPC
+      // equivalent — the WebUI simply cannot mint, and its mutating actions
+      // are refused rather than silently downgraded.
+      ipcMain.handle('__pages:request-activation', async (event, pageSlug: unknown, request: unknown) =>
+        handlePageActivationIpc({
+          getWorkspaceForWindow: (wcId) => windowManager?.getWorkspaceForWindow(wcId),
+          tracker: renderGenerations,
+          gestures: pageUserGestures,
+          request: pageActivationHostRequest,
+        }, event.sender, pageSlug, request))
 
       // Remove workspace from config (cleanup stale entries)
       ipcMain.handle('workspace:remove', async (_event, workspaceId: string) => {

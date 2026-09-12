@@ -49,4 +49,6 @@ export {
   // Constants
   CONFIG_DIR,
   DEFAULT_WORKSPACES_DIR,
+  readStoredPermissionMode,
 } from './storage.ts';
+export type { StoredPermissionModeState } from './storage.ts';

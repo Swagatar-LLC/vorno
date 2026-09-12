@@ -1,0 +1,215 @@
+---
+id: SUV-0065
+title: Enforce Page action runtime authority
+status: done
+plan: PLAN-052
+direction: DIR-04
+owner: jh
+created: 2026-09-10
+updated: 2026-09-11
+related: [SUV-0059, ADR-0033]
+blocked-by: []
+---
+
+# SUV-0065 — Enforce Page action runtime authority
+
+## Goal
+
+Enforce every Page action at the authoritative runtime boundary so no renderer,
+page, or direct RPC caller can bypass a consented grant's scope or fresh trusted
+interaction proof.
+
+## Scope
+
+- Add shared mutating classification and `PageActionOrigin`; unattributed
+  callers fail closed and a newly introduced descriptor cannot evade the
+  classifier.
+- Add trusted, digest/lease-bound, single-use activation tickets and required
+  first-use confirmation. Ticket defaults remain policy within ADR-0033's
+  10-second ceiling; run and record the iframe activation experiment before
+  relying on its result.
+- Revalidate origin, permission mode, workspace, page digest, grant, lease,
+  nonce, expiry, and activation proof on every invocation.
+- Implement replay defence, lease-scoped in-flight keys and cancellation,
+  page/workspace rate limits, timeout, and redacted audit outcomes.
+
+Grant issuance/lifecycle is SUV-0059; pinned session callback payload/execution
+is SUV-0064.
+
+## Acceptance
+
+- [x] Table-driven tests classify every descriptor kind; only API GET is
+      non-mutating, a new kind cannot silently evade classification, and
+      unattributed mutation fails closed.
+- [x] The Electron activation experiment is recorded; trusted tickets are
+      digest/lease-bound, single-use, within the 10-second ceiling, and required
+      first-use confirmation is enforced.
+- [x] Every invocation revalidates origin, permission mode, workspace, page
+      digest, approved grant, lease/nonce, expiry, and fresh activation proof;
+      direct RPC, desktop, and WebUI cannot bypass the checks.
+- [x] Script actions remain argv/no-shell, workspace-confined,
+      minimal-environment, and abort-aware, with a direct runner test.
+- [x] Replay, lease-scoped in-flight keys/cancellation, page/workspace rate
+      limits, and timeout have regression coverage.
+- [x] Rejection, execution, cancellation, timeout, and result are audited
+      without credentials or sensitive payloads. The durable row never quotes
+      the caller: `requestId` is ALWAYS hashed (`pageAuditIdHash`); a lease or
+      grant id appears raw only after host validation has proven it host state,
+      and is hashed otherwise; source and tool are read off the approved grant
+      and bounded, never off the request. A rejection row carries the action
+      kind and the closed code alone. Never recorded: paths, query params, MCP
+      arguments, bodies, script output, the dynamic rejection reason, or remote
+      error text.
+
+## Status log
+
+- `2026-09-10` — created in `planned/` from reserved SUV-0065; split from
+  SUV-0059 so runtime authority and trusted activation remain one reviewable PR.
+- `2026-09-11` — moved from `planned` to `in-progress`: runtime authority,
+  trusted activation, and the ADR-0033 activation experiment implementation
+  began on the merged Pages baseline.
+- `2026-09-11` — moved from `in-progress` to `done`. The ADR-0033 activation
+  experiment was **run, not assumed**, and came back negative for its premise:
+  parent `navigator.userActivation` reads `true` for a click over the Page and
+  for one on unrelated app chrome, and Electron's `input-event` carries no
+  frame identity, so no signal at any trust level attributes a gesture to the
+  frame. Recorded with its rerunnable probe in
+  `roadmap/evidence/SUV-0065/`; the implementation therefore takes the ADR's
+  trusted-host-click branch rather than relying on frame proof, and the
+  residual — that a real in-frame click may be invisible to `input-event` — is
+  made safe by shape, since it fails as a refusal and never as a bypass.
+
+## Reopen, and what closed it
+
+`2026-09-11` — independent architecture review of PR #204 did not clear. Three
+acceptance items are un-ticked again because they were claimed on checks that a
+production caller does not actually reach:
+
+- queued actions re-validated a `PageConfig` snapshot loaded before the wait, so
+  a revocation or content change during the wait was invisible;
+- the scheduled-refresh origin is enforced at the broker but production cron
+  refresh never enters the broker, so "every invocation" was true of the code
+  path under test and not of the product;
+- audit rows carried the raw API path, query params, and MCP arguments, which is
+  caller payload rather than metadata.
+
+`2026-09-11` — closed again. Each item was fixed on the real path rather than
+argued down:
+
+- **Queued actions reload from disk.** An injected `loadCurrentPage` re-reads
+  `page.json` immediately before the executor, so a revocation or content change
+  during the wait is seen; the reloaded config is also what executes, and a host
+  with no reload seam refuses rather than falling back to the snapshot.
+- **Scheduled refresh now enters authoritative admission.** `pages/scheduled-admission.ts`
+  runs origin policy, permission mode, grant existence, digest binding, expiry,
+  and descriptor identity, and audits every decision — called by the scheduler
+  immediately before spawn. No lease or nonce is invented for a run that has no
+  render, and no second execution path was created: the hardened argv runner
+  still owns spawning.
+- **Audit is metadata only.** No path, params, or MCP arguments are recorded at
+  all. Key-name redaction could only ever catch keys it recognized.
+- **First-use sheets are abortable.** Registered under the PR #203 requester and
+  lease, so a lease release or a retired render closes the sheet instead of
+  stalling the serially-drained host queue behind a prompt nobody can answer.
+- **`dropLease` aborts before it deletes.** Cancellation is authorized against
+  the lease, so deleting first left a lease's own in-flight actions running with
+  nothing able to reach them.
+- **`host-ui` and `mayMutate` are gone** — an origin with no caller and a field
+  that was true for every row.
+
+## Reopened again
+
+`2026-09-11` — security re-review at `d115d6c2`. "Every invocation revalidates
+permission mode" was still not true of a queued invocation: the post-queue
+reload re-read the page but reused the authority resolved before the wait, so a
+workspace switched to Explore while a mutation sat in the queue still ran it.
+Two further gaps recorded with it: the scheduled path duplicated grant
+validation despite the claim of one definition, and it did not re-check the
+per-workspace Pages capability, so a mid-run toggle-off left a stale matcher
+able to spawn.
+
+`2026-09-11` — closed again:
+
+- **Queued invocations re-resolve authority, not just the page.** The injected
+  seam is now `loadCurrentAdmission`, returning page **and** authority, so a
+  workspace switched to Explore (or a Pages toggle-off, or an unreadable
+  config) during the wait refuses instead of executing under the mode that
+  applied when the action was admitted.
+- **One admission primitive.** `pages/admission.ts` holds the whole shared
+  question — origin, workspace, digest, grant existence/binding/expiry,
+  descriptor match, kind confinement, permission mode — and the broker and the
+  scheduler both call it. The broker's duplicate `invocationMismatch` and its
+  unreachable no-render branch are deleted; lease, nonce, replay, ticket, and
+  first-use confirmation stay layered above it as the genuinely render-only part.
+- **Scheduled runs re-read the Pages capability**, so a mid-run toggle-off
+  refuses even from a stale matcher.
+- **Absent and corrupt permission modes are now distinguished.**
+  `loadWorkspaceConfig` normalizes an unparseable value to `undefined`, which
+  made "never set" and "stored but unhonourable" identical — so a corrupted
+  `safe` read as absent and absent defaults permissively.
+  `readStoredPermissionMode` reports the distinction from the raw file: absent
+  is the product default `ask`, corrupt or unreadable is `safe`.
+
+## Learnings
+
+- `vorno-internal:learnings/LEARNING-085-consent-caches-key-on-the-command-not-the-grant-id.md`
+  — a grant id names a slot, not a command; consent caches and activation
+  tickets must both carry the descriptor, and fixing one does not fix the other.
+
+## Residuals
+
+Named here rather than left in PR threads, because each is a real limit a
+future owner will meet.
+
+- **Privileged Page actions are desktop-local.** Activation minting crosses
+  Electron `ipcMain`, resolves the workspace from the local window map, and
+  reaches the local broker — structurally identical to grant issuance in
+  SUV-0059, which refuses transport RPC outright (`PAGE_GRANT_IPC_REQUIRED`).
+  So a remote workspace cannot mint a grant *or* an activation, and the WebUI
+  cannot mutate at all. This is consistent rather than new, but it does mean a
+  grant approved while a workspace was local cannot be exercised against that
+  workspace remotely. Raised in review of PR #204. Making the privileged Page
+  surface work across the transport boundary needs the owning server to observe
+  interaction, which is an architecture question, not an implementation fix.
+- **One stray click can authorize one already-confirmed action.** After a
+  grant's first confirmed use on a render, later invocations need a fresh
+  unspent window gesture but no second dialog, and the SUV-0065 experiment
+  proved a window gesture cannot be attributed to the Page frame. Confirming
+  every invocation is friction ADR-0033 explicitly did not ask for.
+- **A lease can be churned out of the shared store.** The store is shared per
+  workspace and capped at `MAX_LIVE_LEASES`, and `pages:createLease` is
+  transport-reachable, so sustained creation evicts something. Eviction ranks
+  never-used before used, oldest-use first within the used group, and busy
+  (anything in flight or awaiting a first-use sheet) last.
+
+  Two classes of window are therefore exposed, not one: a **mounted but
+  unacted** render, which sits in the never-used group until its first action;
+  and a **long-idle used** render, whose last activity is old enough to make it
+  the coldest of the used group. A window in active use is safe, because
+  staying the most recently used costs the attacker an action per lease per
+  round against the per-page and per-workspace action budgets.
+
+  **Severity: availability only.** No grant, ticket, or confirmation is
+  bypassed — an evicted lease fails closed with `lease-not-found`, and recovery
+  is a re-mount.
+
+  **A real fix needs host-trusted lease ownership** — per-lease attribution to
+  a path the caller cannot assert, so eviction can protect one owner's leases
+  from another's churn. Every scope available today (`clientId`, connection,
+  handshake workspace) is client-supplied, which is the same reason grant
+  consent in this feature crosses `ipcMain` rather than the transport. That is
+  an ADR-level change, not an eviction-order tweak.
+
+  **Until then this is benign only while re-mounting stays cheap and
+  unbudgeted, and that coupling is easy to break by accident.** A per-caller
+  lease creation budget was written and removed during this SUV precisely
+  because it keys on `clientId`, a client-asserted handshake field: it bounded
+  nothing a reconnecting caller could not reset, while its bucket map grew with
+  that same churn. Reintroducing any creation budget — per caller, per workspace, or
+  global — converts this residual from "re-mount and carry on" into "cannot
+  re-mount", which is a genuine denial of service against the user. Anyone
+  proposing one must say what happens to recovery first.
+
+- **Whether a real in-frame click is visible to `input-event` is unknown.**
+  Measured only for synthesized input; see the evidence record. It fails as a
+  refusal, never as a bypass.

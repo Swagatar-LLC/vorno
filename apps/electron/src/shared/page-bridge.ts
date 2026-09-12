@@ -48,7 +48,7 @@ import type {
   PageDataSnapshot,
   PageKind,
 } from '@craft-agent/shared/pages/types'
-import { hasPathTraversal, pageActionDescriptorSignature } from '@craft-agent/shared/pages/types'
+import { isMutatingPageAction, pageActionDescriptorSignature, parsePageActionInvocation } from '@craft-agent/shared/pages/types'
 
 export const PAGE_BRIDGE_PROTOCOL = 'craft-pages/v1'
 
@@ -165,42 +165,16 @@ function withinDepth(value: unknown, depth: number): boolean {
   return true
 }
 
-function parseInvocation(value: unknown): PageActionInvocation | null {
-  if (!isPlainObject(value)) return null
-  if (value.kind === 'api') {
-    if (!HTTP_METHODS.includes(value.method as PageActionHttpMethod)) return null
-    if (!isBoundedString(value.path, MAX_PATH_CHARS)) return null
-    // Defense-in-depth: drop traversal paths at the parse boundary too (the
-    // server-side broker re-checks authoritatively). Keeps `..` off onload/timer paths.
-    if (hasPathTraversal(value.path)) return null
-    if (value.params !== undefined && (!isPlainObject(value.params) || !withinDepth(value.params, MAX_OBJECT_DEPTH))) {
-      return null
-    }
-    return {
-      kind: 'api',
-      method: value.method as PageActionHttpMethod,
-      path: value.path,
-      ...(value.params !== undefined ? { params: value.params as Record<string, unknown> } : {}),
-    }
-  }
-  if (value.kind === 'mcp') {
-    if (!isBoundedString(value.toolName, MAX_TOOL_NAME_CHARS)) return null
-    if (value.args !== undefined && (!isPlainObject(value.args) || !withinDepth(value.args, MAX_OBJECT_DEPTH))) {
-      return null
-    }
-    return {
-      kind: 'mcp',
-      toolName: value.toolName,
-      ...(value.args !== undefined ? { args: value.args as Record<string, unknown> } : {}),
-    }
-  }
-  if (value.kind === 'script') {
-    // Pure trigger — carries nothing the host would act on. The grant supplies
-    // script/runtime/args, so there is deliberately no payload to validate.
-    return { kind: 'script' }
-  }
-  return null
-}
+/**
+ * Structural validation of a page-supplied invocation, delegated to the shared
+ * definition.
+ *
+ * This used to be a second copy. The renderer parses page-authored messages and
+ * the RPC host parses transport payloads, and a divergence between the two is
+ * invisible until something well-formed for one gate is malformed for the
+ * other — so there is one parser, and both call it.
+ */
+const parseInvocation = parsePageActionInvocation
 
 /** Validate an untrusted grant descriptor (what a page may ASK for). */
 function parseDescriptor(value: unknown): PageActionDescriptor | null {
@@ -347,15 +321,16 @@ export function isSafeExternalUrl(url: string): boolean {
   }
 }
 
-/** A mutating invocation needs fresh user activation inside the frame. */
-export function isMutatingInvocation(invocation: PageActionInvocation): boolean {
-  // Only api GET is exempt. script is host command execution, and mcp tools
-  // are opaque — no HTTP method to infer read vs write, and a granted tool
-  // may well mutate ("create issue"). Everything not provably read-only
-  // requires a real click, so a page can never fire it from a timer or on load.
-  if (invocation.kind === 'api') return invocation.method !== 'GET'
-  return true
-}
+/**
+ * Whether an invocation mutates, re-exported from the shared definition.
+ *
+ * The renderer is the first gate and the broker is the authoritative one, so a
+ * second copy of this rule here would be a second answer to "is this
+ * privileged" — and the two would disagree the first time either changed. Only
+ * api GET is exempt: script is host command execution, and mcp tools are opaque
+ * (a granted "create issue" has no method to read).
+ */
+export { isMutatingPageAction }
 
 // ============================================================================
 // Outgoing (host → page)

@@ -6,7 +6,10 @@
  * script-executor tests.
  */
 
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createPagesScriptExecutor } from '../script-executor-bridge'
 import type { ScriptAction, ScriptActionResult } from '@craft-agent/shared/automations'
 import type { Logger } from '@craft-agent/server-core/runtime'
@@ -83,4 +86,98 @@ describe('createPagesScriptExecutor', () => {
       executor({ pageSlug: 'dash', script: '../evil.sh' }, { signal }),
     ).rejects.toThrow(/escapes the workspace/)
   })
+})
+
+/**
+ * The same executor against the REAL runner, with no `runScript` seam.
+ *
+ * Every test above injects the runner, which proves the bridge builds the right
+ * ScriptAction and proves nothing about what actually happens when a Page runs
+ * a script. These four properties are the ones a grant is trusted on — argv and
+ * not a shell, confined to the workspace, a minimal environment, and killable —
+ * and a seam cannot demonstrate any of them. SUV-0065 requires this to be
+ * checked directly, so it is.
+ */
+describe('createPagesScriptExecutor — direct runner', () => {
+  let workspaceDir: string
+
+  beforeEach(() => {
+    workspaceDir = mkdtempSync(join(tmpdir(), 'pages-script-runner-'))
+    mkdirSync(join(workspaceDir, 'pages', 'dash'), { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(workspaceDir, { recursive: true, force: true })
+  })
+
+  const direct = () => createPagesScriptExecutor({ workspaceRootPath: workspaceDir, log })
+
+  test('spawns argv with no shell, so metacharacters are inert data', async () => {
+    // A shell would expand `$(…)` and act on `;` and `&&`. Passed as argv they
+    // are just strings, which is why a pinned arg list is safe to approve once.
+    writeFileSync(
+      join(workspaceDir, 'pages', 'dash', 'echo.ts'),
+      'console.log(JSON.stringify(process.argv.slice(2)))',
+    )
+    const hostile = ['$(touch /tmp/pwned)', '; rm -rf /', '&& whoami', '`id`']
+    const out = await direct()(
+      { pageSlug: 'dash', script: 'pages/dash/echo.ts', runtime: 'bun', args: hostile },
+      { signal: new AbortController().signal },
+    )
+    expect(out.exitCode).toBe(0)
+    expect(JSON.parse(out.stdout)).toEqual(hostile)
+  })
+
+  test('refuses to run anything outside the workspace', async () => {
+    const outside = join(tmpdir(), `pages-outside-${Date.now()}.ts`)
+    writeFileSync(outside, 'console.log("should never run")')
+    try {
+      for (const script of ['../escape.ts', outside]) {
+        await expect(
+          direct()({ pageSlug: 'dash', script }, { signal: new AbortController().signal }),
+        ).rejects.toThrow()
+      }
+    } finally {
+      rmSync(outside, { force: true })
+    }
+  })
+
+  test('hands the script a minimal CRAFT-only environment', async () => {
+    writeFileSync(
+      join(workspaceDir, 'pages', 'dash', 'env.ts'),
+      'console.log(JSON.stringify(Object.keys(process.env)))',
+    )
+    process.env.PAGES_RUNNER_CANARY = 'must-not-leak'
+    try {
+      const out = await direct()(
+        { pageSlug: 'dash', script: 'pages/dash/env.ts', runtime: 'bun' },
+        { signal: new AbortController().signal },
+      )
+      const keys = JSON.parse(out.stdout) as string[]
+      expect(keys).toContain('CRAFT_PAGE_SLUG')
+      // The host's own environment is where API keys and tokens live. A page
+      // script gets the workspace's CRAFT_* facts and not the host's secrets.
+      expect(keys).not.toContain('PAGES_RUNNER_CANARY')
+      expect(keys.filter((k) => k === 'ANTHROPIC_API_KEY')).toHaveLength(0)
+    } finally {
+      delete process.env.PAGES_RUNNER_CANARY
+    }
+  })
+
+  test('dies when the broker aborts it', async () => {
+    // The broker's timeout and its cancellation both arrive as this signal, so
+    // a script that ignores it would hold a slot for as long as it liked.
+    writeFileSync(
+      join(workspaceDir, 'pages', 'dash', 'sleep.ts'),
+      'setTimeout(() => {}, 60_000)',
+    )
+    const controller = new AbortController()
+    const running = direct()(
+      { pageSlug: 'dash', script: 'pages/dash/sleep.ts', runtime: 'bun' },
+      { signal: controller.signal },
+    )
+    setTimeout(() => controller.abort(), 50)
+    const out = await running
+    expect(out.exitCode).not.toBe(0)
+  }, 15_000)
 })

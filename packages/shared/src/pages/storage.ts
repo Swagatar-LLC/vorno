@@ -597,13 +597,24 @@ export function assertPageRefreshGrant(config: PageConfig, refresh: PageRefreshS
   if (!config.contentDigest || grant.contentDigest !== config.contentDigest || grant.expiresAt <= Date.now()) {
     throw new Error('Scheduled refresh grant is stale or expired; re-approval is required');
   }
-  if (
-    grant.action.script !== refresh.script ||
-    (grant.action.runtime ?? 'bun') !== (refresh.runtime ?? 'bun') ||
-    !stringArraysEqual(grant.action.args, refresh.args)
-  ) {
+  if (!refreshDescriptorMatches(grant, refresh)) {
     throw new Error('Scheduled refresh must exactly match its approved script grant');
   }
+}
+
+/**
+ * Whether a refresh spec names exactly the command its grant approved.
+ *
+ * The genuinely refresh-specific half of the check — a spec and a grant are two
+ * records that can drift apart, which has no analogue for a rendered action.
+ * Split out so the scheduled admission path can use it alongside the shared
+ * grant primitive instead of re-running the grant checks a second time.
+ */
+export function refreshDescriptorMatches(grant: PageActionGrant, refresh: PageRefreshSpec): boolean {
+  if (grant.action.kind !== 'script') return false;
+  return grant.action.script === refresh.script &&
+    (grant.action.runtime ?? 'bun') === (refresh.runtime ?? 'bun') &&
+    stringArraysEqual(grant.action.args, refresh.args);
 }
 
 function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): boolean {

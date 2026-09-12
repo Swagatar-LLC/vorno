@@ -206,6 +206,15 @@ const api = buildClientApi(client, CHANNEL_MAP, (ch) => client.isChannelAvailabl
   leaseId,
 ) => ipcRenderer.invoke('__pages:request-grant', pageSlug, input, leaseId)
 
+// Activation crosses main IPC for the consent reasons above plus one more: the
+// user gesture that justifies a ticket is observed by the main process, so a
+// renderer can ask for a ticket but can never assert that it earned one.
+;(api as ElectronAPI).requestPageActivation = (
+  _workspaceId,
+  pageSlug,
+  request,
+) => ipcRenderer.invoke('__pages:request-activation', pageSlug, request)
+
 ;(api as any).getRuntimeEnvironment = (): 'electron' | 'web' => 'electron'
 
 // ---------------------------------------------------------------------------

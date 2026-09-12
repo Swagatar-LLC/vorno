@@ -24,7 +24,7 @@ import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
 import { getDefaultStatusConfig, saveStatusConfig, ensureDefaultIconFiles } from '../statuses/storage.ts';
 import { getDefaultLabelConfig, saveLabelConfig } from '../labels/storage.ts';
 import { loadConfigDefaults } from '../config/storage.ts';
-import { parsePermissionMode, PERMISSION_MODE_ORDER } from '../agent/mode-types.ts';
+import { parsePermissionMode, PERMISSION_MODE_ORDER, type PermissionMode } from '../agent/mode-types.ts';
 import { normalizeThinkingLevel } from '../agent/thinking-levels.ts';
 import type {
   WorkspaceConfig,
@@ -96,6 +96,41 @@ export function getWorkspaceSkillsPath(rootPath: string): string {
  * Load workspace config.json from a workspace folder
  * @param rootPath - Absolute path to workspace root folder
  */
+/**
+ * How a workspace's stored permission mode reads BEFORE normalization.
+ *
+ * `loadWorkspaceConfig` deliberately accepts legacy names and drops anything it
+ * cannot parse to `undefined`, which is right for feature code and wrong for a
+ * security decision: it makes "the user never set this" and "a value is stored
+ * and we cannot honour it" indistinguishable, so a corrupted `safe` would read
+ * as absent and absent defaults permissively.
+ *
+ * This reports the distinction instead of erasing it, and lives here because
+ * this module owns the file — a caller re-reading `config.json` to answer the
+ * same question would be a second parser of the same bytes.
+ */
+export type StoredPermissionModeState =
+  | { state: 'absent' }
+  | { state: 'valid'; mode: PermissionMode }
+  | { state: 'unreadable' };
+
+export function readStoredPermissionMode(rootPath: string): StoredPermissionModeState {
+  const configPath = join(rootPath, 'config.json');
+  if (!existsSync(configPath)) return { state: 'unreadable' };
+  try {
+    const raw = readJsonFileSync<{ defaults?: { permissionMode?: unknown } }>(configPath);
+    const stored = raw?.defaults?.permissionMode;
+    if (stored === undefined || stored === null) return { state: 'absent' };
+    if (typeof stored !== 'string') return { state: 'unreadable' };
+    const parsed = parsePermissionMode(stored);
+    // Present but unparseable: corruption, truncation, or a downgrade from a
+    // future version. Something was stored and cannot be honoured.
+    return parsed ? { state: 'valid', mode: parsed } : { state: 'unreadable' };
+  } catch {
+    return { state: 'unreadable' };
+  }
+}
+
 export function loadWorkspaceConfig(rootPath: string): WorkspaceConfig | null {
   const configPath = join(rootPath, 'config.json');
   if (!existsSync(configPath)) return null;
