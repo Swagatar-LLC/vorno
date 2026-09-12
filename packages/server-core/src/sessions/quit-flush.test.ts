@@ -320,6 +320,35 @@ describe('quit flushes sessions that are mid-commit', () => {
       await expect(sm.sendMessage(sessionId, 'too late')).rejects.toThrow(/shutting down/)
     })
 
+    it('a stuck turn does not cost the OTHER sessions their final write', async () => {
+      // The regression the first version of this sequence introduced: it threw
+      // the moment a turn refused to finish, which skipped the final persist
+      // and the drain entirely. One stuck turn therefore cost every other
+      // session its last write — and the hosts caught the error and exited
+      // anyway, so the net effect of "failing loudly" was losing more data.
+      //
+      // Failing loudly must not mean skipping the salvage.
+      const stuckId = 'sess_stuck_neighbour'
+      const innocentId = 'sess_innocent'
+      seedManaged(stuckId, { isProcessing: true, agent: { forceAbort: () => {} } })
+      const innocent = seedManaged(innocentId)
+      ;(innocent.messages as unknown[]).push({
+        id: 'late-1',
+        role: 'assistant',
+        content: 'innocent final state',
+        timestamp: Date.now(),
+      })
+
+      // Still throws — the shutdown was NOT clean and the caller must know.
+      await expect(sm.flushAllSessions()).rejects.toThrow(/not clean/)
+
+      // ...but the innocent session's final state is on disk anyway.
+      expect(readFileSync(getSessionFilePath(root, innocentId), 'utf-8')).toContain('innocent final state')
+      // And the queue was still closed and drained rather than abandoned.
+      expect(sessionPersistenceQueue.isClosing).toBe(true)
+      expect(sessionPersistenceQueue.pendingCount).toBe(0)
+    }, 15000)
+
     it('fails the shutdown when a turn will not finish, rather than closing over it', async () => {
       // Bounded, and exceeding the bound is a FAILURE: the wait exists so the
       // final state gets persisted, so giving up quietly would discard exactly

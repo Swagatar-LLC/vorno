@@ -2535,13 +2535,21 @@ export class SessionManager implements ISessionManager {
    * write. The persistence queue is deliberately still OPEN here.
    *
    * `forceAbort(UserStop)` is the canonical primitive, the same one
-   * `deleteSession` uses; this is not a second teardown path. Bounded, and
-   * exceeding the bound FAILS the shutdown — giving up quietly would discard
-   * exactly the state the wait exists to save.
+   * `deleteSession` uses; this is not a second teardown path.
+   *
+   * Bounded — and it REPORTS the sessions that did not finish rather than
+   * throwing. That distinction matters: throwing here aborted the whole
+   * sequence, so one stuck turn skipped the final persist and the drain for
+   * every OTHER session too, while the hosts caught the error and exited
+   * anyway. A stuck turn must cost its own session's completeness, not the
+   * process's. The caller records the names, finishes the salvage, and fails at
+   * the end.
+   *
+   * @returns ids of sessions whose turns were still running when the bound ran out
    */
-  private async stopActiveTurnsForShutdown(): Promise<void> {
+  private async stopActiveTurnsForShutdown(): Promise<string[]> {
     const active = [...this.sessions.values()].filter(m => m.isProcessing)
-    if (!active.length) return
+    if (!active.length) return []
 
     sessionLog.info(`Shutdown: aborting ${active.length} active turn(s)`)
     for (const managed of active) {
@@ -2559,14 +2567,15 @@ export class SessionManager implements ISessionManager {
     const deadline = Date.now() + SHUTDOWN_TURN_DRAIN_TIMEOUT_MS
     while (Date.now() < deadline) {
       const stillRunning = [...this.sessions.values()].filter(m => m.isProcessing)
-      if (!stillRunning.length) return
+      if (!stillRunning.length) return []
       await new Promise(resolve => setTimeout(resolve, SHUTDOWN_TURN_DRAIN_POLL_MS))
     }
 
     const stuck = [...this.sessions.values()].filter(m => m.isProcessing).map(m => m.id)
-    throw new Error(
+    sessionLog.error(
       `Shutdown: ${stuck.length} turn(s) did not finish within ${SHUTDOWN_TURN_DRAIN_TIMEOUT_MS}ms: ${stuck.join(', ')}`,
     )
+    return stuck
   }
 
   /**
@@ -2598,9 +2607,39 @@ export class SessionManager implements ISessionManager {
   async flushAllSessions(): Promise<void> {
     this.shuttingDown = true
     this.stopPersistenceProducers()
-    await this.stopActiveTurnsForShutdown()
-    await this.persistFinalSessionStates()
-    await sessionPersistenceQueue.flushAll()
+
+    // Failures are COLLECTED, not thrown as they happen. An earlier version
+    // threw the moment a turn refused to finish, which skipped the final
+    // persist and the drain entirely — so one stuck turn cost every other
+    // session its last write, and the hosts caught the error and exited
+    // anyway. Salvage everything salvageable first; report at the end.
+    const failures: string[] = []
+
+    const stuck = await this.stopActiveTurnsForShutdown()
+    if (stuck.length) {
+      failures.push(
+        `${stuck.length} turn(s) did not finish within ${SHUTDOWN_TURN_DRAIN_TIMEOUT_MS}ms: ${stuck.join(', ')}`,
+      )
+    }
+
+    // Still persist every session, INCLUDING a stuck one — a partial transcript
+    // on disk beats none, and the other sessions are simply innocent.
+    try {
+      await this.persistFinalSessionStates()
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error))
+    }
+
+    // And still drain, so whatever did get queued reaches disk.
+    try {
+      await sessionPersistenceQueue.flushAll()
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error))
+    }
+
+    if (failures.length) {
+      throw new Error(`Session shutdown was not clean — ${failures.join(' | ')}`)
+    }
   }
 
   /**

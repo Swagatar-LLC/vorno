@@ -126,6 +126,9 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       turn that will not finish fails the shutdown instead of being closed over.
 - [x] A final write superseded by a watcher reconciliation does not fail the
       shutdown — receipts distinguish `cancelled` from `failed`.
+- [x] A stuck turn still lets every other session's final state reach disk and
+      still closes and drains the queue, and the shutdown still reports itself
+      unclean.
 - [x] Ids that name one file share one key and tail (`nested/same` == `same`),
       while the same canonical id under different roots stays separate.
 - [x] A failed rename does not advance the committed baseline; an abandoned
@@ -152,7 +155,14 @@ session's final state and await the EXACT receipts → only then close and drain
 Any step that cannot complete throws; host cleanup and exit belong strictly
 after it resolves.
 
-Two things fell out of building it that are worth recording:
+Greptile then caught a regression in the first version of the sequence: it threw
+the moment a turn refused to finish, which skipped the final persist and the
+drain entirely — so one stuck turn cost every OTHER session its last write,
+while the hosts caught the error and exited anyway. Failing loudly had made the
+data loss worse. Failures are now collected and thrown at the end, after the
+salvage: a stuck turn costs its own session's completeness, not the process's.
+
+Three things fell out of building it that are worth recording:
 
 - **A cancelled final write is not a shutdown failure.** A watcher
   reconciliation landing during the drain supersedes the final persist, and the
@@ -424,6 +434,10 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 8 (Greptile P1): the ordered shutdown's timeout path
+  threw before the final persist and the drain, so one stuck turn cost every
+  other session its last write. Failures are now collected and reported after
+  the salvage.
 - `2026-09-12` — review 7 (architecture, shutdown producer completeness): the
   freeze stopped timers but not TURNS, so an agent's async finalisation could
   write after the close. `flushAllSessions` is now an ordered sequence — refuse
