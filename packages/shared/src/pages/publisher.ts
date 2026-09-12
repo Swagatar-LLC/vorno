@@ -178,10 +178,16 @@ export interface LocalPublicationRecovery {
  * token a concurrent publish just minted leaves a live public copy nobody can
  * revoke, and there is no local state left to notice it from.
  *
- * Only `publish`, `setPassword`, `unpublish`, and `forgetLocalPublication`
- * acquire it, and none of them calls another — the shared work lives in private
- * helpers — so there is no re-entrant path to deadlock on. Keep it that way: a
- * public method calling a public method would wait for itself forever.
+ * The acquiring entry points are `publish`, `setPassword`, `unpublish`,
+ * `forgetLocalPublication`, and `deleteWithUnpublish`, and none of them calls
+ * another — each delegates to a private `*Locked` body, and composite operations
+ * call those bodies directly. Keep it that way: a public method calling a public
+ * method would wait for itself forever.
+ *
+ * A lifecycle operation must hold this across its WHOLE state transition, not
+ * just its remote call. `deleteWithUnpublish` is the cautionary case — it used to
+ * release between unpublishing and removing the folder, and a publish landing in
+ * that gap left a live public copy with nothing pointing at it.
  */
 const pageLifecycleTails = new Map<string, Promise<void>>();
 
@@ -599,6 +605,80 @@ export class PagePublisher {
     return apiBaseUrl;
   }
 
+  /**
+   * Unpublish (when published) and then delete the local page, with BOTH halves
+   * inside ONE acquisition of the per-page lock.
+   *
+   * Splitting them is what made this dangerous. Unpublish ends by clearing the
+   * share pointer and the vault token, and if the lock is released there, a
+   * queued publish runs next: it mints a live public copy and a fresh token, and
+   * then the local delete removes the folder that held the only pointer to it.
+   * The result is a public page with no local trace and a token nobody will ever
+   * look up — the exact unrevocable copy the rest of this file exists to prevent.
+   *
+   * Holding the lock across both halves means a concurrent publish can only run
+   * strictly before (its publication is then unpublished normally) or strictly
+   * after (it finds no page and fails), never inside.
+   */
+  deleteWithUnpublish(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+  ): Promise<DeletePageOutcome> {
+    return withPageLifecycleLock(workspaceRootPath, pageSlug, () =>
+      this.deleteWithUnpublishLocked(workspaceRootPath, workspaceId, pageSlug));
+  }
+
+  private async deleteWithUnpublishLocked(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+  ): Promise<DeletePageOutcome> {
+    const wasShared = Boolean(loadPageConfig(workspaceRootPath, pageSlug)?.share);
+    if (wasShared) {
+      let result: UnpublishResult;
+      try {
+        // The private body, not the public method: the public one would try to
+        // take a lock this call already holds and wait for itself forever.
+        result = await this.unpublishLocked(workspaceRootPath, workspaceId, pageSlug);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.log(`Unpublish before delete failed for ${pageSlug}: ${detail}`);
+        throw new Error(`Could not confirm remote revocation; retry unpublish before deleting the local page: ${detail}`);
+      }
+      if (result.warning) {
+        throw new Error(
+          result.warning === 'remote-cleanup-pending'
+            ? 'The page is no longer public, but remote data cleanup is pending. Retry unpublish before deleting the local page.'
+            : 'The page may still be public because its admin token is missing. Restore the token or republish before deleting the local page.',
+        );
+      }
+    }
+
+    // Re-read the pointer immediately before the irreversible part. Nothing can
+    // have published under the lock, so this should be unreachable — which is
+    // the reason to check it rather than assume it: the pointer is the only
+    // thing that makes a remote copy findable, and deleting the folder while one
+    // exists cannot be undone or even noticed afterwards.
+    if (loadPageConfig(workspaceRootPath, pageSlug)?.share) {
+      throw new Error('The page still has a public copy recorded locally; retry unpublish before deleting the local page.');
+    }
+
+    try {
+      deletePage(workspaceRootPath, pageSlug);
+    } catch (error) {
+      // The unpublish (if any) already happened by now — a bare fs error would
+      // misreport that state and send the user retrying the remote half too.
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        wasShared
+          ? `The page was unpublished, but deleting the local folder failed: ${detail}`
+          : `Deleting the local page folder failed: ${detail}`,
+      );
+    }
+    return { publicCopyMayRemain: false };
+  }
+
   private async requireToken(workspaceId: string, pageId: string): Promise<string> {
     const token = await this.tokenStore.get(workspaceId, pageId);
     if (!token) {
@@ -689,11 +769,15 @@ export interface DeletePageOutcome {
 /**
  * Delete a page, unpublishing it first when it has a share pointer.
  *
- * The single implementation behind BOTH the `pages:delete` RPC and the
+ * The single entry point behind BOTH the `pages:delete` RPC and the
  * `delete_page` session tool — keep it that way so the two paths cannot
  * drift (unpublish-before-delete is a policy, not a handler detail).
  * Unpublish failures block the local delete; callers must retry revocation or,
  * in Electron only, explicitly approve forgetting the local recovery state.
+ *
+ * The flow itself lives in `PagePublisher.deleteWithUnpublish` because it has to
+ * run under that class's per-page lock — a free function could only call the
+ * public `unpublish`, which releases the lock before the folder is removed.
  */
 export async function deletePageWithUnpublish(
   workspaceRootPath: string,
@@ -701,40 +785,10 @@ export async function deletePageWithUnpublish(
   pageSlug: string,
   options?: { log?: (message: string) => void; tokenStore?: PagePublishTokenStore; fetchFn?: typeof fetch },
 ): Promise<DeletePageOutcome> {
-  const wasShared = Boolean(loadPageConfig(workspaceRootPath, pageSlug)?.share);
-  if (wasShared) {
-    let result: UnpublishResult | undefined;
-    try {
-      const publisher = new PagePublisher({
-        tokenStore: options?.tokenStore ?? createCredentialPagePublishTokenStore(),
-        fetchFn: options?.fetchFn,
-        log: options?.log,
-      });
-      result = await publisher.unpublish(workspaceRootPath, workspaceId, pageSlug);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      options?.log?.(`Unpublish before delete failed for ${pageSlug}: ${detail}`);
-      throw new Error(`Could not confirm remote revocation; retry unpublish before deleting the local page: ${detail}`);
-    }
-    if (result?.warning) {
-      throw new Error(
-        result.warning === 'remote-cleanup-pending'
-          ? 'The page is no longer public, but remote data cleanup is pending. Retry unpublish before deleting the local page.'
-          : 'The page may still be public because its admin token is missing. Restore the token or republish before deleting the local page.',
-      );
-    }
-  }
-  try {
-    deletePage(workspaceRootPath, pageSlug);
-  } catch (error) {
-    // The unpublish (if any) already happened by now — a bare fs error would
-    // misreport that state and send the user retrying the remote half too.
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      wasShared
-        ? `The page was unpublished, but deleting the local folder failed: ${detail}`
-        : `Deleting the local page folder failed: ${detail}`,
-    );
-  }
-  return { publicCopyMayRemain: false };
+  const publisher = new PagePublisher({
+    tokenStore: options?.tokenStore ?? createCredentialPagePublishTokenStore(),
+    fetchFn: options?.fetchFn,
+    log: options?.log,
+  });
+  return publisher.deleteWithUnpublish(workspaceRootPath, workspaceId, pageSlug);
 }

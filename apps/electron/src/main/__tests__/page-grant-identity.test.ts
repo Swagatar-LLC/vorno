@@ -104,6 +104,39 @@ describe('host grant descriptor rendering', () => {
     }
   })
 
+  test('escapes deceptive spacing and combining marks while leaving the plain space alone', () => {
+    const deceptive = {
+      '\u00a0': '\\u00a0', // NO-BREAK SPACE — reads as a space, is not one
+      '\u2003': '\\u2003', // EM SPACE — fakes alignment
+      '\u2002': '\\u2002', // EN SPACE
+      '\u3000': '\\u3000', // IDEOGRAPHIC SPACE
+      '\u202f': '\\u202f', // NARROW NO-BREAK SPACE
+      '\u0301': '\\u0301', // COMBINING ACUTE — alters the character before it
+      '\u0489': '\\u0489', // COMBINING CYRILLIC MILLIONS SIGN — Me, not Mn: it
+      //                          encloses, and the first draft of this class missed it
+    }
+    for (const [raw, escaped] of Object.entries(deceptive)) {
+      const rendered = formatPageGrantDescriptor({
+        kind: 'mcp', sourceSlug: 'source', toolName: `before${raw}after`,
+      })
+      expect(rendered).toContain(`"before${escaped}after"`)
+      expect(rendered).not.toContain(raw)
+    }
+  })
+
+  test('keeps U+0020 literal, or every descriptor becomes unreadable noise', () => {
+    // U+0020 is itself Zs, so the escape has to carve it out by name. Losing this
+    // would trade a real spoofing risk for a worse one: a dialog nobody can read.
+    const rendered = formatPageGrantDescriptor({
+      kind: 'script', script: 'scripts/run.ts', args: ['two words', 'three more words'],
+    })
+    expect(rendered).toContain('"two words"')
+    expect(rendered).toContain('"three more words"')
+    expect(rendered).not.toContain('\\u0020')
+    // JSON's own indentation is spaces too, and it must survive.
+    expect(rendered).toContain('\n  "kind"')
+  })
+
   test('leaves ordinary printable text exactly as JSON wrote it', () => {
     const rendered = formatPageGrantDescriptor({
       kind: 'api', sourceSlug: 'linear', method: 'POST', pathPattern: '/issues/{id}?q=a b&r=\u00e9\u4e2d',

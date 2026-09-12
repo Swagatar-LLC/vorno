@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isPagesSharingEnabled } from '../feature-flags.ts';
@@ -408,6 +408,166 @@ describe('Pages sharing default gate', () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+
+  test('queues a publish behind a delete that is mid-revocation, so it finds no page instead of publishing', async () => {
+    process.env.CRAFT_FEATURE_PAGES_SHARING = '1';
+    process.env.CRAFT_PAGES_SHARE_API_URL = 'https://pages.vorno.ai/api';
+    const workspace = mkdtempSync(join(tmpdir(), 'pages-delete-lock-'));
+    enablePages(workspace);
+    const page = createPage(workspace, { name: 'Delete lock', content: '<p>lock</p>' });
+    setPageShareState(workspace, page.slug, {
+      publicationId: 'publication-1', url: 'https://pages.vorno.ai/p/publication-1', publishedRevision: 'r1',
+      publishedContentDigest: page.contentDigest!, includesData: false, publishedAt: 1, updatedAt: 1, passwordProtected: false,
+    });
+    const pageDir = join(workspace, 'pages', page.slug);
+
+    let token: string | null = 'token-1';
+    let releaseVaultDelete!: () => void;
+    const vaultDeleteParked = new Promise<void>(resolve => { releaseVaultDelete = resolve; });
+    const requests: string[] = [];
+    // Parks AFTER the remote DELETE and AFTER the share pointer is cleared, which
+    // is precisely the gap the old free function left the lock open across.
+    const tokenStore = {
+      get: async () => token,
+      set: async (_workspaceId: string, _pageId: string, value: string) => { token = value; },
+      delete: async () => { await vaultDeleteParked; token = null; return true; },
+    };
+    const fetchFn = (async (url: string | URL, init?: RequestInit) => {
+      requests.push(`${init?.method} ${String(url)}`);
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          id: 'publication-2', url: 'https://pages.vorno.ai/p/publication-2', revision: 'r1',
+          adminToken: 'token-2', passwordProtected: false, status: 'published', updatedAt: 2,
+        }), { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('', { status: 204 });
+    }) as unknown as typeof fetch;
+
+    try {
+      const deleting = deletePageWithUnpublish(workspace, 'workspace', page.slug, { tokenStore, fetchFn });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      // Mid-operation: the remote copy is revoked, the folder is still there.
+      expect(requests).toEqual(['DELETE https://pages.vorno.ai/api/publications/publication-1']);
+      expect(existsSync(pageDir)).toBe(true);
+
+      // A publish arriving now is the whole bug. It must not run until the delete
+      // has finished, or it mints a live copy the delete then orphans.
+      const republish = new PagePublisher({ tokenStore, fetchFn })
+        .publish(workspace, 'workspace', page.slug, { includeData: false })
+        .then(() => 'published', (error: unknown) => String(error));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      expect(requests).toHaveLength(1);
+      expect(existsSync(pageDir)).toBe(true);
+
+      releaseVaultDelete();
+      await expect(deleting).resolves.toEqual({ publicCopyMayRemain: false });
+      expect(existsSync(pageDir)).toBe(false);
+
+      // The queued publish ran after the delete and found no page, so it never
+      // reached the network: no remote publication outlives the local one.
+      expect(await republish).toContain('PAGE_NOT_FOUND');
+      expect(requests).toEqual(['DELETE https://pages.vorno.ai/api/publications/publication-1']);
+      expect(token).toBeNull();
+    } finally { rmSync(workspace, { recursive: true, force: true }); }
+  });
+
+  test('a delete arriving while a publish is in flight waits, then revokes what that publish created', async () => {
+    process.env.CRAFT_FEATURE_PAGES_SHARING = '1';
+    process.env.CRAFT_PAGES_SHARE_API_URL = 'https://pages.vorno.ai/api';
+    const workspace = mkdtempSync(join(tmpdir(), 'pages-delete-inflight-'));
+    enablePages(workspace);
+    // Deliberately NOT shared yet. This is what made the old split-lock version
+    // unsafe: it read "was this shared?" from disk with no lock held, saw no
+    // pointer because the in-flight publish had not written one, skipped
+    // unpublish entirely, and removed the folder — leaving the publication the
+    // POST was about to create live, with its token in the vault and nothing
+    // local pointing at either.
+    const page = createPage(workspace, { name: 'In flight', content: '<p>inflight</p>' });
+    const pageDir = join(workspace, 'pages', page.slug);
+
+    let token: string | null = null;
+    const vaultToken = (): string | null => token;
+    let releasePost!: () => void;
+    const postParked = new Promise<void>(resolve => { releasePost = resolve; });
+    const requests: string[] = [];
+    const tokenStore = {
+      get: async () => token,
+      set: async (_workspaceId: string, _pageId: string, value: string) => { token = value; },
+      delete: async () => { token = null; return true; },
+    };
+    const fetchFn = (async (url: string | URL, init?: RequestInit) => {
+      requests.push(`${init?.method} ${String(url)}`);
+      if (init?.method === 'POST') {
+        // A create is a network round trip, so this window is latency-wide, not
+        // a scheduling artifact.
+        await postParked;
+        return new Response(JSON.stringify({
+          id: 'publication-2', url: 'https://pages.vorno.ai/p/publication-2', revision: 'r1',
+          adminToken: 'token-2', passwordProtected: false, status: 'published', updatedAt: 2,
+        }), { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('', { status: 204 });
+    }) as unknown as typeof fetch;
+
+    try {
+      const publishing = new PagePublisher({ tokenStore, fetchFn })
+        .publish(workspace, 'workspace', page.slug, { includeData: false });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      expect(requests).toEqual(['POST https://pages.vorno.ai/api/publications']);
+
+      const deleting = deletePageWithUnpublish(workspace, 'workspace', page.slug, { tokenStore, fetchFn });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      // The folder must still be here: removing it now is what orphans the copy.
+      expect(existsSync(pageDir)).toBe(true);
+
+      releasePost();
+      await publishing;
+      await expect(deleting).resolves.toEqual({ publicCopyMayRemain: false });
+
+      // The delete read the share pointer INSIDE the lock, so it saw the
+      // publication that had just been created and revoked it before removing
+      // the folder. No remote copy outlives the local page.
+      expect(requests).toEqual([
+        'POST https://pages.vorno.ai/api/publications',
+        'DELETE https://pages.vorno.ai/api/publications/publication-2',
+      ]);
+      expect(existsSync(pageDir)).toBe(false);
+      expect(vaultToken()).toBeNull();
+    } finally { rmSync(workspace, { recursive: true, force: true }); }
+  });
+
+  test('refuses to delete the local page while a share pointer is still recorded', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'pages-delete-pointer-'));
+    enablePages(workspace);
+    const page = createPage(workspace, { name: 'Pointer guard', content: '<p>guard</p>' });
+    const pageDir = join(workspace, 'pages', page.slug);
+    setPageShareState(workspace, page.slug, {
+      publicationId: 'publication-1', url: 'https://pages.vorno.ai/p/publication-1', publishedRevision: 'r1',
+      publishedContentDigest: page.contentDigest!, includesData: false, publishedAt: 1, updatedAt: 1, passwordProtected: false,
+    });
+    try {
+      // A 204 with the pointer left in place: the unpublish reported success but
+      // local state still names a public copy, so the folder must survive.
+      await expect(deletePageWithUnpublish(workspace, 'workspace', page.slug, {
+        tokenStore: {
+          get: async () => 'token',
+          set: async () => {},
+          // Re-record the pointer the unpublish just cleared, standing in for
+          // anything that could reintroduce one before the folder is removed.
+          delete: async () => {
+            setPageShareState(workspace, page.slug, {
+              publicationId: 'publication-2', url: 'https://pages.vorno.ai/p/publication-2', publishedRevision: 'r1',
+              publishedContentDigest: page.contentDigest!, includesData: false, publishedAt: 2, updatedAt: 2, passwordProtected: false,
+            });
+            return true;
+          },
+        },
+        fetchFn: (async () => new Response('', { status: 204 })) as unknown as typeof fetch,
+      })).rejects.toThrow('retry unpublish before deleting the local page');
+      expect(existsSync(pageDir)).toBe(true);
+      expect(loadPageConfig(workspace, page.slug)?.share?.publicationId).toBe('publication-2');
+    } finally { rmSync(workspace, { recursive: true, force: true }); }
   });
 
   test('rejects a hostile edited stored URL before fetch', async () => {
