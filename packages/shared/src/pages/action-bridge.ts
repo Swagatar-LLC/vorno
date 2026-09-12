@@ -454,18 +454,26 @@ export interface PageActionExecutors {
    * those are host-observed states the audit trail must be able to name, not
    * executor failures. It throws only when delivery itself failed.
    *
-   * No `signal`, unlike its three siblings. The delivery is a single
-   * `sendMessage` into an idle session; there is no long-running work to abort,
-   * and the broker's own deadline still races it, so an executor that hangs
-   * cannot hold a slot. A signal here would be a parameter nothing honours.
+   * Takes `signal` for the same reason its siblings do, and the reason is
+   * sharper here: `race` does not stop a losing promise. Without the signal a
+   * cancellation, a lease release, or the deadline would win the race, release
+   * the slot, and audit the action as cancelled or timed out while the
+   * underlying delivery ran to completion anyway — a message the user withdrew,
+   * recorded as not sent. The implementation must therefore re-read `signal`
+   * immediately before it commits, not merely on entry.
    */
   executeSession?: (
     invocation: { pageSlug: string; grantId: string; sessionId: string; message: string },
+    options: { signal: AbortSignal },
   ) => Promise<{ ok: true } | { ok: false; code: PageSessionOutcomeCode; reason: string }>;
 }
 
-/** The session-callback subset of {@link PageActionOutcomeCode}. */
-export type PageSessionOutcomeCode = 'session-not-found' | 'session-closed' | 'session-busy';
+/**
+ * The session-callback subset of {@link PageActionOutcomeCode}, plus
+ * `cancelled`, which the executor reports itself when it refuses at the commit
+ * point rather than letting the race decide.
+ */
+export type PageSessionOutcomeCode = 'session-not-found' | 'session-closed' | 'session-busy' | 'cancelled';
 
 export interface PageActionBrokerOptions {
   executors: PageActionExecutors;
@@ -1665,12 +1673,15 @@ export class PageActionBroker {
           // Target and body come from the APPROVED grant. The invocation is a
           // bare trigger and is not read here at all — there is nothing on it
           // that could reach a session even if a caller put something there.
-          const sessionOutcome = await race(this.executors.executeSession({
-            pageSlug: page.slug,
-            grantId: grant.id,
-            sessionId: grant.action.sessionId,
-            message: grant.action.message,
-          }));
+          const sessionOutcome = await race(this.executors.executeSession(
+            {
+              pageSlug: page.slug,
+              grantId: grant.id,
+              sessionId: grant.action.sessionId,
+              message: grant.action.message,
+            },
+            { signal },
+          ));
           outcome = sessionOutcome.ok ? 'ok' : sessionOutcome.code;
           result = {
             requestId: request.requestId,

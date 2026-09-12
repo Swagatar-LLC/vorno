@@ -45,6 +45,8 @@ export type PageSessionRefusalCode =
   | 'session-closed'
   /** Mid-turn. A callback must not land inside a running turn — see below. */
   | 'session-busy'
+  /** Withdrawn — cancelled, lease released, or the broker deadline — before commit. */
+  | 'cancelled'
 
 export type PageSessionOutcome =
   | { ok: true }
@@ -69,7 +71,23 @@ export interface SessionCallbackTarget {
  */
 export interface SessionCallbackHost extends WorkspaceSessionLookup {
   getSessions(workspaceId: string): SessionCallbackTarget[]
-  sendMessage(sessionId: string, message: string): Promise<void>
+  /**
+   * Atomic check-and-commit. NOT `sendMessage`: that one awaits twice before it
+   * decides whether a turn is running, so a caller that checked state itself
+   * would be checking across those awaits and could land a page's text inside a
+   * running turn or in an archived session. This primitive performs the final
+   * busy/closed/archived/workspace check in the same JS turn as the commit, and
+   * returns at ACCEPTANCE rather than at the end of the turn it starts.
+   *
+   * `signal` is re-read immediately before the commit, so a cancel, a lease
+   * release, or the broker's deadline landing mid-flight refuses instead of
+   * delivering — and once the commit happens nothing can relabel it.
+   */
+  tryDeliverPageCallback(
+    sessionId: string,
+    message: string,
+    options: { workspaceId: string; signal?: AbortSignal },
+  ): Promise<{ ok: true } | { ok: false; code: PageSessionRefusalCode }>
 }
 
 export interface PagesSessionExecutorDeps {
@@ -100,8 +118,16 @@ export function pageCallbackAttribution(pageSlug: string, grantId: string): stri
 export function createPagesSessionExecutor(deps: PagesSessionExecutorDeps) {
   return async (
     invocation: { pageSlug: string; grantId: string; sessionId: string; message: string },
+    options: { signal: AbortSignal },
   ): Promise<PageSessionOutcome> => {
     const origin = pageOrigin(invocation.pageSlug, invocation.grantId)
+
+    // Cheapest possible exit. The authoritative abort check is the one inside
+    // the atomic commit — this one only avoids doing work for a request that is
+    // already withdrawn.
+    if (options.signal.aborted) {
+      return { ok: false, code: 'cancelled', reason: 'Action was cancelled before delivery' }
+    }
 
     // Containment first, and structurally: the shared resolver matches inside
     // this workspace's own session list, so a pinned id naming another
@@ -139,6 +165,12 @@ export function createPagesSessionExecutor(deps: PagesSessionExecutorDeps) {
     // reopen it in the user's inbox on a page's schedule, and the ADR-0021
     // house rule that closure is the human's decision cuts both ways — a Page
     // may not close a session, and it may not un-finish one either.
+    //
+    // Checked here as a cheap, well-described early exit ONLY. It is not the
+    // guarantee: this read and the delivery below are separated by an await, so
+    // by itself it would be a race. The same questions are re-asked inside
+    // `tryDeliverPageCallback`, in the same JS turn as the commit, and that is
+    // where the answer binds.
     const closedByStatus = target.sessionStatus !== undefined &&
       getStatusCategory(deps.workspaceRootPath, target.sessionStatus) === 'closed'
     if (target.isArchived === true || closedByStatus) {
@@ -155,7 +187,8 @@ export function createPagesSessionExecutor(deps: PagesSessionExecutorDeps) {
     // queues behind it — and both are wrong for a callback: the page's text
     // would land inside or immediately after a turn the user is watching, with
     // no gesture of theirs between the two. The user's own send deliberately
-    // keeps that behavior; a page does not get it.
+    // keeps that behavior; a page does not get it. Same caveat as above: the
+    // binding check is the one inside the atomic commit.
     if (target.isProcessing) {
       deps.log.debug(`[pages] session callback refused (busy) for ${describeOrigin(origin)}`)
       return {
@@ -166,8 +199,27 @@ export function createPagesSessionExecutor(deps: PagesSessionExecutorDeps) {
     }
 
     const body = `${pageCallbackAttribution(invocation.pageSlug, invocation.grantId)}\n\n${invocation.message}`
-    await deps.sessionManager.sendMessage(resolvedId, body)
+    // Check-and-commit in one turn, and it returns at acceptance rather than at
+    // the end of the turn it starts — so the broker's deadline can never fire
+    // over work that is already on disk and audit a delivered message as a
+    // timeout.
+    const delivery = await deps.sessionManager.tryDeliverPageCallback(resolvedId, body, {
+      workspaceId: deps.workspaceId,
+      signal: options.signal,
+    })
+    if (!delivery.ok) {
+      deps.log.debug(`[pages] session callback refused (${delivery.code}) for ${describeOrigin(origin)}`)
+      return { ok: false, code: delivery.code, reason: REFUSAL_REASONS[delivery.code] }
+    }
     deps.log.info(`[pages] session callback delivered by ${describeOrigin(origin)}`)
     return { ok: true }
   }
+}
+
+/** Caller-facing prose per code. Never audited — the closed code is. */
+const REFUSAL_REASONS: Record<PageSessionRefusalCode, string> = {
+  'session-not-found': 'The approved session no longer exists in this workspace',
+  'session-closed': 'The approved session is archived or closed',
+  'session-busy': 'The approved session is mid-turn; try again when it is idle',
+  cancelled: 'Action was cancelled before delivery',
 }

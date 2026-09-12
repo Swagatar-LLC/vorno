@@ -185,8 +185,21 @@ function createHarness(
         if (!workspaceId) return [...sessionsByWorkspace.values()].flat()
         return sessionsByWorkspace.get(workspaceId) ?? []
       },
-      async sendMessage(sessionId: string, message: string) {
+      // The atomic primitive, modelled the way the real one behaves: it
+      // re-reads live session state and the abort signal at the commit point
+      // rather than trusting whatever the executor saw before it awaited.
+      async tryDeliverPageCallback(
+        sessionId: string,
+        message: string,
+        options: { workspaceId: string; signal?: AbortSignal },
+      ) {
+        const live = (sessionsByWorkspace.get(options.workspaceId) ?? []).find(s => s.id === sessionId)
+        if (!live) return { ok: false as const, code: 'session-not-found' as const }
+        if (options.signal?.aborted) return { ok: false as const, code: 'cancelled' as const }
+        if (live.isArchived) return { ok: false as const, code: 'session-closed' as const }
+        if (live.isProcessing) return { ok: false as const, code: 'session-busy' as const }
         deliveries.push({ sessionId, message })
+        return { ok: true as const }
       },
     },
     // A host answers about its own window's workspace. It receives the

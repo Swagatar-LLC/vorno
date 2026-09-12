@@ -37,13 +37,33 @@ function seedWorkspace(): void {
   }))
 }
 
-function createHost(sessions: Record<string, SessionCallbackTarget[]>): SessionCallbackHost & {
-  deliveries: Array<{ sessionId: string; message: string }>
-} {
+/**
+ * A host whose atomic primitive behaves like the real one: it re-reads session
+ * state at the commit point rather than trusting what the executor saw, and it
+ * re-reads the abort signal there too. `onCommit` lets a test change the world
+ * in exactly the window the real race lives in — between the executor's read
+ * and the commit — which is the only way to prove the re-check binds.
+ */
+function createHost(
+  sessions: Record<string, SessionCallbackTarget[]>,
+  onCommit?: () => void,
+): SessionCallbackHost & { deliveries: Array<{ sessionId: string; message: string }> } {
   const deliveries: Array<{ sessionId: string; message: string }> = []
   return {
     getSessions: (workspaceId: string) => sessions[workspaceId] ?? [],
-    async sendMessage(sessionId: string, message: string) { deliveries.push({ sessionId, message }) },
+    async tryDeliverPageCallback(sessionId, message, options) {
+      // The await the real primitive performs before its decision — the window
+      // the world can move in.
+      await Promise.resolve()
+      onCommit?.()
+      const live = (sessions[options.workspaceId] ?? []).find((s) => s.id === sessionId)
+      if (!live) return { ok: false as const, code: 'session-not-found' as const }
+      if (options.signal?.aborted) return { ok: false as const, code: 'cancelled' as const }
+      if (live.isArchived) return { ok: false as const, code: 'session-closed' as const }
+      if (live.isProcessing) return { ok: false as const, code: 'session-busy' as const }
+      deliveries.push({ sessionId, message })
+      return { ok: true as const }
+    },
     deliveries,
   }
 }
@@ -70,7 +90,7 @@ describe('page session callback executor', () => {
     const host = createHost({ [WORKSPACE]: [{ id: 'sess_target', isProcessing: false }] })
     const execute = createExecutor(host)
 
-    await expect(execute(invocation)).resolves.toEqual({ ok: true })
+    await expect(execute(invocation, { signal: new AbortController().signal })).resolves.toEqual({ ok: true })
     expect(host.deliveries).toHaveLength(1)
 
     const delivered = host.deliveries[0]!.message
@@ -88,7 +108,7 @@ describe('page session callback executor', () => {
     const host = createHost({ [OTHER_WORKSPACE]: [{ id: 'sess_target', isProcessing: false }] })
     const execute = createExecutor(host)
 
-    await expect(execute(invocation)).resolves.toMatchObject({ ok: false, code: 'session-not-found' })
+    await expect(execute(invocation, { signal: new AbortController().signal })).resolves.toMatchObject({ ok: false, code: 'session-not-found' })
     expect(host.deliveries).toHaveLength(0)
   })
 
@@ -98,14 +118,14 @@ describe('page session callback executor', () => {
     const elsewhere = createHost({ [OTHER_WORKSPACE]: [{ id: 'sess_target', isProcessing: false }] })
     const nowhere = createHost({ [WORKSPACE]: [{ id: 'sess_unrelated', isProcessing: false }] })
 
-    const a = await createExecutor(elsewhere)(invocation)
-    const b = await createExecutor(nowhere)(invocation)
+    const a = await createExecutor(elsewhere)(invocation, { signal: new AbortController().signal })
+    const b = await createExecutor(nowhere)(invocation, { signal: new AbortController().signal })
     expect(a).toEqual(b)
   })
 
   test('refuses an archived target', async () => {
     const host = createHost({ [WORKSPACE]: [{ id: 'sess_target', isProcessing: false, isArchived: true }] })
-    await expect(createExecutor(host)(invocation)).resolves.toMatchObject({ ok: false, code: 'session-closed' })
+    await expect(createExecutor(host)(invocation, { signal: new AbortController().signal })).resolves.toMatchObject({ ok: false, code: 'session-closed' })
     expect(host.deliveries).toHaveLength(0)
   })
 
@@ -113,13 +133,13 @@ describe('page session callback executor', () => {
     // `done` is a built-in closed status; the category comes from the real
     // status config this workspace has on disk.
     const host = createHost({ [WORKSPACE]: [{ id: 'sess_target', isProcessing: false, sessionStatus: 'done' }] })
-    await expect(createExecutor(host)(invocation)).resolves.toMatchObject({ ok: false, code: 'session-closed' })
+    await expect(createExecutor(host)(invocation, { signal: new AbortController().signal })).resolves.toMatchObject({ ok: false, code: 'session-closed' })
     expect(host.deliveries).toHaveLength(0)
   })
 
   test('delivers to a target in an open status', async () => {
     const host = createHost({ [WORKSPACE]: [{ id: 'sess_target', isProcessing: false, sessionStatus: 'in-progress' }] })
-    await expect(createExecutor(host)(invocation)).resolves.toEqual({ ok: true })
+    await expect(createExecutor(host)(invocation, { signal: new AbortController().signal })).resolves.toEqual({ ok: true })
     expect(host.deliveries).toHaveLength(1)
   })
 
@@ -129,14 +149,97 @@ describe('page session callback executor', () => {
     // either interrupts the running turn or queues behind it. Both would put a
     // page's text inside a turn the user is watching with no gesture of theirs
     // in between, so the callback refuses instead of inheriting that behavior.
-    await expect(createExecutor(host)(invocation)).resolves.toMatchObject({ ok: false, code: 'session-busy' })
+    await expect(createExecutor(host)(invocation, { signal: new AbortController().signal })).resolves.toMatchObject({ ok: false, code: 'session-busy' })
     expect(host.deliveries).toHaveLength(0)
   })
 
   test('refuses when the workspace has no sessions at all — there is no default target', async () => {
     const host = createHost({})
-    await expect(createExecutor(host)(invocation)).resolves.toMatchObject({ ok: false, code: 'session-not-found' })
+    await expect(createExecutor(host)(invocation, { signal: new AbortController().signal })).resolves.toMatchObject({ ok: false, code: 'session-not-found' })
     expect(host.deliveries).toHaveLength(0)
+  })
+
+  /**
+   * The race Greptile found on PR #205, and the reason the atomic primitive
+   * exists. The executor's own read of busy/closed/archived is a cheap early
+   * exit; the binding answer is the one taken in the same JS turn as the
+   * commit. These tests move the world in exactly that window.
+   */
+  describe('state that changes between the check and the commit', () => {
+    test('a turn that starts during the commit window refuses instead of steering', async () => {
+      const sessions: Record<string, SessionCallbackTarget[]> = {
+        [WORKSPACE]: [{ id: 'sess_target', isProcessing: false }],
+      }
+      // The executor reads an idle session; a turn begins before the commit.
+      const host = createHost(sessions, () => { sessions[WORKSPACE]![0]!.isProcessing = true })
+
+      await expect(createExecutor(host)(invocation, { signal: new AbortController().signal }))
+        .resolves.toMatchObject({ ok: false, code: 'session-busy' })
+      expect(host.deliveries).toHaveLength(0)
+    })
+
+    test('a session archived during the commit window refuses instead of delivering', async () => {
+      const sessions: Record<string, SessionCallbackTarget[]> = {
+        [WORKSPACE]: [{ id: 'sess_target', isProcessing: false }],
+      }
+      const host = createHost(sessions, () => { sessions[WORKSPACE]![0]!.isArchived = true })
+
+      await expect(createExecutor(host)(invocation, { signal: new AbortController().signal }))
+        .resolves.toMatchObject({ ok: false, code: 'session-closed' })
+      expect(host.deliveries).toHaveLength(0)
+    })
+
+    test('a session deleted during the commit window refuses instead of delivering', async () => {
+      const sessions: Record<string, SessionCallbackTarget[]> = {
+        [WORKSPACE]: [{ id: 'sess_target', isProcessing: false }],
+      }
+      const host = createHost(sessions, () => { sessions[WORKSPACE] = [] })
+
+      await expect(createExecutor(host)(invocation, { signal: new AbortController().signal }))
+        .resolves.toMatchObject({ ok: false, code: 'session-not-found' })
+      expect(host.deliveries).toHaveLength(0)
+    })
+  })
+
+  describe('cancellation', () => {
+    test('refuses without delivering when already aborted', async () => {
+      const host = createHost({ [WORKSPACE]: [{ id: 'sess_target', isProcessing: false }] })
+      const controller = new AbortController()
+      controller.abort()
+
+      await expect(createExecutor(host)(invocation, { signal: controller.signal }))
+        .resolves.toMatchObject({ ok: false, code: 'cancelled' })
+      expect(host.deliveries).toHaveLength(0)
+    })
+
+    test('an abort landing DURING the commit window still stops delivery', async () => {
+      // This is the case a pre-entry check alone cannot cover, and the one that
+      // made the old code audit a delivered message as cancelled: `race` does
+      // not stop its losing promise, so without the signal reaching the commit
+      // point the send ran anyway.
+      const controller = new AbortController()
+      const host = createHost(
+        { [WORKSPACE]: [{ id: 'sess_target', isProcessing: false }] },
+        () => controller.abort(),
+      )
+
+      await expect(createExecutor(host)(invocation, { signal: controller.signal }))
+        .resolves.toMatchObject({ ok: false, code: 'cancelled' })
+      expect(host.deliveries).toHaveLength(0)
+    })
+
+    test('an abort landing AFTER the commit does not unsay a delivered message', async () => {
+      // Once the message is on disk the action succeeded. Relabelling it
+      // cancelled would be the same false audit in the opposite direction.
+      const controller = new AbortController()
+      const host = createHost({ [WORKSPACE]: [{ id: 'sess_target', isProcessing: false }] })
+
+      const outcome = await createExecutor(host)(invocation, { signal: controller.signal })
+      controller.abort()
+
+      expect(outcome).toEqual({ ok: true })
+      expect(host.deliveries).toHaveLength(1)
+    })
   })
 
   /**

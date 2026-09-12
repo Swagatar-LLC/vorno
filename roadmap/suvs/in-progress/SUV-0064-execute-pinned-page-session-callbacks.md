@@ -58,6 +58,47 @@ Grant issuance/lifecycle remains in SUV-0059; runtime action authority and trust
   SUV-0059/0060/0065 baseline; pinned session-callback implementation began.
 - `2026-09-12` — implementation complete, all five acceptance items ticked.
 
+## Reopen, and what closed it
+
+`2026-09-12` — Greptile review of PR #205 did not clear (1/5, two P1). Acceptance
+items 3 and 5 were un-ticked: both were claimed on checks a production caller
+does not actually reach in the state they describe.
+
+- **The state checks raced the delivery.** The executor read
+  busy/closed/archived and then `await`ed `sendMessage` — but `sendMessage`
+  awaits twice more before it branches on `isProcessing`, so a turn starting in
+  that window got the page's text steered or queued into it, and a session
+  archived in that window received a message into finished work. The guard
+  described a state that was true earlier.
+- **Cancellation did not stop delivery.** `executeSession` took no
+  `AbortSignal`, on the reasoning that a single `sendMessage` has no
+  long-running work to abort. That reasoning missed `race`: a losing promise
+  keeps running. A cancel, a lease release, or the broker deadline would win the
+  race, release the slot, and audit the action as cancelled or timed out while
+  the message was delivered anyway — a withdrawn message recorded as not sent.
+
+`2026-09-12` — closed again, at the root rather than by adding another check:
+
+- **`SessionManager.tryDeliverPageCallback` is the atomic primitive.** The final
+  workspace/archived/closed/busy/abort check runs as `sendMessage`'s own
+  `deliveryGuard`, evaluated synchronously at its decision point with nothing
+  able to yield between the check and the commit. This is **not** a second send
+  path — it is the one send path, told when to stop. It returns at
+  **acceptance** (`onAck`, once the user message is persisted and flushed), not
+  at the end of the turn it starts, so the broker's deadline can never fire over
+  work already on disk.
+- **`executeSession` takes the signal** and the guard re-reads it immediately
+  before the commit, so a withdrawal landing mid-flight refuses instead of
+  delivering — and once committed, the action has succeeded and nothing
+  downstream relabels it.
+- **Queued consent re-resolves the target**, immediately before the sheet opens
+  and again after the answer. A request can wait the full confirmation timeout,
+  and a sheet naming a session by a name it no longer has — or one since deleted
+  — asks for consent to the wrong thing; approving one would mint a capability
+  that can never fire.
+- **Release-note bullet added** to `release-notes/next.md` per the bundled
+  resources directive.
+
 ## Decisions worth keeping
 
 Recorded here rather than in the PR thread, because each is a limit or a

@@ -924,11 +924,12 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     // refused without a human ever being asked, which is also what stops the
     // dialog becoming an oracle for which session ids exist elsewhere. Placed
     // AFTER the lease check for the same reason: an unmounted caller owns no
-    // consent work and must not get to probe session existence either. The
-    // resolved identity is what the user is then shown.
-    let targetSession: { id: string; name: string } | undefined
+    // consent work and must not get to probe session existence either.
+    //
+    // This resolution decides whether to PROCEED. It is deliberately not the
+    // one the sheet renders — see the re-resolve inside the queued callback.
     try {
-      targetSession = await describeSessionTarget(canonicalWorkspaceId, request.action)
+      await describeSessionTarget(canonicalWorkspaceId, request.action)
     } catch {
       await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
       throw new Error(PAGE_GRANT_SESSION_TARGET_ERROR)
@@ -993,6 +994,20 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         if (!isLeaseRequesterCurrent(
           workspace.rootPath, leaseId, canonicalWorkspaceId, pageSlug, expectedContentDigest, requester,
         )) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
+
+        // Re-resolved HERE, immediately before the sheet opens, not carried in
+        // from the pre-queue check. This request may have waited behind other
+        // native chrome for the full confirmation timeout, and a session can be
+        // renamed, archived, or deleted in that window — a sheet describing a
+        // session by a name it no longer has, or one that no longer exists, is
+        // asking for consent to the wrong thing.
+        let targetSession: { id: string; name: string } | undefined
+        try {
+          targetSession = await describeSessionTarget(canonicalWorkspaceId, request.action)
+        } catch {
+          await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
+          throw new Error(PAGE_GRANT_SESSION_TARGET_ERROR)
+        }
 
         let accepted = false
         // The deadline must reach the host, not just this promise: abandoning
@@ -1061,6 +1076,17 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         if (!isLeaseRequesterCurrent(
           workspace.rootPath, leaseId, canonicalWorkspaceId, pageSlug, expectedContentDigest, requester,
         )) {
+          await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
+          resolveIssue(null)
+          return
+        }
+        // And once more after the answer. A sheet can sit open for the whole
+        // confirmation timeout, so the user may have approved a callback aimed
+        // at a session that was archived or deleted while they were reading —
+        // persisting that grant would mint a capability that can never fire.
+        try {
+          await describeSessionTarget(canonicalWorkspaceId, request.action)
+        } catch {
           await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
           resolveIssue(null)
           return

@@ -106,6 +106,7 @@ import { listLabels, loadLabelConfig, isValidLabelId } from '@craft-agent/shared
 import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
+import { pageCallbackRefusal, type PageCallbackRefusalCode } from './page-callback-guards.ts'
 import {
   type StatusChangeOrigin,
   UNATTRIBUTED_ORIGIN,
@@ -6339,6 +6340,19 @@ export class SessionManager implements ISessionManager {
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
 
+    // Last-moment veto, and the LAST statement before the branch below for a
+    // reason: this is the only point in the process where session state has
+    // been settled by every await this method performs and nothing yields
+    // before the message is committed. A caller that checked `isProcessing`
+    // itself and then called this method would be checking across those two
+    // awaits, so a turn could start in between and its message would be steered
+    // into it. See `tryDeliverPageCallback`, the one caller.
+    const vetoed = options?.deliveryGuard?.()
+    if (vetoed) {
+      sessionLog.info(`sendMessage: delivery guard refused for ${sessionId} (${vetoed})`)
+      return
+    }
+
     // If currently processing, behavior depends on the connection's
     // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
     // defaults to provider-appropriate value):
@@ -7728,6 +7742,92 @@ export class SessionManager implements ISessionManager {
    * `setSessionStatus` there is no origin parameter here: labels have no closure gate, so
    * there is nothing for an origin to authorize.
    */
+  /**
+   * Deliver one Page callback message to one session, atomically (SUV-0064).
+   *
+   * The primitive exists because "check, then send" is not safe here and cannot
+   * be made safe from outside. `sendMessage` awaits twice before it decides
+   * whether a turn is running, so a caller that checked `isProcessing` itself
+   * would be checking across those awaits: a turn started in between gets the
+   * page's text steered or queued into it, and a session archived in between
+   * receives a message into finished work. Both are exactly what a Page
+   * callback must never do.
+   *
+   * So the final check runs as `sendMessage`'s own `deliveryGuard`, in the same
+   * JS turn as the commit, with nothing able to yield between the two. This is
+   * not a second send path — it is the one send path, told when to stop.
+   *
+   * **Returns at ACCEPTANCE, not at completion.** `onAck` fires once the user
+   * message is persisted and flushed; the turn it starts outlives this call by
+   * design. Awaiting the whole turn would make every callback look like a
+   * 30-second action to the broker's deadline, and a deadline that fired after
+   * the message was already on disk would audit delivered work as a timeout.
+   *
+   * `signal` is re-read inside the guard, so a cancellation or a broker
+   * deadline that lands while this is mid-flight refuses *before* the commit.
+   * Once the commit happens the action has succeeded and nothing downstream may
+   * relabel it — which is why acceptance, not completion, is the boundary.
+   */
+  async tryDeliverPageCallback(
+    sessionId: string,
+    message: string,
+    options: { workspaceId: string; signal?: AbortSignal },
+  ): Promise<{ ok: true } | { ok: false; code: PageCallbackRefusalCode }> {
+    const managed = this.sessions.get(sessionId)
+    // Workspace containment is re-proven here, against live state, however the
+    // caller resolved the target earlier.
+    if (!managed || managed.workspace.id !== options.workspaceId) {
+      return { ok: false, code: 'session-not-found' }
+    }
+
+    /**
+     * Everything refusable, read synchronously from LIVE state each time.
+     * Called once before the send as a cheap early-out, and again as the guard,
+     * where it is authoritative. Re-reading `this.sessions` rather than closing
+     * over `managed` is the point: the session may have been replaced or
+     * removed since.
+     */
+    const refusal = (): PageCallbackRefusalCode | null =>
+      pageCallbackRefusal(this.sessions.get(sessionId), options.workspaceId, options.signal?.aborted === true)
+
+    const early = refusal()
+    if (early) return { ok: false, code: early }
+
+    let refused: PageCallbackRefusalCode | null = null
+    let accepted = false
+    await new Promise<void>((resolve) => {
+      void this.sendMessage(
+        sessionId,
+        message,
+        undefined,
+        undefined,
+        {
+          deliveryGuard: () => {
+            refused = refusal()
+            return refused
+          },
+        },
+        undefined,
+        undefined,
+        // Acceptance: the user message is persisted and flushed. Resolve here
+        // and let the turn run on.
+        () => { accepted = true; resolve() },
+      )
+        .catch((error) => {
+          sessionLog.warn(`tryDeliverPageCallback: send failed for ${sessionId}: ${error}`)
+        })
+        // Covers the guard-refused path, which returns without ever acking, and
+        // the failure path. Resolving twice is a no-op.
+        .finally(() => resolve())
+    })
+
+    if (accepted) return { ok: true }
+    // A send that neither acked nor named a refusal failed for some other
+    // reason; report it as the most conservative truthful thing available
+    // rather than as a delivery.
+    return { ok: false, code: refused ?? 'session-not-found' }
+  }
+
   async setSessionLabels(sessionId: string, labels: string[], cause?: AutomationCause): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
