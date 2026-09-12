@@ -617,6 +617,28 @@ class SessionPersistenceQueue {
    * believes it saved something is worse off than one that is told it did not.
    */
   private closing = false
+  /**
+   * Writes that FAILED after the freeze landed, by key.
+   *
+   * Quiescence is not success, and that gap was load-bearing: `write` catches
+   * its own errors so the fire-and-forget callers that make up nearly all of
+   * this queue's traffic keep working, and an ORDINARY write has no receipt
+   * holder to learn the outcome. So an idle session with one pending write that
+   * failed during the drain left the queue empty, `flushAll` returned happily,
+   * and the host logged a clean quit over state that never reached disk. The
+   * checked final persists cannot cover it — those run BEFORE the freeze, and
+   * this is about everything the drain itself carries.
+   *
+   * Keyed, not appended, because a failure is a claim about STATE rather than
+   * about an attempt: a later write for the same session that commits clears it
+   * (the bytes are on disk, so there is nothing left to report), and a
+   * cancellation never records one at all — `deleted` is intentional and
+   * `superseded` means a replacement is carrying the state.
+   *
+   * Read and cleared by `flushAll`, which is the one caller entitled to the
+   * answer and the one place it can be reported.
+   */
+  private closingWriteFailures = new Map<SessionWriteKey, string>()
   private debounceMs: number
 
   constructor(debounceMs = 500, commitHooks?: SessionCommitHooks) {
@@ -1203,6 +1225,9 @@ class SessionPersistenceQueue {
         this.pendingExternalMetadata.delete(key)
       }
       this.lastWriteFailure.delete(key)
+      // This session's state IS on disk now, so an earlier failure in the same
+      // drain has nothing left to report — see `closingWriteFailures`.
+      this.closingWriteFailures.delete(key)
       this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
       this.settleReceipts(key, generation, { ok: true })
       return true
@@ -1219,6 +1244,11 @@ class SessionPersistenceQueue {
       // value to withdraw.
       this.inFlightSignature.delete(key)
       this.lastWriteFailure.set(key, message)
+      // A failure inside the shutdown drain is the one nobody else can see: the
+      // receipt holders have already been answered by this point, and an
+      // ordinary write has none. Recorded so `flushAll` can refuse to report a
+      // clean shutdown over it.
+      if (this.closing) this.closingWriteFailures.set(key, `${entry.data.id}: ${message}`)
       // Marked attempted either way, so a waiter learns the outcome promptly
       // instead of hanging until some later write happens to supersede it.
       // Failure is an answer; silence is not.
@@ -1423,16 +1453,34 @@ class SessionPersistenceQueue {
    */
   async flushAll(): Promise<void> {
     this.closing = true
+    let quiescent = false
     for (let round = 0; round < FLUSH_ALL_MAX_ROUNDS; round++) {
       const keys = new Set([...this.queued.keys(), ...this.tails.keys()])
-      if (!keys.size) return
+      if (!keys.size) { quiescent = true; break }
       await Promise.all([...keys].map(key => this.flush(key)))
     }
-    const stragglers = new Set([...this.queued.keys(), ...this.tails.keys()])
-    if (stragglers.size) {
-      throw new Error(
-        `Session persistence did not reach quiescence: ${stragglers.size} session(s) still writing after ${FLUSH_ALL_MAX_ROUNDS} drain rounds`,
-      )
+
+    // Two different ways a shutdown is unclean, reported TOGETHER. Throwing on
+    // the first one found would hide the other, and they answer different
+    // questions: whether the queue stopped, and whether what it drained landed.
+    const problems: string[] = []
+    if (!quiescent) {
+      const stragglers = new Set([...this.queued.keys(), ...this.tails.keys()])
+      if (stragglers.size) {
+        problems.push(
+          `did not reach quiescence: ${stragglers.size} session(s) still writing after ${FLUSH_ALL_MAX_ROUNDS} drain rounds`,
+        )
+      }
+    }
+    // Read AND cleared: the ledger answers for this shutdown, and a host that
+    // catches the throw and reopens must not inherit it.
+    const failed = [...this.closingWriteFailures.values()]
+    this.closingWriteFailures.clear()
+    if (failed.length) {
+      problems.push(`${failed.length} session write(s) failed during the drain — ${failed.join('; ')}`)
+    }
+    if (problems.length) {
+      throw new Error(`Session persistence ${problems.join(' | ')}`)
     }
   }
 

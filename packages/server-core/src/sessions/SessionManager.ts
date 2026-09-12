@@ -1060,6 +1060,22 @@ interface TurnFinalizationOwner {
  */
 type TurnStopFinalization = TurnFinalizationOwner | 'no-tail'
 
+/**
+ * A send that has been admitted but does not yet own a turn.
+ *
+ * `sendMessage` refuses at entry while shutting down, which covers a send that
+ * had not started — and covers nothing at all for one already inside its
+ * pre-mutation awaits (the stored-plan clear, the message hydration). Such a
+ * send resumed into a closing queue, pushed a user message that could no longer
+ * be written, and ACKed it. The admission is what shutdown waits for in that
+ * window; ownership transfers to `turnFinalization` the moment a turn starts.
+ */
+interface SendAdmission {
+  readonly token: symbol
+  /** Release the admission. Idempotent — the transfer point and the outer `finally` both call it. */
+  settle(): void
+}
+
 const PI_SDK_MESSAGE_ID_CACHE_LIMIT = 256
 
 export interface AutoRetryPendingHost {
@@ -1379,6 +1395,85 @@ export class SessionManager implements ISessionManager {
     sessionId: string
     topicName: string
   }) => Promise<void>
+
+  /**
+   * Sends admitted but not yet owning a turn, by token.
+   *
+   * The shutdown-visible record of the window between "this send was allowed
+   * in" and "this send owns a turn deferred, or has refused and mutated
+   * nothing". Empty almost always; a send is only in here while it is between
+   * awaits.
+   */
+  private sendAdmissions = new Map<symbol, { sessionId: string; promise: Promise<void> }>()
+
+  /**
+   * Admit a send, synchronously, before it can await anything.
+   *
+   * Registration has to happen in the same tick as the entry refusal, or the
+   * window this exists to close simply moves: a shutdown landing between the
+   * check and the registration would see nothing to wait for.
+   */
+  private admitSend(sessionId: string): SendAdmission {
+    const token = Symbol(`${sessionId}:send`)
+    let resolve!: () => void
+    const promise = new Promise<void>((r) => { resolve = r })
+    this.sendAdmissions.set(token, { sessionId, promise })
+    return {
+      token,
+      settle: () => {
+        // Delete-first, so a second call cannot re-resolve or re-log. The
+        // transfer point settles, and so does the caller's `finally`.
+        if (!this.sendAdmissions.delete(token)) return
+        resolve()
+      },
+    }
+  }
+
+  /**
+   * Wait for every send admitted before the freeze to either take a turn or
+   * refuse.
+   *
+   * Called BEFORE the final-persist candidate set is computed, because a send
+   * that is about to start a turn must be visible to that scan — otherwise
+   * shutdown decides what needs writing, and only then does a new turn appear
+   * with nothing watching it. Bounded like the turn drain, and it REPORTS
+   * rather than throws, for the same reason: one stuck send must cost its own
+   * session's completeness, not the whole salvage.
+   *
+   * @returns ids of sessions whose admitted send had not settled when the bound ran out
+   */
+  private async awaitPendingSendAdmissions(): Promise<string[]> {
+    if (!this.sendAdmissions.size) return []
+    const admitted = [...this.sendAdmissions.values()]
+    sessionLog.info(`Shutdown: awaiting ${admitted.length} in-flight send(s) admitted before the freeze`)
+    await Promise.race([
+      Promise.all(admitted.map(a => a.promise)),
+      new Promise<void>(resolve => setTimeout(resolve, SHUTDOWN_TURN_DRAIN_TIMEOUT_MS)),
+    ])
+    // Whatever is still registered never settled; the map is the live answer.
+    return [...this.sendAdmissions.values()].map(a => a.sessionId)
+  }
+
+  /**
+   * Start the turn and hand shutdown-visibility over from the admission to it,
+   * with NO GAP.
+   *
+   * Two statements, kept in one place so they cannot drift apart. What makes
+   * the handover atomic is the ABSENCE OF AN AWAIT between them, not their
+   * order: nothing else runs inside a synchronous block, so shutdown cannot
+   * observe the instant in between whichever way round they go. The pairing is
+   * named so an edit that inserts an await here has to argue with this comment
+   * first — that await is what would open the gap, and a shutdown scan landing
+   * in it would read an idle session and decide nothing needed writing.
+   *
+   * The admission has to end HERE rather than when `sendMessage` returns: that
+   * promise does not resolve until the whole turn has run, and a shutdown
+   * waiting on it would be waiting for a turn it has not aborted yet.
+   */
+  private beginTurnFromAdmittedSend(managed: ManagedSession, admission: SendAdmission): void {
+    this.setProcessing(managed, true)
+    admission.settle()
+  }
 
   /**
    * Claim a turn's finalisation deferred.
@@ -2776,6 +2871,18 @@ export class SessionManager implements ISessionManager {
     // session its last write, and the hosts caught the error and exited
     // anyway. Salvage everything salvageable first; report at the end.
     const failures: string[] = []
+
+    // A send admitted before the freeze is a producer the freeze does not stop:
+    // it is already past the entry refusal and inside its pre-mutation awaits.
+    // Waited for HERE, before the candidate scan, so a send that is about to
+    // start a turn is visible to that scan, and one that refuses has finished
+    // refusing before anything else looks at the session.
+    const unsettledSends = await this.awaitPendingSendAdmissions()
+    if (unsettledSends.length) {
+      failures.push(
+        `${unsettledSends.length} in-flight send(s) did not settle within ${SHUTDOWN_TURN_DRAIN_TIMEOUT_MS}ms: ${unsettledSends.join(', ')}`,
+      )
+    }
 
     // Decided BEFORE quiescing, because quiescing destroys the evidence: once
     // turns are aborted, `isProcessing` is false everywhere and every session
@@ -7065,6 +7172,50 @@ export class SessionManager implements ISessionManager {
     // `managed.messages`, a turn may have started, and the only honest report
     // left is a failure. Refusing here means nothing happened.
     this.assertNotShuttingDown(`send a message to ${sessionId}`)
+    // Admitted in the SAME tick as that check, before the first await — see
+    // `admitSend`. Settled in the `finally` so a throw from any pre-mutation
+    // await releases it too; the body settles it earlier, at the instant a turn
+    // takes ownership.
+    const admission = this.admitSend(sessionId)
+    try {
+      await this.runAdmittedSend(
+        admission,
+        sessionId,
+        message,
+        attachments,
+        storedAttachments,
+        options,
+        existingMessageId,
+        _isAuthRetry,
+        onAck,
+        rpcContext,
+      )
+    } finally {
+      admission.settle()
+    }
+  }
+
+  /**
+   * The body of an admitted send.
+   *
+   * Split from `sendMessage` only so the admission's `finally` cannot be
+   * skipped by an early `return` or a throw from deep inside this body. Every
+   * pre-mutation await below is followed by a fresh shutting-down check: the
+   * entry refusal answers "may this send start", and these answer "may it still
+   * continue", which is a different question once a quit has begun.
+   */
+  private async runAdmittedSend(
+    admission: SendAdmission,
+    sessionId: string,
+    message: string,
+    attachments?: FileAttachment[],
+    storedAttachments?: StoredAttachment[],
+    options?: SendMessageOptions,
+    existingMessageId?: string,
+    _isAuthRetry?: boolean,
+    onAck?: (messageId: string) => void,
+    rpcContext?: { callerClientId?: string },
+  ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
@@ -7085,12 +7236,20 @@ export class SessionManager implements ISessionManager {
     // This acts as a safety valve - if the user moves on, we don't want to
     // auto-execute an old plan later.
     await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+    // A quit may have begun while that await ran. Refuse here rather than
+    // carry on into the mutations below — shutdown is waiting on this send's
+    // admission, so refusing is what lets it proceed, and nothing this far in
+    // has touched in-memory state.
+    this.assertNotShuttingDown(`send a message to ${sessionId}`)
     // And any in-memory mirror, so a later persist cannot write back a plan
     // the user has just dismissed.
     managed.pendingPlanExecution = undefined
 
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
+    // Same again: hydration reads from disk and can take as long as the file
+    // is large. This is the last await before the branches that push a message.
+    this.assertNotShuttingDown(`send a message to ${sessionId}`)
 
     // If currently processing, behavior depends on the connection's
     // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
@@ -7137,6 +7296,12 @@ export class SessionManager implements ISessionManager {
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
       }
+      // The mutation boundary. Nothing above awaits today, so this repeats the
+      // check a few lines up — deliberately, because what makes the push safe
+      // is that no quit has begun, not that the code between happens to be
+      // synchronous. A future await inserted above must not silently reopen the
+      // window.
+      this.assertNotShuttingDown(`send a message to ${sessionId}`)
       managed.messages.push(userMessage)
 
       const delivery = resolveMidStreamDeliveryOutcome(behavior, steered)
@@ -7196,6 +7361,9 @@ export class SessionManager implements ISessionManager {
         // transcript bubble (e.g. background-task-completion nudge).
         ...(options?.hidden ? { hidden: true } : {}),
       }
+      // The mutation boundary on this branch — same reasoning as the mid-stream
+      // one above.
+      this.assertNotShuttingDown(`send a message to ${sessionId}`)
       managed.messages.push(userMessage)
 
       // Update lastMessageRole for badge display. Skip for hidden messages so the
@@ -7282,7 +7450,7 @@ export class SessionManager implements ISessionManager {
     }
 
     managed.lastMessageAt = Date.now()
-    this.setProcessing(managed, true)
+    this.beginTurnFromAdmittedSend(managed, admission)
     managed.streamingText = ''
     managed.streamingTurnId = undefined
     managed.processingGeneration++

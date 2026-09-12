@@ -235,6 +235,53 @@ orphaning instead of superseding at turn start. The auth-retry site is the one
 stop site with no test of its own — its tail is two synchronous statements and
 the supersede backstop bounds a leak there — recorded rather than implied away.
 
+### Review 14 — two ways a shutdown reported success it did not have
+
+1. **Quiescence is not success.** The cold-session no-rewrite decision is right —
+   an idle session's queued write IS its latest state and the drain carries it —
+   but the drain's own failures had no reader. `write` catches its own errors so
+   the fire-and-forget callers keep working, and an ordinary write has no receipt
+   holder, so an idle session whose one pending write failed left the queue
+   empty, `flushAll` returned, and the host logged a clean quit over state that
+   never reached disk. The checked final persists cannot cover it: they run
+   BEFORE the freeze. Now a `closingWriteFailures` ledger records any write that
+   fails while `closing`; a later successful write for the same key clears it,
+   because a failure is a claim about STATE rather than about an attempt, and
+   every transient mid-drain error would otherwise fail a shutdown that actually
+   saved everything. Cancellations record nothing — `deleted` is intentional,
+   `superseded` means a replacement is carrying the state. `flushAll` reports
+   quiescence failures and drain failures together instead of letting the first
+   hide the second.
+
+2. **A send admitted before the freeze was invisible.** `sendMessage` refuses at
+   entry while shutting down, which answers "may this send START" and nothing
+   else: two awaits sit between that check and the first mutation (the
+   stored-plan clear, the message hydration). A quit landing in that window found
+   nothing to wait for, so the send resumed into a closing queue, pushed a user
+   message the queue then refused to write, and called `onAck` — telling the
+   client "accepted" for a message that existed only in memory of a process about
+   to exit. Worse, a send that went on to start a turn created one AFTER the
+   candidate scan had already decided what needed writing.
+
+   So a send is now *admitted*: `admitSend` registers a deferred in the SAME tick
+   as the entry check (registering after any await just moves the window), every
+   pre-mutation await is followed by a fresh `assertNotShuttingDown`, and a
+   resuming send refuses having mutated nothing and ACKed nothing. Ownership
+   transfers to `turnFinalization` in `beginTurnFromAdmittedSend`, which holds
+   both statements together — the atomicity comes from there being no await
+   between them, not from their order, since nothing can run in between either
+   way. Shutdown awaits admissions BEFORE the candidate scan, so a send about to
+   take a turn is visible to it; bounded like the turn drain and reported rather
+   than thrown, for the same reason.
+
+Mutations: shutdown skipping the admission wait, a missing post-hydration
+re-check, a transfer that forgets to settle, a ledger that never records, and a
+success that does not clear the ledger — each fails a test. One mutation
+SURVIVED and is recorded rather than papered over: swapping the two statements
+inside `beginTurnFromAdmittedSend` changes nothing observable, because a
+synchronous block has no instant in between. The comment claiming the order was
+the contract was corrected to say what actually holds.
+
 ### Review 9 — security: shutdown scope and cancellation intent
 
 1. **Shutdown was rewriting the whole workspace.** Persisting every loaded
@@ -560,6 +607,14 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 14 (architecture, 2 P1): a write that failed during the
+  closing drain had no reader — ordinary writes have no receipt holder — so a
+  quiescent queue reported a clean shutdown over lost state; and a send admitted
+  before the freeze resumed into a closing queue, pushed a user message that
+  could not be written, and ACKed it. Added a closing-failure ledger that
+  `flushAll` reports, and a send-admission seam shutdown awaits before its
+  candidate scan. Five mutations killed, one survived and is recorded as a
+  corrected claim rather than a defect.
 - `2026-09-12` — review 13 (architecture P1): releasing the finalisation
   deferred from `setProcessing(false)` made release a side effect of a flag
   write, so a handoff with an async tail resolved it at the START of that tail —

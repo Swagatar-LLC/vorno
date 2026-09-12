@@ -255,6 +255,46 @@ describe('SessionPersistenceQueue checked writes', () => {
       });
     });
 
+    it('fails the shutdown when a write fails during the drain, receipt or no receipt', async () => {
+      // Quiescence is not success. `write` catches its own errors so the
+      // queue's fire-and-forget callers keep working, and an ORDINARY write has
+      // no receipt holder to learn the outcome — so a session whose last write
+      // failed during the drain left the queue empty, `flushAll` returned
+      // happily, and the host logged a clean quit over lost state.
+      mkdirSync(join(root, 'sessions', 'drainfail', 'session.jsonl.tmp'), { recursive: true });
+      queue.enqueue(session('drainfail'));
+
+      await expect(queue.flushAll()).rejects.toThrow(/drainfail/);
+      // Quiescent, which is exactly why the ledger has to be the thing that
+      // speaks: there is nothing left outstanding to notice.
+      expect(queue.pendingCount).toBe(0);
+    });
+
+    it('does not fail the shutdown when a later write for the same session lands', async () => {
+      // A failure is about state, not about an attempt: if a subsequent write
+      // for the same session commits, that state IS on disk and there is
+      // nothing to report. Otherwise every transient mid-drain error would fail
+      // a shutdown that actually saved everything.
+      // Two writes were already queued when the freeze landed — checked entries
+      // never coalesce, so both are really there — and the first one cannot
+      // land. Intake is frozen, so this is what "a later write" looks like
+      // during a drain: work that was already in the queue.
+      let firstAttempt = true;
+      hooks = {
+        beforeRename: () => {
+          if (!firstAttempt) return;
+          firstAttempt = false;
+          throw new Error('transient disk hiccup');
+        },
+      };
+      queue.enqueueChecked(session('drainheal'));
+      queue.enqueueChecked(Object.assign(session('drainheal'), { name: 'newer' }) as StoredSession);
+
+      await queue.flushAll();
+      hooks = undefined;
+      expect(readFileSync(getSessionFilePath(root, 'drainheal'), 'utf-8')).toContain('"name":"newer"');
+    });
+
     it('fails the shutdown if reconciliation never settles, rather than looping forever', async () => {
       // The exemption is bounded by the same rounds as everything else. A
       // watcher stuck in a supersede/persist cycle must fail the shutdown

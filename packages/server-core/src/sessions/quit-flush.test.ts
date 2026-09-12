@@ -99,6 +99,10 @@ describe('quit flushes sessions that are mid-commit', () => {
     return sm as unknown as {
       setProcessing(m: unknown, processing: boolean, finalization?: unknown): void
       claimTurnFinalization(sessionId: string): { token: symbol; release(): void }
+      admitSend(sessionId: string): { token: symbol; settle(): void }
+      beginTurnFromAdmittedSend(m: unknown, admission: { token: symbol; settle(): void }): void
+      sendAdmissions: Map<symbol, unknown>
+      collectSessionsNeedingFinalPersist(): Array<{ id: string }>
       completePlanSubmissionHandoff(m: unknown): Promise<void>
       completeAuthRequestHandoff(m: unknown, request: unknown, authMessage: unknown): void
     }
@@ -865,6 +869,103 @@ describe('quit flushes sessions that are mid-commit', () => {
 
       expect(sabotaged).toBe(true)
       // Cleanup so afterEach can remove the root.
+      rmSync(file + '.tmp', { recursive: true, force: true })
+    }, 20000)
+
+    it('waits for a send admitted before the freeze, and that send refuses without mutating', async () => {
+      // The entry refusal answers "may this send START", and a send already
+      // past it is invisible to shutdown: `sendMessage` awaits the stored-plan
+      // clear and the message hydration before it touches anything. A quit
+      // landing in that window found nothing to wait for, the send resumed into
+      // a closing queue, pushed a user message that could no longer be written,
+      // and ACKed it to the client. Held hydration reproduces exactly that.
+      const sessionId = 'sess_admitted_send'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+
+      let releaseLoad!: () => void
+      const loadHeld = new Promise<void>((r) => { releaseLoad = r })
+      ;(sm as unknown as {
+        ensureMessagesLoaded(m: unknown): Promise<void>
+      }).ensureMessagesLoaded = async () => { await loadHeld }
+
+      let acked = false
+      const send = sm.sendMessage(
+        sessionId, 'a message that must not be half-accepted',
+        undefined, undefined, undefined, undefined, undefined,
+        () => { acked = true },
+      ).then(() => 'resolved').catch((e: unknown) => e)
+      await new Promise((r) => setTimeout(r, 20))
+
+      let settled = false
+      const shutdown = sm.flushAllSessions().then(() => { settled = true })
+      await new Promise((r) => setTimeout(r, 80))
+
+      // Shutdown is waiting on the admission: the queue is still OPEN, so the
+      // send can still finish honestly either way.
+      expect(settled).toBe(false)
+      expect(sessionPersistenceQueue.isClosing).toBe(false)
+
+      releaseLoad()
+      const outcome = await send
+      expect(String(outcome)).toMatch(/shutting down/)
+      // Nothing was mutated and nothing was promised.
+      expect((managed.messages as Array<{ content?: string }>).some(
+        (m) => m.content === 'a message that must not be half-accepted',
+      )).toBe(false)
+      expect(acked).toBe(false)
+
+      await shutdown
+      expect(settled).toBe(true)
+      expect(readFileSync(getSessionFilePath(root, sessionId), 'utf-8')).not.toContain(
+        'a message that must not be half-accepted',
+      )
+    }, 20000)
+
+    it('hands ownership from the admission to the turn with no gap', () => {
+      // The handover is the one instant where a session could fall between the
+      // two things shutdown looks at. Release the admission first and there is
+      // a moment where the send no longer counts and the turn does not yet — a
+      // candidate scan landing there reads an idle session and writes nothing.
+      const sessionId = 'sess_admission_transfer'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+
+      const admission = turns().admitSend(sessionId)
+      expect(turns().sendAdmissions.size).toBe(1)
+
+      turns().beginTurnFromAdmittedSend(managed, admission)
+
+      // The turn is watching now, and the admission is spent — not the other
+      // way round, and not both at once.
+      expect(managed.turnFinalization).toBeDefined()
+      expect(turns().sendAdmissions.size).toBe(0)
+      // The consequence that matters: shutdown still sees work to write.
+      expect(turns().collectSessionsNeedingFinalPersist().map((m) => m.id)).toContain(sessionId)
+    })
+
+    it('refuses to report a clean shutdown when an IDLE session\'s drained write fails', async () => {
+      // The session shutdown deliberately does NOT give a final checked write:
+      // it is idle, so the write already queued IS its latest state and the
+      // drain carries it. That decision is right, and it left a hole — the
+      // drain's own failures had no reader. An ordinary write has no receipt
+      // holder, `write` catches its own errors, and the queue went quiescent,
+      // so quit reported success over a session that never reached disk.
+      const sessionId = 'sess_idle_write_fails'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+      ;(managed.messages as unknown[]).push({
+        id: 'idle-edit',
+        role: 'assistant',
+        content: 'an edit that cannot be written',
+        timestamp: Date.now(),
+      })
+
+      // Idle, with one ordinary write pending — and a DIRECTORY where its temp
+      // file goes, so the drain's attempt fails with EISDIR.
+      const file = getSessionFilePath(root, sessionId)
+      ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
+      mkdirSync(file + '.tmp', { recursive: true })
+
+      await expect(sm.flushAllSessions()).rejects.toThrow(/failed during the drain/)
+
       rmSync(file + '.tmp', { recursive: true, force: true })
     }, 20000)
   })
