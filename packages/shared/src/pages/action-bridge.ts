@@ -987,7 +987,7 @@ export class PageActionBroker {
     authority: PageActionAuthority,
     contentDigest: string,
     grant: PageActionGrant,
-  ): { ok: true } | { ok: false; code: PageActionValidationErrorCode; reason: string } {
+  ): { ok: true; descriptorSignature: string } | { ok: false; code: PageActionValidationErrorCode; reason: string } {
     const ticketId = request.activationTicket;
     if (typeof ticketId !== 'string' || ticketId.length === 0) {
       return {
@@ -1035,7 +1035,10 @@ export class PageActionBroker {
     if (ticket.requestHash !== canonicalPageActionHash(authority.workspaceId, contentDigest, request)) {
       return { ok: false, code: 'activation-invalid', reason: 'Activation does not match this request' };
     }
-    return { ok: true };
+    // Returned, not just checked. The caller re-reads the grant from disk after
+    // the queue, and has to be able to prove the reloaded descriptor is still
+    // the one this ticket authorized.
+    return { ok: true, descriptorSignature: ticket.descriptorSignature };
   }
 
   /**
@@ -1167,9 +1170,11 @@ export class PageActionBroker {
     // single-use one: everything that can refuse this request for a reason that
     // would recur has already run, so a burned ticket means the call really was
     // going to execute.
+    let confirmedDescriptor: string | undefined;
     if (mutating && pageActionOriginPolicy(authority.origin)!.requiresActivationTicket) {
       const activation = this.consumeActivationTicket(request, authority, page.contentDigest!, grant);
       if (!activation.ok) return rejected(activation.code, activation.reason);
+      confirmedDescriptor = activation.descriptorSignature;
     }
 
     this.seenRequestIds.get(request.leaseId)?.add(request.requestId);
@@ -1247,6 +1252,18 @@ export class PageActionBroker {
       if (!afterQueue.ok) {
         releaseAdmission();
         return rejected(afterQueue.code, afterQueue.reason);
+      }
+      // Adopting the reloaded grant re-opens the swap the ticket exists to
+      // prevent unless the binding is re-checked HERE. The ticket was validated
+      // against the admission-time descriptor; execution is about to use the
+      // reloaded one, and `page.json` can be rewritten under a stable grant id
+      // and a stable content digest while this request sits in the queue.
+      if (
+        confirmedDescriptor !== undefined &&
+        confirmedDescriptor !== pageActionDescriptorSignature(afterQueue.grant.action)
+      ) {
+        releaseAdmission();
+        return rejected('activation-invalid', 'The approved action changed while this request was queued');
       }
       // Execute against the reloaded config, not the admission snapshot, so the
       // descriptor that runs is the one just re-validated.

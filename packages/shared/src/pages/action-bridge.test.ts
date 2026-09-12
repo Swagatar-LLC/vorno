@@ -1640,6 +1640,52 @@ describe('pages/action-bridge', () => {
       await Promise.all(running);
     });
 
+    it('refuses when the command is swapped while the request is queued', async () => {
+      // The reload is what makes a revocation visible, and it is also what
+      // could quietly substitute a command: the ticket was bound to the
+      // descriptor at admission, and execution is about to use the reloaded
+      // one. Same grant id, same content digest, different script.
+      const ran: string[] = [];
+      const gates: Array<() => void> = [];
+      const broker = makeBroker({
+        executeScript: (invocation) => new Promise((resolve) => {
+          ran.push(invocation.script);
+          gates.push(() => resolve({ exitCode: 0, stdout: '', stderr: '' }));
+        }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const pageWith = (script: string) => makePage({
+        grants: [makeGrant({ id: 'grant_script001', expiresAt: clock.now + 3_600_000, action: { kind: 'script', script } })],
+      });
+      const approved = pageWith('pages/dash/safe.ts');
+      disk.page = approved;
+
+      const start = async () => {
+        const request = makeRequest(lease, { grantId: 'grant_script001', invocation: { kind: 'script' } });
+        const mint = await broker.mintActivationTicket(approved, request, AUTHORITY, CONFIRMING);
+        return broker.executeAction(approved, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY);
+      };
+
+      const running = [start(), start()];
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = start();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(ran).toEqual(['pages/dash/safe.ts', 'pages/dash/safe.ts']);
+
+      // Swapped while the third waits.
+      disk.page = pageWith('pages/dash/evil.ts');
+
+      while (gates.length) gates.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      while (gates.length) gates.shift()!();
+
+      const result = await queued;
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('activation-invalid');
+      expect(ran).not.toContain('pages/dash/evil.ts');
+      await Promise.all(running);
+    });
+
     it('runs the descriptor that is on disk now, not the one admission saw', async () => {
       // The reload is not only a refusal mechanism: whatever it returns is what
       // executes, so the descriptor that runs is the one just re-validated.
