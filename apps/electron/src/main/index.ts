@@ -99,6 +99,7 @@ import {
   isRequesterCurrent,
   type RenderIdentity,
 } from './page-grant-identity'
+import { forgetPublicationDetailKey } from './page-forget-consent'
 import { bootstrapServer, releaseServerLock } from '@craft-agent/server-core/bootstrap'
 import { createMessagingBootstrap, type MessagingBootstrapHandle } from '@craft-agent/messaging-gateway'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
@@ -860,7 +861,7 @@ app.whenReady().then(async () => {
                 signal,
               })).response === 1
             },
-            confirmForgetPagePublication: isHeadless ? undefined : async ({ workspaceName, pageSlug, alreadyRevoked, signal }) => {
+            confirmForgetPagePublication: isHeadless ? undefined : async ({ workspaceName, pageSlug, reason, alreadyRevoked, signal }) => {
               // Forget recovery has no render-bound requester; on macOS it must
               // still use an existing trusted parent for AbortSignal to dismiss it.
               const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -868,14 +869,11 @@ app.whenReady().then(async () => {
               const result = await dialog.showMessageBox(parent, {
                 type: 'warning', title: i18n.t('pages.share.forgetLocalTitle'),
                 message: `${i18n.t('pages.share.forgetLocalTitle')}: “${pageSlug}” (${workspaceName})`,
-                // An already-revoked page is losing its cleanup retry, not its
-                // revocation. Consent has to describe what is actually being
-                // given up, or it is consent to the wrong thing. This keys on the
-                // revocation status alone — which capability went missing does
-                // not change whether the copy is still reachable.
-                detail: alreadyRevoked
-                  ? i18n.t('pages.share.forgetLocalBodyRevoked')
-                  : i18n.t('pages.share.forgetLocalBody'),
+                // Consent has to describe what is actually being given up, or it
+                // is consent to the wrong thing. Both facts feed the choice:
+                // whether the key exists to be discarded, and whether the copy is
+                // already offline. See page-forget-consent.ts for the table.
+                detail: i18n.t(forgetPublicationDetailKey(reason, alreadyRevoked)),
                 buttons: [i18n.t('pages.share.cancel'), i18n.t('pages.share.forgetLocalButton')],
                 defaultId: 0, cancelId: 0, noLink: true, signal,
               })
