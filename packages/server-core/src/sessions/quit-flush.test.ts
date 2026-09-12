@@ -504,4 +504,158 @@ describe('quit flushes sessions that are mid-commit', () => {
       expect(readFileSync(getSessionFilePath(root, activeId), 'utf-8')).toContain('work worth keeping')
     }, 30000)
   })
+
+  describe('finalisation is not the isProcessing flag', () => {
+    it('stays pending until the finaliser completes, then has the final state on disk', async () => {
+      // `isProcessing = false` is NOT "the turn is finished". The stop handler
+      // clears it and then keeps going — browser visuals, read state, status,
+      // runtime teardown — before the persist that records all of it. Waiting
+      // on the flag let shutdown resume mid-tail and close the queue underneath
+      // that write.
+      //
+      // Holding `clearVisualsForSession` parks the finaliser at its first await
+      // WITH the flag already false, which is exactly the window.
+      const sessionId = 'sess_finalizer'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+
+      let releaseVisuals!: () => void
+      const visualsHeld = new Promise<void>((r) => { releaseVisuals = r })
+      ;(sm as unknown as {
+        getBrowserPaneManagerForSession(id: string): unknown
+      }).getBrowserPaneManagerForSession = () => ({
+        clearVisualsForSession: async () => { await visualsHeld },
+      })
+
+      // Start a real turn so `setProcessing` mints the finalisation deferred.
+      ;(sm as unknown as { setProcessing(m: unknown, p: boolean): void }).setProcessing(managed, true)
+      expect(managed.turnFinalization).toBeDefined()
+
+      // The turn produces its answer and the finaliser begins.
+      ;(managed.messages as unknown[]).push({
+        id: 'final-held',
+        role: 'assistant',
+        content: 'answer written while shutdown waited',
+        timestamp: Date.now(),
+      })
+      void (sm as unknown as {
+        onProcessingStopped(id: string, reason: string): Promise<void>
+      }).onProcessingStopped(sessionId, 'complete')
+      await new Promise((r) => setTimeout(r, 20))
+
+      // The flag is already false; the turn is NOT finished.
+      expect(managed.isProcessing).toBe(false)
+      expect(managed.turnFinalization).toBeDefined()
+
+      let settled = false
+      const shutdown = sm.flushAllSessions().then(() => { settled = true })
+      await new Promise((r) => setTimeout(r, 80))
+
+      // Still pending, and the queue still open — the point of the deferred.
+      expect(settled).toBe(false)
+      expect(sessionPersistenceQueue.isClosing).toBe(false)
+
+      releaseVisuals()
+      await shutdown
+
+      expect(settled).toBe(true)
+      expect(sessionPersistenceQueue.isClosing).toBe(true)
+      // And the finaliser's work is on disk, including the read-state it sets.
+      const header = JSON.parse(
+        readFileSync(getSessionFilePath(root, sessionId), 'utf-8').split('\n')[0]!,
+      ) as Record<string, unknown>
+      expect(header.hasUnread).toBe(true)
+      expect(readFileSync(getSessionFilePath(root, sessionId), 'utf-8')).toContain(
+        'answer written while shutdown waited',
+      )
+    }, 20000)
+  })
+
+  describe('a cancelled final receipt is never accepted', () => {
+    it('re-snapshots after a supersession and commits the merged state', async () => {
+      // The positive half. A supersession is a RETRY, not an acceptance: the
+      // reconciliation has merged the external edit into managed state, so the
+      // next snapshot carries both its change and ours. Accepting the cancelled
+      // receipt instead would report success on bytes nobody wrote.
+      const sessionId = 'sess_retry_merges'
+      const managed = seedManaged(sessionId, {
+        messageQueue: [{ message: 'queued', messageId: 'q1' }],
+      })
+      ;(managed.messages as unknown[]).push({
+        id: 'ours-1',
+        role: 'assistant',
+        content: 'our final state',
+        timestamp: Date.now(),
+      })
+
+      const file = getSessionFilePath(root, sessionId)
+      let superseded = false
+      disposeHooks = installSingletonCommitHooksForTesting({
+        afterRename: (key) => {
+          if (superseded || key !== sessionWriteKey(root, sessionId)) return
+          superseded = true
+          // A watcher reconciliation lands mid-commit, carrying an external
+          // edit to a field only the merge can preserve.
+          const header = JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>
+          sessionPersistenceQueue.supersedePendingWrites(key, {
+            ...header,
+            permissionMode: 'safe',
+          } as never)
+        },
+      })
+
+      // Resolves: the retry commits.
+      await sm.flushAllSessions()
+      disposeHooks?.()
+      disposeHooks = undefined
+
+      expect(superseded).toBe(true)
+      const contents = readFileSync(file, 'utf-8')
+      const header = JSON.parse(contents.split('\n')[0]!) as Record<string, unknown>
+      // Both survive: our final state AND the external edit it collided with.
+      expect(contents).toContain('our final state')
+      expect(header.permissionMode).toBe('safe')
+    }, 20000)
+
+    it('rejects rather than reporting success when the replacement write cannot land', async () => {
+      // The hole in "a supersession is fine, the replacement carries it": the
+      // replacement can FAIL. Here the reconciliation supersedes the final
+      // write and then the session file's directory is made unwritable, so
+      // nothing can commit. Shutdown must not report success over a session
+      // that was never written.
+      const sessionId = 'sess_replacement_fails'
+      // Queued work, so the session qualifies for a final write at all — an
+      // idle one is deliberately skipped, which is a different behaviour and
+      // not what this test is about.
+      const managed = seedManaged(sessionId, {
+        messageQueue: [{ message: 'queued', messageId: 'q1' }],
+      })
+      ;(managed.messages as unknown[]).push({
+        id: 'never-landed',
+        role: 'assistant',
+        content: 'state that cannot be written',
+        timestamp: Date.now(),
+      })
+
+      const file = getSessionFilePath(root, sessionId)
+      let sabotaged = false
+      disposeHooks = installSingletonCommitHooksForTesting({
+        afterRename: (key) => {
+          if (sabotaged || key !== sessionWriteKey(root, sessionId)) return
+          sabotaged = true
+          // Supersede the final write, then make every later write fail: a
+          // DIRECTORY where the temp file goes gives EISDIR.
+          sessionPersistenceQueue.supersedePendingWrites(key)
+          mkdirSync(file + '.tmp', { recursive: true })
+        },
+      })
+
+      await expect(sm.flushAllSessions()).rejects.toThrow(/not clean/)
+      disposeHooks?.()
+      disposeHooks = undefined
+
+      expect(sabotaged).toBe(true)
+      // Cleanup so afterEach can remove the root.
+      rmSync(file + '.tmp', { recursive: true, force: true })
+    }, 20000)
+  })
 })

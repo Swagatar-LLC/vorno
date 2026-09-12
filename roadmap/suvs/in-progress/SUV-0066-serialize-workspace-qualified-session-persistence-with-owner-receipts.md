@@ -32,7 +32,7 @@ external metadata edit cannot be reverted by a write already in flight.
     Ordinary writes still coalesce into a trailing ordinary entry; a checked
     entry is never coalesced into, and receipts settle on the exact generation,
     so a receipt attests its own bytes rather than borrowing a later write's
-    success. `ok: true` means committed, not power-loss durable.
+    success. `ok: true` means committed, not power-loss durable (see Residuals).
   - Cancellation as two per-intent watermarks: `cancelForDeletion` discards a
     committed artifact, `supersedePendingWrites` never does. Re-checked at
     every commit boundary, and the check is **stage-aware** — between the
@@ -128,6 +128,12 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       shutdown — receipts distinguish `cancelled` from `failed`.
 - [x] An active turn's final state is persisted even when an intermediate
       write is already queued for it.
+- [x] Shutdown stays pending while a finaliser is parked after `isProcessing`
+      has gone false, and the read-state and final response it writes are on
+      disk before the queue closes.
+- [x] A superseded final write is re-snapshotted and commits the merged state;
+      when the replacement cannot land at all, shutdown rejects rather than
+      reporting success.
 - [x] 200 cold sessions are byte-identical after a quit — no rewrite, no
       `lastUsedAt` restamp, no hydration — while a session with queued work or
       an active turn still has its final state persisted, including a turn that
@@ -148,6 +154,32 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       3 rounds on the round-1 fixes, and 6 on the round-2 fixes — all caught.
 
 ## Review findings
+
+### Review 10 — architecture: the finalisation boundary
+
+1. **`isProcessing = false` is not "the turn is finished".** The stop handler
+   clears it and then keeps going — browser visuals, read state, status, runtime
+   teardown, the complete event — before the persist that records all of it.
+   Waiting on the flag let shutdown resume mid-tail and close the queue
+   underneath that write. Each turn now carries a finalisation deferred, created
+   when processing starts and resolved in `onProcessingStopped`'s `finally`
+   after every step, with a token so a slow finaliser cannot resolve or clear
+   the deferred of the turn that started after it. Shutdown captures the
+   deferreds BEFORE aborting — the abort is what makes them resolve — and awaits
+   them; the `isProcessing` poll stays as the always-available fallback for a
+   session that has no deferred.
+2. **A cancelled final receipt is no longer accepted.** Treating `superseded` as
+   "the replacement carries it" assumed the replacement would land, and it can
+   fail — a disk error on the reconciliation's own write left nothing carrying
+   the state while shutdown reported success. Supersession is now a bounded
+   RETRY that re-snapshots from CURRENT managed state, so the reconciliation's
+   merge is picked up and both changes commit. `deleted` stays terminal;
+   `failed` is collected. The queue closes only after every session has an exact
+   committed receipt.
+
+Both wait mechanisms are deliberately redundant, which is why each survived
+mutation alone and only removing both fails the test — recorded so the next
+reader does not delete one as dead.
 
 ### Review 9 — security: shutdown scope and cancellation intent
 
@@ -478,6 +510,12 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 10 (architecture): `isProcessing = false` was treated
+  as finalisation complete, so shutdown closed the queue while the stop
+  handler's tail was still assembling and persisting state; turns now carry a
+  token-guarded finalisation deferred that resolves only after the final
+  persist. And a superseded final receipt is retried from current managed state
+  rather than accepted, because the replacement write can itself fail.
 - `2026-09-12` — review 9 (security): shutdown was rewriting every cold session
   (hydration + `lastUsedAt` restamp); the final-persist set is now computed
   before quiesce and defaults to skip. `cancelled` split into `superseded` and

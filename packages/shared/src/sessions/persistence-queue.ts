@@ -721,11 +721,11 @@ class SessionPersistenceQueue {
    * "delivered and saved" needs the difference, and guessing optimistically is
    * the one answer it must never give.
    *
-   * The receipt is tied to a GENERATION, not to a moment. A later write
-   * satisfies it — a newer snapshot contains this one — while an older write
-   * completing does not, so the answer cannot be borrowed from somebody else's
-   * success, and a caller waits on its own bytes rather than on whatever
-   * happened to be in the queue.
+   * The receipt is tied to THIS generation and no other — see I4. An earlier
+   * revision let a later write satisfy it, on the reasoning that a newer
+   * snapshot contains the older one; that is true of today's callers and is not
+   * something a durability answer may rest on, and it reported success for
+   * bytes nobody had written. A caller waits on its own bytes.
    *
    * Deliberately additive: `flush` and `enqueue` are untouched and every
    * existing caller keeps its best-effort behaviour.
