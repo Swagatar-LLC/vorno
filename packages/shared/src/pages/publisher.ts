@@ -135,10 +135,20 @@ export interface PublishPageOptions {
 export interface UnpublishResult {
   config: PageConfig;
   /**
-   * Set when local state was cleared without remote confirmation (vault token
-   * missing) — the public copy may still exist until it is garbage-collected.
+   * Why local state does not yet match a confirmed remote outcome:
+   *
+   *   remote-copy-may-remain            no capability, and revocation was never
+   *                                     confirmed — the copy may still be public
+   *   remote-cleanup-pending            revoked; the Worker owes a physical
+   *                                     cleanup retry and we can still ask for it
+   *   remote-cleanup-credential-missing revoked, but the capability to ask for
+   *                                     that retry is gone
+   *
+   * The last two are NOT "may still be public" and must never be reported as
+   * such. Public routes already 404 in both, and describing a revoked page as
+   * possibly online is how a real alarm gets trained into background noise.
    */
-  warning?: 'remote-copy-may-remain' | 'remote-cleanup-pending';
+  warning?: 'remote-copy-may-remain' | 'remote-cleanup-pending' | 'remote-cleanup-credential-missing';
 }
 
 interface WorkerPublicationResponse {
@@ -153,8 +163,20 @@ interface WorkerPublicationResponse {
 
 const ERROR_BODY_MAX_CHARS = 300;
 
-/** Why a retained share pointer can no longer be revoked through the normal path. */
-export type LocalPublicationRecoveryReason = 'token-missing' | 'origin-unusable';
+/**
+ * Why a retained share pointer can no longer be managed through the normal path.
+ *
+ *   token-missing              the capability is gone and revocation was never
+ *                              confirmed — the copy may still be public
+ *   origin-unusable            the stored origin is not one we will talk to
+ *   cleanup-credential-missing already revoked; only the physical-cleanup retry
+ *                              is unreachable
+ *
+ * This drives the wording of an irreversible confirmation, so the distinction is
+ * load-bearing: telling someone a revoked page "may remain online" asks them to
+ * approve against a false premise.
+ */
+export type LocalPublicationRecoveryReason = 'token-missing' | 'origin-unusable' | 'cleanup-credential-missing';
 
 export interface LocalPublicationRecovery {
   /** The publication a human is about to be asked about, and the only one the approval covers. */
@@ -384,8 +406,17 @@ export class PagePublisher {
 
     const token = await this.tokenStore.get(workspaceId, config.id);
     if (!token) {
-      // We cannot claim logical revocation without the capability. Keep the
-      // share pointer so a restored vault token can retry the real remote call.
+      // Either way the share pointer stays, so a restored vault token can retry
+      // the real remote call. What differs is what we already know.
+      if (share.cleanupPending) {
+        // Logical revocation is recorded: the Worker 404s the public routes and
+        // owed us only a physical-object cleanup. Losing the capability loses
+        // that retry, not the revocation, so this must not be reported as a copy
+        // that might still be online.
+        this.log(`Cleanup retry not attempted for ${pageSlug}: admin token missing, public access already revoked`);
+        return { config, warning: 'remote-cleanup-credential-missing' };
+      }
+      // Here revocation was never confirmed, so the alarming reading is correct.
       this.log(`Unpublish not attempted for ${pageSlug}: admin token missing from vault`);
       return { config, warning: 'remote-copy-may-remain' };
     }
@@ -461,14 +492,20 @@ export class PagePublisher {
       );
     }
     const token = await this.tokenStore.get(workspaceId, config.id);
-    if (!token) return { publicationId: share.publicationId, reason: 'token-missing' };
-    if (!resolveStoredPagesShareApiBaseUrl(share.url, this.publishApiBaseUrl)) {
-      return { publicationId: share.publicationId, reason: 'origin-unusable' };
+    const originUsable = resolveStoredPagesShareApiBaseUrl(share.url, this.publishApiBaseUrl) !== undefined;
+    if (token && originUsable) {
+      throw new PageShareError(
+        'PAGE_SHARE_FORGET_NOT_ELIGIBLE',
+        share.cleanupPending
+          ? 'Remote cleanup can still be retried for this page. Retry it instead of discarding local state.'
+          : 'This page can still be unpublished normally. Unpublish it so the public copy is actually revoked.',
+      );
     }
-    throw new PageShareError(
-      'PAGE_SHARE_FORGET_NOT_ELIGIBLE',
-      'This page can still be unpublished normally. Unpublish it so the public copy is actually revoked.',
-    );
+    // Checked before the other two: when revocation is already recorded, that is
+    // the fact the human needs, and it outranks which half of the capability is
+    // the one we lost.
+    if (share.cleanupPending) return { publicationId: share.publicationId, reason: 'cleanup-credential-missing' };
+    return { publicationId: share.publicationId, reason: token ? 'origin-unusable' : 'token-missing' };
   }
 
   /**
@@ -647,10 +684,15 @@ export class PagePublisher {
         throw new Error(`Could not confirm remote revocation; retry unpublish before deleting the local page: ${detail}`);
       }
       if (result.warning) {
+        // Each arm states what is actually known. Deleting is blocked in all
+        // three, but a user told "may still be public" about an already-revoked
+        // page will go hunting for a live copy that does not exist.
         throw new Error(
           result.warning === 'remote-cleanup-pending'
             ? 'The page is no longer public, but remote data cleanup is pending. Retry unpublish before deleting the local page.'
-            : 'The page may still be public because its admin token is missing. Restore the token or republish before deleting the local page.',
+            : result.warning === 'remote-cleanup-credential-missing'
+              ? 'The page is no longer public, but the key needed to finish remote data cleanup is missing, so the published copy\'s stored data may remain on the server. Restore the key, or forget the local publication state, before deleting the local page.'
+              : 'The page may still be public because its admin token is missing. Restore the token or republish before deleting the local page.',
         );
       }
     }

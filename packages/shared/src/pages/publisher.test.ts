@@ -184,6 +184,68 @@ describe('Pages sharing default gate', () => {
     } finally { rmSync(workspace, { recursive: true, force: true }); }
   });
 
+  test('reports a lost cleanup capability as revoked-but-uncleanable, never as maybe-still-public', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'pages-cleanup-credential-'));
+    enablePages(workspace);
+    const page = createPage(workspace, { name: 'Cleanup credential', content: '<p>revoked</p>' });
+    setPageShareState(workspace, page.slug, {
+      publicationId: 'publication-1', url: 'https://pages.vorno.ai/p/publication-1', publishedRevision: 'r1',
+      publishedContentDigest: page.contentDigest!, includesData: false, publishedAt: 1, updatedAt: 1,
+      passwordProtected: false,
+      // The Worker already 404s the public routes and owed only a byte cleanup.
+      cleanupPending: true,
+    });
+    let fetched = false;
+    const publisher = new PagePublisher({
+      tokenStore: { get: async () => null, set: async () => {}, delete: async () => false },
+      fetchFn: (async () => { fetched = true; return new Response('', { status: 204 }); }) as unknown as typeof fetch,
+    });
+    try {
+      const result = await publisher.unpublish(workspace, 'workspace', page.slug);
+      expect(result.warning).toBe('remote-cleanup-credential-missing');
+      expect(fetched).toBe(false);
+
+      // The known-revoked state is preserved, not downgraded: a restored key must
+      // still find a page whose remaining debt is physical cleanup only.
+      const stored = loadPageConfig(workspace, page.slug)?.share;
+      expect(stored?.publicationId).toBe('publication-1');
+      expect(stored?.cleanupPending).toBe(true);
+
+      // And the recovery prompt is told which fact to describe.
+      await expect(publisher.describeLocalPublicationRecovery(workspace, 'workspace', page.slug))
+        .resolves.toEqual({ publicationId: 'publication-1', reason: 'cleanup-credential-missing' });
+
+      // Deleting is still blocked, but with accurate wording.
+      await expect(deletePageWithUnpublish(workspace, 'workspace', page.slug, {
+        tokenStore: { get: async () => null, set: async () => {}, delete: async () => false },
+        fetchFn: (async () => new Response('', { status: 204 })) as unknown as typeof fetch,
+      })).rejects.toThrow('no longer public, but the key needed to finish remote data cleanup is missing');
+    } finally { rmSync(workspace, { recursive: true, force: true }); }
+  });
+
+  test('sends a cleanup-pending page with a usable key back to retry, not to local recovery', async () => {
+    process.env.CRAFT_FEATURE_PAGES_SHARING = '1';
+    process.env.CRAFT_PAGES_SHARE_API_URL = 'https://pages.vorno.ai/api';
+    const workspace = mkdtempSync(join(tmpdir(), 'pages-cleanup-retryable-'));
+    enablePages(workspace);
+    const page = createPage(workspace, { name: 'Retryable cleanup', content: '<p>retry</p>' });
+    setPageShareState(workspace, page.slug, {
+      publicationId: 'publication-1', url: 'https://pages.vorno.ai/p/publication-1', publishedRevision: 'r1',
+      publishedContentDigest: page.contentDigest!, includesData: false, publishedAt: 1, updatedAt: 1,
+      passwordProtected: false, cleanupPending: true,
+    });
+    const publisher = new PagePublisher({
+      tokenStore: { get: async () => 'token', set: async () => {}, delete: async () => true },
+      fetchFn: (async () => new Response('', { status: 204 })) as unknown as typeof fetch,
+    });
+    try {
+      const refusal = publisher.describeLocalPublicationRecovery(workspace, 'workspace', page.slug);
+      await expect(refusal).rejects.toMatchObject({ code: 'PAGE_SHARE_FORGET_NOT_ELIGIBLE' });
+      // The refusal names the action that actually exists in this state.
+      await expect(refusal).rejects.toThrow('Remote cleanup can still be retried');
+    } finally { rmSync(workspace, { recursive: true, force: true }); }
+  });
+
   test('offers local recovery only for a retained publication that cannot be revoked remotely', async () => {
     process.env.CRAFT_FEATURE_PAGES_SHARING = '1';
     delete process.env.CRAFT_PAGES_SHARE_API_URL;

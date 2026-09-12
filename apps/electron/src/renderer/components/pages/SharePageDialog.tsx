@@ -183,11 +183,19 @@ export function SharePageDialog({
       if (result.warning === 'remote-cleanup-pending') {
         toast.warning(t('toast.pageUnpublished'), { description: t('toast.pageRemoteCleanupPending') })
         return
-      } else if (result.warning === 'remote-copy-may-remain') {
-        toast.warning(t('toast.pageUnpublishFailed'), { description: t('toast.pagePublicCopyMayRemain') })
-        // The host, not the renderer, owns the irreversible confirmation.
+      } else if (result.warning === 'remote-copy-may-remain' || result.warning === 'remote-cleanup-credential-missing') {
+        // Two different facts share this branch because both end in the same
+        // local-forget prompt, but they must not share the same words: one page
+        // may still be public, the other is already revoked and is only losing
+        // the ability to reclaim its stored bytes.
+        const revoked = result.warning === 'remote-cleanup-credential-missing'
+        toast.warning(revoked ? t('toast.pageUnpublished') : t('toast.pageUnpublishFailed'), {
+          description: revoked ? t('toast.pageCleanupCredentialMissing') : t('toast.pagePublicCopyMayRemain'),
+        })
+        // The host, not the renderer, owns the irreversible confirmation. The
+        // toast above already said why it is about to appear, so there is no
+        // second identical one after it resolves.
         await window.electronAPI.unpublishPage(workspaceId, config.slug, { forgetLocal: true })
-        toast.warning(t('toast.pageUnpublishFailed'), { description: t('toast.pagePublicCopyMayRemain') })
       } else {
         toast.success(t('toast.pageUnpublished'))
       }
@@ -383,7 +391,11 @@ export function SharePageDialog({
                   )}
                 </div>
               </>
-            ) : (
+            ) : cleanupPending ? null : (
+              // Only a genuinely disabled build says so. A cleanup-pending page
+              // hides the publish controls for its own reason — it is revoked and
+              // the one action left is retrying cleanup — and claiming publishing
+              // is disabled there is simply false when sharing is enabled.
               <span className="text-xs text-foreground/50">{t('pages.share.disabledNote')}</span>
             )}
           </div>

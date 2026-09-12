@@ -860,7 +860,7 @@ app.whenReady().then(async () => {
                 signal,
               })).response === 1
             },
-            confirmForgetPagePublication: isHeadless ? undefined : async ({ workspaceName, pageSlug, signal }) => {
+            confirmForgetPagePublication: isHeadless ? undefined : async ({ workspaceName, pageSlug, reason, signal }) => {
               // Forget recovery has no render-bound requester; on macOS it must
               // still use an existing trusted parent for AbortSignal to dismiss it.
               const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -868,7 +868,12 @@ app.whenReady().then(async () => {
               const result = await dialog.showMessageBox(parent, {
                 type: 'warning', title: i18n.t('pages.share.forgetLocalTitle'),
                 message: `${i18n.t('pages.share.forgetLocalTitle')}: “${pageSlug}” (${workspaceName})`,
-                detail: i18n.t('pages.share.forgetLocalBody'),
+                // An already-revoked page is losing its cleanup retry, not its
+                // revocation. Consent has to describe what is actually being
+                // given up, or it is consent to the wrong thing.
+                detail: reason === 'cleanup-credential-missing'
+                  ? i18n.t('pages.share.forgetLocalBodyRevoked')
+                  : i18n.t('pages.share.forgetLocalBody'),
                 buttons: [i18n.t('pages.share.cancel'), i18n.t('pages.share.forgetLocalButton')],
                 defaultId: 0, cancelId: 0, noLink: true, signal,
               })

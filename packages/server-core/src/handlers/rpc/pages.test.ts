@@ -218,6 +218,7 @@ async function seedUnrevocablePublication(
   invoke: GrantHarness,
   name: string,
   publicationId: string,
+  cleanupPending = false,
 ): Promise<{ slug: string; publicationId: string }> {
   const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
     name, content: `<p>${publicationId}</p>`,
@@ -231,6 +232,7 @@ async function seedUnrevocablePublication(
     publishedAt: 1,
     updatedAt: 1,
     passwordProtected: false,
+    ...(cleanupPending ? { cleanupPending: true } : {}),
   })
   return { slug: page.slug, publicationId }
 }
@@ -337,6 +339,23 @@ describe('Pages RPC workspace capability gate', () => {
     // Resolving the page first is what keeps hostile text off native chrome
     // entirely: an unresolvable slug has no publication, so nothing is asked.
     expect(calls).toBe(0)
+  })
+
+  test('tells the host which fact to warn about, so a revoked page is not described as possibly public', async () => {
+    const reasons: string[] = []
+    const invoke = createHarness('unavailable', undefined, async ({ reason }) => { reasons.push(reason); return true })
+
+    // Never confirmed revoked: the alarming wording is the correct one.
+    const unconfirmed = await seedUnrevocablePublication(invoke, 'Unconfirmed', 'publication-unconfirmed')
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, unconfirmed.slug, { forgetLocal: true }))
+      .resolves.toMatchObject({ warning: undefined })
+
+    // Already revoked with only physical cleanup outstanding.
+    const revoked = await seedUnrevocablePublication(invoke, 'Revoked', 'publication-revoked', true)
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, revoked.slug, { forgetLocal: true }))
+      .resolves.toMatchObject({ warning: undefined })
+
+    expect(reasons).toEqual(['token-missing', 'cleanup-credential-missing'])
   })
 
   test('coalesces duplicate local-recovery requests into one host confirmation and one write', async () => {

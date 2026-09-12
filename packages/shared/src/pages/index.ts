@@ -165,4 +165,6 @@ export {
   type PublishPageOptions,
   type UnpublishResult,
   type DeletePageOutcome,
+  type LocalPublicationRecovery,
+  type LocalPublicationRecoveryReason,
 } from './publisher.ts';
