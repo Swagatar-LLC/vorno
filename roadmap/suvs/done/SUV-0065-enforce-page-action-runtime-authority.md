@@ -71,3 +71,27 @@ is SUV-0064.
   trusted-host-click branch rather than relying on frame proof, and the
   residual — that a real in-frame click may be invisible to `input-event` — is
   made safe by shape, since it fails as a refusal and never as a bypass.
+
+## Residuals
+
+Named here rather than left in PR threads, because each is a real limit a
+future owner will meet.
+
+- **Privileged Page actions are desktop-local.** Activation minting crosses
+  Electron `ipcMain`, resolves the workspace from the local window map, and
+  reaches the local broker — structurally identical to grant issuance in
+  SUV-0059, which refuses transport RPC outright (`PAGE_GRANT_IPC_REQUIRED`).
+  So a remote workspace cannot mint a grant *or* an activation, and the WebUI
+  cannot mutate at all. This is consistent rather than new, but it does mean a
+  grant approved while a workspace was local cannot be exercised against that
+  workspace remotely. Raised in review of PR #204. Making the privileged Page
+  surface work across the transport boundary needs the owning server to observe
+  interaction, which is an architecture question, not an implementation fix.
+- **One stray click can authorize one already-confirmed action.** After a
+  grant's first confirmed use on a render, later invocations need a fresh
+  unspent window gesture but no second dialog, and the SUV-0065 experiment
+  proved a window gesture cannot be attributed to the Page frame. Confirming
+  every invocation is friction ADR-0033 explicitly did not ask for.
+- **Whether a real in-frame click is visible to `input-event` is unknown.**
+  Measured only for synthesized input; see the evidence record. It fails as a
+  refusal, never as a bypass.
