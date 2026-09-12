@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SessionPersistenceQueue, sessionWriteKey } from '../persistence-queue.ts';
+import { SessionPersistenceQueue, sessionWriteKey, type SessionWriteKey } from '../persistence-queue.ts';
 import { getSessionFilePath } from '../storage.ts';
 import type { StoredSession } from '../types.ts';
 
@@ -257,6 +257,128 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(await handle.receipt).toMatchObject({ ok: false });
       expect(existsSync(getSessionFilePath(root, 'c2'))).toBe(false);
       expect(existsSync(getSessionFilePath(root, 'c2') + '.tmp')).toBe(false);
+    });
+
+    /**
+     * The whole stage × intent grid, because the interesting cell was missing.
+     *
+     * Cancellation can land at three points in a commit, and what it may safely
+     * do differs at each. The middle one is where a review found real damage: by
+     * then the target has ALREADY been unlinked — by us, for Windows, where
+     * rename refuses an existing destination — so abandoning there left a LIVE
+     * session with no file at all. The individual tests around this one each
+     * covered one cell, and none covered that one, so the grid is stated as a
+     * grid rather than trusted to a reader spotting the hole.
+     *
+     * The invariant, in one line: a supersede never leaves the session absent,
+     * a deletion always does.
+     */
+    /** Fire `act` at exactly one commit boundary, typed off the hook itself. */
+    function cancelAt(hook: 'beforeUnlink' | 'beforeRename' | 'afterRename', act: (key: SessionWriteKey) => void) {
+      queue.commitHooks = { [hook]: act };
+    }
+
+    const STAGES = [
+      { hook: 'beforeUnlink', label: 'before the unlink (target intact)' },
+      { hook: 'beforeRename', label: 'between the unlink and the rename (target already gone)' },
+      { hook: 'afterRename', label: 'after the rename committed' },
+    ] as const;
+
+    for (const stage of STAGES) {
+      it(`a SUPERSEDE ${stage.label} leaves the session present`, async () => {
+        write('grid', (r) => { r.name = 'committed' });
+        await queue.driveChecked(k('grid'));
+        const file = getSessionFilePath(root, 'grid');
+        expect(existsSync(file)).toBe(true);
+
+        cancelAt(stage.hook, (key) => queue.supersedePendingWrites(key));
+        const handle = write('grid', (r) => { r.name = 'stale' });
+        await handle.tail;
+        queue.commitHooks = undefined;
+
+        // Cancelled, so the caller is told its bytes did not land...
+        expect(await handle.receipt).toMatchObject({ ok: false });
+        // ...and the session still HAS a file, which is the whole promise.
+        expect(existsSync(file)).toBe(true);
+        expect(readFileSync(file, 'utf-8').length).toBeGreaterThan(0);
+        // The scratch file is this generation's own and goes either way.
+        expect(existsSync(file + '.tmp')).toBe(false);
+      });
+
+      it(`a DELETION ${stage.label} leaves the session absent`, async () => {
+        write('gridd', (r) => { r.name = 'committed' });
+        await queue.driveChecked(k('gridd'));
+        const file = getSessionFilePath(root, 'gridd');
+        expect(existsSync(file)).toBe(true);
+
+        cancelAt(stage.hook, (key) => queue.cancelForDeletion(key));
+        const handle = write('gridd', (r) => { r.name = 'stale' });
+        await handle.tail;
+        queue.commitHooks = undefined;
+
+        expect(await handle.receipt).toMatchObject({ ok: false });
+        // `beforeUnlink` is the one stage where the committed file survives a
+        // deletion cancel — nothing has touched it yet, and `deleteSession`
+        // removes the directory itself. The other two must leave nothing.
+        if (stage.hook !== 'beforeUnlink') {
+          expect(existsSync(file)).toBe(false);
+        }
+        expect(existsSync(file + '.tmp')).toBe(false);
+      });
+    }
+
+    it('a deletion does not leave its intent behind for a later supersede', async () => {
+      // The flaw in a single sticky `discardCommitted` flag: it described the
+      // SESSION, so once any deletion had happened, "discard the artifact"
+      // applied to every later generation — including a supersede's, which must
+      // never remove a file.
+      //
+      // Reaching it takes care, and the first version of this test did not.
+      // `retireIfQuiescent` drops the watermark the moment a session goes idle,
+      // which erases the evidence — so a deletion, a pause, and a later
+      // supersede cannot show the leak. It needs UNBROKEN activity across all
+      // three, which is the busy-session shape where retirement never runs: the
+      // deletion lands mid-write and a further generation is already queued
+      // behind it, so the watermark is still there when the supersede arrives.
+      const file = getSessionFilePath(root, 'leak');
+      let deleted = false;
+      let superseded = false;
+      queue.commitHooks = {
+        // Generation 1: delete it mid-write, and queue generation 2 behind it
+        // before this tail can drain. That is what keeps retirement from
+        // running and taking the deletion watermark with it.
+        beforeUnlink: (key) => {
+          if (deleted) return;
+          deleted = true;
+          queue.cancelForDeletion(key);
+          queue.enqueueChecked(
+            Object.assign(session('leak'), { name: 'live again' }) as StoredSession,
+          );
+        },
+        // Generation 2 reaches here — generation 1 abandoned before its rename.
+        // It is above the deletion's watermark, so it commits; then a supersede
+        // lands on it while that watermark is still on record. Its artifact
+        // must survive, because THIS generation was superseded, not deleted.
+        afterRename: (key) => {
+          if (superseded) return;
+          superseded = true;
+          queue.supersedePendingWrites(key);
+        },
+      };
+      await write('leak').tail;
+      // Generation 2 was queued mid-commit, so it runs on its own timer; drive
+      // it explicitly and wait for the tail that carries it.
+      await queue.driveChecked(k('leak'));
+      queue.commitHooks = undefined;
+
+      expect(deleted).toBe(true);
+      expect(superseded).toBe(true);
+      // Superseded, so the write is reported cancelled — and its bytes stay,
+      // because a supersede never removes a live session's file. Under the old
+      // session-wide flag the deletion's intent was still set here and this
+      // unlinked it.
+      expect(existsSync(file)).toBe(true);
+      expect(readFileSync(file, 'utf-8')).toContain('"name":"live again"');
     });
 
     it('removes the artifact when a DELETION lands AFTER the rename committed', async () => {
@@ -691,6 +813,64 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(after.lastReadMessageId).toBeUndefined();
       expect(held.has(k('age1'))).toBe(false);
     });
+
+    /**
+     * The observation baseline is "local as it stood when we looked", and the
+     * two directions have to come apart cleanly.
+     *
+     * Baselining on the last COMMITTED metadata got this wrong, because local
+     * writes are debounced: an in-app change sitting in the queue uncommitted
+     * looked, to a later observation, like an edit made AFTER it. Rule 1 then
+     * fired and wrote our older value over a genuinely newer external one.
+     * Baselining on the newest ENQUEUED metadata asks the real question.
+     *
+     * Run over the two fields this can actually bite on: `permissionMode` and
+     * `lastReadMessageId` are not copied into memory by SessionManager's
+     * reconciliation, so the merge is the only route by which either can reach
+     * disk, and a wrong answer here is a silent data loss rather than a
+     * cosmetic one.
+     */
+    for (const field of ['permissionMode', 'lastReadMessageId'] as const) {
+      it(`external wins ${field} when it lands during an uncommitted local change`, async () => {
+        await write('base1').tail;
+        const file = getSessionFilePath(root, 'base1');
+        const read = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+
+        // A local change is enqueued and NOT yet committed — the debounce window.
+        queue.enqueueChecked(session('base1'));
+        const local = queue.enqueueChecked(
+          Object.assign(session('base1'), { [field]: 'ours-uncommitted' }) as StoredSession,
+        );
+        expect(queue.hasPending(k('base1'))).toBe(true);
+
+        // THEN somebody else changes the same field, and we observe it. Their
+        // edit is newer than our uncommitted one, so theirs must win.
+        const observed = { ...read(), [field]: 'theirs-newer' };
+        queue.supersedePendingWrites(k('base1'), observed as never);
+
+        // The replacement write carries our local value forward as local state.
+        await write('base1', (r) => { (r as unknown as Record<string, unknown>)[field] = 'ours-uncommitted' }).tail;
+        void local;
+
+        expect(read()[field]).toBe('theirs-newer');
+      });
+
+      it(`local wins ${field} when the app changes it AFTER the observation`, async () => {
+        await write('base2').tail;
+        const file = getSessionFilePath(root, 'base2');
+        const read = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+
+        // Observed first, with nothing local outstanding.
+        const observed = { ...read(), [field]: 'theirs' };
+        queue.supersedePendingWrites(k('base2'), observed as never);
+
+        // The app moves the same field afterwards. Ours is the newer edit, so
+        // the remembered external value must not resurrect over it.
+        await write('base2', (r) => { (r as unknown as Record<string, unknown>)[field] = 'ours-newer' }).tail;
+
+        expect(read()[field]).toBe('ours-newer');
+      });
+    }
 
     it('KEEPS the signature baseline through a supersede', async () => {
       // The other half of the asymmetry, and the one with teeth. A supersede

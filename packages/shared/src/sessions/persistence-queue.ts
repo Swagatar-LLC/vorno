@@ -29,7 +29,12 @@ interface HeaderMetadataSignature {
   lastReadMessageId?: string
 }
 
-function getHeaderMetadataFields(header: SessionHeader): HeaderMetadataSignature {
+/**
+ * Takes the shared shape rather than `SessionHeader`, so the same extraction
+ * serves a header and a `StoredSession` snapshot. The seven fields are named
+ * identically on both, and the observation baseline needs it off a snapshot.
+ */
+function getHeaderMetadataFields(header: HeaderMetadataSignature): HeaderMetadataSignature {
   const signature: HeaderMetadataSignature = {
     name: header.name,
     labels: header.labels,
@@ -135,10 +140,10 @@ function resolveExternalMetadata({
 }
 
 /**
- * How far cancellation reaches, and how far it is allowed to go.
+ * How far cancellation reaches, per intent.
  *
- * `discardCommitted` is the difference between the two callers of this
- * mechanism, and conflating them destroys live data:
+ * The two intents are the difference between the callers, and conflating them
+ * destroys live data:
  *
  * - **Deletion** (`cancelForDeletion`) must remove the artifact even if the
  *   rename already committed, or a deleted session reappears on disk.
@@ -147,12 +152,39 @@ function resolveExternalMetadata({
  *   state; unlinking there deletes a live session's file, and leaves it absent
  *   until the replacement write lands.
  *
- * Sticky by design: once a session is being deleted, a later supersede cannot
- * downgrade the intent back to "keep the file", because nothing un-deletes a
- * session. `through` is likewise monotonic. Both directions of ordering are
- * therefore safe without the callers having to know about each other.
+ * **Two watermarks rather than one plus a flag.** A single sticky
+ * `discardCommitted` boolean was wrong in a way no test caught: it described
+ * the session rather than a generation, so once any deletion had happened the
+ * "discard the artifact" intent applied to every later generation too. A
+ * session deleted, re-enqueued, and then superseded would have had that
+ * supersede unlink a live file, because the flag was still set from the
+ * deletion several generations earlier.
+ *
+ * Keyed by intent, each generation gets the answer that belongs to it: a
+ * generation is cancelled if either watermark covers it, and its artifact is
+ * discarded only if the DELETION watermark does. Both climb and never fall, so
+ * the two callers still cannot undo each other in either order — a supersede
+ * after a deletion cannot un-delete, and a deletion after a supersede still
+ * discards — without the intent bleeding forward onto unrelated work.
  */
-type CancellationWatermark = { through: number; discardCommitted: boolean }
+type CancellationWatermark = { deleteThrough: number; supersedeThrough: number }
+
+/** The highest generation cancelled under either intent. */
+function cancelledThroughGeneration(watermark?: CancellationWatermark): number {
+  return Math.max(watermark?.deleteThrough ?? 0, watermark?.supersedeThrough ?? 0)
+}
+
+/**
+ * How far a write has got, for the cancellation check.
+ *
+ * Named rather than a boolean because the three stages do not differ by degree:
+ * what a cancellation may safely do is different at each one, and the middle
+ * stage is the surprising one. `intact` — the session's file is untouched, so
+ * walking away leaves it exactly as it was. `target-removed` — we have unlinked
+ * it ourselves for Windows, so walking away leaves NOTHING. `committed` — the
+ * rename has happened and the bytes are live.
+ */
+type WriteStage = 'intact' | 'target-removed' | 'committed'
 
 /**
  * The identity every piece of this queue's per-session state is filed under.
@@ -340,6 +372,22 @@ class SessionPersistenceQueue {
    */
   private lastWrittenMetadata = new Map<SessionWriteKey, HeaderMetadataSignature>()
   /**
+   * The newest local metadata this queue has been HANDED, written or not.
+   *
+   * The observation baseline has to come from here rather than from
+   * `lastWrittenMetadata`, and the difference is a real wrong answer. Local
+   * writes are debounced, so in-app state routinely sits in the queue
+   * uncommitted. Baselining on the last *committed* metadata makes such a
+   * change look like it happened AFTER an observation taken later than it, so
+   * the resolver's rule 1 fires and writes our older value over a genuinely
+   * newer external edit — the exact reversal that rule exists to prevent.
+   *
+   * Recorded on every `enqueue`, so it covers the pending entry and the one
+   * already lifted off `pending` onto the tail; both are local state the app
+   * has produced and neither is on disk yet.
+   */
+  private lastEnqueuedMetadata = new Map<SessionWriteKey, HeaderMetadataSignature>()
+  /**
    * Metadata an external writer was OBSERVED to have, held until a write lands
    * it.
    *
@@ -382,6 +430,10 @@ class SessionPersistenceQueue {
     }, this.debounceMs)
 
     this.pending.set(key, { data: session, timer, generation })
+    // The newest local state we have been handed, for the observation baseline.
+    // Recorded here rather than at commit time because a debounced write is
+    // local state that already exists — see `lastEnqueuedMetadata`.
+    this.lastEnqueuedMetadata.set(key, getHeaderMetadataFields(session))
     return generation
   }
 
@@ -425,7 +477,7 @@ class SessionPersistenceQueue {
     // above it. No black-box test can reach this branch, and none pretends to;
     // it is here because the invariant — never report success for a cancelled
     // generation — should survive someone changing that arithmetic.
-    if ((this.cancelledThrough.get(key)?.through ?? 0) >= generation) {
+    if (cancelledThroughGeneration(this.cancelledThrough.get(key)) >= generation) {
       return Promise.resolve({ ok: false, error: 'session write cancelled' })
     }
     const written = this.writtenGeneration.get(key) ?? 0
@@ -533,6 +585,12 @@ class SessionPersistenceQueue {
     this.writtenGeneration.delete(key)
     this.cancelledThrough.delete(key)
     this.lastWriteFailure.delete(key)
+    // Retired WITH the generations, unlike the signature baseline below. It
+    // describes local state that was waiting to be written, and at quiescence
+    // there is none — every enqueued snapshot has been written or abandoned. An
+    // observation taken later then baselines on the last committed metadata,
+    // which at that point IS the newest local state.
+    this.lastEnqueuedMetadata.delete(key)
     // `lastWrittenHeaderSignature` is deliberately NOT retired here. It is not
     // generation bookkeeping — it is the live baseline for "did somebody else
     // change this header since we last wrote it", and it has to outlive
@@ -585,7 +643,7 @@ class SessionPersistenceQueue {
     // Cancelled between enqueue and execution: do not write at all. Nothing was
     // committed, so the intent does not matter here — there is no artifact to
     // keep or discard either way.
-    if ((this.cancelledThrough.get(key)?.through ?? 0) >= generation) {
+    if (cancelledThroughGeneration(this.cancelledThrough.get(key)) >= generation) {
       debug(`[PersistenceQueue] Skipped cancelled write for ${entry.data.id}`)
       this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
       this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled' })
@@ -706,13 +764,37 @@ class SessionPersistenceQueue {
        * serialised behind this one — start from a clean slate rather than
        * racing this cleanup.
        */
-      const abandonIfCancelled = async (committed: boolean): Promise<boolean> => {
+      const abandonIfCancelled = async (stage: WriteStage): Promise<boolean> => {
         const watermark = this.cancelledThrough.get(key)
-        if ((watermark?.through ?? 0) < generation) return false
+        if (cancelledThroughGeneration(watermark) < generation) return false
+        // THIS generation's intent, not the session's ever-set flags.
+        const discardCommitted = (watermark?.deleteThrough ?? 0) >= generation
+
+        // `target-removed` is the one stage where abandoning is not a safe
+        // no-op, and it took a review to see it. By this point the target has
+        // ALREADY been unlinked — by us, for Windows, where rename refuses an
+        // existing destination. Deleting the replacement here and returning
+        // therefore leaves the session with no file at all, which is exactly
+        // the outcome a supersede exists to prevent, arrived at from the other
+        // direction: the earlier fix stopped supersede unlinking a committed
+        // file, and this one stops it walking away from a target it had already
+        // removed. The replacement write is debounced and swallows its errors,
+        // so the gap is not hypothetical — a crash inside it loses the session.
+        //
+        // So under a keep-the-file intent this stage does not abandon at all.
+        // The rename completes, the stale bytes land, and the caller's merged
+        // write replaces them a moment later. Stale-then-replaced is what this
+        // path did before any cancellation check existed; absent is new damage.
+        // The receipt still reports cancelled from the commit stage below, so
+        // no caller is told these bytes were its own.
+        //
+        // A deletion still abandons here: the file is meant to be gone.
+        if (stage === 'target-removed' && !discardCommitted) return false
+
         // The temp file is this generation's private scratch space and is
         // always ours to remove, under either intent.
         try { await unlink(tmpFile) } catch { /* may not exist */ }
-        if (committed && watermark?.discardCommitted) {
+        if (stage === 'committed' && discardCommitted) {
           // Deletion only. The rename already happened, so remove what it
           // produced — otherwise a session the caller deleted stays on disk.
           //
@@ -722,7 +804,7 @@ class SessionPersistenceQueue {
           // from disk until the replacement write lands.
           try { await unlink(filePath) } catch { /* may not exist */ }
         }
-        debug(`[PersistenceQueue] Abandoned cancelled write for session ${data.id} (committed=${committed})`)
+        debug(`[PersistenceQueue] Abandoned cancelled write for session ${data.id} (stage=${stage})`)
         this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
         this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled' })
         return true
@@ -730,16 +812,16 @@ class SessionPersistenceQueue {
 
       await writeFile(tmpFile, lines.join('\n') + '\n', 'utf-8')
       await this.commitHooks?.beforeUnlink?.(key)
-      if (await abandonIfCancelled(false)) return false
+      if (await abandonIfCancelled('intact')) return false
 
       // On Windows, rename fails if target exists. Delete first for cross-platform compatibility.
       try { await unlink(filePath) } catch { /* ignore if doesn't exist */ }
       await this.commitHooks?.beforeRename?.(key)
-      if (await abandonIfCancelled(false)) return false
+      if (await abandonIfCancelled('target-removed')) return false
 
       await rename(tmpFile, filePath)
       await this.commitHooks?.afterRename?.(key)
-      if (await abandonIfCancelled(true)) return false
+      if (await abandonIfCancelled('committed')) return false
 
       debug(`[PersistenceQueue] Wrote session ${data.id}`)
       // Landed, so the observation has been discharged. Deliberately NOT done
@@ -812,11 +894,12 @@ class SessionPersistenceQueue {
    * that baseline to describe.
    */
   cancelForDeletion(key: SessionWriteKey): void {
-    this.stopPendingWrites(key, { discardCommitted: true })
+    this.stopPendingWrites(key, 'delete')
     // Safe here and only here: the session is gone, so no later write can need
     // this baseline to detect an external edit.
     this.lastWrittenHeaderSignature.delete(key)
     this.lastWrittenMetadata.delete(key)
+    this.lastEnqueuedMetadata.delete(key)
     this.lastWriteFailure.delete(key)
     this.pendingExternalMetadata.delete(key)
     // Drop the bookkeeping, but only if nothing is still in flight. Deleted
@@ -845,7 +928,7 @@ class SessionPersistenceQueue {
    * edit this call exists to protect.
    */
   supersedePendingWrites(key: SessionWriteKey, observedHeader?: SessionHeader): void {
-    this.stopPendingWrites(key, { discardCommitted: false })
+    this.stopPendingWrites(key, 'supersede')
     // Hold what the caller actually saw, AND what we had when it saw it. The
     // second half is what stops a remembered external value from beating an
     // in-app change made after the observation — see `ExternalObservation`.
@@ -855,7 +938,12 @@ class SessionPersistenceQueue {
     if (observedHeader) {
       this.pendingExternalMetadata.set(key, {
         external: getHeaderMetadataFields(observedHeader),
-        localAtObservation: this.lastWrittenMetadata.get(key),
+        // The newest local state, committed or merely enqueued — NOT the last
+        // committed one. A debounced local change is local state that already
+        // happened; baselining behind it makes it look like a post-observation
+        // edit and lets it beat a newer external change. Falls back to the last
+        // write for a session with nothing in the queue.
+        localAtObservation: this.lastEnqueuedMetadata.get(key) ?? this.lastWrittenMetadata.get(key),
         observedAt: Date.now(),
       })
     }
@@ -867,7 +955,7 @@ class SessionPersistenceQueue {
    * Shared core of both intents: raise the watermark and settle anything
    * waiting on the generations it now covers.
    */
-  private stopPendingWrites(key: SessionWriteKey, { discardCommitted }: { discardCommitted: boolean }): void {
+  private stopPendingWrites(key: SessionWriteKey, intent: 'delete' | 'supersede'): void {
     const entry = this.pending.get(key)
     if (entry) {
       clearTimeout(entry.timer)
@@ -879,24 +967,28 @@ class SessionPersistenceQueue {
     // Everything enqueued up to now is cancelled; anything enqueued after is
     // a higher generation and unaffected.
     //
-    // Both fields climb and never fall, so the two callers cannot undo each
-    // other in either order: a supersede arriving after a deletion leaves the
-    // session deleted.
+    // Each intent raises only its OWN watermark, and only ever upward. That is
+    // what keeps both orderings safe — a supersede after a deletion cannot
+    // un-delete, a deletion after a supersede still discards — while confining
+    // "discard the artifact" to the generations a deletion actually covered.
+    // The flag this replaced described the session, so it leaked a deletion's
+    // intent onto every later generation, including a supersede's.
     //
-    // The two halves have different standing, and saying so is the honest
-    // version. `discardCommitted`'s OR is LIVE — both orderings are exercised
-    // (`a supersede arriving after a deletion…` and its mirror), and dropping
-    // it lets a watcher event rescue a deleted session's file. The `Math.max`
-    // on `through` is a STRUCTURAL BACKSTOP with no reachable path today:
-    // `generations` only ever shrinks in `retireIfQuiescent`, which deletes
-    // `cancelledThrough` in the same breath, so there is no state in which a
-    // lower generation count meets a surviving watermark. Removing it changes
-    // no test, and it stays because the invariant should hold by construction
-    // rather than by that adjacency continuing to be true.
+    // Honest standing of the two `Math.max` calls: they are STRUCTURAL
+    // BACKSTOPS with no reachable path today, because `generations` only ever
+    // shrinks in `retireIfQuiescent`, which deletes `cancelledThrough` in the
+    // same breath — so no state exists where a lower generation count meets a
+    // surviving watermark. They stay because the invariant should hold by
+    // construction rather than by that adjacency continuing to be true.
     const previous = this.cancelledThrough.get(key)
+    const reached = this.generations.get(key) ?? 0
     this.cancelledThrough.set(key, {
-      through: Math.max(previous?.through ?? 0, this.generations.get(key) ?? 0),
-      discardCommitted: (previous?.discardCommitted ?? false) || discardCommitted,
+      deleteThrough: intent === 'delete'
+        ? Math.max(previous?.deleteThrough ?? 0, reached)
+        : (previous?.deleteThrough ?? 0),
+      supersedeThrough: intent === 'supersede'
+        ? Math.max(previous?.supersedeThrough ?? 0, reached)
+        : (previous?.supersedeThrough ?? 0),
     })
 
     // Anything holding a receipt for a cancelled generation must be told rather
