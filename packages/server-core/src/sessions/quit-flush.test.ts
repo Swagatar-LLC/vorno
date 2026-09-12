@@ -87,6 +87,36 @@ describe('quit flushes sessions that are mid-commit', () => {
     return managed
   }
 
+  /**
+   * The private turn-lifecycle API, reached the way the rest of this suite
+   * reaches privates. A function, not a const: `sm` is rebuilt per test.
+   *
+   * `setProcessing`'s stop overload REQUIRES a disposition — an owner that will
+   * release after its tail, or `'no-tail'` — so the cast spells the third
+   * argument out rather than letting a test pretend it is optional.
+   */
+  function turns() {
+    return sm as unknown as {
+      setProcessing(m: unknown, processing: boolean, finalization?: unknown): void
+      claimTurnFinalization(sessionId: string): { token: symbol; release(): void }
+      completePlanSubmissionHandoff(m: unknown): Promise<void>
+      completeAuthRequestHandoff(m: unknown, request: unknown, authMessage: unknown): void
+    }
+  }
+
+  /** A browser-pane manager whose visual clear parks until `release()` is called. */
+  function holdBrowserRelease(): { release: () => void } {
+    let release!: () => void
+    const held = new Promise<void>((r) => { release = r })
+    ;(sm as unknown as {
+      getBrowserPaneManagerForSession(id: string): unknown
+    }).getBrowserPaneManagerForSession = () => ({
+      clearVisualsForSession: async () => { await held },
+      unbindAllForSession: () => {},
+    })
+    return { release: () => release() }
+  }
+
   it('flushAllSessions waits for a write already past the queue', async () => {
     const filePath = getSessionFilePath(root, SESSION_ID)
     mkdirSync(dirname(filePath), { recursive: true })
@@ -518,16 +548,10 @@ describe('quit flushes sessions that are mid-commit', () => {
       const sessionId = 'sess_finalizer'
       const managed = seedManaged(sessionId, { messageQueue: [] })
 
-      let releaseVisuals!: () => void
-      const visualsHeld = new Promise<void>((r) => { releaseVisuals = r })
-      ;(sm as unknown as {
-        getBrowserPaneManagerForSession(id: string): unknown
-      }).getBrowserPaneManagerForSession = () => ({
-        clearVisualsForSession: async () => { await visualsHeld },
-      })
+      const visuals = holdBrowserRelease()
 
       // Start a real turn so `setProcessing` mints the finalisation deferred.
-      ;(sm as unknown as { setProcessing(m: unknown, p: boolean): void }).setProcessing(managed, true)
+      turns().setProcessing(managed, true)
       expect(managed.turnFinalization).toBeDefined()
 
       // The turn produces its answer and the finaliser begins.
@@ -554,7 +578,7 @@ describe('quit flushes sessions that are mid-commit', () => {
       expect(settled).toBe(false)
       expect(sessionPersistenceQueue.isClosing).toBe(false)
 
-      releaseVisuals()
+      visuals.release()
       await shutdown
 
       expect(settled).toBe(true)
@@ -580,15 +604,14 @@ describe('quit flushes sessions that are mid-commit', () => {
       // one that never gets a checked write.
       const sessionId = 'sess_mid_finalization'
       const managed = seedManaged(sessionId, { messageQueue: [] })
-      ;(sm as unknown as { setProcessing(m: unknown, p: boolean): void }).setProcessing(managed, true)
-      ;(sm as unknown as { setProcessing(m: unknown, p: boolean): void }).setProcessing(managed, false)
+      turns().setProcessing(managed, true)
+      turns().setProcessing(managed, false, 'no-tail')
       // Put it back into the mid-finalisation shape: flag down, deferred up.
       let resolveFinal!: () => void
       managed.turnFinalization = {
         token: Symbol(sessionId),
         promise: new Promise<void>((r) => { resolveFinal = r }),
         resolve: () => {},
-        finalizerRunning: true,
       }
       expect(managed.isProcessing).toBe(false)
 
@@ -627,11 +650,11 @@ describe('quit flushes sessions that are mid-commit', () => {
       const sessionId = 'sess_handoff'
       const managed = seedManaged(sessionId, { messageQueue: [] })
 
-      ;(sm as unknown as { setProcessing(m: unknown, p: boolean): void }).setProcessing(managed, true)
+      turns().setProcessing(managed, true)
       expect(managed.turnFinalization).toBeDefined()
 
-      // The handoff: the flag goes false without the finaliser running.
-      ;(sm as unknown as { setProcessing(m: unknown, p: boolean): void }).setProcessing(managed, false)
+      // A stop with nothing following it says so, and is released on the spot.
+      turns().setProcessing(managed, false, 'no-tail')
       expect(managed.turnFinalization).toBeUndefined()
 
       // Resolves promptly, and cleanly — not after the drain bound, and not as
@@ -640,6 +663,121 @@ describe('quit flushes sessions that are mid-commit', () => {
       await sm.flushAllSessions()
       expect(Date.now() - started).toBeLessThan(2000)
     }, 20000)
+
+    it('holds the plan handoff open across its tail, and the plan lands', async () => {
+      // The regression this exists for: releasing the deferred from
+      // `setProcessing(false)` released it at the START of the handoff's tail.
+      // The plan handoff's tail is browser release, then the complete event,
+      // then the persist that records the plan — so a shutdown landing inside
+      // it resumed, closed the queue, and the plan never reached disk while the
+      // quit reported success.
+      const sessionId = 'sess_plan_handoff'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+      const visuals = holdBrowserRelease()
+      managed.agent = { interruptForHandoff: () => {} }
+
+      turns().setProcessing(managed, true)
+      ;(managed.messages as unknown[]).push({
+        id: 'plan-1',
+        role: 'plan',
+        content: 'the plan submitted while shutdown waited',
+        timestamp: Date.now(),
+      })
+
+      // Parks at the browser release, with the flag already down.
+      void turns().completePlanSubmissionHandoff(managed)
+      await new Promise((r) => setTimeout(r, 20))
+      expect(managed.isProcessing).toBe(false)
+      expect(managed.turnFinalization).toBeDefined()
+
+      let settled = false
+      const shutdown = sm.flushAllSessions().then(() => { settled = true })
+      await new Promise((r) => setTimeout(r, 80))
+
+      // The owner still holds it, so the queue is still open.
+      expect(settled).toBe(false)
+      expect(sessionPersistenceQueue.isClosing).toBe(false)
+
+      visuals.release()
+      await shutdown
+
+      expect(settled).toBe(true)
+      expect(readFileSync(getSessionFilePath(root, sessionId), 'utf-8')).toContain(
+        'the plan submitted while shutdown waited',
+      )
+    }, 20000)
+
+    it('releases the auth handoff after its persist, and the pending request lands', async () => {
+      // The auth handoff's tail is synchronous, so what it has to get right is
+      // the release: held past the persist, and actually released afterwards.
+      // A forgotten `finally` here is invisible until a quit, which then waits
+      // out its entire drain bound and reports a stuck turn that is not stuck.
+      const sessionId = 'sess_auth_handoff'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+      holdBrowserRelease()  // never released: the auth tail must not await it
+      managed.agent = { interruptForHandoff: () => {} }
+
+      turns().setProcessing(managed, true)
+      const authMessage = {
+        id: 'auth-1',
+        role: 'auth-request',
+        content: 'Sign in to Linear',
+        timestamp: Date.now(),
+        authRequestId: 'req_1',
+        authStatus: 'pending',
+      }
+      ;(managed.messages as unknown[]).push(authMessage)
+      turns().completeAuthRequestHandoff(
+        managed,
+        { requestId: 'req_1', type: 'oauth', sourceSlug: 'linear', sourceName: 'Linear' },
+        authMessage,
+      )
+
+      expect(managed.isProcessing).toBe(false)
+      expect(managed.turnFinalization).toBeUndefined()
+
+      const started = Date.now()
+      await sm.flushAllSessions()
+      expect(Date.now() - started).toBeLessThan(2000)
+      expect(readFileSync(getSessionFilePath(root, sessionId), 'utf-8')).toContain('Sign in to Linear')
+    }, 20000)
+
+    it('a stale owner cannot resolve the turn that replaced it', () => {
+      // Turns are serial per session; their tails are not. An owner whose turn
+      // has already been superseded must release NOTHING — resolving the live
+      // deferred would tell shutdown that the new turn is finalised while it is
+      // still assembling state.
+      const sessionId = 'sess_stale_owner'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+
+      turns().setProcessing(managed, true)
+      const firstPromise = (managed.turnFinalization as { promise: Promise<void> }).promise
+      let firstSettled = false
+      void firstPromise.then(() => { firstSettled = true })
+
+      // The first turn stops with a tail still in flight — its owner has not
+      // released yet.
+      const stale = turns().claimTurnFinalization(sessionId)
+      turns().setProcessing(managed, false, stale)
+      expect(managed.turnFinalization).toBeDefined()
+
+      // The successor starts before that tail finishes.
+      turns().setProcessing(managed, true)
+      const successor = managed.turnFinalization
+      expect(successor).not.toBe(undefined)
+
+      stale.release()
+      expect(managed.turnFinalization).toBe(successor)
+
+      // And the superseded deferred was settled rather than orphaned: shutdown
+      // may hold a reference to it, and nothing else can ever answer it.
+      return Promise.resolve().then(() => {
+        expect(firstSettled).toBe(true)
+        // The successor's own owner does release it.
+        turns().claimTurnFinalization(sessionId).release()
+        expect(managed.turnFinalization).toBeUndefined()
+      })
+    })
   })
 
   describe('a cancelled final receipt is never accepted', () => {

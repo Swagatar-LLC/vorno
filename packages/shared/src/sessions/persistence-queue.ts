@@ -745,7 +745,12 @@ class SessionPersistenceQueue {
     return { key, generation, receipt: this.receiptFor(key, generation) }
   }
 
-  /** Resolve once `generation` (or later) has been written, or has failed. */
+  /**
+   * Resolve once THIS generation has been written, has failed, or has been
+   * cancelled — never on a later generation's outcome (I4). The `written >=`
+   * shortcut below is an already-answered fast path, not a widening: it fires
+   * only for a generation that was written before its receipt was asked for.
+   */
   private receiptFor(key: SessionWriteKey, generation: number): Promise<SessionWriteReceipt> {
     // Cancelled generations are TERMINAL and answer immediately, rather than
     // parking a waiter that nothing would settle: `write` returns early when

@@ -1010,27 +1010,24 @@ interface ManagedSession {
    * records all of it. A shutdown that waited on the flag resumed while that
    * tail was still running, so the queue closed underneath the final write.
    *
-   * Created when processing STARTS and resolved in `onProcessingStopped`'s
-   * `finally`, after every one of those steps. The token is the identity guard:
-   * turns are serial per session but their finalisers are async, so a slow
-   * finaliser must not resolve — or clear — the deferred belonging to the turn
-   * that started after it.
+   * Created when processing STARTS and resolved by the ONE owner that claimed
+   * it — never as a side effect of the flag going false. Every stop site says
+   * which it is: `setProcessing(…, false)` takes a REQUIRED disposition, so a
+   * site with an async tail holds the deferred across that tail and its persist
+   * and releases in its own `finally`, while a site with nothing left to finish
+   * passes `'no-tail'` and the deferred is released there and then. Releasing
+   * generically from the flag write was the earlier shape, and it resolved a
+   * handoff's deferred at the START of its tail — the exact early-resolve this
+   * exists to prevent, reached through a different door.
+   *
+   * The token is the identity guard: turns are serial per session but their
+   * tails are async, so a slow owner must not resolve — or clear — the deferred
+   * belonging to the turn that started after it.
    */
   turnFinalization?: {
     token: symbol
     promise: Promise<void>
     resolve: () => void
-    /**
-     * Whether `onProcessingStopped` is the one that will resolve this.
-     *
-     * Set when that handler starts, and it is what lets `setProcessing(false)`
-     * tell its two cases apart: the flag going false from INSIDE the finaliser
-     * is the normal path and must not resolve early, while the flag going false
-     * anywhere else means no finaliser is coming and the deferred has to be
-     * released — otherwise shutdown waits out its whole bound on a promise
-     * nothing will ever settle.
-     */
-    finalizerRunning: boolean
   }
   autoRetryPending?: {
     content: string
@@ -1039,6 +1036,29 @@ interface ManagedSession {
     committed: boolean
   }
 }
+
+/**
+ * The single claim on a turn's finalisation deferred.
+ *
+ * Handed out by `claimTurnFinalization`, bound to the turn that was live when
+ * it was taken: a stale owner — one whose turn has since been replaced —
+ * releases nothing. Holding one is a promise to call `release()` in a
+ * `finally`, after the tail and the persist the deferred exists to cover.
+ */
+interface TurnFinalizationOwner {
+  /** The turn this owner may release. Inert once a later turn owns the slot. */
+  readonly token: symbol
+  /** Resolve the claimed turn's deferred. Idempotent; a repeat call no-ops. */
+  release(): void
+}
+
+/**
+ * What a stop site does about finalisation. REQUIRED at every
+ * `setProcessing(…, false)`, so a future stop site cannot silently inherit
+ * someone else's answer: either an owner it holds and will release after its
+ * tail, or `'no-tail'` — nothing follows this stop, so release now.
+ */
+type TurnStopFinalization = TurnFinalizationOwner | 'no-tail'
 
 const PI_SDK_MESSAGE_ID_CACHE_LIMIT = 256
 
@@ -1361,36 +1381,85 @@ export class SessionManager implements ISessionManager {
   }) => Promise<void>
 
   /**
+   * Claim a turn's finalisation deferred.
+   *
+   * Taken BEFORE the stop it covers, so the owner is bound to the turn that is
+   * ending rather than to whatever is live when its tail finally finishes: a
+   * follow-up turn mints a new deferred with a new token, and this owner then
+   * releases nothing. Claiming where there is no live turn hands back an inert
+   * owner rather than failing — every site that claims sits on a path where the
+   * deferred may legitimately already be gone.
+   */
+  private claimTurnFinalization(sessionId: string): TurnFinalizationOwner {
+    const token = this.sessions.get(sessionId)?.turnFinalization?.token ?? Symbol(`${sessionId}:no-turn`)
+    return {
+      token,
+      release: () => {
+        // Re-read the session rather than trusting one captured before the
+        // tail ran: it may have been deleted, or deleted and re-registered
+        // under the same id, while this owner was working.
+        const live = this.sessions.get(sessionId)
+        if (!live?.turnFinalization || live.turnFinalization.token !== token) return
+        live.turnFinalization.resolve()
+        live.turnFinalization = undefined
+      },
+    }
+  }
+
+  /**
    * Centralized setter for session processing state.
    * Automatically notifies the power manager on transitions (true→false, false→true)
    * so callers don't need to remember to call onSessionStarted/onSessionStopped.
+   *
+   * Stopping additionally requires naming who finalises the turn — see
+   * `TurnStopFinalization`. This setter moves UI and admission state; it does
+   * NOT resolve the finalisation deferred on its own.
    */
-  private setProcessing(managed: ManagedSession, processing: boolean): void {
+  private setProcessing(managed: ManagedSession, processing: true): void
+  private setProcessing(managed: ManagedSession, processing: false, finalization: TurnStopFinalization): void
+  private setProcessing(
+    managed: ManagedSession,
+    processing: boolean,
+    finalization?: TurnStopFinalization,
+  ): void {
     const was = managed.isProcessing
     managed.isProcessing = processing
     if (!was && processing) {
       // A fresh finalisation deferred per turn. Shutdown awaits these rather
       // than the flag below, because the flag goes false well before the turn's
       // state has been written — see `turnFinalization`.
+      //
+      // A deferred still sitting here belongs to a turn whose owner has not
+      // released it. Resolve it rather than orphan it: the slot is about to be
+      // overwritten, and a shutdown holding that promise would otherwise wait
+      // out its entire bound on a turn that is already over. Logged, because
+      // the only innocent cause is the next message arriving inside a handoff's
+      // tail — anything else is an owner that forgot its `finally`.
+      if (managed.turnFinalization) {
+        sessionLog.warn(`Superseding an unreleased finalisation deferred for session ${managed.id}`)
+        managed.turnFinalization.resolve()
+      }
       let resolve!: () => void
       const promise = new Promise<void>((r) => { resolve = r })
-      managed.turnFinalization = { token: Symbol(managed.id), promise, resolve, finalizerRunning: false }
+      managed.turnFinalization = { token: Symbol(managed.id), promise, resolve }
       sessionRuntimeHooks.onSessionStarted()
     } else if (was && !processing) {
-      // A turn can stop WITHOUT being finalised, and those paths have to
-      // release the deferred or shutdown blocks on a promise nothing settles.
-      //
-      // Plan submission and auth requests are handoff interrupts: control moves
-      // to the UI, the flag goes false, and `onProcessingStopped` is never
-      // reached — the turn is paused, not finished. Same for the auth-retry
-      // path, which clears the flag before resending. `finalizerRunning`
-      // distinguishes those from the normal route, where this same line runs
-      // from inside the finaliser and resolving here would be exactly the
-      // early-resolve the deferred exists to prevent.
-      const finalization = managed.turnFinalization
-      if (finalization && !finalization.finalizerRunning) {
-        finalization.resolve()
-        managed.turnFinalization = undefined
+      // The deferred belongs to whoever CLAIMED it, and this flag write is not
+      // a claim. A turn can stop without being finalised — plan submission and
+      // auth requests are handoff interrupts where control moves to the UI and
+      // `onProcessingStopped` is never reached, as is the auth-retry resend —
+      // and each of those owns a tail that has to finish before shutdown may
+      // proceed. Releasing from here released it at the START of that tail.
+      if (finalization === 'no-tail') {
+        this.claimTurnFinalization(managed.id).release()
+      } else if (managed.turnFinalization && finalization?.token !== managed.turnFinalization.token) {
+        // Unreachable by construction: every stop site claims immediately
+        // before it stops. Loud rather than silent, because what it describes
+        // is a deferred no live owner can resolve, and the only symptom of that
+        // is a shutdown burning its whole bound and reporting a stuck turn.
+        sessionLog.error(
+          `Turn stop for session ${managed.id} carries an owner for a different turn; its deferred has no releaser`,
+        )
       }
       // Turn completion is the activity signal for idle-TTL eviction:
       // lastMessageAt is stamped at turn START, so without this a long turn
@@ -5176,24 +5245,7 @@ export class SessionManager implements ISessionManager {
 
           // Interrupt execution - plan presentation is a stopping point
           // The user needs to review and respond before continuing
-          if (managed.isProcessing && managed.agent) {
-            sessionLog.info(`Interrupting for plan submission in session ${managed.id}`)
-            managed.agent.interruptForHandoff(AbortReason.PlanSubmitted)
-            this.setProcessing(managed, false)
-
-            // Release browser overlay + session binding because the agent is no longer running.
-            // Plan submission pauses execution until user review, so browser ownership should not remain locked.
-            await releaseBrowserOwnershipOnForcedStop(
-              (sid) => this.getBrowserPaneManagerForSession(sid),
-              managed.id,
-            )
-
-            // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
-            this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage, backgroundTasksAlive: this.keepBackgroundTasksAlive }, managed.workspace.id)
-
-            // Persist session state
-            this.persistSession(managed)
-          }
+          await this.completePlanSubmissionHandoff(managed)
         } catch (error) {
           sessionLog.error(`Failed to read plan file:`, error)
         }
@@ -5234,35 +5286,10 @@ export class SessionManager implements ISessionManager {
         managed.pendingAuthRequestId = request.requestId
         managed.pendingAuthRequest = request
 
-        // Interrupt execution (like SubmitPlan)
-        if (managed.isProcessing && managed.agent) {
-          sessionLog.info(`Interrupting for auth request in session ${managed.id}`)
-          managed.agent.interruptForHandoff(AbortReason.AuthRequest)
-          this.setProcessing(managed, false)
-
-          // Release browser overlay + session binding because the agent is paused awaiting user auth.
-          void releaseBrowserOwnershipOnForcedStop(
-            (sid) => this.getBrowserPaneManagerForSession(sid),
-            managed.id,
-          )
-
-          // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
-          this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage, backgroundTasksAlive: this.keepBackgroundTasksAlive }, managed.workspace.id)
-        }
-
-        // Emit auth_request event to renderer
-        this.sendEvent({
-          type: 'auth_request',
-          sessionId: managed.id,
-          message: authMessage,
-          request: request,
-        }, managed.workspace.id)
-
-        // Persist session state
-        this.persistSession(managed)
-
+        // Interrupt execution (like SubmitPlan), tell the renderer, and persist.
         // OAuth flow is client-driven via performOAuth() (preload).
         // The UI calls window.electronAPI.performOAuth() when user clicks "Sign in".
+        this.completeAuthRequestHandoff(managed, request, authMessage)
       }
 
       // Wire up onSpawnSession to create independent sessions from agent tool calls
@@ -7765,16 +7792,26 @@ export class SessionManager implements ISessionManager {
 
         if (retryMessage) {
           sessionLog.info(`[auth-retry] Retrying message for session ${sessionId}`)
-          this.setProcessing(managed, false)
+          // The failed attempt's turn ends here, and its tail is the tidy-up
+          // below — NOT the resend. The resend starts a turn of its own with
+          // its own deferred, so this one is released BEFORE it: holding it
+          // across `sendMessage` would leave the old promise stranded the
+          // moment the new turn replaced it.
+          const finalization = this.claimTurnFinalization(sessionId)
+          try {
+            this.setProcessing(managed, false, finalization)
 
-          // Remove the user message that was added for this failed attempt
-          // so we don't get duplicate messages when retrying
-          const lastUserMsgIndex = managed.messages.findLastIndex(m => m.role === 'user')
-          if (lastUserMsgIndex !== -1) {
-            managed.messages.splice(lastUserMsgIndex, 1)
+            // Remove the user message that was added for this failed attempt
+            // so we don't get duplicate messages when retrying
+            const lastUserMsgIndex = managed.messages.findLastIndex(m => m.role === 'user')
+            if (lastUserMsgIndex !== -1) {
+              managed.messages.splice(lastUserMsgIndex, 1)
+            }
+
+            managed.authRetryInProgress = false
+          } finally {
+            finalization.release()
           }
-
-          managed.authRetryInProgress = false
 
           await this.sendMessage(
             sessionId,
@@ -7850,6 +7887,98 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * Pause a turn for plan review, and hold its finalisation open until the
+   * pause is recorded.
+   *
+   * A handoff interrupt is a turn that stops WITHOUT being finalised: control
+   * moves to the UI and `onProcessingStopped` is never reached. The flag going
+   * false is therefore the START of this site's tail — browser release, the
+   * complete event, then the persist that records the plan — so this method
+   * owns the deferred across all of it and releases in a `finally`. Resolving
+   * at the flag write let shutdown close the queue while the plan was still on
+   * its way to disk, and report success.
+   *
+   * Extracted from the `onPlanSubmitted` callback so that ordering is reachable
+   * from a test; the callback assigns the message and hands over.
+   */
+  private async completePlanSubmissionHandoff(managed: ManagedSession): Promise<void> {
+    if (!managed.isProcessing || !managed.agent) return
+    sessionLog.info(`Interrupting for plan submission in session ${managed.id}`)
+    const finalization = this.claimTurnFinalization(managed.id)
+    try {
+      managed.agent.interruptForHandoff(AbortReason.PlanSubmitted)
+      this.setProcessing(managed, false, finalization)
+
+      // Release browser overlay + session binding because the agent is no longer running.
+      // Plan submission pauses execution until user review, so browser ownership should not remain locked.
+      await releaseBrowserOwnershipOnForcedStop(
+        (sid) => this.getBrowserPaneManagerForSession(sid),
+        managed.id,
+      )
+
+      // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
+      this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage, backgroundTasksAlive: this.keepBackgroundTasksAlive }, managed.workspace.id)
+
+      // Persist session state
+      this.persistSession(managed)
+    } finally {
+      finalization.release()
+    }
+  }
+
+  /**
+   * Pause a turn for an auth request, and hold its finalisation open until the
+   * pending request is recorded.
+   *
+   * Same ownership as the plan handoff, over a tail that is entirely
+   * synchronous — the browser release stays fire-and-forget, because awaiting
+   * it would delay the `auth_request` event behind browser teardown and lose it
+   * entirely if that teardown hung. What the deferred has to cover is the
+   * persist: `pendingAuthRequest` and the auth message are the state a restart
+   * needs, and they are enqueued at the end of this method.
+   *
+   * The emit and the persist run whether or not a turn was interrupted, which
+   * is why they sit inside the same `try` rather than behind the guard.
+   */
+  private completeAuthRequestHandoff(
+    managed: ManagedSession,
+    request: AuthRequest,
+    authMessage: Message,
+  ): void {
+    let finalization: TurnFinalizationOwner | undefined
+    try {
+      if (managed.isProcessing && managed.agent) {
+        sessionLog.info(`Interrupting for auth request in session ${managed.id}`)
+        finalization = this.claimTurnFinalization(managed.id)
+        managed.agent.interruptForHandoff(AbortReason.AuthRequest)
+        this.setProcessing(managed, false, finalization)
+
+        // Release browser overlay + session binding because the agent is paused awaiting user auth.
+        void releaseBrowserOwnershipOnForcedStop(
+          (sid) => this.getBrowserPaneManagerForSession(sid),
+          managed.id,
+        )
+
+        // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
+        this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage, backgroundTasksAlive: this.keepBackgroundTasksAlive }, managed.workspace.id)
+      }
+
+      // Emit auth_request event to renderer
+      this.sendEvent({
+        type: 'auth_request',
+        sessionId: managed.id,
+        message: authMessage,
+        request: request,
+      }, managed.workspace.id)
+
+      // Persist session state
+      this.persistSession(managed)
+    } finally {
+      finalization?.release()
+    }
+  }
+
+  /**
    * Central handler for when processing stops (any reason).
    * Single source of truth for cleanup and queue processing.
    *
@@ -7860,13 +7989,11 @@ export class SessionManager implements ISessionManager {
     sessionId: string,
     reason: 'complete' | 'interrupted' | 'error' | 'timeout'
   ): Promise<void> {
-    // The token this invocation owns. Captured at ENTRY so a slow finaliser
-    // cannot resolve the deferred belonging to a turn that started after it.
-    const finalizationToken = this.sessions.get(sessionId)?.turnFinalization?.token
-    // Claim the deferred before anything below clears `isProcessing`, so
-    // `setProcessing(false)` knows a finaliser is running and leaves it alone.
-    const claimed = this.sessions.get(sessionId)?.turnFinalization
-    if (claimed && claimed.token === finalizationToken) claimed.finalizerRunning = true
+    // The deferred this invocation owns, claimed at ENTRY: before anything
+    // below clears `isProcessing`, and before the first `return`, so the
+    // `finally` always has something to release and a slow finaliser cannot
+    // resolve the deferred belonging to a turn that started after it.
+    const finalization = this.claimTurnFinalization(sessionId)
     try {
         const managed = this.sessions.get(sessionId)
         if (!managed) return
@@ -7881,7 +8008,7 @@ export class SessionManager implements ISessionManager {
         sessionLog.info(`Processing stopped for session ${sessionId}: ${reason}`)
 
         // 1. Cleanup state
-        this.setProcessing(managed, false)
+        this.setProcessing(managed, false, finalization)
         managed.stopRequested = false  // Reset for next turn
 
         // 1b. Orphan backstop: with the default per-turn subprocess model, any
@@ -8021,11 +8148,7 @@ export class SessionManager implements ISessionManager {
       // `finally`, so a throw anywhere above still releases the waiter — a
       // shutdown blocked forever on a failed finaliser is worse than one that
       // proceeds and reports what it could not confirm.
-      const live = this.sessions.get(sessionId)
-      if (finalizationToken && live?.turnFinalization?.token === finalizationToken) {
-        live.turnFinalization.resolve()
-        live.turnFinalization = undefined
-      }
+      finalization.release()
     }
   }
 

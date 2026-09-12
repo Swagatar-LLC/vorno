@@ -195,10 +195,45 @@ turn can stop WITHOUT being finalised. Plan submission and auth requests are
 handoff interrupts — control moves to the UI, the flag goes false, and
 `onProcessingStopped` is never reached — as is the auth-retry resend. Those left
 a deferred nothing would settle, so shutdown burned its whole bound and then
-reported a stuck turn that was not stuck. `setProcessing(false)` now releases
-the deferred unless `finalizerRunning` marks the finaliser as the caller, which
-is the one case where releasing would be the early-resolve the deferred exists
-to prevent.
+reported a stuck turn that was not stuck. The first fix released the deferred
+from `setProcessing(false)` unless a `finalizerRunning` flag marked the finaliser
+as the caller — which the round below replaced, because it made release a side
+effect of a flag write.
+
+### Review 13 — finalisation ownership is explicit, not a side effect
+
+Releasing the deferred from the single `setProcessing(false)` choke point put it
+at the START of a handoff's tail, not the end. Plan submission clears the flag,
+*then* releases the browser, *then* persists the plan; a quit landing in that
+window resumed, closed the queue underneath the plan's write, and reported
+success. The guard against early-resolve had become a second route to it.
+
+So ownership is now named rather than inferred. `claimTurnFinalization(id)` hands
+out a token-bound owner, `setProcessing`'s stop overload takes a REQUIRED
+disposition — that owner, or `'no-tail'` — and every one of the four stop sites
+holds its own `finally`:
+
+| Site | Tail the deferred covers |
+|---|---|
+| `onProcessingStopped` | claimed at ENTRY, before the first `return`; released after visuals, read state, status, teardown, complete event, persist |
+| plan submission (`completePlanSubmissionHandoff`) | browser release → complete event → persist |
+| auth request (`completeAuthRequestHandoff`) | complete event → `auth_request` event → persist (synchronous; the browser release stays fire-and-forget, because awaiting it would delay the auth prompt behind teardown and lose it if teardown hung) |
+| auth retry resend | released BEFORE `sendMessage`, deliberately — the resend is a NEW turn with its own deferred, and holding across it would strand the old promise the moment the new turn replaced it |
+
+Making it required is the half that lasts: a future stop site cannot inherit
+someone else's answer, because there is no default. The type is the check, per
+*encode lessons in structure*. And a deferred still unreleased when the next turn
+starts is resolved and logged rather than orphaned — a forgotten `finally` then
+costs a warning, not a shutdown that waits out its whole bound. The two handoff
+bodies were extracted from their agent callbacks so the ordering is reachable
+from a test; the callbacks assign the message and hand over.
+
+Four mutations, each killed: releasing generically from the flag write (plan +
+stale-owner tests fail), dropping the auth `finally` (shutdown burns its bound),
+dropping the token guard in `release` (a stale owner resolves its successor), and
+orphaning instead of superseding at turn start. The auth-retry site is the one
+stop site with no test of its own — its tail is two synchronous statements and
+the supersede backstop bounds a leak there — recorded rather than implied away.
 
 ### Review 9 — security: shutdown scope and cancellation intent
 
@@ -509,16 +544,12 @@ activity.
 - Exact-generation receipt matching is unreachable-by-construction today given
   the FIFO, and is kept as defence against coalescing being reintroduced.
 
-- `commitHooks` is a public mutable test seam on a module singleton. Not
-  reachable by a Page, a script action, or any RPC — no wire representation —
-  but tightening it to a build-stripped seam is recorded, not silently accepted.
-  Suites that set it must clear it in `afterEach`.
 - The two watermarks' `Math.max` calls have no reachable path today; they hold
   an invariant that currently rests on `retireIfQuiescent` dropping
   `generations` and `cancelledThrough` together.
-- `retireIfQuiescent`'s failure-evidence guard has no live reader. Kept because
-  deleting a record of failure is the wrong default for the next reader; pinned
-  as state, not as behaviour.
+- The auth-retry resend is the one turn-stop site with no test of its own. Its
+  tail is two synchronous statements, and a forgotten release there is bounded
+  by the supersede-at-turn-start backstop rather than by coverage.
 
 ## Status log
 
@@ -529,6 +560,15 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 13 (architecture P1): releasing the finalisation
+  deferred from `setProcessing(false)` made release a side effect of a flag
+  write, so a handoff with an async tail resolved it at the START of that tail —
+  a quit inside a plan submission closed the queue before the plan reached disk
+  and reported success. Ownership is now explicit and REQUIRED at every stop
+  site (`claimTurnFinalization` + a stop-overload disposition), each site
+  releasing in its own `finally` after its tail and persist. Four mutations
+  killed; the stale `receiptFor` "or later" wording and two residuals that the
+  code had already outgrown were corrected in the same pass.
 - `2026-09-12` — review 12 (security P3s): the final-persist predicate read a
   mid-finalisation session as idle, so the one session being assembled during
   shutdown got no checked receipt; and `markAllSessionsRead` used `Promise.all`,
