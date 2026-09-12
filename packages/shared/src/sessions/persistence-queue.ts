@@ -56,9 +56,21 @@ function mergeHeaderWithExternalMetadata(localHeader: SessionHeader, diskHeader:
  * when rapid successive flushes (e.g., clearSessionForRecovery + onSdkSessionIdUpdate)
  * would otherwise write to the same .tmp file concurrently.
  */
+/** Outcome of a checked persist. `ok:false` carries the reason for the audit. */
+export type SessionWriteReceipt = { ok: true } | { ok: false; error: string }
+
 class SessionPersistenceQueue {
   private pending = new Map<string, PendingWrite>()
   private writeInProgress = new Map<string, Promise<void>>()
+  /**
+   * Last write failure per session, cleared on the next success.
+   *
+   * `write` deliberately swallows its errors so the fire-and-forget callers
+   * that make up almost all of this queue's traffic keep working — but that
+   * also meant `flush` resolved happily after a failed write, and a caller who
+   * needed to *know* had no way to ask. This is how they ask.
+   */
+  private lastWriteFailure = new Map<string, string>()
   private lastWrittenHeaderSignature = new Map<string, string>()
   private debounceMs: number
 
@@ -87,9 +99,9 @@ class SessionPersistenceQueue {
    * Write a session to disk immediately in JSONL format.
    * Uses atomic write (write-to-temp-then-rename) to prevent corruption on crash.
    */
-  private async write(sessionId: string): Promise<void> {
+  private async write(sessionId: string): Promise<boolean> {
     const entry = this.pending.get(sessionId)
-    if (!entry) return
+    if (!entry) return true
 
     this.pending.delete(sessionId)
 
@@ -160,8 +172,14 @@ class SessionPersistenceQueue {
       try { await unlink(filePath) } catch { /* ignore if doesn't exist */ }
       await rename(tmpFile, filePath)
       debug(`[PersistenceQueue] Wrote session ${sessionId}`)
+      this.lastWriteFailure.delete(sessionId)
+      return true
     } catch (error) {
       console.error(`[PersistenceQueue] Failed to write session ${sessionId}:`, error)
+      // Recorded, not thrown. Existing callers are fire-and-forget and must not
+      // start failing; `flushChecked` is the opt-in way to learn about this.
+      this.lastWriteFailure.set(sessionId, error instanceof Error ? error.message : String(error))
+      return false
     }
   }
 
@@ -182,7 +200,7 @@ class SessionPersistenceQueue {
       }
 
       // Start new write and track it
-      const writePromise = this.write(sessionId)
+      const writePromise = this.write(sessionId).then(() => undefined)
       this.writeInProgress.set(sessionId, writePromise)
 
       try {
@@ -190,6 +208,43 @@ class SessionPersistenceQueue {
       } finally {
         this.writeInProgress.delete(sessionId)
       }
+    }
+  }
+
+  /**
+   * Flush, and report whether the bytes actually reached disk.
+   *
+   * `flush` cannot answer that question: `write` catches its own errors so the
+   * fire-and-forget callers keep working, so a failed write is indistinguishable
+   * from a successful one to anyone awaiting it. A caller that tells a user
+   * "delivered and saved" needs the difference, and guessing in the optimistic
+   * direction is the one answer it must never give.
+   *
+   * Deliberately additive: `flush` is untouched and every existing caller keeps
+   * its best-effort behaviour.
+   */
+  async flushChecked(sessionId: string): Promise<SessionWriteReceipt> {
+    const entry = this.pending.get(sessionId)
+    if (!entry) {
+      // Nothing queued. Either everything is already on disk, or the last
+      // attempt failed and nobody has succeeded since — which still means this
+      // session's state is not durable.
+      const prior = this.lastWriteFailure.get(sessionId)
+      return prior ? { ok: false, error: prior } : { ok: true }
+    }
+
+    clearTimeout(entry.timer)
+    const inProgress = this.writeInProgress.get(sessionId)
+    if (inProgress) await inProgress
+
+    const writePromise = this.write(sessionId)
+    this.writeInProgress.set(sessionId, writePromise.then(() => undefined))
+    try {
+      const wrote = await writePromise
+      if (wrote) return { ok: true }
+      return { ok: false, error: this.lastWriteFailure.get(sessionId) ?? 'session write failed' }
+    } finally {
+      this.writeInProgress.delete(sessionId)
     }
   }
 
@@ -204,6 +259,7 @@ class SessionPersistenceQueue {
       debug(`[PersistenceQueue] Cancelled pending write for session ${sessionId}`)
     }
     this.lastWrittenHeaderSignature.delete(sessionId)
+    this.lastWriteFailure.delete(sessionId)
   }
 
   /**

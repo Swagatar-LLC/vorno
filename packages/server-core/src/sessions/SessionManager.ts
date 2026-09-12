@@ -990,6 +990,12 @@ interface ManagedSession {
    * treat the session as idle and commit alongside B's turn.
    */
   pageCallbackTurnPendingToken?: symbol
+  /**
+   * Mirror of the stored record's pending-plan state, hydrated at a Page
+   * callback's commit so the write that follows preserves it rather than
+   * dropping a field the metadata projection strips.
+   */
+  pendingPlanExecution?: StoredSession['pendingPlanExecution']
   // Flag to prevent infinite retry loops (reset at start of each sendMessage)
   authRetryAttempted?: boolean
   // Flag indicating auth retry is in progress (to prevent complete handler from interfering)
@@ -2348,6 +2354,19 @@ export class SessionManager implements ISessionManager {
   // queue already has an entry whenever persistSession was just called.
   async flushSession(sessionId: string): Promise<void> {
     await sessionPersistenceQueue.flush(sessionId)
+  }
+
+  /**
+   * Flush and report whether the bytes reached disk.
+   *
+   * `flushSession` cannot: the queue catches its own write errors so its many
+   * fire-and-forget callers keep working, which makes a failed write
+   * indistinguishable from a successful one to anyone awaiting it. A Page
+   * callback tells its page the message was delivered AND saved, so it needs
+   * the difference — and "assume it worked" is the one answer it must not give.
+   */
+  async flushSessionChecked(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    return sessionPersistenceQueue.flushChecked(sessionId)
   }
 
   // Flush all pending sessions (call on app quit).
@@ -6662,8 +6681,19 @@ export class SessionManager implements ISessionManager {
       // window would audit delivered work as a timeout. Once this returns, the
       // action has succeeded and nothing downstream may relabel it.
       if (pageCallback) {
+        // Carry forward state that lives ONLY on the stored record.
+        //
+        // `headerToMetadata` strips `pendingPlanExecution` before
+        // `createManagedSession`, and `persistSession` rebuilds the header from
+        // managed via `pickSessionFields` — so a plan the user has not answered
+        // is dropped by the next persist from any writer. Not clearing it is
+        // therefore not enough: this write would destroy it anyway. Read
+        // synchronously (the storage accessor is sync) so nothing yields
+        // between the guard and the commit.
+        const pendingPlan = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+        if (pendingPlan) managed.pendingPlanExecution = pendingPlan
         // Marks the accepted-but-not-started window for any send that arrives
-        // before `setProcessing` — see `pageCallbackTurnPending`.
+        // before `setProcessing` — see `pageCallbackTurnPendingToken`.
         managed.pageCallbackTurnPendingToken = pageCallback.token
         pageCallback.markCommitted()
       }
@@ -6678,12 +6708,19 @@ export class SessionManager implements ISessionManager {
       // genuinely on disk before we tell the renderer "accepted", and
       // `persistSession` is debounced (500ms). #616.
       this.persistSession(managed)
-      await this.flushSession(managed.id)
-      onAck?.(userMessage.id)
-      // Phase two for a Page callback: the message is on disk. Fired after the
-      // flush rather than alongside the push, because "delivered" and "durable"
-      // are different promises and the caller is entitled to know which it got.
-      pageCallback?.onDurable()
+      if (pageCallback) {
+        // Checked flush, and `onDurable` only if it really succeeded. The
+        // unchecked path resolves just as happily after a failed write, so
+        // firing durability off it would have the page told its message was
+        // saved when the disk had said otherwise.
+        const receipt = await this.flushSessionChecked(managed.id)
+        onAck?.(userMessage.id)
+        if (receipt.ok) pageCallback.onDurable()
+        else sessionLog.warn(`Page callback message not durable for ${sessionId}: ${receipt.error}`)
+      } else {
+        await this.flushSession(managed.id)
+        onAck?.(userMessage.id)
+      }
 
       // Emit user_message event so UI can confirm the optimistic message
       this.sendEvent({

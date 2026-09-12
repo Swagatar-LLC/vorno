@@ -78,24 +78,18 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
    * actually lives on `pendingPlanExecution` inside the session record, so the
    * only assertion worth making reads it back through `getPendingPlanExecution`.
    */
-  async function seedPendingPlan(managed: Record<string, unknown>): Promise<void> {
+  /**
+   * Real pending-plan state, written through the storage API the product uses
+   * and left ONLY where the product leaves it — on the stored record.
+   *
+   * An earlier version also mirrored it onto the managed session. That state is
+   * impossible: `headerToMetadata` strips `pendingPlanExecution` before
+   * `createManagedSession`, so no managed session in the product ever carries
+   * it, and a test that invents one is validating fiction. The hydration at the
+   * callback's commit is what has to make the write preserve it.
+   */
+  async function seedPendingPlan(): Promise<void> {
     await setPendingPlanExecution(root, SESSION_ID, 'plans/do-the-thing.md', 'draft text')
-    // Mirror it onto the managed session as well.
-    //
-    // `headerToMetadata` strips `pendingPlanExecution` before
-    // `createManagedSession`, and `persistSession` rebuilds the header from
-    // managed state via `pickSessionFields` — so ANY persist drops a field that
-    // only exists on disk. That is a pre-existing product behavior affecting
-    // every writer, not something this feature introduced, and fixing it is a
-    // separate change. Seeding both sides keeps this test measuring what it is
-    // about — whether a callback CLEARS the plan — instead of re-measuring that
-    // unrelated gap.
-    managed.pendingPlanExecution = {
-      planPath: 'plans/do-the-thing.md',
-      draftInputSnapshot: 'draft text',
-      awaitingCompaction: true,
-      executionDispatched: false,
-    }
     // Fail loudly here rather than let the real assertion below pass vacuously
     // against state that was never written.
     expect(getPendingPlanExecution(root, SESSION_ID)?.planPath).toBe('plans/do-the-thing.md')
@@ -168,7 +162,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
    */
   it('never clears pending plan execution when the guard refuses inside sendMessage', async () => {
     const managed = seed() as unknown as Record<string, unknown>
-    await seedPendingPlan(managed)
+    await seedPendingPlan()
 
     // Make the session read idle at the synchronous early-out and busy at the
     // guard. That is precisely the state change the guard exists to catch, and
@@ -197,15 +191,63 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
   })
 
   /**
-   * The delivery path deliberately has NO behavioural assertion here.
+   * The delivery path, from the representation the product actually produces.
    *
-   * It cannot have an honest one: `persistSession` rebuilds the header from
-   * managed state, so the field is restored whether or not the clear ran, and
-   * any assertion would pass with the defect present. Branch placement on that
-   * path is covered by the structural test below, which brace-matches the
-   * `if (!pageCallback)` block — and a claim of coverage that a structural test
-   * actually provides belongs where the structural test is, not here.
+   * This previously had no honest assertion available: `persistSession`
+   * rebuilds the header from managed state, and `headerToMetadata` strips
+   * `pendingPlanExecution` on the way in, so a delivered callback's write
+   * destroyed a plan the user had not answered — not by clearing it, but by
+   * writing a record that had never heard of it. Mirroring the field onto
+   * managed made the old test pass by inventing a state the product cannot
+   * reach. The fix hydrates it at the commit instead, so the assertion below is
+   * about real behaviour.
    */
+  it('preserves a disk-only pending plan across a DELIVERED callback', async () => {
+    seed()
+    await seedPendingPlan()
+
+    const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+    expect(outcome).toMatchObject({ ok: true })
+
+    // Re-read from disk: the plan the user is still deciding about survives a
+    // page's button being pressed.
+    const survived = getPendingPlanExecution(root, SESSION_ID)
+    expect(survived).not.toBeNull()
+    expect(survived!.planPath).toBe('plans/do-the-thing.md')
+    expect(survived!.draftInputSnapshot).toBe('draft text')
+  })
+
+  it('reports durable:false when the write fails, and never claims otherwise', async () => {
+    seed()
+
+    // The queue catches its own write errors, so an unchecked flush resolves
+    // just as happily after a failed write. Without the checked receipt the
+    // page would be told its message was saved while the disk said otherwise.
+    const original = (sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked
+    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = async () => ({
+      ok: false, error: 'ENOSPC: no space left on device',
+    })
+
+    try {
+      const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+      // Delivered — the message is really in the transcript — but explicitly
+      // not durable. Both halves matter: claiming failure would be as wrong as
+      // claiming durability.
+      expect(outcome).toMatchObject({ ok: true, durable: false })
+    } finally {
+      ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = original
+    }
+  })
+
+  it('reports durable:true only when the write really succeeded', async () => {
+    seed()
+    const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+
+    expect(outcome).toMatchObject({ ok: true, durable: true })
+    // And the message is genuinely on disk, not merely reported as such.
+    const reloaded = readFileSync(getSessionFilePath(root, SESSION_ID), 'utf-8')
+    expect(reloaded).toContain(BODY)
+  })
 
   it('a NON-callback send still clears pending plan execution', () => {
     // The control for the test above. Without it, "the plan survived" would
@@ -359,8 +401,8 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // `isProcessing` handover. The harness's own failure happens *after* the
     // handover, which already clears the marker — so using it would prove
     // nothing. `flushSession` sits squarely in the window.
-    const original = (sm as unknown as { flushSession: unknown }).flushSession
-    ;(sm as unknown as { flushSession: unknown }).flushSession = async () => {
+    const original = (sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked
+    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = async () => {
       throw new Error('disk gone')
     }
 
@@ -369,7 +411,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
       // Committed, but never flushed — so delivered and explicitly not durable.
       expect(outcome).toMatchObject({ ok: true, durable: false })
     } finally {
-      ;(sm as unknown as { flushSession: unknown }).flushSession = original
+      ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = original
     }
     await new Promise((r) => setTimeout(r, 50))
 
@@ -387,63 +429,57 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
    * message queues rather than committing alongside it — otherwise two turns
    * start in one session.
    */
-  it('queues an ordinary send that arrives after a callback has committed', async () => {
+  it('queues a real user send that interleaves after a callback has committed', async () => {
     const managed = seed() as unknown as Record<string, unknown> & {
       messages: Array<{ role: string; content: string }>
-      messageQueue: unknown[]
+      messageQueue: Array<{ message: string }>
       pageCallbackTurnPendingToken?: symbol
     }
 
-    await sm.tryDeliverPageCallback(SESSION_ID, 'from the page', { workspaceId: WORKSPACE_ID })
-    // Let the callback's own send settle first — its `finally` clears the
-    // marker, and setting it before that would have the clear land mid-test.
-    await new Promise((r) => setTimeout(r, 50))
-
-    // The push→handover gap: committed, but the turn has not started.
-    managed.pageCallbackTurnPendingToken = Symbol('pending')
-    managed.isProcessing = false
-
-    await sm.sendMessage(SESSION_ID, 'from the user').catch(() => {})
-
-    // Both messages exist — the user is never dropped — but the user's is
-    // queued behind the accepted turn rather than racing it.
-    const users = managed.messages.filter((m) => m.role === 'user')
-    expect(users.map((m) => m.content)).toContain('from the user')
-    expect(managed.messageQueue.length).toBeGreaterThan(0)
-  })
-
-  it('does not let a finishing callback clear a newer callback\'s marker', async () => {
-    const managed = seed() as unknown as Record<string, unknown>
-
-    // Hold callback A inside its flush so it is genuinely still settling while
-    // callback B establishes its marker. Setting B's token after A had already
-    // finished would race nothing, and an earlier version of this test did
-    // exactly that — it passed with the ownership check removed.
+    // Hold the callback inside its flush so the interleaving is real: the
+    // callback has committed, its turn has not started, and the user send
+    // arrives in exactly that window. Setting the marker by hand and then
+    // sending would prove nothing about the ordering the product produces.
     let releaseFlush!: () => void
     const flushing = new Promise<void>((resolve) => { releaseFlush = resolve })
-    const original = (sm as unknown as { flushSession: unknown }).flushSession
-    ;(sm as unknown as { flushSession: unknown }).flushSession = async () => { await flushing }
+    const original = (sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked
+    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = async () => {
+      await flushing
+      return { ok: true as const }
+    }
 
-    const aDelivery = sm.tryDeliverPageCallback(SESSION_ID, 'from A', { workspaceId: WORKSPACE_ID })
+    const callback = sm.tryDeliverPageCallback(SESSION_ID, 'from the page', { workspaceId: WORKSPACE_ID })
 
-    // Wait for A to commit — the marker is set at the push, before the flush.
+    // Wait for the real commit — the marker is set at the push, before the flush.
     for (let i = 0; i < 50 && managed.pageCallbackTurnPendingToken === undefined; i++) {
       await new Promise((r) => setTimeout(r, 5))
     }
     expect(managed.pageCallbackTurnPendingToken).toBeDefined()
+    expect(managed.isProcessing).toBe(false)
 
-    // B commits while A is still inside the flush and takes over the marker.
-    const bToken = Symbol('callback-b')
-    managed.pageCallbackTurnPendingToken = bToken
+    // A genuine user send, in the gap, through the ordinary path.
+    const userSend = sm.sendMessage(SESSION_ID, 'from the user').catch(() => {})
+
+    // Let it get past its own preamble awaits and reach the branch decision
+    // WHILE the flush is still held. Releasing first would let the callback's
+    // turn start, and the send would then queue on `isProcessing` — passing
+    // this test without the marker ever being consulted.
+    await new Promise((r) => setTimeout(r, 30))
+    expect(managed.isProcessing).toBe(false)
 
     releaseFlush()
-    await aDelivery
-    await new Promise((r) => setTimeout(r, 50))
-    ;(sm as unknown as { flushSession: unknown }).flushSession = original
+    await callback
+    await userSend
+    ;(sm as unknown as { flushSessionChecked: unknown }).flushSessionChecked = original
 
-    // A's cleanup must leave B's marker alone. Clearing it would let the next
-    // send treat the session as idle and commit alongside B's turn.
-    expect(managed.pageCallbackTurnPendingToken).toBe(bToken)
+    // The user is never dropped — both messages exist — but the user's is
+    // queued behind the accepted turn rather than committing alongside it.
+    const users = managed.messages.filter((m) => m.role === 'user')
+    expect(users.map((m) => m.content)).toContain('from the page')
+    expect(users.map((m) => m.content)).toContain('from the user')
+    // Specifically THAT message queued — a length check would pass on anything
+    // happening to be in the queue, including the callback's own turn.
+    expect(managed.messageQueue.map((e) => e.message)).toContain('from the user')
   })
 
   it('stands down for an announced ordinary send', async () => {

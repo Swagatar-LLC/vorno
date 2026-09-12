@@ -463,6 +463,35 @@ race and it passed with the ownership check removed. It now holds A inside its
 flush so A is genuinely mid-settle when B takes over, and reddens when the check
 is taken out.
 
+## Round 13 — three production fixes the earlier rounds had only described
+
+`2026-09-12` — architecture review, and each of these replaced a claim with a
+mechanism.
+
+- **A delivered callback destroyed a disk-only pending plan.** Not by clearing
+  it — that was fixed rounds ago — but by writing a record that had never heard
+  of it, because the metadata projection strips the field and the persist
+  rebuilds the header from managed state. The test that "covered" this mirrored
+  the field onto the managed session, which is a state the product cannot reach,
+  so it was validating fiction. The callback now hydrates the stored value
+  synchronously at its commit (the storage accessor is sync, so nothing yields
+  between guard and commit), and the test starts from the real representation:
+  plan on disk only, deliver, reload, unchanged.
+- **`durable: true` could be a lie.** The persistence queue catches its own
+  write errors so its fire-and-forget callers keep working, which made a failed
+  write indistinguishable from a successful one to anyone awaiting `flush`. Added
+  `flushChecked` — additive, with `flush` and every existing caller untouched —
+  which reports the actual write outcome, and `onDurable` now fires only on a
+  verified success. An injected write failure reports `durable: false`, and the
+  audit never says otherwise.
+- **The callback-first/user-second interleaving test was passing for the wrong
+  reason.** It released the callback's flush before the user send reached its
+  branch, so the send queued on `isProcessing` and the marker was never
+  consulted — it passed with the marker check removed. It now holds the flush
+  open until the send has reached the decision, asserts `isProcessing` is still
+  false at that moment, and asserts that *that* message is in the queue rather
+  than merely that the queue is non-empty.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been
@@ -507,12 +536,15 @@ is taken out.
   Closing it properly means extending the digest to cover the grant descriptors
   themselves, which changes what "content changed" means for every existing
   grant kind and belongs in its own SUV rather than smuggled into this one.
-- **`pendingPlanExecution` does not survive any persist, and that is not this
-  SUV's doing.** `headerToMetadata` strips the field before
-  `createManagedSession`, and `persistSession` rebuilds the header from managed
-  state via `pickSessionFields` — so a value written by `setPendingPlanExecution`
-  is dropped by the next persist from any writer. Found while building the
-  callback plan-preservation test, which now seeds both sides so it measures
-  what it is about. Reported rather than folded in: it affects every session
-  writer, predates this work, and a fix belongs with whoever owns the
-  Accept-and-Compact recovery path.
+- **`pendingPlanExecution` is preserved on the callback write, and remains
+  fragile everywhere else.** `headerToMetadata` strips it before
+  `createManagedSession` and `persistSession` rebuilds the header from managed
+  via `pickSessionFields`, so a value written by `setPendingPlanExecution` is
+  dropped by the next persist from any writer. A callback now hydrates it
+  synchronously at its commit, so *this* feature cannot destroy a plan the user
+  has not answered — but the general defect is untouched and any other writer
+  still drops it. Fixing it properly means either stopping the metadata
+  projection from stripping the field or teaching the persistence queue to merge
+  disk-only fields, and both change behaviour for every session writer. That
+  belongs with whoever owns the Accept-and-Compact recovery path, not smuggled
+  into this SUV.
