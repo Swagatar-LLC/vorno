@@ -144,16 +144,6 @@ export function isMutatingPageAction(action: PageActionDescriptor | PageActionIn
 
 /** What one origin is permitted to do, before any grant is even consulted. */
 export interface PageActionOriginPolicy {
-  /**
-   * Does this origin act on behalf of a live render, and therefore have to
-   * prove a lease, its nonce, and a non-replayed request id?
-   *
-   * False for the scheduled path, which has no render to lease. Modelling that
-   * as a policy question rather than an `if (origin === …)` in the validator is
-   * what keeps "a cron run has no lease" from being mistaken for "a cron run
-   * skips validation" — everything else still applies to it.
-   */
-  requiresRenderLease: boolean;
   /** Must a mutating action carry a host-minted, single-use activation ticket? */
   requiresActivationTicket: boolean;
   /**
@@ -192,8 +182,8 @@ export interface PageActionOriginPolicy {
  * route for api/mcp calls that skip activation.
  */
 const PAGE_ACTION_ORIGIN_POLICY: { [O in PageActionOrigin]: PageActionOriginPolicy } = {
-  'sandboxed-page': { requiresRenderLease: true, requiresActivationTicket: true, requiresFirstUseConfirmation: true },
-  'scheduled-refresh': { requiresRenderLease: false, requiresActivationTicket: false, requiresFirstUseConfirmation: false },
+  'sandboxed-page': { requiresActivationTicket: true, requiresFirstUseConfirmation: true },
+  'scheduled-refresh': { requiresActivationTicket: false, requiresFirstUseConfirmation: false },
 };
 
 /** Every known origin, for tests that must enumerate the whole union. */

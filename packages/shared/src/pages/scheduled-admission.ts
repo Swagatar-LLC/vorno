@@ -16,9 +16,14 @@
  *
  * **Honest authority, no fake render.** There is no lease, no nonce, no
  * activation ticket, and none is invented — a synthetic lease would be a lie
- * the audit log then records as fact. What applies without a render still
- * applies here, and `PageActionOriginPolicy.requiresRenderLease` is where that
- * distinction is written down rather than assumed.
+ * the audit log then records as fact.
+ *
+ * The render/no-render distinction is structural rather than a flag: the
+ * lease, nonce, and replay checks live in `PageActionBroker.validate`, which
+ * only a rendered action reaches, and this function calls the shared primitive
+ * without them. There is nothing to declare because there is nothing that could
+ * branch on the declaration — a policy field for it would be a value no code
+ * reads, and flipping it would change nothing.
  */
 
 import type { PageActionAuthority, PageConfig, PageRefreshSpec } from '@craft-agent/core';

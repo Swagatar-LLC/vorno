@@ -645,9 +645,19 @@ describe('pages/action-bridge', () => {
 
     it('gives every origin a policy and no policy to an unattributed caller', () => {
       expect([...PAGE_ACTION_ORIGINS].sort()).toEqual(['sandboxed-page', 'scheduled-refresh']);
-      for (const origin of PAGE_ACTION_ORIGINS) {
-        expect(pageActionOriginPolicy(origin)).not.toBeNull();
-      }
+      // Asserted as an exact shape, not just non-null. Every field here is
+      // read by code; a field added without a reader shows up as a failure
+      // here, which is the cheapest available nudge against the policy table
+      // growing decorative entries (`requiresRenderLease` was one, and flipping
+      // it changed nothing).
+      expect(pageActionOriginPolicy('sandboxed-page')).toEqual({
+        requiresActivationTicket: true,
+        requiresFirstUseConfirmation: true,
+      });
+      expect(pageActionOriginPolicy('scheduled-refresh')).toEqual({
+        requiresActivationTicket: false,
+        requiresFirstUseConfirmation: false,
+      });
       // `host-ui` is deliberately absent until something actually uses it.
       for (const notAnOrigin of [undefined, null, '', 'agent', 'webui', 'host-ui', 42, {}]) {
         expect(pageActionOriginPolicy(notAnOrigin)).toBeNull();
