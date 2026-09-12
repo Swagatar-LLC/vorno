@@ -272,13 +272,25 @@ describe('page session callback executor', () => {
         source.indexOf('export interface SessionCallbackHost'),
         source.indexOf('export interface PagesSessionExecutorDeps'),
       )
-      expect(surface).toContain('getSessions')
-      expect(surface).toContain('sendMessage')
+
+      // Declared members only, read off the interface body rather than matched
+      // as substrings. An earlier version asserted `surface` contained
+      // 'sendMessage' — which kept passing after the member was replaced by
+      // `tryDeliverPageCallback`, because the word survived in a comment
+      // explaining why `sendMessage` is NOT the member. A test that a prose
+      // change can satisfy is not testing the interface.
+      const declared = [...surface.matchAll(/^\s{2}(\w+)\s*[(<]/gm)].map((m) => m[1]!)
+      expect(declared.sort()).toEqual(['getSessions', 'tryDeliverPageCallback'])
+
+      // Exactly two powers, and no lifecycle call anywhere in the file — the
+      // no-close boundary is enforced by absence, so absence is what is
+      // asserted.
       for (const forbidden of [
         'setSessionStatus', 'setSessionLabels', 'applyContextProfile',
         'archiveSession', 'deleteSession', 'createSession', 'closeSession',
-        'setSessionPermissionMode', 'stopSession',
+        'setSessionPermissionMode', 'stopSession', 'sendMessage',
       ]) {
+        expect(declared).not.toContain(forbidden)
         expect(source).not.toContain(`${forbidden}(`)
       }
     })

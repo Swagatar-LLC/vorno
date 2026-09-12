@@ -211,9 +211,12 @@ instant.
   the other two are re-exports.
 - **First-use consent re-resolves inside the queued callback** immediately before
   chrome and again after the answer, before the ticket is minted.
-- **Consent leads with host-resolved target identity** and truncates the pinned
-  body for display, so a 2,000-character message cannot bury which session is
-  being authorized.
+- **Consent leads with host-resolved target identity** and renders the pinned
+  body **in full, never truncated**, so a long message cannot bury which session
+  is being authorized *and* cannot hide a suffix from the person approving it.
+  (This bullet originally described a display truncation. That truncation was
+  itself a P1 — see the post-mortem below — and the cap, not the preview, is
+  what keeps the sheet legible.)
 
 The adjacency itself is pinned by a test that reads the source and fails if an
 `await` appears between the guard and the commit — **verified by injecting one**,
@@ -245,6 +248,35 @@ security hole because it broke the correspondence between what is consented to
 and what executes. When consent is the security boundary, do not make the
 consent surface lossy.
 
+## Test integrity, round 5
+
+`2026-09-12` — security re-review found three tests that passed for the wrong
+reason. Recorded because "the test was green" was doing work it had not earned.
+
+- **The plan-preservation test asserted against a file that does not exist.** It
+  wrote an invented `sessions/<id>.pending-plan.json` and checked it survived.
+  `clearStoredPendingPlanExecution` never touches such a path — the state lives
+  on `pendingPlanExecution` inside the session record — so the assertion was
+  true no matter what the code did. It now seeds through
+  `setPendingPlanExecution` and reads back through `getPendingPlanExecution`,
+  with a precondition assert so a failed seed fails loudly instead of passing
+  vacuously, and a control test proving a non-callback send still clears.
+- **The mutation-placement test proved less than it claimed.** It searched
+  backwards for `if (!pageCallback) {` before each mutation, which only showed
+  the branch opened somewhere earlier in the file — it kept passing with every
+  mutation moved out past the closing brace. It now brace-matches the block, the
+  way its sibling matches the mid-stream branch, and asserts each mutation is
+  inside it and absent outside.
+- **The host-surface test matched a comment.** It asserted the interface body
+  contained `sendMessage`, which stayed true after the member was replaced by
+  `tryDeliverPageCallback` because the word survived in a comment explaining why
+  `sendMessage` is *not* the member. It now parses declared members and asserts
+  the exact set `['getSessions', 'tryDeliverPageCallback']`.
+
+All three were **falsified before being trusted**: the plan test reddens when
+the clearing call is moved out of the branch, the placement test reddens on the
+same edit, and the surface test reddens when a lifecycle member is added.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been
@@ -264,3 +296,28 @@ consent surface lossy.
   requesting a grant and seeing it refused before any dialog. The resolution is
   placed after the lease check so only a mounted render can probe, and a mounted
   render is already showing that workspace to the user.
+- **A grant descriptor can be edited on disk without invalidating its digest.**
+  The content digest a grant is bound to covers `index.html`, not `page.json`,
+  and the pinned `sessionId` and `message` live in `page.json`. So anything with
+  local filesystem write access to the workspace can change what an approved
+  callback says, or which session it targets, while the grant continues to
+  validate.
+
+  **This is not a privilege escalation, and the distinction matters.** An actor
+  who can write `page.json` can already write `index.html`, drop a script and
+  request a script grant, or edit `automations.json` — ADR-0021's model treats
+  local filesystem write as *already inside* the trust boundary, which is why
+  `automations.json` rules are "reviewed at registration" rather than
+  re-verified per run. Nothing here grants a capability that actor did not have.
+
+  What it does cost is **provenance**: the audit row names a grant the user
+  approved, and the user may have approved different words. Two things narrow
+  the window rather than close it — host-rendered first-use confirmation per
+  render shows the descriptor *as it stands on disk at that moment*, so an
+  edited body is surfaced to the user the next time the page is opened; and the
+  activation ticket binds `pageActionDescriptorSignature`, which is re-checked
+  after a queue wait, so a swap mid-flight is refused outright.
+
+  Closing it properly means extending the digest to cover the grant descriptors
+  themselves, which changes what "content changed" means for every existing
+  grant kind and belongs in its own SUV rather than smuggled into this one.

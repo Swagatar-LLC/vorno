@@ -39,7 +39,9 @@ export function describeGrantAction(action: PageActionDescriptor, t: Translate):
   if (action.kind === 'session') {
     // The session id, not the pinned body. This label appears in a list of
     // approvals; the body is what the approval SHEET showed in full, and
-    // repeating 2,000 characters of it per row would bury every other grant.
+    // repeating up to 1,000 characters of it per row would bury every other
+    // grant. Nothing is hidden by this: the consent sheet showed the body in
+    // full before it was ever approved.
     return t('pages.grants.sessionAction', { session: action.sessionId })
   }
   return t('pages.grants.apiAction', {

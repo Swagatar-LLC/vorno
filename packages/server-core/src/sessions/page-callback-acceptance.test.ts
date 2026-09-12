@@ -12,7 +12,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { getSessionFilePath, writeSessionJsonl, type StoredSession } from '@craft-agent/shared/sessions'
+import {
+  getPendingPlanExecution,
+  getSessionFilePath,
+  setPendingPlanExecution,
+  writeSessionJsonl,
+  type StoredSession,
+} from '@craft-agent/shared/sessions'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
 
 const WORKSPACE_ID = 'ws_callback'
@@ -63,12 +69,20 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     }
   }
 
-  /** A pending plan on disk — the state a refused callback must not destroy. */
-  function seedPendingPlan(): string {
-    const file = join(root, 'sessions', `${SESSION_ID}.pending-plan.json`)
-    mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify({ plan: 'do the thing' }))
-    return file
+  /**
+   * Real pending-plan state, written through the storage API the product uses.
+   *
+   * An earlier version of this wrote an invented `*.pending-plan.json` path and
+   * asserted it still existed — which proved nothing, because
+   * `clearStoredPendingPlanExecution` never touches such a file. The state
+   * actually lives on `pendingPlanExecution` inside the session record, so the
+   * only assertion worth making reads it back through `getPendingPlanExecution`.
+   */
+  async function seedPendingPlan(): Promise<void> {
+    await setPendingPlanExecution(root, SESSION_ID, 'plans/do-the-thing.md', 'draft text')
+    // Fail loudly here rather than let the real assertion below pass vacuously
+    // against state that was never written.
+    expect(getPendingPlanExecution(root, SESSION_ID)?.planPath).toBe('plans/do-the-thing.md')
   }
 
   it('delivers and commits the message', async () => {
@@ -134,15 +148,30 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
       mkdirSync(join(root, 'statuses'), { recursive: true })
       sm = new SessionManager()
       seed(state as Record<string, unknown>)
-      const planFile = seedPendingPlan()
+      await seedPendingPlan()
 
       const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
       if (expected) expect(outcome).toMatchObject({ ok: false, code: expected })
       else expect(outcome).toEqual({ ok: true })
 
-      // A page's button is not the user moving on. The plan survives either way.
-      expect(readFileSync(planFile, 'utf-8')).toContain('do the thing')
+      // A page's button is not the user moving on. The plan survives on BOTH
+      // paths — a refused callback obviously must not destroy it, and a
+      // delivered one must not either: the user is still deciding about that
+      // plan, and nothing they can see did this.
+      const survived = getPendingPlanExecution(root, SESSION_ID)
+      expect(survived).not.toBeNull()
+      expect(survived!.planPath).toBe('plans/do-the-thing.md')
+      expect(survived!.draftInputSnapshot).toBe('draft text')
     }
+  })
+
+  it('a NON-callback send still clears pending plan execution', () => {
+    // The control for the test above. Without it, "the plan survived" would
+    // pass just as happily if the clearing call had been deleted outright, and
+    // the assertion would be about nothing. A user's own send is the caller
+    // that legitimately means "I have moved on".
+    const source = readFileSync(join(import.meta.dir, 'SessionManager.ts'), 'utf-8')
+    expect(source).toContain('await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)')
   })
 
   it('never leaves the internal delivery seam on replayable options', async () => {
@@ -242,17 +271,48 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     expect(guardAt).toBeGreaterThan(sendAt)
 
     const preamble = source.slice(sendAt, guardAt)
+
+    // Brace-match the `if (!pageCallback)` block, the same way the adjacency
+    // test matches the mid-stream branch. A `lastIndexOf` search would only
+    // prove the branch opens somewhere earlier in the file — it would keep
+    // passing with every mutation moved out after the closing brace, which is
+    // exactly the regression this is meant to catch.
+    const branchAt = preamble.indexOf('if (!pageCallback) {')
+    expect(branchAt).toBeGreaterThan(-1)
+
+    let depth = 0
+    let branchEnd = -1
+    for (let i = preamble.indexOf('{', branchAt); i < preamble.length; i++) {
+      if (preamble[i] === '{') depth++
+      else if (preamble[i] === '}') {
+        depth--
+        if (depth === 0) { branchEnd = i + 1; break }
+      }
+    }
+    expect(branchEnd).toBeGreaterThan(branchAt)
+
+    const insideBranch = preamble.slice(branchAt, branchEnd)
+    const outsideBranch = preamble.slice(0, branchAt) + preamble.slice(branchEnd)
+
     // Each of these mutates: pins the browser host, claims the retry slot, or
-    // deletes a stored plan. All three must sit inside the non-callback branch.
+    // deletes a stored plan. All three must sit INSIDE the non-callback branch
+    // and nowhere else before the guard.
     for (const mutation of [
       'this.setLastMessageClientId(',
       'claimAutoRetryPending(',
       'clearStoredPendingPlanExecution(',
     ]) {
-      const at = preamble.indexOf(mutation)
-      expect(at).toBeGreaterThan(-1)
-      const guardedFrom = preamble.lastIndexOf('if (!pageCallback) {', at)
-      expect(guardedFrom).toBeGreaterThan(-1)
+      expect(insideBranch).toContain(mutation)
+      expect(outsideBranch).not.toContain(mutation)
     }
+
+    // And the callback path's one permitted await really is the only one.
+    const callbackReachable = outsideBranch
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*'))
+      .join('\n')
+    expect(callbackReachable.match(/\bawait\b/g) ?? []).toHaveLength(1)
+    expect(callbackReachable).toContain('await this.ensureMessagesLoaded(managed)')
   })
 })

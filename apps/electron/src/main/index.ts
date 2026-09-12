@@ -320,7 +320,7 @@ function withPageGrantTargetLine(
 ): string {
   if (!target) return detail
   // PREPENDED, not appended. The descriptor JSON in `detail` carries the pinned
-  // message, which may run to the full 2,000-character cap — long enough to
+  // message, which may run to the full 1,000-character cap — long enough to
   // push a trailing target line off the visible area of a native sheet, so the
   // one fact the user most needs ("which session am I authorizing this
   // against?") would be the first thing buried. Host-resolved identity leads;
