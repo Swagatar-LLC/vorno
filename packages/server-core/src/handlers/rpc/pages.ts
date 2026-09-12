@@ -426,22 +426,26 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
    * second one has to see it. Reading it from disk here is what makes
    * "revalidates permission mode on every invocation" true instead of aspirational.
    *
-   * An unreadable or absent mode resolves to `safe`, the mode that runs
-   * nothing — a corrupt config must not be a way to reach `allow-all`.
+   * **Absent resolves to `ask`, not `safe`.** `defaults.permissionMode` is a
+   * preference most workspaces never set and whose product default is `ask`
+   * (`config/storage.ts`). Reading absence as Explore would not be failing
+   * closed — it would revoke a capability the user never restricted, refusing
+   * every mutating Page action in every workspace that left the setting alone.
+   * Only an explicit Explore refuses. The security boundary is the approved,
+   * digest-bound grant plus the activation ticket; permission mode is an
+   * additional restriction layered over those.
    */
   async function resolveAuthority(
     workspace: { id: string; rootPath: string },
     origin: PageActionOrigin,
   ): Promise<PageActionAuthority> {
-    let permissionMode: PageActionAuthority['permissionMode'] = 'safe'
+    let permissionMode: PageActionAuthority['permissionMode'] = 'ask'
     try {
       const { loadWorkspaceConfig } = await import('@craft-agent/shared/workspaces')
       const configured = loadWorkspaceConfig(workspace.rootPath)?.defaults?.permissionMode
-      if (configured === 'ask' || configured === 'allow-all' || configured === 'safe') {
-        permissionMode = configured
-      }
+      if (configured === 'safe' || configured === 'allow-all') permissionMode = configured
     } catch {
-      // Fall through to `safe`.
+      // Fall through to the product default.
     }
     return { workspaceId: workspace.id, origin, permissionMode }
   }
@@ -474,12 +478,26 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const page = loadPageConfig(workspace.rootPath, pageSlug)
     if (!page) throw new Error(`Page not found: ${pageSlug}`)
 
+    const expectedContentDigest = page.contentDigest
+    if (!expectedContentDigest) throw new Error(`Page "${pageSlug}" has no content yet`)
+
     const broker = await getBroker(canonicalWorkspaceId, workspace.rootPath)
+    // Bind this lease to the observed requester, exactly as grant consent does.
+    // A render that inherited an existing grant has never been through the
+    // grant path, so without this its lease has no owner recorded and the
+    // window re-checks around the confirmation sheet would have nothing to
+    // compare against — refusing every legitimate first use.
+    if (!bindLeaseRequester(
+      workspace.rootPath, request.leaseId, canonicalWorkspaceId, pageSlug, expectedContentDigest, requester,
+    )) throw new Error('PAGE_ACTIVATION_TRUSTED_CONTEXT_REQUIRED')
+
     const authority = await resolveAuthority(workspace, 'sandboxed-page')
     const outcome = await broker.mintActivationTicket(page, request, authority, {
       // Queued behind the same serialized host surface as grant consent, so a
       // Page cannot stack native chrome by asking for many first uses at once.
-      confirmFirstUse: () => confirmPageActionFirstUse(requester, workspace, page, request.grantId),
+      confirmFirstUse: () => confirmPageActionFirstUse(
+        requester, workspace, page, request.grantId, request.leaseId, expectedContentDigest,
+      ),
     })
     if (!outcome.ok) throw new Error(`PAGE_ACTIVATION_REFUSED: ${outcome.code}`)
     return { ticketId: outcome.ticketId, expiresAt: outcome.expiresAt }
@@ -489,10 +507,13 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   /** Host-rendered "run this now", on the shared confirmation queue. */
   async function confirmPageActionFirstUse(
     requester: PageGrantRequester,
-    workspace: { id: string; name: string },
+    workspace: { id: string; name: string; rootPath: string },
     page: import('@craft-agent/core').PageConfig,
     grantId: string,
+    leaseId: string,
+    expectedContentDigest: string,
   ): Promise<boolean> {
+    const leaseKey = leaseKeyFor(workspace.rootPath, leaseId)
     const confirm = deps.confirmPageAction
     if (!confirm) return false
     if (pendingHostConfirmationCount >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) {
@@ -509,20 +530,43 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         const deadline = new AbortController()
         let timer: ReturnType<typeof setTimeout> | undefined
         try {
+          // Re-check before opening. This request may have waited behind other
+          // native chrome, and a render that has since reloaded or died must
+          // not be shown a sheet whose answer can no longer be used.
+          if (!isLeaseRequesterCurrent(
+            workspace.rootPath, leaseId, workspace.id, page.slug, expectedContentDigest, requester,
+          )) throw new Error('PAGE_ACTIVATION_TRUSTED_CONTEXT_REQUIRED')
+
           const confirmation = confirm(requester, {
             workspace: { id: workspace.id, name: sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace') },
             page: { slug: page.slug, name: sanitizePageGrantIdentity(page.name, 'Unnamed page') },
             action: grant.action,
           }, deadline.signal)
+          // Published for exactly as long as the sheet is open, keyed the same
+          // way grant consent is. Without this, releasing the lease or retiring
+          // the render made the ANSWER unusable but left the sheet on the
+          // user's window — and because host chrome is drained serially, every
+          // other Page and workspace queued behind a prompt nobody can answer.
+          activeConfirmations.set(leaseKey, { deadline, requester })
           const timeout = new Promise<never>((_resolve, rejectTimeout) => {
             timer = setTimeout(() => { deadline.abort(); rejectTimeout(new Error('confirmation timed out')) },
               deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
           })
-          resolve(await Promise.race([confirmation, timeout]))
+          const accepted = await Promise.race([confirmation, timeout])
+          // An answer given after the render stopped existing belongs to
+          // nothing. The broker re-validates page state after this resolves;
+          // this re-validates the WINDOW, which the broker cannot see.
+          if (accepted && !isLeaseRequesterCurrent(
+            workspace.rootPath, leaseId, workspace.id, page.slug, expectedContentDigest, requester,
+          )) { resolve(false); return }
+          resolve(accepted)
         } catch (error) {
           reject(error)
         } finally {
           if (timer) clearTimeout(timer)
+          if (activeConfirmations.get(leaseKey)?.deadline === deadline) {
+            activeConfirmations.delete(leaseKey)
+          }
           deadline.abort()
           pendingHostConfirmationCount--
         }
@@ -565,6 +609,14 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         executeScript: createPagesScriptExecutor({ workspaceRootPath, log }),
       },
       permissionsContext: { workspaceRootPath, activeSourceSlugs },
+      // The broker does no IO, but it must not act on a stale view either: an
+      // action that waited for a slot was admitted against a config read before
+      // the wait. This is how it re-reads grants, digest, and expiry from disk
+      // immediately before the executor runs.
+      loadCurrentPage: async (pageSlug: string) => {
+        const { loadPageConfig } = await import('@craft-agent/shared/pages')
+        return loadPageConfig(workspaceRootPath, pageSlug) ?? null
+      },
     })
     brokers.set(workspaceRootPath, broker)
     log.info(`Created page action broker for workspace ${workspaceId}`)

@@ -79,6 +79,8 @@ type GrantHarness = ((channel: string, ...args: unknown[]) => Promise<unknown>) 
     request: unknown,
   ) => Promise<{ ticketId: string; expiresAt: number }>
   actionConfirmations: Array<{ pageSlug: string }>
+  /** Answer an action confirmation that is currently on screen. */
+  resolveActionConfirmation: () => void
   invokeWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
   invokeTransportWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
 }
@@ -109,6 +111,7 @@ function createHarness(
   let hostRequest: import('../handler-deps').PageGrantHostRequest | undefined
   let hostActivationRequest: import('../handler-deps').PageActivationHostRequest | undefined
   const actionConfirmations: Array<{ pageSlug: string }> = []
+  const actionConfirmationResolvers: Array<(accepted: boolean) => void> = []
   let invalidateRequester: ((requester: PageGrantRequester) => void) | undefined
   const pendingResolvers: Array<(accepted: boolean) => void> = []
   const server: RpcServer = {
@@ -171,8 +174,22 @@ function createHarness(
     confirmPageAction: confirm === 'unavailable' ? undefined : async (
       _requester: PageGrantRequester,
       spec: import('../handler-deps').PageActionConfirmationSpec,
+      signal: AbortSignal,
     ) => {
       actionConfirmations.push({ pageSlug: spec.page.slug })
+      // A real sheet stays on the window until it is answered or dismissed, and
+      // dismissal arrives as `signal`. Modelling that is the only way to test
+      // that a release or a retired render can actually close one.
+      if (confirm === 'pending') {
+        return await new Promise<boolean>(resolve => {
+          actionConfirmationResolvers.push(resolve)
+          signal.addEventListener('abort', () => {
+            const queued = actionConfirmationResolvers.indexOf(resolve)
+            if (queued >= 0) actionConfirmationResolvers.splice(queued, 1)
+            resolve(false)
+          }, { once: true })
+        })
+      }
       return confirm === 'approve'
     },
     confirmPageGrant,
@@ -246,6 +263,7 @@ function createHarness(
       )
     },
     actionConfirmations,
+    resolveActionConfirmation: () => actionConfirmationResolvers.shift()?.(true),
     invokeWithContext,
     invokeTransportWithContext,
   })
@@ -1144,6 +1162,97 @@ describe('Pages RPC workspace capability gate', () => {
       await expect(invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, 'req_x')).resolves.toBe(false)
       await expect(invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, 'req_x', lease.leaseId, 'wrong-nonce'))
         .resolves.toBe(false)
+    })
+
+
+    /**
+     * The first-use sheet is real host chrome on the user's window, and host
+     * chrome is drained serially. Refusing to USE a dead render's answer is
+     * only half the job: an un-closable sheet stalls every other Page and
+     * workspace behind it until the timeout.
+     */
+    describe('first-use confirmation lifecycle', () => {
+      async function pendingConfirmation() {
+        const invoke = createHarness('pending')
+        const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+          name: 'Sheet page', content: '<p>sheet</p>',
+        }) as { slug: string }
+        writeFileSync(join(ROOT_A, 'runner.ts'), 'console.log("ran")')
+        const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+          lease: { leaseId: string; nonce: string }
+        }
+        // Seed an approved grant without going through the pending sheet.
+        const { addPageGrant, loadPageConfig } = await import('@craft-agent/shared/pages')
+        const grant = addPageGrant(ROOT_A, page.slug, {
+          action: { kind: 'script', script: 'runner.ts', runtime: 'bun' },
+          expectedContentDigest: loadPageConfig(ROOT_A, page.slug)!.contentDigest!,
+        })
+        const request = {
+          requestId: 'req_sheet',
+          pageSlug: page.slug,
+          leaseId: lease.lease.leaseId,
+          nonce: lease.lease.nonce,
+          grantId: grant.id,
+          invocation: { kind: 'script' as const },
+        }
+        const minting = invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, request)
+          .then(() => 'minted' as const, (error: Error) => error.message)
+        await new Promise(resolve => setTimeout(resolve, 20))
+        expect(invoke.actionConfirmations).toHaveLength(1)
+        return { invoke, page, lease: lease.lease, minting }
+      }
+
+      test('releasing the lease closes the open sheet and mints nothing', async () => {
+        const { invoke, lease, minting } = await pendingConfirmation()
+
+        await invoke(RPC_CHANNELS.pages.RELEASE_LEASE, WORKSPACE_A, lease.leaseId)
+
+        // Not merely outlived — closed. Without the sheet being registered for
+        // abort this would sit until the confirmation timeout instead.
+        expect(await minting).toContain('PAGE_ACTIVATION')
+      })
+
+      test('replacing the render closes the open sheet and mints nothing', async () => {
+        const { invoke, minting } = await pendingConfirmation()
+
+        // A reload keeps the webContents id and the workspace, so only the
+        // render generation distinguishes the document that opened this sheet
+        // from the one that replaced it.
+        invoke.replaceRenderer(101)
+
+        expect(await minting).toContain('PAGE_ACTIVATION')
+      })
+
+      test('a closed sheet unblocks the next one instead of holding the queue', async () => {
+        const { invoke, lease, minting } = await pendingConfirmation()
+        await invoke(RPC_CHANNELS.pages.RELEASE_LEASE, WORKSPACE_A, lease.leaseId)
+        await minting
+
+        // The serially-drained queue moved on: a second Page can open its own
+        // sheet rather than waiting behind a prompt nobody can answer.
+        const second = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+          name: 'Second page', content: '<p>second</p>',
+        }) as { slug: string }
+        const secondLease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, second.slug) as {
+          lease: { leaseId: string; nonce: string }
+        }
+        const { addPageGrant, loadPageConfig } = await import('@craft-agent/shared/pages')
+        const grant = addPageGrant(ROOT_A, second.slug, {
+          action: { kind: 'script', script: 'runner.ts', runtime: 'bun' },
+          expectedContentDigest: loadPageConfig(ROOT_A, second.slug)!.contentDigest!,
+        })
+        void invoke.requestActivationAsHost(101, WORKSPACE_A, second.slug, {
+          requestId: 'req_second',
+          pageSlug: second.slug,
+          leaseId: secondLease.lease.leaseId,
+          nonce: secondLease.lease.nonce,
+          grantId: grant.id,
+          invocation: { kind: 'script' as const },
+        }).catch(() => {})
+        await new Promise(resolve => setTimeout(resolve, 20))
+        expect(invoke.actionConfirmations).toHaveLength(2)
+        expect(invoke.actionConfirmations[1]?.pageSlug).toBe(second.slug)
+      })
     })
 
     test('audits the execution with its origin, workspace, and permission mode', async () => {

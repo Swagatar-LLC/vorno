@@ -239,10 +239,15 @@ export interface PageActionRequest {
  * separate argument.
  *
  * - `sandboxed-page`    page JS asked, relayed by the host through the bridge
- * - `host-ui`           host chrome asked directly, with no page JS involved
  * - `scheduled-refresh` a cron-materialized refresh run, approved at grant time
+ *
+ * There is deliberately no `host-ui` member. Host chrome initiating a Page
+ * action directly has no caller today, and an origin with no caller is a value
+ * whose policy nobody can check against behavior — it would sit in the table
+ * being the cheapest thing for a future caller to claim. Add it with its first
+ * real user.
  */
-export type PageActionOrigin = 'host-ui' | 'sandboxed-page' | 'scheduled-refresh';
+export type PageActionOrigin = 'sandboxed-page' | 'scheduled-refresh';
 
 /**
  * Everything the host asserts about one invocation, re-derived per call rather

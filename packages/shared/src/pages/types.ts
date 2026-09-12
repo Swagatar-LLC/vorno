@@ -143,8 +143,16 @@ export function isMutatingPageAction(action: PageActionDescriptor | PageActionIn
 
 /** What one origin is permitted to do, before any grant is even consulted. */
 export interface PageActionOriginPolicy {
-  /** May this origin run a mutating action at all? */
-  mayMutate: boolean;
+  /**
+   * Does this origin act on behalf of a live render, and therefore have to
+   * prove a lease, its nonce, and a non-replayed request id?
+   *
+   * False for the scheduled path, which has no render to lease. Modelling that
+   * as a policy question rather than an `if (origin === …)` in the validator is
+   * what keeps "a cron run has no lease" from being mistaken for "a cron run
+   * skips validation" — everything else still applies to it.
+   */
+  requiresRenderLease: boolean;
   /** Must a mutating action carry a host-minted, single-use activation ticket? */
   requiresActivationTicket: boolean;
   /**
@@ -173,11 +181,6 @@ export interface PageActionOriginPolicy {
  * entry at all, which is how ADR-0033's "unattributed default that cannot
  * mutate" is enforced rather than described.
  *
- * `host-ui` is held to exactly the same bar as `sandboxed-page` on purpose.
- * It is the stricter reading: host chrome initiating a granted action is still
- * acting on a Page's approved capability, and an origin that relaxed a check
- * would become the cheapest thing for a future caller to claim.
- *
  * `scheduled-refresh` is the deliberate asymmetry, and it is narrow. A cron run
  * has no user present to click, so requiring interaction proof would mean no
  * scheduled refresh could ever run. What replaces the click is that the user
@@ -188,9 +191,8 @@ export interface PageActionOriginPolicy {
  * route for api/mcp calls that skip activation.
  */
 const PAGE_ACTION_ORIGIN_POLICY: { [O in PageActionOrigin]: PageActionOriginPolicy } = {
-  'host-ui': { mayMutate: true, requiresActivationTicket: true, requiresFirstUseConfirmation: true },
-  'sandboxed-page': { mayMutate: true, requiresActivationTicket: true, requiresFirstUseConfirmation: true },
-  'scheduled-refresh': { mayMutate: true, requiresActivationTicket: false, requiresFirstUseConfirmation: false },
+  'sandboxed-page': { requiresRenderLease: true, requiresActivationTicket: true, requiresFirstUseConfirmation: true },
+  'scheduled-refresh': { requiresRenderLease: false, requiresActivationTicket: false, requiresFirstUseConfirmation: false },
 };
 
 /** Every known origin, for tests that must enumerate the whole union. */

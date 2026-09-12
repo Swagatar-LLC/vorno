@@ -315,6 +315,15 @@ export interface PageActionExecutors {
 
 export interface PageActionBrokerOptions {
   executors: PageActionExecutors;
+  /**
+   * Re-read a page's current config from disk. Injected because the broker does
+   * no IO of its own, and required for correctness rather than convenience: an
+   * action that waited for a mutating slot was admitted against a snapshot
+   * taken before the wait, so a revocation or a content change during the wait
+   * would be invisible to it. A host that cannot reload is treated as a host
+   * whose state may have changed — the queued action is refused.
+   */
+  loadCurrentPage?: (pageSlug: string) => Promise<PageConfig | null>;
   /** Audit log path (default: {CONFIG_DIR}/logs/page-actions.jsonl) */
   auditLogPath?: string;
   /** Render-lease lifetime in ms */
@@ -365,6 +374,7 @@ export class PageActionBroker {
   private readonly actionTimeoutMs: number;
   private readonly activationTicketTtlMs: number;
   private readonly permissionsContext?: PermissionsContext;
+  private readonly loadCurrentPage?: (pageSlug: string) => Promise<PageConfig | null>;
   private readonly now: () => number;
 
   private readonly leases = new Map<string, PageRenderLease>();
@@ -374,11 +384,14 @@ export class PageActionBroker {
    *
    * A bare requestId key made cancellation a cross-tenant capability: request
    * ids are minted by the caller, so any client that learned or guessed one
-   * could abort another render's — or another page's — action. Scoping the key
+   * could abort another render's — or another page's — action. Scoping by lease
    * means a cancel must prove the lease it names, and `cancelAction` requires
    * the lease nonce for exactly that reason.
+   *
+   * Nested rather than a composite string key so `dropLease` can reach every
+   * controller a lease owns without parsing keys back apart.
    */
-  private readonly inFlight = new Map<string, AbortController>();
+  private readonly inFlight = new Map<string, Map<string, AbortController>>();
   /** leaseId → number of actions currently executing */
   private readonly inFlightByLease = new Map<string, number>();
   /** leaseId → number of MUTATING actions currently executing */
@@ -418,6 +431,7 @@ export class PageActionBroker {
       PAGE_ACTIVATION_TICKET_TTL_CEILING_MS,
     );
     this.permissionsContext = options.permissionsContext;
+    this.loadCurrentPage = options.loadCurrentPage;
     this.now = options.now ?? Date.now;
   }
 
@@ -497,6 +511,19 @@ export class PageActionBroker {
    * eviction paths, which call this rather than deleting the lease themselves.
    */
   private dropLease(leaseId: string): void {
+    // Abort FIRST, while the lease still exists.
+    //
+    // Releasing a lease withdraws the authority its in-flight actions are
+    // running under, so leaving them running is the same bug as never having
+    // cancelled them: an unmounted Page's write completes against a source
+    // minutes after the render it belonged to is gone. Deleting the lease first
+    // would also make `cancelAction` unable to find them, because ownership is
+    // proven against the lease being deleted.
+    for (const controller of this.inFlight.get(leaseId)?.values() ?? []) {
+      controller.abort();
+    }
+    this.inFlight.delete(leaseId);
+
     this.leases.delete(leaseId);
     this.seenRequestIds.delete(leaseId);
     this.inFlightByLease.delete(leaseId);
@@ -524,9 +551,17 @@ export class PageActionBroker {
     this.dropTicketsWhere((ticket) => now > ticket.expiresAt);
   }
 
-  /** Key for the in-flight map and for cancellation ownership. */
-  private inFlightKey(leaseId: string, requestId: string): string {
-    return JSON.stringify([leaseId, requestId]);
+  private trackInFlight(leaseId: string, requestId: string, controller: AbortController): void {
+    const forLease = this.inFlight.get(leaseId) ?? new Map<string, AbortController>();
+    forLease.set(requestId, controller);
+    this.inFlight.set(leaseId, forLease);
+  }
+
+  private untrackInFlight(leaseId: string, requestId: string): void {
+    const forLease = this.inFlight.get(leaseId);
+    if (!forLease) return;
+    forLease.delete(requestId);
+    if (forLease.size === 0) this.inFlight.delete(leaseId);
   }
 
   // ==========================================================
@@ -702,6 +737,13 @@ export class PageActionBroker {
       return { ok: false, code: 'workspace-mismatch', reason: 'Page actions require a resolved workspace' };
     }
 
+    if (!originPolicy.requiresRenderLease) {
+      // A cron run has no render, so there is no lease, nonce, or request-id
+      // stream to check. Everything below that is NOT about the render still
+      // applies, and is reached by falling through to the page/grant checks.
+      return this.validatePageAndGrant(page, request, authority, originPolicy);
+    }
+
     const lease = this.leases.get(request.leaseId);
     if (!lease) {
       return { ok: false, code: 'lease-not-found', reason: 'No render lease for this request — re-mount the page' };
@@ -732,6 +774,31 @@ export class PageActionBroker {
       return { ok: false, code: 'replay-cache-full', reason: 'Lease exhausted its request budget — re-mount the page' };
     }
 
+    return this.validatePageAndGrant(page, request, authority, originPolicy);
+  }
+
+  /**
+   * Everything that is true of an invocation regardless of whether a render
+   * made it: the page has content, the grant exists, is bound to that content,
+   * has not expired, matches the invocation, and is a kind this origin may run.
+   *
+   * Split out so the render path and the no-render scheduled path share ONE
+   * definition of "this grant authorizes this call". Two copies would be two
+   * answers, and the cron path is exactly where a second, laxer answer would go
+   * unnoticed.
+   */
+  private validatePageAndGrant(
+    page: PageConfig,
+    request: PageActionRequest,
+    authority: PageActionAuthority,
+    originPolicy: { requiresActivationTicket: boolean },
+  ): ValidationOutcome {
+    const now = this.now();
+
+    if (!page.contentDigest) {
+      return { ok: false, code: 'content-missing', reason: 'Page has no content digest' };
+    }
+
     const grant = page.grants?.find((g) => g.id === request.grantId);
     if (!grant) {
       return { ok: false, code: 'grant-not-found', reason: `No grant ${request.grantId} on this page` };
@@ -760,13 +827,6 @@ export class PageActionBroker {
     // decision is made against what the user consented to rather than against
     // what the caller sent.
     const mutating = isMutatingPageAction(grant.action);
-    if (mutating && !originPolicy.mayMutate) {
-      return {
-        ok: false,
-        code: 'origin-forbidden',
-        reason: `A ${authority.origin} action may not mutate`,
-      };
-    }
     // Explore is read-only across the product, and a Page is not an exception:
     // a grant approved in a permissive mode must not keep executing writes
     // after the workspace is switched to safe. Re-read per invocation, so the
@@ -1058,10 +1118,13 @@ export class PageActionBroker {
    * page.json state. Never throws — failures come back as { ok: false }.
    */
   async executeAction(
+    // Reassigned after a queue wait, when the page is re-read from disk.
     page: PageConfig,
     request: PageActionRequest,
     authority: PageActionAuthority,
   ): Promise<PageActionResult> {
+
+
     const startTime = this.now();
     const invocationSummary = this.summarizeInvocation(request.invocation);
 
@@ -1090,7 +1153,8 @@ export class PageActionBroker {
     const validation = this.validate(page, request, authority);
     if (!validation.ok) return rejected(validation.code, validation.reason);
 
-    const { grant, mutating } = validation;
+    let { grant } = validation;
+    const { mutating } = validation;
 
     // Rate check AFTER validation (a throttled caller learns nothing about
     // lease/grant validity it didn't already prove) and BEFORE burning the
@@ -1140,12 +1204,11 @@ export class PageActionBroker {
     // nor controller, report that there was nothing to cancel, and let the
     // withdrawn write run anyway when a slot freed.
     const controller = new AbortController();
-    const inFlightKey = this.inFlightKey(request.leaseId, request.requestId);
-    this.inFlight.set(inFlightKey, controller);
+    this.trackInFlight(request.leaseId, request.requestId, controller);
 
     /** Give back everything admission reserved. Safe to call exactly once. */
     const releaseAdmission = () => {
-      this.inFlight.delete(inFlightKey);
+      this.untrackInFlight(request.leaseId, request.requestId);
       if (mutating) this.releaseMutatingSlot(request.leaseId);
     };
 
@@ -1160,13 +1223,38 @@ export class PageActionBroker {
         releaseAdmission();
         return rejected('cancelled', 'Action was cancelled before it started');
       }
-      // The world moves while a request waits: the lease can be released and
-      // the content can change. Re-validate rather than assume the admission
-      // decision survived the queue.
-      const afterQueue = this.validate(page, request, authority, { checkReplay: false });
+      // The world moves while a request waits, and it moves ON DISK. The `page`
+      // this call was admitted against is a snapshot the host read before the
+      // wait, so re-validating it would re-confirm the past: a grant revoked or
+      // content changed while this sat in the queue would not appear in it.
+      // Reload, then re-check digest, grant, descriptor, and expiry against
+      // what is true now — immediately before the executor runs.
+      if (!this.loadCurrentPage) {
+        releaseAdmission();
+        return rejected('content-changed', 'Queued actions require a host that can re-read page state');
+      }
+      let current: PageConfig | null;
+      try {
+        current = await this.loadCurrentPage(request.pageSlug);
+      } catch {
+        current = null;
+      }
+      if (!current) {
+        releaseAdmission();
+        return rejected('grant-not-found', 'Page no longer exists');
+      }
+      const afterQueue = this.validate(current, request, authority, { checkReplay: false });
       if (!afterQueue.ok) {
         releaseAdmission();
         return rejected(afterQueue.code, afterQueue.reason);
+      }
+      // Execute against the reloaded config, not the admission snapshot, so the
+      // descriptor that runs is the one just re-validated.
+      page = current;
+      grant = afterQueue.grant;
+      if (controller.signal.aborted) {
+        releaseAdmission();
+        return rejected('cancelled', 'Action was cancelled before it started');
       }
     }
 
@@ -1302,6 +1390,8 @@ export class PageActionBroker {
       leaseId: request.leaseId,
       grantId: grant.id,
       actionKind: grant.action.kind,
+      // From the GRANT, which the host approved — not from the request.
+      ...(grant.action.kind !== 'script' ? { sourceSlug: grant.action.sourceSlug } : {}),
       invocation: invocationSummary,
       policyDecision: policy.decision,
       ok: result.ok,
@@ -1333,7 +1423,7 @@ export class PageActionBroker {
 
     this.dropTicketsWhere((ticket) => ticket.leaseId === leaseId && ticket.requestId === requestId);
 
-    const controller = this.inFlight.get(this.inFlightKey(leaseId, requestId));
+    const controller = this.inFlight.get(leaseId)?.get(requestId);
     // A cancel that only withdrew a ticket is still a real cancellation — the
     // action it authorized can no longer run — so it is audited and reported as
     // one rather than reading as "nothing to cancel".
@@ -1373,22 +1463,32 @@ export class PageActionBroker {
     };
   }
 
-  /** Audit-safe summary of an invocation: shape + redacted params, no bodies. */
+  /**
+   * Audit-safe summary of an invocation: **metadata only, never payload.**
+   *
+   * The earlier version recorded the request path and redacted the params by
+   * key name, which is the wrong guarantee in an audit log. Redaction can only
+   * catch keys it recognizes, so a token in `?access_token=`, an id in a path
+   * segment, a customer email in an MCP argument, or any field named something
+   * the redactor has never heard of went to disk verbatim — in a file that
+   * lives for the life of the install and is read by whoever debugs it.
+   *
+   * So nothing the caller supplied is recorded at all. What remains answers the
+   * questions an audit log exists for — what kind of action, against which
+   * source, which tool or method, and how it came out — and answers them from
+   * values the host already knows, not from the request body.
+   */
   private summarizeInvocation(invocation: PageActionInvocation): Record<string, unknown> {
     if (invocation.kind === 'api') {
-      return {
-        kind: 'api',
-        method: invocation.method,
-        path: invocation.path,
-        ...(invocation.params ? { params: redactSensitiveValues(invocation.params) } : {}),
-      };
+      // The method is a closed set and the grant's path PATTERN is recorded
+      // alongside this row via grantId, so the concrete path adds nothing an
+      // investigator cannot recover — and everything an attacker could hide in.
+      return { kind: 'api', method: invocation.method };
     }
     if (invocation.kind === 'mcp') {
-      return {
-        kind: 'mcp',
-        toolName: invocation.toolName,
-        ...(invocation.args ? { args: redactSensitiveValues(invocation.args) } : {}),
-      };
+      // Tool name only. Arguments are entirely caller-supplied and are exactly
+      // where the sensitive values live.
+      return { kind: 'mcp', toolName: invocation.toolName };
     }
     // script is a bare trigger — the resolved grantId in the same audit row
     // carries the script path/runtime/args, so there is nothing to summarize.

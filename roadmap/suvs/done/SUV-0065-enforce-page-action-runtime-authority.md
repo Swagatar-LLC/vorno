@@ -72,6 +72,44 @@ is SUV-0064.
   residual — that a real in-frame click may be invisible to `input-event` — is
   made safe by shape, since it fails as a refusal and never as a bypass.
 
+## Reopen, and what closed it
+
+`2026-09-11` — independent architecture review of PR #204 did not clear. Three
+acceptance items are un-ticked again because they were claimed on checks that a
+production caller does not actually reach:
+
+- queued actions re-validated a `PageConfig` snapshot loaded before the wait, so
+  a revocation or content change during the wait was invisible;
+- the scheduled-refresh origin is enforced at the broker but production cron
+  refresh never enters the broker, so "every invocation" was true of the code
+  path under test and not of the product;
+- audit rows carried the raw API path, query params, and MCP arguments, which is
+  caller payload rather than metadata.
+
+`2026-09-11` — closed again. Each item was fixed on the real path rather than
+argued down:
+
+- **Queued actions reload from disk.** An injected `loadCurrentPage` re-reads
+  `page.json` immediately before the executor, so a revocation or content change
+  during the wait is seen; the reloaded config is also what executes, and a host
+  with no reload seam refuses rather than falling back to the snapshot.
+- **Scheduled refresh now enters authoritative admission.** `pages/scheduled-admission.ts`
+  runs origin policy, permission mode, grant existence, digest binding, expiry,
+  and descriptor identity, and audits every decision — called by the scheduler
+  immediately before spawn. No lease or nonce is invented for a run that has no
+  render, and no second execution path was created: the hardened argv runner
+  still owns spawning.
+- **Audit is metadata only.** No path, params, or MCP arguments are recorded at
+  all. Key-name redaction could only ever catch keys it recognized.
+- **First-use sheets are abortable.** Registered under the PR #203 requester and
+  lease, so a lease release or a retired render closes the sheet instead of
+  stalling the serially-drained host queue behind a prompt nobody can answer.
+- **`dropLease` aborts before it deletes.** Cancellation is authorized against
+  the lease, so deleting first left a lease's own in-flight actions running with
+  nothing able to reach them.
+- **`host-ui` and `mayMutate` are gone** — an origin with no caller and a field
+  that was true for every row.
+
 ## Learnings
 
 - `vorno-internal:learnings/LEARNING-085-consent-caches-key-on-the-command-not-the-grant-id.md`

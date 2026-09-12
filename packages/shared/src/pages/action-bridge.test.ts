@@ -40,11 +40,19 @@ describe('pages/action-bridge', () => {
   let tempDir: string;
   let auditPath: string;
   let clock: { now: number };
+  /**
+   * What `page.json` says right now. The broker re-reads it before running a
+   * request that waited for a slot, so a test can revoke a grant or change
+   * content mid-queue simply by assigning here — which is the whole point of
+   * the reload, and cannot be expressed by passing a snapshot in.
+   */
+  let disk: { page: PageConfig | null };
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'page-action-bridge-test-'));
     auditPath = join(tempDir, 'page-actions.jsonl');
     clock = { now: 1_000_000 };
+    disk = { page: null };
   });
 
   afterEach(() => {
@@ -56,6 +64,7 @@ describe('pages/action-bridge', () => {
       executors,
       auditLogPath: auditPath,
       now: () => clock.now,
+      loadCurrentPage: async () => disk.page,
     });
   }
 
@@ -187,7 +196,8 @@ describe('pages/action-bridge', () => {
       const executed = audit.find((e) => e.event === 'page_action_executed');
       expect(executed?.ok).toBe(true);
       expect(executed?.policyDecision).toBe('allow');
-      expect((executed?.invocation as { path: string }).path).toBe('/repos/craft/agents');
+      expect(executed?.invocation).toEqual({ kind: 'api', method: 'GET' });
+      expect(executed?.sourceSlug).toBe('github');
     });
   });
 
@@ -317,11 +327,13 @@ describe('pages/action-bridge', () => {
         contentDigest: DIGEST_V2,
         grants: [makeGrant()], // grant still bound to v1
       });
+      disk.page = page;
       await expectRejection(page, {}, 'grant-stale');
     });
 
     it('rejects expired grants', async () => {
       const page = makePage({ grants: [makeGrant({ expiresAt: clock.now - 1 })] });
+      disk.page = page;
       await expectRejection(page, {}, 'grant-expired');
     });
 
@@ -360,6 +372,7 @@ describe('pages/action-bridge', () => {
         action: { kind: 'mcp', sourceSlug: 'linear', toolName: 'create_issue' },
       });
       const page = makePage({ grants: [mcpGrant] });
+      disk.page = page;
 
       const broker = makeBroker({
         executeMcp: async (invocation) => ({ echoed: invocation.toolName }),
@@ -390,8 +403,10 @@ describe('pages/action-bridge', () => {
       });
       const broker = makeBroker({}); // no executors
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const mcpPage = makePage({ grants: [mcpGrant] });
+      disk.page = mcpPage;
       const result = await run(broker, 
-        makePage({ grants: [mcpGrant] }),
+        mcpPage,
         makeRequest(lease, { grantId: 'grant_mcp00001', invocation: { kind: 'mcp', toolName: 'create_issue' } }),
       );
       expect(result.ok).toBe(false);
@@ -440,6 +455,12 @@ describe('pages/action-bridge', () => {
       });
     const scriptRequest = (lease: PageRenderLease) =>
       makeRequest(lease, { grantId: 'grant_script001', invocation: { kind: 'script' } });
+    /** The page as it exists on disk, which is what execution re-reads. */
+    const scriptPageOnDisk = () => {
+      const page = makePage({ grants: [scriptGrant()] });
+      disk.page = page;
+      return page;
+    };
 
     it('runs the grant-pinned script and returns stdout/stderr/exit on success', async () => {
       const seen: unknown[] = [];
@@ -450,7 +471,7 @@ describe('pages/action-bridge', () => {
         },
       });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-      const result = await run(broker, makePage({ grants: [scriptGrant()] }), scriptRequest(lease));
+      const result = await run(broker, scriptPageOnDisk(), scriptRequest(lease));
 
       expect(result.ok).toBe(true);
       expect(result.body).toEqual({ exitCode: 0, stdout: 'hello', stderr: '' });
@@ -468,7 +489,7 @@ describe('pages/action-bridge', () => {
         executeScript: async () => ({ exitCode: 2, stdout: '', stderr: 'boom' }),
       });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-      const result = await run(broker, makePage({ grants: [scriptGrant()] }), scriptRequest(lease));
+      const result = await run(broker, scriptPageOnDisk(), scriptRequest(lease));
 
       expect(result.ok).toBe(false);
       expect(result.error).toContain('code 2');
@@ -478,7 +499,7 @@ describe('pages/action-bridge', () => {
     it('returns executor-unavailable when no script executor is wired', async () => {
       const broker = makeBroker({}); // no executors
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-      const result = await run(broker, makePage({ grants: [scriptGrant()] }), scriptRequest(lease));
+      const result = await run(broker, scriptPageOnDisk(), scriptRequest(lease));
       expect(result.ok).toBe(false);
       expect(result.error).toContain('executor-unavailable');
     });
@@ -490,7 +511,7 @@ describe('pages/action-bridge', () => {
         },
       });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-      const result = await run(broker, makePage({ grants: [scriptGrant()] }), scriptRequest(lease));
+      const result = await run(broker, scriptPageOnDisk(), scriptRequest(lease));
       expect(result.ok).toBe(false);
       expect(result.error).toContain('escapes the workspace');
     });
@@ -512,9 +533,13 @@ describe('pages/action-bridge', () => {
       const audit = await readAudit();
       const rejected = audit.find((e) => e.event === 'page_action_rejected');
       expect(rejected?.code).toBe('nonce-mismatch');
-      const params = (rejected?.invocation as { params: Record<string, unknown> }).params;
-      expect(params.apiToken).toBe('[REDACTED]');
-      expect(params.page).toBe(2);
+      // Metadata only. Not "redacted params" — no params at all, and no path:
+      // redaction only catches key names it recognizes, and an audit log is the
+      // wrong place to be guessing which caller-supplied keys are sensitive.
+      expect(rejected?.invocation).toEqual({ kind: 'api', method: 'GET' });
+      const serialized = JSON.stringify(audit);
+      expect(serialized).not.toContain('sk-super-secret');
+      expect(serialized).not.toContain('/repos/x');
     });
   });
 
@@ -527,6 +552,7 @@ describe('pages/action-bridge', () => {
       });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = makePage();
+      disk.page = page;
 
       // Fill every in-flight slot (calls run to the executor await synchronously).
       const inFlight = Array.from({ length: PAGE_ACTION_MAX_IN_FLIGHT_PER_LEASE }, () =>
@@ -560,6 +586,7 @@ describe('pages/action-bridge', () => {
       // Long-lived grant: the test advances the clock past the default 60s expiry.
       const grant = makeGrant({ expiresAt: clock.now + 3_600_000 });
       const page = makePage({ grants: [grant] });
+      disk.page = page;
       const leaseA = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
 
       for (let i = 0; i < PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_LEASE; i++) {
@@ -612,15 +639,14 @@ describe('pages/action-bridge', () => {
     });
 
     it('gives every origin a policy and no policy to an unattributed caller', () => {
-      expect([...PAGE_ACTION_ORIGINS].sort()).toEqual(['host-ui', 'sandboxed-page', 'scheduled-refresh']);
+      expect([...PAGE_ACTION_ORIGINS].sort()).toEqual(['sandboxed-page', 'scheduled-refresh']);
       for (const origin of PAGE_ACTION_ORIGINS) {
         expect(pageActionOriginPolicy(origin)).not.toBeNull();
       }
-      for (const notAnOrigin of [undefined, null, '', 'agent', 'webui', 42, {}]) {
+      // `host-ui` is deliberately absent until something actually uses it.
+      for (const notAnOrigin of [undefined, null, '', 'agent', 'webui', 'host-ui', 42, {}]) {
         expect(pageActionOriginPolicy(notAnOrigin)).toBeNull();
       }
-      // The two interactive origins are held to the same bar on purpose.
-      expect(pageActionOriginPolicy('host-ui')).toEqual(pageActionOriginPolicy('sandboxed-page'));
     });
 
     it('fails an unattributed mutation closed, before any lease or grant is consulted', async () => {
@@ -628,6 +654,7 @@ describe('pages/action-bridge', () => {
       const broker = makeBroker({ executeScript: async (i) => { calls.push(i); return { exitCode: 0, stdout: '', stderr: '' }; } });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = makePage({ grants: [makeGrant({ id: 'grant_script001', action: { kind: 'script', script: 'run.sh' } })] });
+      disk.page = page;
       const request = makeRequest(lease, { grantId: 'grant_script001', invocation: { kind: 'script' } });
 
       for (const authority of [
@@ -652,16 +679,19 @@ describe('pages/action-bridge', () => {
 
       // A cron run has no click, so it carries no ticket — and still executes.
       const page = makePage({ grants: [makeGrant({ id: 'grant_script001', action: { kind: 'script', script: 'run.sh' } })] });
+      disk.page = page;
       const ran = await broker.executeAction(
         page,
         makeRequest(lease, { grantId: 'grant_script001', invocation: { kind: 'script' } }),
         scheduled,
       );
+      expect(ran.error ?? '').toBe('');
       expect(ran.ok).toBe(true);
 
       // That exemption must not become a general no-activation route: a
       // scheduled origin may not run an api grant at all.
       const apiPage = makePage({ grants: [makeGrant({ action: { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '/repos/.*' } })] });
+      disk.page = apiPage;
       const refused = await broker.executeAction(
         apiPage,
         makeRequest(lease, { invocation: { kind: 'api', method: 'POST', path: '/repos/x' } }),
@@ -700,6 +730,7 @@ describe('pages/action-bridge', () => {
       const { broker, calls } = activationBroker();
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
 
       const bare = await broker.executeAction(page, writeRequest(lease), AUTHORITY);
       expect(bare.ok).toBe(false);
@@ -729,6 +760,7 @@ describe('pages/action-bridge', () => {
       const { broker, calls } = activationBroker();
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
       const request = writeRequest(lease);
       const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
       const activated = { ...request, activationTicket: ticketOf(mint) };
@@ -800,6 +832,7 @@ describe('pages/action-bridge', () => {
       const leaseA = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const leaseB = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
 
       // A fresh ticket per attempt: redemption is atomic and unconditional, so
       // a failed attempt burns the ticket and a shared one would make the
@@ -833,16 +866,19 @@ describe('pages/action-bridge', () => {
       const { broker } = activationBroker();
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
       const request = writeRequest(lease);
       const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
 
       const result = await broker.executeAction(
         page,
         { ...request, activationTicket: ticketOf(mint) },
-        { ...AUTHORITY, origin: 'host-ui' },
+        { ...AUTHORITY, origin: 'scheduled-refresh' },
       );
       expect(result.ok).toBe(false);
-      expect(result.error).toContain('activation-invalid');
+      // A scheduled origin cannot run an api grant at all, so it is refused
+      // before the ticket is even considered — the ticket stays unspendable.
+      expect(result.error).toContain('origin-forbidden');
     });
 
     it('expires tickets within the 10-second ceiling and clamps a generous option', async () => {
@@ -855,6 +891,7 @@ describe('pages/action-bridge', () => {
       });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
       const request = writeRequest(lease);
       const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
       expect(mint.ok).toBe(true);
@@ -870,6 +907,7 @@ describe('pages/action-bridge', () => {
       const { broker } = activationBroker();
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
 
       const released = writeRequest(lease);
       const mintA = await broker.mintActivationTicket(page, released, AUTHORITY, CONFIRMING);
@@ -892,6 +930,7 @@ describe('pages/action-bridge', () => {
       const { broker } = activationBroker();
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
       for (let i = 0; i < MAX_OUTSTANDING_TICKETS_PER_LEASE; i++) {
         expect((await broker.mintActivationTicket(page, writeRequest(lease), AUTHORITY, CONFIRMING)).ok).toBe(true);
       }
@@ -912,6 +951,7 @@ describe('pages/action-bridge', () => {
       const { broker } = activationBroker();
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
       await broker.mintActivationTicket(
         page,
         writeRequest(lease, { invocation: { kind: 'api', method: 'POST', path: '/repos/x', params: { apiToken: 'sk-super-secret' } } }),
@@ -943,6 +983,7 @@ describe('pages/action-bridge', () => {
       const broker = makeBroker({ executeScript: async () => ({ exitCode: 0, stdout: '', stderr: '' }) });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = scriptPage();
+      disk.page = page;
       let asked = 0;
       const confirmFirstUse = async () => { asked++; return true; };
 
@@ -962,6 +1003,7 @@ describe('pages/action-bridge', () => {
       const broker = makeBroker({ executeScript: async (i) => { calls.push(i); return { exitCode: 0, stdout: '', stderr: '' }; } });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = scriptPage();
+      disk.page = page;
 
       const declined = await broker.mintActivationTicket(page, scriptReq(lease), AUTHORITY, { confirmFirstUse: async () => false });
       expect(declined.ok).toBe(false);
@@ -980,6 +1022,7 @@ describe('pages/action-bridge', () => {
       const broker = makeBroker({ executeScript: async () => ({ exitCode: 0, stdout: '', stderr: '' }) });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = scriptPage();
+      disk.page = page;
 
       // The grant expires while the user is reading the dialog. Approving the
       // question is not approving the state that follows it.
@@ -995,6 +1038,7 @@ describe('pages/action-bridge', () => {
       const broker = makeBroker({ executeScript: async () => ({ exitCode: 0, stdout: '', stderr: '' }) });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = scriptPage();
+      disk.page = page;
 
       const abandoned = await broker.mintActivationTicket(page, scriptReq(lease), AUTHORITY, {
         confirmFirstUse: async () => { broker.releaseLease(lease.leaseId); return true; },
@@ -1186,6 +1230,7 @@ describe('pages/action-bridge', () => {
       const page = makePage({
         grants: [makeGrant({ id: 'grant_write0001', expiresAt: clock.now + 3_600_000, action: { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '/repos/.*' } })],
       });
+      disk.page = page;
       const write = async () => {
         const request = makeRequest(lease, { grantId: 'grant_write0001', invocation: { kind: 'api', method: 'POST', path: '/repos/x' } });
         const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
@@ -1217,6 +1262,7 @@ describe('pages/action-bridge', () => {
       const page = makePage({
         grants: [makeGrant({ id: 'grant_write0001', expiresAt: clock.now + 3_600_000, action: { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '/repos/.*' } })],
       });
+      disk.page = page;
       const start = async () => {
         const request = makeRequest(lease, { grantId: 'grant_write0001', invocation: { kind: 'api', method: 'POST', path: '/repos/x' } });
         const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
@@ -1249,6 +1295,7 @@ describe('pages/action-bridge', () => {
       const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
       const grant = makeGrant({ expiresAt: clock.now + 3_600_000 });
       const page = makePage({ grants: [grant] });
+      disk.page = page;
 
       // Fresh lease every call: the per-lease budget never binds, so what stops
       // this is the page ceiling above it — the one a re-mount cannot reset.
@@ -1315,6 +1362,7 @@ describe('pages/action-bridge', () => {
       });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
 
       const start = async () => {
         const request = makeRequest(lease, {
@@ -1354,6 +1402,7 @@ describe('pages/action-bridge', () => {
       });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
 
       const start = async (path: string) => {
         const request = makeRequest(lease, {
@@ -1462,6 +1511,7 @@ describe('pages/action-bridge', () => {
       });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
+      disk.page = page;
       const start = async () => {
         const request = makeRequest(lease, {
           grantId: 'grant_write0001',
@@ -1503,10 +1553,240 @@ describe('pages/action-bridge', () => {
     });
   });
 
+
+  /**
+   * Regressions for the independent architecture review of PR #204. Each covers
+   * a check that passed against a snapshot or a test-only path while the
+   * production one went around it.
+   */
+  describe('architecture review regressions (PR #204)', () => {
+    const writeGrant = () => makeGrant({
+      id: 'grant_write0001',
+      expiresAt: clock.now + 3_600_000,
+      action: { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '/repos/.*' },
+    });
+
+    /** Two writes occupying both slots, plus a third that must queue behind them. */
+    function saturated() {
+      const gates: Array<() => void> = [];
+      const executed: string[] = [];
+      const broker = makeBroker({
+        executeApi: (invocation) => new Promise((resolve) => {
+          executed.push(invocation.path);
+          gates.push(() => resolve({ status: 201, ok: true, body: null }));
+        }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage({ grants: [writeGrant()] });
+      disk.page = page;
+      const start = async (path: string) => {
+        const request = makeRequest(lease, {
+          grantId: 'grant_write0001',
+          invocation: { kind: 'api', method: 'POST', path },
+        });
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+        return broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY);
+      };
+      return { broker, lease, page, gates, executed, start };
+    }
+
+    it('sees a revocation that happens while the request is queued', async () => {
+      const { broker, gates, executed, start } = saturated();
+      const running = [start('/repos/a'), start('/repos/b')];
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = start('/repos/c');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(executed).toHaveLength(PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE);
+
+      // The user revokes while the third write waits. The snapshot this call
+      // was admitted against still lists the grant, so only re-reading disk can
+      // see this — which is the whole point.
+      disk.page = makePage({ grants: [] });
+
+      while (gates.length) gates.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      while (gates.length) gates.shift()!();
+
+      const result = await queued;
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('grant-not-found');
+      // It never reached the source.
+      expect(executed).toHaveLength(PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE);
+      await Promise.all(running);
+    });
+
+    it('sees a content change that happens while the request is queued', async () => {
+      const { broker, gates, executed, start } = saturated();
+      const running = [start('/repos/a'), start('/repos/b')];
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = start('/repos/c');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // New content: the grant is still listed but is now bound to a digest the
+      // page no longer has, which is what makes it stale rather than missing.
+      disk.page = makePage({ contentDigest: DIGEST_V2, grants: [writeGrant()] });
+
+      while (gates.length) gates.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      while (gates.length) gates.shift()!();
+
+      const result = await queued;
+      expect(result.ok).toBe(false);
+      // The lease is bound to the digest it was issued for, so new content is
+      // caught as a dead render before the grant is even reached — a stricter
+      // refusal than `grant-stale`, and the earlier one.
+      expect(result.error).toContain('content-changed');
+      expect(executed).toHaveLength(PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE);
+      await Promise.all(running);
+    });
+
+    it('runs the descriptor that is on disk now, not the one admission saw', async () => {
+      // The reload is not only a refusal mechanism: whatever it returns is what
+      // executes, so the descriptor that runs is the one just re-validated.
+      const ran: string[] = [];
+      const broker = makeBroker({
+        executeScript: async (invocation) => { ran.push(invocation.script); return { exitCode: 0, stdout: '', stderr: '' }; },
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage({
+        grants: [makeGrant({ id: 'grant_script001', action: { kind: 'script', script: 'pages/dash/run.ts' } })],
+      });
+      disk.page = page;
+      const request = makeRequest(lease, { grantId: 'grant_script001', invocation: { kind: 'script' } });
+      const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+
+      const result = await broker.executeAction(
+        page,
+        { ...request, activationTicket: (mint as { ticketId: string }).ticketId },
+        AUTHORITY,
+      );
+      expect(result.ok).toBe(true);
+      expect(ran).toEqual(['pages/dash/run.ts']);
+    });
+
+    it('refuses a mutating action when the host cannot re-read page state', async () => {
+      // No reload seam means no way to know the grant still stands. That has to
+      // fail closed, not fall back to the snapshot.
+      const broker = new PageActionBroker({
+        executors: { executeApi: async () => ({ status: 201, ok: true, body: null }) },
+        auditLogPath: auditPath,
+        now: () => clock.now,
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage({ grants: [writeGrant()] });
+      const request = makeRequest(lease, {
+        grantId: 'grant_write0001',
+        invocation: { kind: 'api', method: 'POST', path: '/repos/x' },
+      });
+      const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+      const result = await broker.executeAction(
+        page,
+        { ...request, activationTicket: (mint as { ticketId: string }).ticketId },
+        AUTHORITY,
+      );
+      expect(result.ok).toBe(false);
+    });
+
+    it('aborts in-flight actions when their lease is released', async () => {
+      // Releasing a lease withdraws the authority the action runs under, so
+      // letting it finish is the same defect as never cancelling it: an
+      // unmounted Page's write lands on a source after the render is gone.
+      const broker = makeBroker({
+        executeApi: (_invocation, { signal }) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage();
+      disk.page = page;
+      const pending = broker.executeAction(page, makeRequest(lease), AUTHORITY);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      broker.releaseLease(lease.leaseId);
+
+      const result = await pending;
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('cancelled');
+    });
+
+    it('aborts before deleting the lease, so ownership can still be proven', async () => {
+      // Ordering matters: cancellation is authorized against the lease, so a
+      // dropLease that deleted first would leave its own in-flight actions
+      // running with nothing able to reach them.
+      const broker = makeBroker({
+        executeApi: (_invocation, { signal }) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage();
+      disk.page = page;
+      const a = broker.executeAction(page, makeRequest(lease), AUTHORITY);
+      const b = broker.executeAction(page, makeRequest(lease), AUTHORITY);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      broker.releaseLease(lease.leaseId);
+      const settled = await Promise.all([a, b]);
+      expect(settled.every((r) => !r.ok)).toBe(true);
+      // And the lease really is gone afterwards.
+      expect(broker.cancelAction(lease.leaseId, lease.nonce, 'anything')).toBe(false);
+    });
+
+    it('audits no caller-supplied value, recognized as sensitive or not', async () => {
+      const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage();
+      disk.page = page;
+      await run(broker, page, makeRequest(lease, {
+        invocation: {
+          kind: 'api',
+          method: 'GET',
+          // None of these key names are ones a redactor would recognize, which
+          // is exactly why recording params at all was the wrong design.
+          path: '/repos/craft/agents/patient-8871',
+          params: { note: 'jeff@example.com', ref: 'bearer-abcdef', q: 'salary' },
+        },
+      }));
+
+      const serialized = JSON.stringify(await readAudit());
+      for (const leaked of ['patient-8871', 'jeff@example.com', 'bearer-abcdef', 'salary']) {
+        expect(serialized).not.toContain(leaked);
+      }
+      // What remains is still enough to investigate with.
+      const executed = (await readAudit()).find((e) => e.event === 'page_action_executed');
+      expect(executed?.invocation).toEqual({ kind: 'api', method: 'GET' });
+      expect(executed?.sourceSlug).toBe('github');
+      expect(executed?.grantId).toBe('grant_test0001');
+    });
+
+    it('audits no MCP arguments', async () => {
+      const broker = makeBroker({ executeMcp: async () => ({ ok: true }) });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage({
+        grants: [makeGrant({ id: 'grant_mcp00001', action: { kind: 'mcp', sourceSlug: 'linear', toolName: 'create_issue' } })],
+      });
+      disk.page = page;
+      await run(broker, page, makeRequest(lease, {
+        grantId: 'grant_mcp00001',
+        invocation: { kind: 'mcp', toolName: 'create_issue', args: { title: 'acquisition-project-halo', body: 'jeff@example.com' } },
+      }));
+
+      const serialized = JSON.stringify(await readAudit());
+      expect(serialized).not.toContain('acquisition-project-halo');
+      expect(serialized).not.toContain('jeff@example.com');
+      const executed = (await readAudit()).find((e) => e.event === 'page_action_executed');
+      expect(executed?.invocation).toEqual({ kind: 'mcp', toolName: 'create_issue' });
+      expect(executed?.sourceSlug).toBe('linear');
+    });
+  });
+
   describe('lease store cap', () => {
     it('evicts the oldest lease past MAX_LIVE_LEASES (audited) and keeps new mounts working', async () => {
       const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
       const page = makePage();
+      disk.page = page;
 
       const first = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       for (let i = 1; i < MAX_LIVE_LEASES; i++) {
