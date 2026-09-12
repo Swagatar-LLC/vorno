@@ -61,13 +61,8 @@ import { redactSensitiveValues } from '../utils/redaction.ts';
 import { evaluateApiEndpointPolicy, evaluateMcpToolPolicy, type SourceActionPolicyDecision } from '../agent/source-policy.ts';
 import type { PermissionsContext } from '../agent/permissions-config.ts';
 import { proxyToolName } from '../mcp/proxy-tool-name.ts';
-import {
-  hasPathTraversal,
-  isMutatingPageAction,
-  pageActionDescriptorSignature,
-  pageActionOriginAllowsKind,
-  pageActionOriginPolicy,
-} from './types.ts';
+import { authorizePageAction } from './admission.ts';
+import { pageActionDescriptorSignature, pageActionOriginPolicy } from './types.ts';
 
 const log = createLogger('page-action-broker');
 
@@ -316,14 +311,24 @@ export interface PageActionExecutors {
 export interface PageActionBrokerOptions {
   executors: PageActionExecutors;
   /**
-   * Re-read a page's current config from disk. Injected because the broker does
-   * no IO of its own, and required for correctness rather than convenience: an
-   * action that waited for a mutating slot was admitted against a snapshot
-   * taken before the wait, so a revocation or a content change during the wait
-   * would be invisible to it. A host that cannot reload is treated as a host
-   * whose state may have changed — the queued action is refused.
+   * Re-read the CURRENT admission state — page config and host authority — for
+   * an action about to execute.
+   *
+   * Injected because the broker does no IO of its own, and required for
+   * correctness rather than convenience: an action that waited for a mutating
+   * slot was admitted against a snapshot taken before the wait, so a
+   * revocation, a content change, or a switch to Explore during the wait would
+   * be invisible to it.
+   *
+   * Returning the **authority** and not only the page is the part that is easy
+   * to get wrong, and did get wrong: re-reading `page.json` while reusing the
+   * authority resolved before the queue means "revalidates permission mode on
+   * every invocation" is true of the fast path and false of the queued one,
+   * which is precisely the path a user is most likely to be changing settings
+   * during. A host that cannot reload is treated as a host whose state may have
+   * changed — the queued action is refused.
    */
-  loadCurrentPage?: (pageSlug: string) => Promise<PageConfig | null>;
+  loadCurrentAdmission?: (pageSlug: string) => Promise<{ page: PageConfig; authority: PageActionAuthority } | null>;
   /** Audit log path (default: {CONFIG_DIR}/logs/page-actions.jsonl) */
   auditLogPath?: string;
   /** Render-lease lifetime in ms */
@@ -374,7 +379,9 @@ export class PageActionBroker {
   private readonly actionTimeoutMs: number;
   private readonly activationTicketTtlMs: number;
   private readonly permissionsContext?: PermissionsContext;
-  private readonly loadCurrentPage?: (pageSlug: string) => Promise<PageConfig | null>;
+  private readonly loadCurrentAdmission?: (
+    pageSlug: string,
+  ) => Promise<{ page: PageConfig; authority: PageActionAuthority } | null>;
   private readonly now: () => number;
 
   private readonly leases = new Map<string, PageRenderLease>();
@@ -442,7 +449,7 @@ export class PageActionBroker {
       PAGE_ACTIVATION_TICKET_TTL_CEILING_MS,
     );
     this.permissionsContext = options.permissionsContext;
-    this.loadCurrentPage = options.loadCurrentPage;
+    this.loadCurrentAdmission = options.loadCurrentAdmission;
     this.now = options.now ?? Date.now;
   }
 
@@ -734,27 +741,16 @@ export class PageActionBroker {
     const now = this.now();
 
     // Origin first: an unattributed caller must not learn whether its lease,
-    // grant, or page even exist. ADR-0033's "unattributed default that cannot
-    // mutate" is this branch — there is no default origin to fall back to.
+    // grant, or page even exist. The shared primitive answers that, so ask it
+    // before touching lease state.
     const originPolicy = pageActionOriginPolicy(authority?.origin);
     if (!originPolicy) {
-      return {
-        ok: false,
-        code: 'origin-unattributed',
-        reason: 'Page actions require a host-declared origin',
-      };
-    }
-    if (!authority.workspaceId) {
-      return { ok: false, code: 'workspace-mismatch', reason: 'Page actions require a resolved workspace' };
+      return { ok: false, code: 'origin-unattributed', reason: 'Page actions require a host-declared origin' };
     }
 
-    if (!originPolicy.requiresRenderLease) {
-      // A cron run has no render, so there is no lease, nonce, or request-id
-      // stream to check. Everything below that is NOT about the render still
-      // applies, and is reached by falling through to the page/grant checks.
-      return this.validatePageAndGrant(page, request, authority, originPolicy);
-    }
-
+    // The render-specific layer, and the ONLY part of validation this class
+    // owns. Everything below it is the shared primitive, so the sandboxed path
+    // and the scheduled path cannot drift apart on what a grant authorizes.
     const lease = this.leases.get(request.leaseId);
     if (!lease) {
       return { ok: false, code: 'lease-not-found', reason: 'No render lease for this request — re-mount the page' };
@@ -769,7 +765,6 @@ export class PageActionBroker {
     if (lease.nonce !== request.nonce) {
       return { ok: false, code: 'nonce-mismatch', reason: 'Request nonce does not match the render lease' };
     }
-
     if (!page.contentDigest) {
       return { ok: false, code: 'content-missing', reason: 'Page has no content digest' };
     }
@@ -785,72 +780,13 @@ export class PageActionBroker {
       return { ok: false, code: 'replay-cache-full', reason: 'Lease exhausted its request budget — re-mount the page' };
     }
 
-    return this.validatePageAndGrant(page, request, authority, originPolicy);
-  }
-
-  /**
-   * Everything that is true of an invocation regardless of whether a render
-   * made it: the page has content, the grant exists, is bound to that content,
-   * has not expired, matches the invocation, and is a kind this origin may run.
-   *
-   * Split out so the render path and the no-render scheduled path share ONE
-   * definition of "this grant authorizes this call". Two copies would be two
-   * answers, and the cron path is exactly where a second, laxer answer would go
-   * unnoticed.
-   */
-  private validatePageAndGrant(
-    page: PageConfig,
-    request: PageActionRequest,
-    authority: PageActionAuthority,
-    originPolicy: { requiresActivationTicket: boolean },
-  ): ValidationOutcome {
-    const now = this.now();
-
-    if (!page.contentDigest) {
-      return { ok: false, code: 'content-missing', reason: 'Page has no content digest' };
-    }
-
-    const grant = page.grants?.find((g) => g.id === request.grantId);
-    if (!grant) {
-      return { ok: false, code: 'grant-not-found', reason: `No grant ${request.grantId} on this page` };
-    }
-    if (grant.contentDigest !== page.contentDigest) {
-      return { ok: false, code: 'grant-stale', reason: 'Grant was approved for older page content — re-approval required' };
-    }
-    if (now > grant.expiresAt) {
-      return { ok: false, code: 'grant-expired', reason: 'Grant expired — re-approval required' };
-    }
-
-    const mismatch = this.invocationMismatch(grant, request.invocation);
-    if (mismatch) return mismatch;
-
-    if (!pageActionOriginAllowsKind(authority.origin, grant.action.kind)) {
-      return {
-        ok: false,
-        code: 'origin-forbidden',
-        reason: `A ${authority.origin} action may not run a ${grant.action.kind} grant`,
-      };
-    }
-
-    // Classify from the GRANT, not the invocation. They agree here (the
-    // mismatch check above proved the kinds match, and api method equality with
-    // it), and reading the approved descriptor means the privileged/unprivileged
-    // decision is made against what the user consented to rather than against
-    // what the caller sent.
-    const mutating = isMutatingPageAction(grant.action);
-    // Explore is read-only across the product, and a Page is not an exception:
-    // a grant approved in a permissive mode must not keep executing writes
-    // after the workspace is switched to safe. Re-read per invocation, so the
-    // switch takes effect on the very next action rather than the next mount.
-    if (mutating && authority.permissionMode === 'safe') {
-      return {
-        ok: false,
-        code: 'permission-mode-forbidden',
-        reason: 'Explore mode does not run mutating page actions',
-      };
-    }
-
-    return { ok: true, grant, mutating };
+    return authorizePageAction({
+      page,
+      grantId: request.grantId,
+      invocation: request.invocation,
+      authority,
+      now,
+    });
   }
 
   // ==========================================================
@@ -1115,54 +1051,6 @@ export class PageActionBroker {
     return this.tickets.size;
   }
 
-  /** Check the concrete invocation against the grant's descriptor. */
-  private invocationMismatch(grant: PageActionGrant, invocation: PageActionInvocation): ValidationOutcome | null {
-    if (grant.action.kind !== invocation.kind) {
-      return { ok: false, code: 'grant-mismatch', reason: `Grant allows ${grant.action.kind} actions, request is ${invocation.kind}` };
-    }
-
-    if (grant.action.kind === 'api' && invocation.kind === 'api') {
-      if (grant.action.method !== invocation.method) {
-        return { ok: false, code: 'grant-mismatch', reason: `Grant allows ${grant.action.method}, request is ${invocation.method}` };
-      }
-      // Reject traversal BEFORE the pattern match. fetch normalizes `..`, so a
-      // raw path that matches the anchored pattern could still resolve to a
-      // different endpoint with the real credential. Rejecting here guarantees
-      // the (raw) path later forwarded to executeApi is traversal-free — match
-      // and execution agree without transforming the forwarded path.
-      if (hasPathTraversal(invocation.path)) {
-        return { ok: false, code: 'invocation-path-unsafe', reason: 'Request path contains a directory-traversal segment' };
-      }
-      let pattern: RegExp;
-      try {
-        // Anchored: the grant's pattern must match the WHOLE path.
-        pattern = new RegExp(`^(?:${grant.action.pathPattern})$`);
-      } catch {
-        return { ok: false, code: 'grant-pattern-invalid', reason: 'Grant path pattern is not a valid regex' };
-      }
-      const path = invocation.path.startsWith('/') ? invocation.path : `/${invocation.path}`;
-      if (!pattern.test(path)) {
-        return { ok: false, code: 'grant-mismatch', reason: `Path ${path} does not match the granted pattern` };
-      }
-      return null;
-    }
-
-    if (grant.action.kind === 'mcp' && invocation.kind === 'mcp') {
-      if (grant.action.toolName !== invocation.toolName) {
-        return { ok: false, code: 'grant-mismatch', reason: `Grant allows tool ${grant.action.toolName}, request is ${invocation.toolName}` };
-      }
-      return null;
-    }
-
-    if (grant.action.kind === 'script' && invocation.kind === 'script') {
-      // Nothing to compare: the trigger carries no script/args, so the grant's
-      // descriptor is authoritative and any script-for-script pair matches.
-      return null;
-    }
-
-    return { ok: false, code: 'grant-mismatch', reason: 'Unsupported action kind' };
-  }
-
   // ==========================================================
   // Execution
   // ==========================================================
@@ -1285,13 +1173,13 @@ export class PageActionBroker {
       // content changed while this sat in the queue would not appear in it.
       // Reload, then re-check digest, grant, descriptor, and expiry against
       // what is true now — immediately before the executor runs.
-      if (!this.loadCurrentPage) {
+      if (!this.loadCurrentAdmission) {
         releaseAdmission();
-        return rejected('content-changed', 'Queued actions require a host that can re-read page state');
+        return rejected('content-changed', 'Queued actions require a host that can re-read admission state');
       }
-      let current: PageConfig | null;
+      let current: { page: PageConfig; authority: PageActionAuthority } | null;
       try {
-        current = await this.loadCurrentPage(request.pageSlug);
+        current = await this.loadCurrentAdmission(request.pageSlug);
       } catch {
         current = null;
       }
@@ -1299,7 +1187,16 @@ export class PageActionBroker {
         releaseAdmission();
         return rejected('grant-not-found', 'Page no longer exists');
       }
-      const afterQueue = this.validate(current, request, authority, { checkReplay: false });
+      // The workspace cannot change identity under a request, and a reload that
+      // said otherwise would mean the host resolved a different workspace than
+      // the one this action was admitted for.
+      if (current.authority.workspaceId !== authority.workspaceId) {
+        releaseAdmission();
+        return rejected('workspace-mismatch', 'Workspace changed while this request was queued');
+      }
+      // Re-validated against the CURRENT authority — a switch to Explore while
+      // this sat in the queue refuses here rather than executing.
+      const afterQueue = this.validate(current.page, request, { ...current.authority, origin: authority.origin }, { checkReplay: false });
       if (!afterQueue.ok) {
         releaseAdmission();
         return rejected(afterQueue.code, afterQueue.reason);
@@ -1318,7 +1215,7 @@ export class PageActionBroker {
       }
       // Execute against the reloaded config, not the admission snapshot, so the
       // descriptor that runs is the one just re-validated.
-      page = current;
+      page = current.page;
       grant = afterQueue.grant;
       if (controller.signal.aborted) {
         releaseAdmission();

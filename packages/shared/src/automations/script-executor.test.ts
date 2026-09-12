@@ -25,6 +25,22 @@ describe('script-executor', () => {
     workspaceDir = mkdtempSync(join(tmpdir(), 'script-executor-test-'));
   });
 
+  /**
+   * A workspace with Pages actually enabled. Scheduled refresh now re-reads the
+   * per-workspace capability on every run, so a fixture with no config models a
+   * workspace that never enabled Pages — and is correctly refused.
+   */
+  function enablePages(permissionMode: string | undefined = 'ask') {
+    writeFileSync(join(workspaceDir, 'config.json'), JSON.stringify({
+      id: 'ws_script_exec',
+      name: 'Script executor test',
+      slug: 'ws_script_exec',
+      defaults: { pages: { enabled: true }, ...(permissionMode !== undefined ? { permissionMode } : {}) },
+      createdAt: 1,
+      updatedAt: 1,
+    }));
+  }
+
   afterEach(() => {
     rmSync(workspaceDir, { recursive: true, force: true });
   });
@@ -38,6 +54,7 @@ describe('script-executor', () => {
   }
 
   function configureRefresh(script: string, args?: string[]): string {
+    enablePages();
     const page = createPage(workspaceDir, { name: 'Dash', content: '<p>dash</p>' });
     const grant = addPageGrant(workspaceDir, page.slug, {
       action: { kind: 'script', script, ...(args ? { args } : {}) },
@@ -212,6 +229,39 @@ describe('script-executor', () => {
       expect(result.success).toBe(false);
       expect(result.blocked).toBe(true);
       expect(result.stderr).toContain('expired');
+    });
+  });
+
+  describe('page refresh admission (SUV-0065)', () => {
+    it('refuses to spawn once Pages is disabled for the workspace', async () => {
+      // This is the production scheduler path. A matcher built while Pages was
+      // on must not get one more run out of a stale schedule after it is off.
+      writeFileSync(join(workspaceDir, 'run.ts'), 'console.log("ran")');
+      const grantId = configureRefresh('run.ts');
+
+      const enabled = await executeScriptAction(action({ script: 'run.ts', page: 'dash', grantId }), ctx());
+      expect(enabled.success).toBe(true);
+
+      writeFileSync(join(workspaceDir, 'config.json'), JSON.stringify({
+        id: 'ws_script_exec', name: 'Script executor test', slug: 'ws_script_exec',
+        defaults: { pages: { enabled: false }, permissionMode: 'ask' }, createdAt: 1, updatedAt: 1,
+      }));
+      const disabled = await executeScriptAction(action({ script: 'run.ts', page: 'dash', grantId }), ctx());
+      expect(disabled.blocked).toBe(true);
+      expect(disabled.stderr).toContain('pages-disabled');
+    });
+
+    it('refuses to spawn while the workspace is in Explore', async () => {
+      writeFileSync(join(workspaceDir, 'run.ts'), 'console.log("ran")');
+      const grantId = configureRefresh('run.ts');
+
+      writeFileSync(join(workspaceDir, 'config.json'), JSON.stringify({
+        id: 'ws_script_exec', name: 'Script executor test', slug: 'ws_script_exec',
+        defaults: { pages: { enabled: true }, permissionMode: 'safe' }, createdAt: 1, updatedAt: 1,
+      }));
+      const result = await executeScriptAction(action({ script: 'run.ts', page: 'dash', grantId }), ctx());
+      expect(result.blocked).toBe(true);
+      expect(result.stderr).toContain('permission-mode-forbidden');
     });
   });
 

@@ -29,13 +29,13 @@ describe('pages/scheduled-admission', () => {
     rmSync(workspaceRootPath, { recursive: true, force: true });
   });
 
-  function writeWorkspace(permissionMode?: string) {
+  function writeWorkspace(permissionMode?: string, pagesEnabled = true) {
     mkdirSync(workspaceRootPath, { recursive: true });
     writeFileSync(join(workspaceRootPath, 'config.json'), JSON.stringify({
       id: 'ws_sched',
       name: 'Scheduled',
       slug: 'ws_sched',
-      defaults: { pages: { enabled: true }, ...(permissionMode ? { permissionMode } : {}) },
+      defaults: { pages: { enabled: pagesEnabled }, ...(permissionMode !== undefined ? { permissionMode } : {}) },
       createdAt: 1,
       updatedAt: 1,
     }));
@@ -102,7 +102,7 @@ describe('pages/scheduled-admission', () => {
 
   it('refuses a revoked grant', async () => {
     const result = await refusal(makePage({ grants: [] }));
-    expect(result.code).toBe('grant-stale');
+    expect(result.code).toBe('grant-not-found');
     expect(audit().some((e) => e.event === 'page_action_rejected')).toBe(true);
   });
 
@@ -113,7 +113,7 @@ describe('pages/scheduled-admission', () => {
   it('refuses an expired grant', async () => {
     const page = makePage();
     page.grants![0]!.expiresAt = Date.now() - 1;
-    expect((await refusal(page)).code).toBe('grant-stale');
+    expect((await refusal(page)).code).toBe('grant-expired');
   });
 
   it('refuses when the matcher names a grant the page no longer declares', async () => {
@@ -130,8 +130,9 @@ describe('pages/scheduled-admission', () => {
     const page = makePage();
     page.grants![0]!.action = { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '.*' };
     // The scheduled origin skips activation because a cron tick has no click;
-    // that exemption must never become a route for api or mcp writes.
-    expect((await refusal(page)).code).toBe('grant-stale');
+    // that exemption must never become a route for api or mcp writes. The
+    // trigger is a script invocation, so an api grant mismatches outright.
+    expect((await refusal(page)).code).toBe('grant-mismatch');
   });
 
   it('refuses in Explore, and re-reads the mode per run', async () => {
@@ -146,6 +147,30 @@ describe('pages/scheduled-admission', () => {
     // caution.
     writeWorkspace(undefined);
     expect((await admit(makePage())).ok).toBe(true);
+  });
+
+  it('refuses once Pages is turned off, even from a stale matcher', async () => {
+    // Matchers are rebuilt from disk on config change, but a tick already in
+    // flight — or a rebuild that has not happened yet — must not get one more
+    // run out of the old schedule. The capability is re-read per run.
+    expect((await admit(makePage())).ok).toBe(true);
+    writeWorkspace('ask', false);
+    const result = await refusal(makePage());
+    expect(result.code).toBe('pages-disabled');
+  });
+
+  it('refuses a corrupted permission mode, while still allowing an absent one', async () => {
+    // Absent is a legacy workspace that never set the field; the product
+    // contract says `ask`. A value that is PRESENT but unrecognized is
+    // corruption or a downgrade — something was stored and cannot be honoured,
+    // and an unhonourable restriction has to read as the most restrictive one.
+    writeWorkspace(undefined);
+    expect((await admit(makePage())).ok).toBe(true);
+
+    for (const corrupt of ['SAFE', 'explore', 'read-only', '']) {
+      writeWorkspace(corrupt);
+      expect((await refusal(makePage())).code).toBe('permission-mode-forbidden');
+    }
   });
 
   it('audits no script path or arguments', async () => {

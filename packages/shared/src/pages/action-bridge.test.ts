@@ -46,13 +46,13 @@ describe('pages/action-bridge', () => {
    * content mid-queue simply by assigning here — which is the whole point of
    * the reload, and cannot be expressed by passing a snapshot in.
    */
-  let disk: { page: PageConfig | null };
+  let disk: { page: PageConfig | null; permissionMode: 'safe' | 'ask' | 'allow-all' };
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'page-action-bridge-test-'));
     auditPath = join(tempDir, 'page-actions.jsonl');
     clock = { now: 1_000_000 };
-    disk = { page: null };
+    disk = { page: null, permissionMode: 'ask' };
   });
 
   afterEach(() => {
@@ -64,7 +64,12 @@ describe('pages/action-bridge', () => {
       executors,
       auditLogPath: auditPath,
       now: () => clock.now,
-      loadCurrentPage: async () => disk.page,
+      // The host re-reads BOTH the page and the authority. Modelling only the
+      // page would leave the Explore-during-queue transition untestable, which
+      // is how it went unnoticed.
+      loadCurrentAdmission: async () => disk.page
+        ? { page: disk.page, authority: { ...AUTHORITY, permissionMode: disk.permissionMode } }
+        : null,
     });
   }
 
@@ -1710,6 +1715,91 @@ describe('pages/action-bridge', () => {
       expect(result.ok).toBe(false);
       expect(result.error).toContain('activation-invalid');
       expect(ran).not.toContain('pages/dash/evil.ts');
+      await Promise.all(running);
+    });
+
+    it('refuses a queued mutation when the workspace switches to Explore during the wait', async () => {
+      // EXPLORE-DURING-QUEUE. Reloading only the page would re-confirm the
+      // grant and run the write under an authority resolved before the user
+      // changed the setting — and the queue is exactly where a user has time to
+      // change it.
+      const executed: string[] = [];
+      const gates: Array<() => void> = [];
+      const broker = makeBroker({
+        executeApi: (invocation) => new Promise((resolve) => {
+          executed.push(invocation.path);
+          gates.push(() => resolve({ status: 201, ok: true, body: null }));
+        }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage({ grants: [writeGrant()] });
+      disk.page = page;
+      const start = async (path: string) => {
+        const request = makeRequest(lease, {
+          grantId: 'grant_write0001',
+          invocation: { kind: 'api', method: 'POST', path },
+        });
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+        return broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY);
+      };
+
+      const running = [start('/repos/a'), start('/repos/b')];
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = start('/repos/c');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(executed).toEqual(['/repos/a', '/repos/b']);
+
+      // The user switches the workspace to Explore while the third write waits.
+      disk.permissionMode = 'safe';
+
+      while (gates.length) gates.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      while (gates.length) gates.shift()!();
+
+      const result = await queued;
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('permission-mode-forbidden');
+      // Two runs, not three: the queued write never reached the source.
+      expect(executed).toEqual(['/repos/a', '/repos/b']);
+      await Promise.all(running);
+    });
+
+    it('refuses a queued mutation when the host can no longer resolve admission', async () => {
+      // Pages disabled, workspace gone, config unreadable — the host returns
+      // null and the queued action fails closed rather than using its snapshot.
+      const executed: string[] = [];
+      const gates: Array<() => void> = [];
+      const broker = makeBroker({
+        executeApi: (invocation) => new Promise((resolve) => {
+          executed.push(invocation.path);
+          gates.push(() => resolve({ status: 201, ok: true, body: null }));
+        }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage({ grants: [writeGrant()] });
+      disk.page = page;
+      const start = async (path: string) => {
+        const request = makeRequest(lease, {
+          grantId: 'grant_write0001',
+          invocation: { kind: 'api', method: 'POST', path },
+        });
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+        return broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY);
+      };
+
+      const running = [start('/repos/a'), start('/repos/b')];
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = start('/repos/c');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      disk.page = null;
+
+      while (gates.length) gates.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      while (gates.length) gates.shift()!();
+
+      expect((await queued).ok).toBe(false);
+      expect(executed).toEqual(['/repos/a', '/repos/b']);
       await Promise.all(running);
     });
 

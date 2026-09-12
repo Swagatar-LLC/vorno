@@ -110,6 +110,39 @@ argued down:
 - **`host-ui` and `mayMutate` are gone** — an origin with no caller and a field
   that was true for every row.
 
+## Reopened again
+
+`2026-09-11` — security re-review at `d115d6c2`. "Every invocation revalidates
+permission mode" was still not true of a queued invocation: the post-queue
+reload re-read the page but reused the authority resolved before the wait, so a
+workspace switched to Explore while a mutation sat in the queue still ran it.
+Two further gaps recorded with it: the scheduled path duplicated grant
+validation despite the claim of one definition, and it did not re-check the
+per-workspace Pages capability, so a mid-run toggle-off left a stale matcher
+able to spawn.
+
+`2026-09-11` — closed again:
+
+- **Queued invocations re-resolve authority, not just the page.** The injected
+  seam is now `loadCurrentAdmission`, returning page **and** authority, so a
+  workspace switched to Explore (or a Pages toggle-off, or an unreadable
+  config) during the wait refuses instead of executing under the mode that
+  applied when the action was admitted.
+- **One admission primitive.** `pages/admission.ts` holds the whole shared
+  question — origin, workspace, digest, grant existence/binding/expiry,
+  descriptor match, kind confinement, permission mode — and the broker and the
+  scheduler both call it. The broker's duplicate `invocationMismatch` and its
+  unreachable no-render branch are deleted; lease, nonce, replay, ticket, and
+  first-use confirmation stay layered above it as the genuinely render-only part.
+- **Scheduled runs re-read the Pages capability**, so a mid-run toggle-off
+  refuses even from a stale matcher.
+- **Absent and corrupt permission modes are now distinguished.**
+  `loadWorkspaceConfig` normalizes an unparseable value to `undefined`, which
+  made "never set" and "stored but unhonourable" identical — so a corrupted
+  `safe` read as absent and absent defaults permissively.
+  `readStoredPermissionMode` reports the distinction from the raw file: absent
+  is the product default `ask`, corrupt or unreadable is `safe`.
+
 ## Learnings
 
 - `vorno-internal:learnings/LEARNING-085-consent-caches-key-on-the-command-not-the-grant-id.md`

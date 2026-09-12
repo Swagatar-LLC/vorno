@@ -22,10 +22,11 @@
  */
 
 import type { PageActionAuthority, PageConfig, PageRefreshSpec } from '@craft-agent/core';
-import { loadWorkspaceConfig } from '../workspaces/storage.ts';
+import { loadWorkspaceConfig, readStoredPermissionMode } from '../workspaces/storage.ts';
 import { appendPageActionAudit } from './action-bridge.ts';
-import { assertPageRefreshGrant } from './storage.ts';
-import { pageActionOriginAllowsKind, pageActionOriginPolicy } from './types.ts';
+import { authorizePageAction } from './admission.ts';
+import { isPagesEnabled } from './capability.ts';
+import { refreshDescriptorMatches } from './storage.ts';
 
 export type ScheduledAdmissionOutcome =
   | { ok: true }
@@ -88,32 +89,40 @@ export async function admitScheduledPageRefresh(
     return { ok: false, code, reason };
   };
 
-  // Origin policy first, read from the same table the broker reads. An origin
-  // that vanished from the table must stop everything, not fall through.
-  const policy = pageActionOriginPolicy(authority.origin);
-  if (!policy) return refuse('origin-unattributed', 'The scheduled origin has no policy');
-  if (!pageActionOriginAllowsKind(authority.origin, 'script')) {
-    return refuse('origin-forbidden', 'A scheduled refresh may not run this action kind');
+  // Pages is a per-workspace capability and the matcher that scheduled this run
+  // may be older than the setting. A workspace that turned Pages off between
+  // the last matcher rebuild and this tick must not get one more refresh out of
+  // the stale schedule, so the capability is re-read per run like everything
+  // else on this path.
+  if (!isPagesEnabled(workspaceRootPath)) {
+    return refuse('pages-disabled', 'Pages are disabled for this workspace');
   }
 
-  // Explore is read-only across the product, and a background script is not an
-  // exception to that. Re-read per run, so switching a workspace to Explore
-  // stops the next refresh rather than the next restart.
-  if (authority.permissionMode === 'safe') {
-    return refuse('permission-mode-forbidden', 'Explore mode does not run scheduled page refreshes');
-  }
-
-  // The grant itself: present, still the page's declared refresh grant, bound
-  // to current content, unexpired, and descriptor-identical. Delegated to the
-  // one existing definition rather than restated — a second copy here is how
-  // the scheduled path would start disagreeing with the rest of the product.
+  // The page must still declare THIS grant as its refresh grant — a cached
+  // matcher can name one the config has since replaced.
   if (!page.refresh || page.refresh.grantId !== grantId) {
     return refuse('grant-not-found', 'Page refresh grant is missing, revoked, or no longer current');
   }
-  try {
-    assertPageRefreshGrant(page, refresh);
-  } catch (error) {
-    return refuse('grant-stale', error instanceof Error ? error.message : 'Refresh grant is no longer usable');
+
+  // Origin policy, workspace, content digest, grant existence/binding/expiry,
+  // kind confinement, and permission mode all come from the shared primitive —
+  // the same call the broker makes. A second copy here is exactly how the
+  // background path would start answering the question differently.
+  const admission = authorizePageAction({
+    page,
+    grantId,
+    // A cron tick is a bare trigger, identical in shape to the one a Page sends
+    // for a script grant.
+    invocation: { kind: 'script' },
+    authority,
+    now: Date.now(),
+  });
+  if (!admission.ok) return refuse(admission.code, admission.reason);
+
+  // The only genuinely refresh-specific check: a spec and its grant are two
+  // records that can drift apart, which has no analogue for a rendered action.
+  if (!refreshDescriptorMatches(admission.grant, refresh)) {
+    return refuse('grant-stale', 'Scheduled refresh must exactly match its approved script grant');
   }
 
   await appendPageActionAudit(
@@ -135,29 +144,37 @@ export async function admitScheduledPageRefresh(
 }
 
 /**
- * Workspace identity and permission mode, resolved the way the rest of the
- * product resolves it.
+ * Workspace identity and permission mode.
  *
- * **Absent is `ask`, not `safe`.** `defaults.permissionMode` is a preference
- * most workspaces never set, and the product default is `ask`
- * (`config/storage.ts`). Reading absence as Explore would not be "failing
- * closed" — it would revoke a capability the user never restricted, silently
- * stopping every scheduled refresh in every workspace that left the setting
- * alone. Only an explicit Explore refuses.
+ * **Absent and corrupt are different, and the earlier version of this function
+ * treated them the same.** It resolved both to `ask` and justified it with a
+ * comment claiming that "resolving an unreadable config to the product default
+ * is not a privilege escalation" — which is wrong for the corrupt case, because
+ * a stored `"safe"` that failed to parse would silently become a mode that runs
+ * mutations.
  *
- * The security boundary here is the approved, digest-bound grant; permission
- * mode is an additional restriction layered on top of it, so resolving an
- * unreadable config to the product default is not a privilege escalation.
+ * - **Absent** (`undefined`) is a legacy workspace that never set the field.
+ *   The product contract is that this means `ask` (`config/storage.ts` resolves
+ *   `workspaceDefaults.permissionMode` to `'ask'`), and reading it as Explore
+ *   would revoke a capability the user never restricted, silently stopping
+ *   refreshes everywhere the setting was left alone.
+ * - **Present but unrecognized** is corruption, truncation, or a downgrade from
+ *   a future version. Something was stored and cannot be honoured, and the only
+ *   safe reading of an unhonourable restriction is the most restrictive one.
+ * - **Unreadable config** is the same class: a restriction may exist and cannot
+ *   be read.
+ *
+ * A corrupt value therefore refuses; a missing one does not.
  */
 function safeLoadWorkspace(workspaceRootPath: string): { id: string; permissionMode: 'safe' | 'ask' | 'allow-all' } {
+  let id = 'unknown';
   try {
-    const config = loadWorkspaceConfig(workspaceRootPath);
-    const mode = config?.defaults?.permissionMode;
-    return {
-      id: config?.id ?? 'unknown',
-      permissionMode: mode === 'safe' || mode === 'allow-all' ? mode : 'ask',
-    };
+    id = loadWorkspaceConfig(workspaceRootPath)?.id ?? 'unknown';
   } catch {
-    return { id: 'unknown', permissionMode: 'ask' };
+    return { id, permissionMode: 'safe' };
   }
+  const stored = readStoredPermissionMode(workspaceRootPath);
+  if (stored.state === 'valid') return { id, permissionMode: stored.mode };
+  if (stored.state === 'absent') return { id, permissionMode: 'ask' };
+  return { id, permissionMode: 'safe' };
 }

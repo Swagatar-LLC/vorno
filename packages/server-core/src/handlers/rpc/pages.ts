@@ -438,28 +438,39 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
    * second one has to see it. Reading it from disk here is what makes
    * "revalidates permission mode on every invocation" true instead of aspirational.
    *
-   * **Absent resolves to `ask`, not `safe`.** `defaults.permissionMode` is a
-   * preference most workspaces never set and whose product default is `ask`
-   * (`config/storage.ts`). Reading absence as Explore would not be failing
-   * closed — it would revoke a capability the user never restricted, refusing
-   * every mutating Page action in every workspace that left the setting alone.
-   * Only an explicit Explore refuses. The security boundary is the approved,
-   * digest-bound grant plus the activation ticket; permission mode is an
-   * additional restriction layered over those.
+   * **Absent and corrupt are different.** Absent (`undefined`) is a legacy
+   * workspace that never set the field, and the product contract resolves that
+   * to `ask` (`config/storage.ts`); reading it as Explore would refuse a
+   * capability the user never restricted, in every workspace that left the
+   * setting alone. A value that is PRESENT but unrecognized is corruption or a
+   * downgrade from a future version — something was stored and cannot be
+   * honoured — and the only safe reading of an unhonourable restriction is the
+   * most restrictive one. An unreadable config is the same class.
+   *
+   * The security boundary is the approved, digest-bound grant plus the
+   * activation ticket; permission mode is an additional restriction layered
+   * over those, which is why absence may default permissively and corruption
+   * may not.
    */
   async function resolveAuthority(
     workspace: { id: string; rootPath: string },
     origin: PageActionOrigin,
   ): Promise<PageActionAuthority> {
-    let permissionMode: PageActionAuthority['permissionMode'] = 'ask'
-    try {
-      const { loadWorkspaceConfig } = await import('@craft-agent/shared/workspaces')
-      const configured = loadWorkspaceConfig(workspace.rootPath)?.defaults?.permissionMode
-      if (configured === 'safe' || configured === 'allow-all') permissionMode = configured
-    } catch {
-      // Fall through to the product default.
-    }
+    const permissionMode = await resolveWorkspacePermissionMode(workspace.rootPath)
     return { workspaceId: workspace.id, origin, permissionMode }
+  }
+
+  async function resolveWorkspacePermissionMode(
+    workspaceRootPath: string,
+  ): Promise<PageActionAuthority['permissionMode']> {
+    // Read BEFORE normalization: `loadWorkspaceConfig` drops an unparseable
+    // value to `undefined`, which would make a corrupted `safe` read as "never
+    // set" and default permissively.
+    const { readStoredPermissionMode } = await import('@craft-agent/shared/workspaces')
+    const stored = readStoredPermissionMode(workspaceRootPath)
+    if (stored.state === 'valid') return stored.mode
+    if (stored.state === 'absent') return 'ask'
+    return 'safe'
   }
 
   /**
@@ -622,12 +633,26 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       },
       permissionsContext: { workspaceRootPath, activeSourceSlugs },
       // The broker does no IO, but it must not act on a stale view either: an
-      // action that waited for a slot was admitted against a config read before
-      // the wait. This is how it re-reads grants, digest, and expiry from disk
-      // immediately before the executor runs.
-      loadCurrentPage: async (pageSlug: string) => {
+      // action that waited for a slot was admitted against state read before
+      // the wait. This re-reads grants, digest, and expiry from disk AND
+      // re-resolves the workspace permission mode, immediately before the
+      // executor runs — so a switch to Explore during the wait refuses rather
+      // than executing, which reloading only the page would have missed.
+      loadCurrentAdmission: async (pageSlug: string) => {
         const { loadPageConfig } = await import('@craft-agent/shared/pages')
-        return loadPageConfig(workspaceRootPath, pageSlug) ?? null
+        const page = loadPageConfig(workspaceRootPath, pageSlug)
+        if (!page) return null
+        // Pages can be disabled mid-flight too; a queued action must not
+        // outlive the capability that allowed it.
+        if (!isPagesEnabled(workspaceRootPath)) return null
+        return {
+          page,
+          authority: {
+            workspaceId,
+            origin: 'sandboxed-page' as const,
+            permissionMode: await resolveWorkspacePermissionMode(workspaceRootPath),
+          },
+        }
       },
     })
     brokers.set(workspaceRootPath, broker)
