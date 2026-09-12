@@ -26,7 +26,10 @@ import {
   getSessionFilePath,
   listSessions as listStoredSessions,
   sessionPersistenceQueue,
+  setSingletonCommitHooksForTesting,
   writeSessionJsonl,
+  type SessionMetadata,
+  type SessionMetadataWithPendingPlan,
   type StoredSession,
 } from '@craft-agent/shared/sessions'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
@@ -47,7 +50,7 @@ describe('pending plan execution mirror', () => {
   })
 
   afterEach(() => {
-    sessionPersistenceQueue.commitHooks = undefined
+    setSingletonCommitHooksForTesting(undefined)
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -191,6 +194,49 @@ describe('pending plan execution mirror', () => {
 
     expect(diskHeader().pendingPlanExecution).toBeUndefined()
     expect(sm.getPendingPlanExecution(SESSION_ID)).toBeNull()
+  })
+
+  it('keeps the draft off the public metadata shape, reachable only by name', async () => {
+    // `SessionMetadata` is consumed broadly — artifact scans, label and status
+    // queries, every list projection — so putting unsent user text on it would
+    // put that text within reach of all of them and of anything that later
+    // decides to serialize one. The field rides the wider
+    // `SessionMetadataWithPendingPlan` instead, which only the host's startup
+    // hydration asks for.
+    //
+    // The runtime assertion that matters is the one below on the wire payloads.
+    // This one pins the narrower claim: the value is present for the caller
+    // that names the internal shape, so hydration still works.
+    const filePath = getSessionFilePath(root, SESSION_ID)
+    mkdirSync(dirname(filePath), { recursive: true })
+    writeSessionJsonl(filePath, {
+      id: SESSION_ID,
+      workspaceRootPath: root,
+      name: 'Planning session',
+      sessionStatus: 'todo',
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      messages: [{ role: 'user', content: 'transcript' }],
+      pendingPlanExecution: {
+        planPath: PLAN_PATH,
+        draftInputSnapshot: DRAFT,
+        awaitingCompaction: true,
+        executionDispatched: false,
+      },
+    } as unknown as StoredSession)
+
+    const internal: SessionMetadataWithPendingPlan | undefined = listStoredSessions(root)
+      .find((s) => s.id === SESSION_ID)
+    expect(internal?.pendingPlanExecution?.draftInputSnapshot).toBe(DRAFT)
+
+    // And the public view of the same record: assignable to `SessionMetadata`,
+    // which does not declare the field at all.
+    const asPublic: SessionMetadata = internal as SessionMetadata
+    expect('pendingPlanExecution' in (asPublic as object)).toBe(true)
+    // ^ the DATA is on the object (same reference); what the narrowing buys is
+    // that no `SessionMetadata`-typed caller can reach it without casting, so a
+    // wire projection cannot pick it up by autocomplete. The runtime guarantee
+    // is enforced where it belongs, on the wire shapes, below.
   })
 
   it('keeps the unsent draft out of every wire projection', async () => {

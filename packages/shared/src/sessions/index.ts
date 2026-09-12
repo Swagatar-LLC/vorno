@@ -16,6 +16,7 @@ export type {
   SessionConfig,
   StoredSession,
   SessionMetadata,
+  SessionMetadataWithPendingPlan,
   SessionHeader,
   SessionPersistentField,
 } from './types.ts';
@@ -82,6 +83,9 @@ export {
   // Async persistence queue
   sessionPersistenceQueue,
   sessionWriteKey,
+  // Test-only seam for the shared queue; see its doc comment for why it exists.
+  setSingletonCommitHooksForTesting,
+  type SessionCommitHooks,
   type SessionWriteKey,
   type SessionWriteHandle,
   type SessionWriteReceipt,

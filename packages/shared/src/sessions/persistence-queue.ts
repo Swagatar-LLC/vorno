@@ -1,7 +1,47 @@
+/**
+ * Session persistence: one serialised, workspace-qualified write path per
+ * session, with receipts for the callers that need to know a write landed.
+ *
+ * Four invariants shape everything below. They are stated here ONCE and
+ * referenced by name at the sites that rely on them, rather than re-argued at
+ * each one.
+ *
+ * **I1 — one tail per key.** Every write for a session goes through a single
+ * serialised chain. They share one `.tmp` path, so concurrency there is a
+ * correctness problem and not a fairness one: interleaved writers can rename a
+ * half-written temp file over a good session, and the loser's bytes vanish with
+ * no error anywhere. Serialising is what makes "the newest enqueued state wins"
+ * true rather than merely probable.
+ *
+ * **I2 — "stop these writes" has two meanings.** A DELETION must discard the
+ * artifact even after the rename committed, or a deleted session reappears on
+ * disk. A SUPERSEDE must never remove it: its caller has absorbed an external
+ * metadata edit and is about to write merged state, so the session is live and
+ * unlinking deletes a real transcript. Conflating them destroys user data, and
+ * the distinction has to survive both orderings and every commit boundary —
+ * including the one where we have already unlinked the target ourselves.
+ *
+ * **I3 — "what is on disk" and "what a watcher should ignore" are different
+ * questions.** `ConfigWatcher` has to recognise the fs events fired during our
+ * own unlink and rename, which means publishing a signature BEFORE the bytes
+ * land. That value must never become "what we last committed": left standing
+ * after a write that failed, the next write reads the untouched file as an
+ * external edit and the merge hands disk the win, silently reverting the app's
+ * own unsaved change. Hence two fields — `inFlightSignature` for echo
+ * suppression, `committedMetadata` promoted only by a successful rename.
+ *
+ * **I4 — a receipt attests its own bytes.** Never a later write's success:
+ * that assumes the newer snapshot contained the older one, which is true of
+ * today's callers and is not something a durability answer may rest on. So a
+ * checked snapshot is never coalesced into, and its receipt settles on its
+ * exact generation. `ok: true` means committed — written and renamed without
+ * error — and explicitly NOT power-loss durable; see {@link SessionWriteReceipt}.
+ */
 import { writeFile, rename, unlink } from 'fs/promises'
 import { dirname, resolve } from 'path'
 import type { StoredSession, SessionHeader } from './types.js'
 import { getSessionFilePath, ensureSessionsDir, ensureSessionDir } from './storage.js'
+import { sanitizeSessionId } from './validation.js'
 import { toPortablePath } from '../utils/paths.js'
 import { createSessionHeader, makeSessionPathPortable, readSessionHeader } from './jsonl.js'
 import { debug } from '../utils/debug.js'
@@ -149,17 +189,7 @@ function resolveExternalMetadata({
 }
 
 /**
- * How far cancellation reaches, per intent.
- *
- * The two intents are the difference between the callers, and conflating them
- * destroys live data:
- *
- * - **Deletion** (`cancelForDeletion`) must remove the artifact even if the
- *   rename already committed, or a deleted session reappears on disk.
- * - **Supersede** (`supersedePendingWrites`) must NEVER remove it. Its caller
- *   is reacting to an external metadata edit and is about to write merged fresh
- *   state; unlinking there deletes a live session's file, and leaves it absent
- *   until the replacement write lands.
+ * How far cancellation reaches, per intent (I2).
  *
  * **Two watermarks rather than one plus a flag.** A single sticky
  * `discardCommitted` boolean was wrong in a way no test caught: it described
@@ -196,6 +226,18 @@ function cancelledThroughGeneration(watermark?: CancellationWatermark): number {
 type WriteStage = 'intact' | 'target-removed' | 'committed'
 
 /**
+ * Commit-boundary callbacks, for tests that need a cancel to land mid-write.
+ *
+ * Exported so a suite can build its own queue with them; there is deliberately
+ * no way to attach them to an existing queue.
+ */
+export interface SessionCommitHooks {
+  beforeUnlink?: (key: SessionWriteKey) => void | Promise<void>
+  beforeRename?: (key: SessionWriteKey) => void | Promise<void>
+  afterRename?: (key: SessionWriteKey) => void | Promise<void>
+}
+
+/**
  * The identity every piece of this queue's per-session state is filed under.
  *
  * **A bare session id is not unique.** Ids are minted per workspace, and a
@@ -212,9 +254,20 @@ type WriteStage = 'intact' | 'target-removed' | 'committed'
  * `/w/sessions/a` with id `b` produce the same string. A tuple cannot alias,
  * because JSON escaping keeps the two components separable.
  *
- * The root is `resolve`d first so that `/w`, `/w/`, and `/w/x/..` are one key
- * rather than three writers racing over one file — the opposite failure from
- * the one above, and just as real.
+ * **Both components are canonicalised the same way the FILE PATH is**, which is
+ * the half that is easy to miss. `getSessionPath` runs the id through
+ * `sanitizeSessionId` (a `basename`) as path-traversal defence, so `nested/same`
+ * and `same` name the SAME file — and keying on the raw id gave them two keys,
+ * two tails, and two writers racing over one `.tmp`, which is precisely the
+ * lost-bytes race this key exists to prevent, arrived at from the other
+ * direction. The id therefore goes through the same canonicaliser the path uses;
+ * there is one of it, and both callers use it.
+ *
+ * The root is `resolve`d for the same reason, so that `/w`, `/w/`, and `/w/x/..`
+ * are one key rather than three writers racing over one file.
+ *
+ * Two DIFFERENT roots still give different keys even when the ids canonicalise
+ * to the same thing — the point is to match the file, and those are two files.
  *
  * Branded so the compiler rejects a bare `sessionId` at every call site. When
  * this was introduced it found all of them; that is the only reason to believe
@@ -225,7 +278,10 @@ export type SessionWriteKey = string & { readonly __sessionWriteKey: unique symb
 
 /** Build the canonical, injective key for a session's persistence state. */
 export function sessionWriteKey(workspaceRootPath: string, sessionId: string): SessionWriteKey {
-  return JSON.stringify([resolve(workspaceRootPath), sessionId]) as SessionWriteKey
+  // `sanitizeSessionId` is the SAME canonicaliser `getSessionPath` applies, and
+  // that is the whole requirement: the key must identify the file, not the
+  // string the caller happened to pass.
+  return JSON.stringify([resolve(workspaceRootPath), sanitizeSessionId(sessionId)]) as SessionWriteKey
 }
 
 /**
@@ -247,19 +303,36 @@ export function sessionWriteKey(workspaceRootPath: string, sessionId: string): S
 type ExternalObservation = {
   external: HeaderMetadataSignature
   localAtObservation?: HeaderMetadataSignature
-  observedAt: number
 }
 
 /**
- * How long an unlanded observation is honoured.
+ * When a held observation is released — and why it is NOT on a timer.
  *
- * It is cleared by the write that commits it, but a session that is never
- * written again would otherwise hold one for the life of the process. The bound
- * is time rather than count because the risk is staleness, not volume: beyond
- * this the on-disk state has long since settled and re-reading it is the better
- * answer. Generous on purpose — the window it exists to cover is milliseconds.
+ * An observation is the ONLY surviving copy of an external metadata edit in the
+ * stale-write race: the write that lost the race committed pre-edit state over
+ * it, and supersede correctly keeps that file, so disk no longer holds the edit
+ * and the baseline matches the stale file. Re-reading disk cannot recover it.
+ *
+ * An age-based drop therefore does not bound anything worth bounding — it
+ * DISCARDS USER DATA on a timer, silently, and only for the sessions unlucky
+ * enough to be idle. A previous revision honoured observations for five
+ * minutes; the number was arbitrary and the failure it caused was real.
+ *
+ * So an observation is released on exactly two events, both of which mean it
+ * has done its job or has no job left:
+ *
+ * 1. The write that COMMITS it succeeds — the edit is on disk, so the memory is
+ *    redundant.
+ * 2. The session is explicitly deleted (`cancelForDeletion`) — there is nothing
+ *    left for the edit to describe.
+ *
+ * Normally short-lived: the only caller, `applyExternalSessionMetadata`,
+ * supersedes and then immediately persists, so event 1 follows within a
+ * debounce interval. What is left is one small record per session that received
+ * an external edit, was never successfully written again, and was never
+ * deleted — bounded by that anomaly rather than by traffic, and visible in
+ * `diagnostics()` so a leak test can watch it.
  */
-const OBSERVATION_MAX_AGE_MS = 5 * 60_000
 
 /**
  * How many times `flushAll` will re-take the union before giving up.
@@ -323,29 +396,20 @@ class SessionPersistenceQueue {
   /**
    * Queued writes per session, oldest first.
    *
-   * A LIST rather than the single coalescing slot this used to be, because a
-   * checked write's receipt attests its own snapshot and a replaced snapshot
-   * never reaches disk. With one slot, an ordinary `persistSession` landing
-   * between a checked enqueue and its write silently took its place, and the
-   * receipt then reported success for bytes that were never written — an
-   * optimistic durability answer, which is the one answer it must never give.
+   * A LIST rather than a single coalescing slot, because of I4: a replaced
+   * snapshot never reaches disk, so with one slot an ordinary `persistSession`
+   * landing between a checked enqueue and its write took its place and the
+   * receipt reported success for bytes nobody wrote.
    *
-   * Ordinary writes still coalesce, into the trailing entry, so the common
-   * case costs exactly what it did before: back-to-back state changes for one
-   * session collapse to a single write. A checked entry ends the run — the
-   * next ordinary write queues behind it instead of over it.
+   * Ordinary writes still coalesce into the trailing entry, so the common case
+   * costs what it always did — back-to-back changes for one session collapse to
+   * one write. A checked entry ends the run.
    */
   private queued = new Map<SessionWriteKey, PendingWrite[]>()
   /**
    * Per-session write tail. EVERY write — debounced, flushed, or checked —
-   * chains onto it, so two writes for one session can never be in flight at
-   * once.
-   *
-   * They share a single `.tmp` path, so concurrency there is not a fairness
-   * question but a correctness one: interleaved writers can rename a partially
-   * written temp file over a good session, and the loser's bytes vanish with no
-   * error anywhere. Serialising is what makes "the newest enqueued state wins"
-   * true rather than probable.
+   * chains onto it, so two writes for one session are never in flight at once.
+   * This is I1.
    */
   private tails = new Map<SessionWriteKey, Promise<void>>()
   /** Highest generation enqueued per session. */
@@ -378,33 +442,21 @@ class SessionPersistenceQueue {
    */
   private cancelledThrough = new Map<SessionWriteKey, CancellationWatermark>()
   /**
-   * Test seam: awaited at each commit boundary so a suite can land a cancel
-   * inside a write deterministically.
+   * Awaited at each commit boundary so a suite can land a cancel inside a write
+   * deterministically. **Injected once at construction and never reassignable.**
    *
    * Real filesystem writes take measurable time and a cancel genuinely can
-   * arrive mid-commit, but an in-memory test's writes settle far too fast to
-   * hit those windows by timing. Without a seam the guards above would be
+   * arrive mid-commit, but an in-memory test's writes settle far too fast to hit
+   * those windows by timing. Without a seam the cancellation guards would be
    * untestable — and an untested guard is one nobody can tell is still working.
-   * Unset in production, where it costs one optional-chain per boundary.
    *
-   * **It is a public mutable field on a module singleton, which is a real if
-   * small hazard, and the alternatives were worse.** Anything in-process can set
-   * it, and because the hooks are awaited, a hostile or buggy one can stall
-   * every session write. It has no wire representation and nothing serialises to
-   * it, so the exposure is to code already running in the host, which can call
-   * `unlink` directly anyway. Constructor injection was rejected because the
-   * singleton is constructed at module scope before any test can reach it; a
-   * subclass was rejected because the guards must be exercised on the exact
-   * instance the product uses. Suites that set it MUST clear it in `afterEach` —
-   * a leaked hook fires inside every later suite's writes. Tightening this to a
-   * build-stripped seam is a recorded residual on SUV-0066, not a silent
-   * acceptance.
+   * It used to be a public mutable property, which meant any in-process code
+   * could reassign it and — because the hooks are awaited — stall every session
+   * write. `readonly` and constructor-only removes that from the instance
+   * surface entirely: a queue a test owns gets its hooks at `new`, and the
+   * production singleton below is constructed without any.
    */
-  commitHooks?: {
-    beforeUnlink?: (key: SessionWriteKey) => void | Promise<void>
-    beforeRename?: (key: SessionWriteKey) => void | Promise<void>
-    afterRename?: (key: SessionWriteKey) => void | Promise<void>
-  }
+  private readonly commitHooks?: SessionCommitHooks
   /**
    * Last write failure per session, cleared on the next success.
    *
@@ -414,28 +466,38 @@ class SessionPersistenceQueue {
    * needed to *know* had no way to ask. This is how they ask.
    */
   private lastWriteFailure = new Map<SessionWriteKey, string>()
-  private lastWrittenHeaderSignature = new Map<SessionWriteKey, string>()
   /**
-   * The same thing as `lastWrittenHeaderSignature`, kept as fields rather than
-   * a string, because an observation has to ask per-field questions the
-   * signature can only answer as a whole. Written and cleared together with it.
+   * The ONE baseline: the metadata of the header we last COMMITTED, per session.
+   *
+   * There used to be two of these — a signature string and the same seven
+   * fields — set together and read separately, which is two things to keep in
+   * agreement for no gain. The signature is derived on demand instead.
+   *
+   * Only a successful rename writes this. That is the fix for a defect worth
+   * naming: it used to be assigned BEFORE the write (see `inFlightSignature`),
+   * which made it a claim about bytes that might never land. Left standing
+   * after a failed or abandoned write, the next write read the untouched file
+   * on disk as an external edit, and the merge handed disk the win — so one
+   * failed write silently reverted the app's own unsaved change. Promoting only
+   * on success removes the whole speculative-then-roll-back dance.
    */
-  private lastWrittenMetadata = new Map<SessionWriteKey, HeaderMetadataSignature>()
+  private committedMetadata = new Map<SessionWriteKey, HeaderMetadataSignature>()
   /**
-   * The newest local metadata this queue has been HANDED, written or not.
+   * The signature of a header currently being written, for fs.watch echo
+   * suppression ONLY.
    *
-   * The observation baseline has to come from here rather than from
-   * `lastWrittenMetadata`, and the difference is a real wrong answer. Local
-   * writes are debounced, so in-app state routinely sits in the queue
-   * uncommitted. Baselining on the last *committed* metadata makes such a
-   * change look like it happened AFTER an observation taken later than it, so
-   * the resolver's rule 1 fires and writes our older value over a genuinely
-   * newer external edit — the exact reversal that rule exists to prevent.
+   * `ConfigWatcher` sees events during the unlink and the rename, and has to
+   * recognise them as ours or it treats our own write as a foreign change and
+   * reverts in-memory metadata on idle sessions. That requires publishing the
+   * signature BEFORE the bytes land — which is exactly what must not be allowed
+   * to contaminate the committed baseline.
    *
-   * Recorded on every `enqueue`, so it covers the pending entry and the one
-   * already lifted off `pending` onto the tail; both are local state the app
-   * has produced and neither is on disk yet.
+   * So the two concerns are two fields. This one is set before the write and
+   * cleared on every exit path, successful or not; the committed baseline is
+   * promoted only by a successful rename. Nothing reads this as "what is on
+   * disk".
    */
+  private inFlightSignature = new Map<SessionWriteKey, string>()
   private lastEnqueuedMetadata = new Map<SessionWriteKey, HeaderMetadataSignature>()
   /**
    * Metadata an external writer was OBSERVED to have, held until a write lands
@@ -455,8 +517,9 @@ class SessionPersistenceQueue {
   private pendingExternalMetadata = new Map<SessionWriteKey, ExternalObservation>()
   private debounceMs: number
 
-  constructor(debounceMs = 500) {
+  constructor(debounceMs = 500, commitHooks?: SessionCommitHooks) {
     this.debounceMs = debounceMs
+    this.commitHooks = commitHooks
   }
 
   /**
@@ -469,7 +532,6 @@ class SessionPersistenceQueue {
 
   /** Shared by both entry points; `checked` decides whether it may be coalesced into. */
   private enqueueEntry(session: StoredSession, checked: boolean): number {
-    this.sweepStaleObservations()
     const key = sessionWriteKey(session.workspaceRootPath, session.id)
     const list = this.queued.get(key) ?? []
     const trailing = list[list.length - 1]
@@ -489,10 +551,16 @@ class SessionPersistenceQueue {
     // question unanswerable except by lying.
     if (!checked && trailing && !trailing.checked) {
       clearTimeout(trailing.timer)
-      // The replaced generation is gone and nothing will write it. Nobody can
-      // be holding a receipt for it (only `enqueueChecked` hands those out, and
-      // those entries are never replaced), so there is nothing to settle.
+      const replaced = trailing.generation
       list[list.length - 1] = { data: session, timer, generation, checked: false }
+      // The replaced generation is gone and nothing will write it, so anything
+      // waiting on it is told so HERE rather than left to a later write's
+      // success. Unreachable today — only `enqueueChecked` hands out receipts
+      // and those entries are never the ones replaced — and kept because
+      // "a receipt may be answered by somebody else's write" is exactly the
+      // assumption that produced false positives, and it should be untrue by
+      // construction rather than by that pairing holding.
+      this.settleReceipts(key, replaced, { ok: false, error: 'session write superseded' })
     } else {
       list.push({ data: session, timer, generation, checked })
     }
@@ -592,39 +660,6 @@ class SessionPersistenceQueue {
    * Re-reads the queue each time round, so an entry enqueued during a commit
    * is picked up by the same drain rather than waiting out its own debounce.
    */
-  /**
-   * Drop observations that have aged past the bound, across ALL sessions.
-   *
-   * An observation is normally discharged by the write that lands it, and one
-   * that ages out is dropped by the next write for its own session. Neither
-   * helps a session that is never written again: the entry then sits there for
-   * the life of the process, and it is the one map here that grows on a path
-   * which does not have to end in a write (`supersedePendingWrites`).
-   *
-   * Swept from every public entry point rather than on a timer. A
-   * `setInterval` on a module singleton is a lifecycle hazard for a bound this
-   * cheap to enforce — it has to be created, unref'd, and torn down, and it
-   * keeps a reference to the queue forever. Sweeping on activity means the map
-   * is bounded whenever the queue is used at all, including by OTHER sessions,
-   * which is the real scenario: one session goes quiet while the app keeps
-   * working. With no activity anywhere the process is idle and the entries are
-   * inert — a residual stated in the SUV rather than papered over.
-   *
-   * Linear in the number of held observations, which is at most one per session
-   * that received an external edit. Nothing to prune is the overwhelmingly
-   * common case and costs one `size` check.
-   */
-  private sweepStaleObservations(): void {
-    if (!this.pendingExternalMetadata.size) return
-    const now = Date.now()
-    for (const [key, held] of this.pendingExternalMetadata) {
-      if (now - held.observedAt > OBSERVATION_MAX_AGE_MS) {
-        this.pendingExternalMetadata.delete(key)
-        debug('[PersistenceQueue] Swept stale external observation')
-      }
-    }
-  }
-
   /** Stop every queued entry's debounce for this session; the caller drives them. */
   private clearQueuedTimers(key: SessionWriteKey): void {
     for (const entry of this.queued.get(key) ?? []) clearTimeout(entry.timer)
@@ -726,20 +761,23 @@ class SessionPersistenceQueue {
     // observation taken later then baselines on the last committed metadata,
     // which at that point IS the newest local state.
     this.lastEnqueuedMetadata.delete(key)
-    // `lastWrittenHeaderSignature` is deliberately NOT retired here. It is not
+    // `committedMetadata` is deliberately NOT retired here. It is not
     // generation bookkeeping — it is the live baseline for "did somebody else
     // change this header since we last wrote it", and it has to outlive
     // quiescence because that is exactly when an external edit happens. Drop it
-    // and two things break at once: the next write sees no previous signature,
+    // and two things break at once: the next write sees no previous baseline,
     // concludes nothing external changed, and clobbers the other writer's
     // metadata; and `ConfigWatcher` loses its self-echo baseline and treats our
     // own write as a foreign change. It is removed only on explicit deletion,
     // where the session itself is going away.
+    //
+    // `inFlightSignature` is not retired here either, for the opposite reason:
+    // by definition nothing is in flight at quiescence, so there is nothing to
+    // retire. Every write clears its own on the way out.
   }
 
   /** Per-session bookkeeping sizes, for tests that assert nothing leaks. */
   diagnostics(): Record<string, number> {
-    this.sweepStaleObservations()
     return {
       queued: this.queued.size,
       tails: this.tails.size,
@@ -748,13 +786,12 @@ class SessionPersistenceQueue {
       cancelledThrough: this.cancelledThrough.size,
       receiptWaiters: this.receiptWaiters.size,
       lastWriteFailure: this.lastWriteFailure.size,
-      lastWrittenHeaderSignature: this.lastWrittenHeaderSignature.size,
-      // Every per-key map appears here, including the three that used to be
-      // absent. A leak test can only assert on what it can see, so an omitted
-      // map is a map nothing is watching — `lastEnqueuedMetadata` and
-      // `pendingExternalMetadata` in particular grow on paths that do not
-      // necessarily end in a write.
-      lastWrittenMetadata: this.lastWrittenMetadata.size,
+      // Every per-key map appears here. A leak test can only assert on what
+      // it can see, so an omitted map is a map nothing is watching — and
+      // `lastEnqueuedMetadata` and `pendingExternalMetadata` in particular grow
+      // on paths that do not have to end in a write.
+      committedMetadata: this.committedMetadata.size,
+      inFlightSignature: this.inFlightSignature.size,
       lastEnqueuedMetadata: this.lastEnqueuedMetadata.size,
       pendingExternalMetadata: this.pendingExternalMetadata.size,
     }
@@ -823,18 +860,6 @@ class SessionPersistenceQueue {
       return false
     }
 
-    // Captured before the try so the catch can roll back too. The baseline is
-    // set speculatively mid-write (for fs.watch self-echo detection), and every
-    // branch that fails to commit has to put it back — see the set site below.
-    const priorSignature = this.lastWrittenHeaderSignature.get(key)
-    const priorMetadata = this.lastWrittenMetadata.get(key)
-    const restoreBaseline = () => {
-      if (priorSignature === undefined) this.lastWrittenHeaderSignature.delete(key)
-      else this.lastWrittenHeaderSignature.set(key, priorSignature)
-      if (priorMetadata === undefined) this.lastWrittenMetadata.delete(key)
-      else this.lastWrittenMetadata.set(key, priorMetadata)
-    }
-
     try {
       const { data } = entry
       ensureSessionsDir(data.workspaceRootPath)
@@ -864,17 +889,12 @@ class SessionPersistenceQueue {
       // An observation older than the bound is dropped rather than applied: by
       // then the on-disk state has long since settled, and re-reading it below
       // is the better answer than replaying something remembered.
-      const held = this.pendingExternalMetadata.get(key)
-      const observedExternal =
-        held && Date.now() - held.observedAt <= OBSERVATION_MAX_AGE_MS ? held : undefined
-      if (held && !observedExternal) {
-        this.pendingExternalMetadata.delete(key)
-        debug(`[PersistenceQueue] Dropped stale external observation for ${data.id}`)
-      }
+      const observedExternal = this.pendingExternalMetadata.get(key)
       const localHeader = createSessionHeader(storageSession)
       const localSig = getHeaderMetadataSignature(localHeader)
       const diskHeader = readSessionHeader(filePath)
-      const previousSig = this.lastWrittenHeaderSignature.get(key)
+      const committedBaseline = this.committedMetadata.get(key)
+      const previousSig = committedBaseline === undefined ? undefined : JSON.stringify(committedBaseline)
       const diskSig = diskHeader ? getHeaderMetadataSignature(diskHeader) : undefined
 
       // Queue writes should never clobber session metadata changed externally
@@ -897,7 +917,7 @@ class SessionPersistenceQueue {
         local: localHeader,
         disk: hasExternalMetadataChange ? diskHeader : undefined,
         observation: observedExternal,
-        lastWritten: this.lastWrittenMetadata.get(key),
+        lastWritten: committedBaseline,
       })
 
       if (hasMetadataMismatch) {
@@ -914,30 +934,15 @@ class SessionPersistenceQueue {
         ...persistableMessages.map(m => makeSessionPathPortable(JSON.stringify(m), sessionDir)),
       ]
 
-      // Atomic write: write to .tmp then rename over the real file.
-      // If the process crashes mid-write, only the .tmp is corrupted —
-      // the original session.jsonl remains intact.
+      // Atomic write: write to .tmp then rename over the real file. If the
+      // process crashes mid-write only the .tmp is corrupted — the original
+      // session.jsonl remains intact.
       //
-      // Update signature BEFORE the write so that fs.watch events fired
-      // during unlink/rename are correctly identified as self-writes.
-      // Without this, onSessionMetadataChange sees the stale signature
-      // and reverts in-memory metadata on idle sessions.
-      //
-      // That makes the baseline SPECULATIVE until the rename lands, and a
-      // speculative baseline that is never rolled back is a live defect rather
-      // than an untidiness. It claims "this is what we last wrote" about bytes
-      // that never reached disk, and the next write reads it as the answer to
-      // "did somebody else change this file since?" — so the unchanged file on
-      // disk looks like an external edit, and the merge hands disk the win over
-      // the local state it was trying to save. One failed write and the app
-      // reverts its own unsaved change to whatever is on disk.
-      //
-      // So the prior value is captured before the try and restored on every
-      // branch that does not commit (see `restoreBaseline`). Only a successful
-      // rename lets the speculative value stand as the committed baseline.
-      const finalSignature = getHeaderMetadataSignature(header)
-      this.lastWrittenHeaderSignature.set(key, finalSignature)
-      this.lastWrittenMetadata.set(key, getHeaderMetadataFields(header))
+      // The signature published here is IN-FLIGHT only, for fs.watch echo
+      // suppression — I3. Nothing may read it as "what is on disk"; the
+      // committed baseline is promoted by the successful rename below, and by
+      // nothing else.
+      this.inFlightSignature.set(key, getHeaderMetadataSignature(header))
 
       const tmpFile = filePath + '.tmp'
 
@@ -1003,20 +1008,27 @@ class SessionPersistenceQueue {
           try { await unlink(filePath) } catch { /* may not exist */ }
         }
         debug(`[PersistenceQueue] Abandoned cancelled write for session ${data.id} (stage=${stage})`)
-        // Roll the baseline back only when this generation left NOTHING on
-        // disk. The rule is "does the file out there hold our bytes", and there
-        // is exactly one abandon path where it does: a supersede after the
-        // rename, which deliberately keeps the committed file. The baseline
-        // then describes disk correctly and restoring it would be the very
-        // desync this rollback exists to prevent — the next write would read
-        // its own committed bytes as somebody else's edit.
+        // Nothing to unwind. The committed baseline is only ever promoted by
+        // a successful rename, so an abandoned generation never touched it —
+        // that is the point of splitting the two fields, and it is why this
+        // path no longer has to reason about whether its bytes reached disk.
         //
-        // Everywhere else — cancelled before the write, abandoned with the
-        // target already removed, or a deletion that unlinked the result —
-        // nothing of this generation is on disk and the prior value is the
-        // truth about what we last committed.
-        const ourBytesAreOnDisk = stage === 'committed' && !discardCommitted
-        if (!ourBytesAreOnDisk) restoreBaseline()
+        // The in-flight echo value does have to go, or `getLastWrittenSignature`
+        // keeps answering with a header nobody wrote.
+        this.inFlightSignature.delete(key)
+        // A deletion that unlinked the committed file takes the baseline with
+        // it: there is no session left for it to describe.
+        //
+        // Honest standing: a STRUCTURAL BACKSTOP with no reachable path today,
+        // labelled rather than claimed as tested. Promotion happens immediately
+        // after the rename and therefore BEFORE the `afterRename` hook, and a
+        // hook is the only way a cancel can land inside a commit — so
+        // `cancelForDeletion`, which clears the baseline itself, always runs
+        // after the promotion it would need to undo. Removing this line changes
+        // no test. It stays because "a deleted session leaves no baseline" is
+        // the kind of invariant that should not depend on that ordering
+        // continuing to hold.
+        if (stage === 'committed' && discardCommitted) this.committedMetadata.delete(key)
         this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
         this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled' })
         return true
@@ -1032,6 +1044,12 @@ class SessionPersistenceQueue {
       if (await abandonIfCancelled('target-removed')) return false
 
       await rename(tmpFile, filePath)
+      // COMMITTED. The bytes are on disk, so this is the one place the baseline
+      // advances — including when the cancellation check just below abandons
+      // this generation under a keep-the-file intent, because that path leaves
+      // these bytes in place and the baseline has to go on describing them.
+      this.committedMetadata.set(key, getHeaderMetadataFields(header))
+      this.inFlightSignature.delete(key)
       await this.commitHooks?.afterRename?.(key)
       if (await abandonIfCancelled('committed')) return false
 
@@ -1055,7 +1073,9 @@ class SessionPersistenceQueue {
       // bytes that do not exist. Left standing, the NEXT write reads the
       // untouched file as an external edit and lets disk overwrite the local
       // state this one failed to save.
-      restoreBaseline()
+      // Never promoted, so there is nothing to undo — only the in-flight echo
+      // value to withdraw.
+      this.inFlightSignature.delete(key)
       this.lastWriteFailure.set(key, message)
       // Marked attempted either way, so a waiter learns the outcome promptly
       // instead of hanging until some later write happens to supersede it.
@@ -1067,16 +1087,11 @@ class SessionPersistenceQueue {
   }
 
   /**
-   * Immediately flush a specific session, on its serialised tail.
-   *
-   * Whatever is already running for this session finishes first and this write
-   * follows it — never alongside. They share one `.tmp` path, so concurrency
-   * there is a correctness problem rather than a fairness one: interleaved
-   * writers can rename a half-written temp file over a good session and lose
-   * the loser's bytes with no error anywhere.
+   * Immediately flush a specific session, on its serialised tail (I1):
+   * whatever is already running for it finishes first and this follows it,
+   * never alongside.
    */
   async flush(key: SessionWriteKey): Promise<void> {
-    this.sweepStaleObservations()
     if (!this.queued.has(key) && !this.tails.has(key)) return
     this.clearQueuedTimers(key)
     await this.runOnTail(key)
@@ -1098,7 +1113,6 @@ class SessionPersistenceQueue {
    * write does on its way out, which settles just after the receipt.
    */
   driveChecked(key: SessionWriteKey): Promise<void> {
-    this.sweepStaleObservations()
     this.clearQueuedTimers(key)
     return this.runOnTail(key)
   }
@@ -1114,8 +1128,8 @@ class SessionPersistenceQueue {
     this.stopPendingWrites(key, 'delete')
     // Safe here and only here: the session is gone, so no later write can need
     // this baseline to detect an external edit.
-    this.lastWrittenHeaderSignature.delete(key)
-    this.lastWrittenMetadata.delete(key)
+    this.committedMetadata.delete(key)
+    this.inFlightSignature.delete(key)
     this.lastEnqueuedMetadata.delete(key)
     this.lastWriteFailure.delete(key)
     this.pendingExternalMetadata.delete(key)
@@ -1127,12 +1141,8 @@ class SessionPersistenceQueue {
 
   /**
    * Stop stale writes from committing over fresher state, WITHOUT touching the
-   * session's file.
-   *
-   * The caller has just absorbed an external metadata edit and is about to
-   * persist the merged result. What it needs is for in-flight writes carrying
-   * pre-edit state to lose; what it must never get is the session's file
-   * removed, because the session is live.
+   * session's file (I2): in-flight writes carrying pre-edit state must lose,
+   * and the live session's file must survive.
    *
    * The header-signature baseline is deliberately KEPT. It is the input to
    * `write`'s external-change detection (`hasExternalMetadataChange` requires a
@@ -1160,8 +1170,7 @@ class SessionPersistenceQueue {
         // happened; baselining behind it makes it look like a post-observation
         // edit and lets it beat a newer external change. Falls back to the last
         // write for a session with nothing in the queue.
-        localAtObservation: this.lastEnqueuedMetadata.get(key) ?? this.lastWrittenMetadata.get(key),
-        observedAt: Date.now(),
+        localAtObservation: this.lastEnqueuedMetadata.get(key) ?? this.committedMetadata.get(key),
       })
     }
     // No retirement sweep and no baseline drop: this session is live, is about
@@ -1173,7 +1182,6 @@ class SessionPersistenceQueue {
    * waiting on the generations it now covers.
    */
   private stopPendingWrites(key: SessionWriteKey, intent: 'delete' | 'supersede'): void {
-    this.sweepStaleObservations()
     const queued = this.queued.get(key)
     if (queued?.length) {
       const id = queued[0]!.data.id
@@ -1263,7 +1271,14 @@ class SessionPersistenceQueue {
    * Used by ConfigWatcher to suppress self-triggered metadata change events.
    */
   getLastWrittenSignature(key: SessionWriteKey): string | undefined {
-    return this.lastWrittenHeaderSignature.get(key)
+    // In-flight first: during a write, the echo the watcher is about to see is
+    // the header being written, not the one before it. Once the write settles
+    // the in-flight value is gone and the committed baseline answers — and on
+    // the success path the two are identical anyway.
+    const inFlight = this.inFlightSignature.get(key)
+    if (inFlight !== undefined) return inFlight
+    const committed = this.committedMetadata.get(key)
+    return committed === undefined ? undefined : JSON.stringify(committed)
   }
 
   /**
@@ -1274,8 +1289,42 @@ class SessionPersistenceQueue {
   }
 }
 
-// Singleton instance
-export const sessionPersistenceQueue = new SessionPersistenceQueue()
+/**
+ * Hooks for the shared singleton, for the few suites that must exercise
+ * mid-commit behaviour through `SessionManager` rather than through a queue
+ * they own.
+ *
+ * Held here rather than on the instance so the queue itself has no settable
+ * property. This is a NARROWED seam, not an absent one, and the honest reason
+ * it cannot be removed outright is that `storage.ts:saveSession` and
+ * `SessionManager` must share ONE queue instance — they write the same files,
+ * and two instances would mean two tails over one `.tmp`, which is the race the
+ * whole unit exists to prevent. So a SessionManager-level test cannot be given
+ * its own queue, and the only remaining way to make a commit boundary
+ * deterministic is a seam on the shared one. Recorded as a residual.
+ */
+let singletonCommitHooks: SessionCommitHooks | undefined
+
+/**
+ * Attach commit hooks to the shared queue. **Tests only**, and they must clear
+ * them in `afterEach` — a leaked hook fires inside every later suite's writes.
+ * Throws when hooks are already attached, so a leak is loud rather than
+ * mysterious.
+ */
+export function setSingletonCommitHooksForTesting(hooks: SessionCommitHooks | undefined): void {
+  if (hooks && singletonCommitHooks) {
+    throw new Error('Commit hooks are already attached to the shared persistence queue; a suite leaked them')
+  }
+  singletonCommitHooks = hooks
+}
+
+// Singleton instance. Constructed with hooks that delegate to the holder above,
+// so the instance exposes nothing assignable.
+export const sessionPersistenceQueue = new SessionPersistenceQueue(500, {
+  beforeUnlink: (key) => singletonCommitHooks?.beforeUnlink?.(key),
+  beforeRename: (key) => singletonCommitHooks?.beforeRename?.(key),
+  afterRename: (key) => singletonCommitHooks?.afterRename?.(key),
+})
 
 // Named exports for testing/customization
 export { SessionPersistenceQueue, getHeaderMetadataSignature, resolveExternalMetadata }

@@ -35,6 +35,7 @@ import type {
   SessionTokenUsage,
   SessionHeader,
   SessionStatus,
+  SessionMetadataWithPendingPlan,
 } from './types.ts';
 import type { Plan } from '../agent/plan-types.ts';
 import { validateSessionStatus } from '../statuses/validation.ts';
@@ -326,7 +327,8 @@ export async function saveSession(session: StoredSession): Promise<void> {
  * Multiple rapid calls are coalesced into a single write.
  * Use this during active sessions to avoid blocking the main thread.
  */
-export { sessionPersistenceQueue, sessionWriteKey, getHeaderMetadataSignature } from './persistence-queue.js'
+export { sessionPersistenceQueue, sessionWriteKey, getHeaderMetadataSignature, setSingletonCommitHooksForTesting } from './persistence-queue.js'
+export type { SessionCommitHooks } from './persistence-queue.js'
 export type { SessionWriteKey } from './persistence-queue.js'
 export type { SessionWriteHandle, SessionWriteReceipt } from './persistence-queue.js'
 
@@ -356,7 +358,16 @@ export function loadSession(workspaceRootPath: string, sessionId: string): Store
  *
  * Uses JSONL header for fast loading (only reads first line of each file).
  */
-export function listSessions(workspaceRootPath: string): SessionMetadata[] {
+/**
+ * List a workspace's sessions.
+ *
+ * Returns {@link SessionMetadataWithPendingPlan}: the public list shape plus
+ * the pending-plan state the host needs to hydrate a managed session at
+ * startup. Assignable to `SessionMetadata` everywhere, so the many callers
+ * that only want list fields are unaffected and cannot see the extra one
+ * without asking for the wider type by name.
+ */
+export function listSessions(workspaceRootPath: string): SessionMetadataWithPendingPlan[] {
   const span = perf.span('session.listSessions');
   const sessionsDir = getWorkspaceSessionsPath(workspaceRootPath);
   if (!existsSync(sessionsDir)) {
@@ -403,7 +414,7 @@ export function listSessions(workspaceRootPath: string): SessionMetadata[] {
  * Convert SessionHeader to SessionMetadata
  * Used for fast session list loading from JSONL format.
  */
-function headerToMetadata(header: SessionHeader, workspaceRootPath: string): SessionMetadata | null {
+function headerToMetadata(header: SessionHeader, workspaceRootPath: string): SessionMetadataWithPendingPlan | null {
   try {
     // Migration: accept old 'todoState' field from pre-rename session files
     const rawStatus = header.sessionStatus ?? (header as unknown as { todoState?: string }).todoState;
@@ -417,12 +428,16 @@ function headerToMetadata(header: SessionHeader, workspaceRootPath: string): Ses
     const workingDir = header.workingDirectory ? expandPath(header.workingDirectory) : undefined;
     const sdkCwd = header.sdkCwd ? expandPath(header.sdkCwd) : workingDir;
 
-    // Destructure fields that don't exist on SessionMetadata or need overrides
+    // Destructure fields that don't exist on the metadata shape or need
+    // overrides.
     //
-    // `pendingPlanExecution` is deliberately NOT destructured out any more: the
-    // managed session is built from this shape and the header is rebuilt from
-    // the managed session, so stripping it here meant the field lived only on
-    // disk until the next persist from any writer silently dropped it.
+    // `pendingPlanExecution` is deliberately NOT destructured out: the managed
+    // session is built from this shape and the header is rebuilt from the
+    // managed session, so stripping it here meant the field lived only on disk
+    // until the next persist from any writer silently dropped it. It rides the
+    // WIDER return type (`SessionMetadataWithPendingPlan`) rather than the
+    // public `SessionMetadata`, so it reaches the host's startup hydration and
+    // nothing else — it carries unsent user draft text.
     const {
       sessionStatus: _ss, workingDirectory: _wd, sdkCwd: _sc,
       workspaceRootPath: _wrp, ...headerFields

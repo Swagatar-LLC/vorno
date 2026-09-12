@@ -22,6 +22,7 @@ import {
   getHeaderMetadataSignature,
   getSessionFilePath,
   sessionPersistenceQueue,
+  setSingletonCommitHooksForTesting,
   sessionWriteKey,
   writeSessionJsonl,
   type StoredSession,
@@ -44,7 +45,7 @@ describe('external metadata reconciliation', () => {
   afterEach(() => {
     // Shared module singleton — a leaked hook would fire inside every other
     // suite's writes.
-    sessionPersistenceQueue.commitHooks = undefined
+    setSingletonCommitHooksForTesting(undefined)
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -91,8 +92,8 @@ describe('external metadata reconciliation', () => {
     // differently. An edit arriving while the queue is idle leaves nothing to
     // abandon, so it would pass under either variant and prove nothing.
     let applied = false
-    sessionPersistenceQueue.commitHooks = {
-      afterRename: (hookKey) => {
+    setSingletonCommitHooksForTesting({
+      afterRename: (hookKey: string) => {
         // The hook hands back the QUEUE's key, not a session id — they are
         // different things, and comparing them would silently never match.
         if (applied || hookKey !== sessionWriteKey(root, SESSION_ID)) return
@@ -104,7 +105,7 @@ describe('external metadata reconciliation', () => {
           createdAt: Date.now(),
         })
       },
-    }
+    })
 
     ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
     await sm.flushSession(SESSION_ID)
@@ -114,7 +115,7 @@ describe('external metadata reconciliation', () => {
     // unlinks it at exactly this point, for a session nobody deleted.
     expect(existsSync(file)).toBe(true)
 
-    sessionPersistenceQueue.commitHooks = undefined
+    setSingletonCommitHooksForTesting(undefined)
     await sm.flushSession(SESSION_ID)
     expect(existsSync(file)).toBe(true)
     // And the transcript is intact, not merely the path.
@@ -155,7 +156,7 @@ describe('external metadata reconciliation', () => {
 
     let observed: Record<string, unknown> | undefined
     let superseded = false
-    sessionPersistenceQueue.commitHooks = {
+    setSingletonCommitHooksForTesting({
       // The edit lands after the in-flight write computed its header.
       beforeUnlink: () => { if (!observed) observed = externalHeader() },
       // The watcher sees it while that write is mid-commit.
@@ -165,10 +166,10 @@ describe('external metadata reconciliation', () => {
         observed = undefined
         superseded = applyExternal(header)
       },
-    }
+    })
     ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
     await sm.flushSession(SESSION_ID)
-    sessionPersistenceQueue.commitHooks = undefined
+    setSingletonCommitHooksForTesting(undefined)
 
     // Fail loudly rather than let the assertions below pass without the path
     // under test ever having run.
@@ -206,7 +207,7 @@ describe('external metadata reconciliation', () => {
 
     let observed: Record<string, unknown> | undefined
     let changedReported: boolean | undefined
-    sessionPersistenceQueue.commitHooks = {
+    setSingletonCommitHooksForTesting({
       beforeUnlink: () => { if (!observed) observed = externalHeader() },
       afterRename: () => {
         if (!observed) return
@@ -214,10 +215,10 @@ describe('external metadata reconciliation', () => {
         observed = undefined
         changedReported = applyExternal(header)
       },
-    }
+    })
     ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
     await sm.flushSession(SESSION_ID)
-    sessionPersistenceQueue.commitHooks = undefined
+    setSingletonCommitHooksForTesting(undefined)
 
     // Nothing this method mirrors moved, so it reports no in-memory change —
     // and it must have superseded anyway.

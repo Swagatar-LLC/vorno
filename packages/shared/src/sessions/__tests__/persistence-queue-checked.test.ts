@@ -12,21 +12,36 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SessionPersistenceQueue, sessionWriteKey, type SessionWriteKey } from '../persistence-queue.ts';
+import { SessionPersistenceQueue, sessionWriteKey, type SessionCommitHooks, type SessionWriteKey } from '../persistence-queue.ts';
 import { getSessionFilePath } from '../storage.ts';
 import type { StoredSession } from '../types.ts';
 
 describe('SessionPersistenceQueue checked writes', () => {
   let root: string;
   let queue: SessionPersistenceQueue;
+  /**
+   * The hooks this suite wants active right now.
+   *
+   * The queue takes its hooks once, at construction, and they are readonly
+   * after that — so a test cannot reach in and reassign them. What it changes
+   * instead is this variable, which the injected delegators read. Same
+   * expressiveness, and the queue exposes nothing assignable.
+   */
+  let hooks: SessionCommitHooks | undefined;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'persist-checked-'));
+    hooks = undefined;
     // No debounce: the timer path is exercised directly rather than waited on.
-    queue = new SessionPersistenceQueue(0);
+    queue = new SessionPersistenceQueue(0, {
+      beforeUnlink: (key) => hooks?.beforeUnlink?.(key),
+      beforeRename: (key) => hooks?.beforeRename?.(key),
+      afterRename: (key) => hooks?.afterRename?.(key),
+    });
   });
 
   afterEach(() => {
+    hooks = undefined;
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -141,7 +156,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // The hold is released on a timer rather than after `flushAll` returns.
       // Releasing it afterwards would deadlock — which is itself the proof that
       // this now waits.
-      queue.commitHooks = {
+      hooks = {
         beforeRename: async () => { await new Promise((r) => setTimeout(r, 120)) },
         afterRename: () => { renamed = true },
       };
@@ -155,7 +170,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(renamed).toBe(true);
 
       await tail;
-      queue.commitHooks = undefined;
+      hooks = undefined;
       expect(existsSync(getSessionFilePath(root, 'quit1'))).toBe(true);
     });
 
@@ -164,7 +179,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // can produce more, and a pass that only read the first union would leave
       // it behind. Here a commit enqueues a second session mid-flush.
       let queuedMore = false;
-      queue.commitHooks = {
+      hooks = {
         afterRename: () => {
           if (queuedMore) return;
           queuedMore = true;
@@ -173,7 +188,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       };
       queue.enqueueChecked(session('quit2'));
       await queue.flushAll();
-      queue.commitHooks = undefined;
+      hooks = undefined;
 
       expect(queuedMore).toBe(true);
       // Both on disk, and nothing left outstanding.
@@ -192,7 +207,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // satisfied it. An optimistic durability answer is the one answer this
       // must never give.
       const landed: string[] = [];
-      queue.commitHooks = {
+      hooks = {
         afterRename: () => {
           const header = JSON.parse(
             readFileSync(getSessionFilePath(root, 'own1'), 'utf-8').split('\n')[0]!,
@@ -207,7 +222,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // An ordinary write that does NOT contain A's change.
       queue.enqueue(Object.assign(session('own1'), { name: 'B' }) as StoredSession);
       await queue.driveChecked(checked.key);
-      queue.commitHooks = undefined;
+      hooks = undefined;
 
       const receipt = await checked.receipt;
       // Truthful either way: success only if A's bytes actually landed.
@@ -223,12 +238,12 @@ describe('SessionPersistenceQueue checked writes', () => {
       // replacement; a run of ordinary writes must still collapse to one, or
       // every keystroke-driven persist becomes a separate disk write.
       let writes = 0;
-      queue.commitHooks = { afterRename: () => { writes++ } };
+      hooks = { afterRename: () => { writes++ } };
       queue.enqueue(Object.assign(session('coal1'), { name: 'one' }) as StoredSession);
       queue.enqueue(Object.assign(session('coal1'), { name: 'two' }) as StoredSession);
       queue.enqueue(Object.assign(session('coal1'), { name: 'three' }) as StoredSession);
       await queue.flush(k('coal1'));
-      queue.commitHooks = undefined;
+      hooks = undefined;
 
       expect(writes).toBe(1);
       expect(readFileSync(getSessionFilePath(root, 'coal1'), 'utf-8')).toContain('"name":"three"');
@@ -256,6 +271,38 @@ describe('SessionPersistenceQueue checked writes', () => {
       const handle = queue.enqueueChecked(record);
       return { ...handle, tail: queue.driveChecked(handle.key) };
     }
+
+    it('treats ids that name ONE file as one writer', async () => {
+      // The mirror of the root case, and the one that bites hardest because it
+      // looks like a security detail rather than a concurrency one.
+      // `getSessionPath` runs the id through `sanitizeSessionId` (a `basename`)
+      // as path-traversal defence, so `nested/same` and `same` address the SAME
+      // file — and keying on the raw string gave them two keys, two tails and
+      // two writers racing over one `.tmp`, which is exactly the lost-bytes
+      // race the key exists to prevent.
+      expect(k('same')).toBe(k('nested/same'));
+      expect(getSessionFilePath(root, 'nested/same')).toBe(getSessionFilePath(root, 'same'));
+
+      // And through the real write path: both land on one file, serialised.
+      const a = writeIn(root, (r) => {
+        (r as unknown as { id: string }).id = 'twinfile';
+        (r as unknown as { name: string }).name = 'plain';
+      });
+      const b = writeIn(root, (r) => {
+        (r as unknown as { id: string }).id = 'nested/twinfile';
+        (r as unknown as { name: string }).name = 'traversing';
+      });
+      expect(a.key).toBe(b.key);
+      await a.tail; await b.tail;
+      expect(readFileSync(getSessionFilePath(root, 'twinfile'), 'utf-8')).toContain('"name":"traversing"');
+    });
+
+    it('still separates the same canonical id under DIFFERENT roots', async () => {
+      // Canonicalising the id must not collapse workspaces: these are two
+      // files, and they get two keys.
+      expect(k('twin', root)).not.toBe(k('twin', rootB));
+      expect(k('nested/twin', root)).not.toBe(k('twin', rootB));
+    });
 
     it('treats equivalent spellings of one root as ONE writer', async () => {
       // The opposite failure from the collision above, and just as real. If the
@@ -296,12 +343,12 @@ describe('SessionPersistenceQueue checked writes', () => {
       // committed. With one shared key, A's watermark covered B's generation
       // and A's `discardCommitted` unlinked B's file — a live transcript,
       // deleted by an unrelated workspace.
-      queue.commitHooks = {
+      hooks = {
         afterRename: () => { queue.cancelForDeletion(k(ID, root)); },
       };
       const b = writeIn(rootB, (r) => { (r as unknown as { name: string }).name = 'still B'; });
       await b.tail;
-      queue.commitHooks = undefined;
+      hooks = undefined;
 
       expect(await b.receipt).toEqual({ ok: true });
       expect(existsSync(getSessionFilePath(rootB, ID))).toBe(true);
@@ -337,7 +384,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // Real writes take measurable time and a cancel genuinely lands
       // mid-commit; an in-memory suite's writes settle far too fast to hit that
       // by timing. The hook makes the window deterministic.
-      queue.commitHooks = { beforeUnlink: (key) => { queue.cancelForDeletion(key) } };
+      hooks = { beforeUnlink: (key) => { queue.cancelForDeletion(key) } };
       const handle = write('c1');
       await handle.tail;
 
@@ -352,7 +399,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // should never have occurred, so a state-only assertion passes with this
       // boundary removed and proves nothing about it.
       let renamed = false;
-      queue.commitHooks = {
+      hooks = {
         beforeRename: (key) => { queue.cancelForDeletion(key) },
         afterRename: () => { renamed = true },
       };
@@ -381,7 +428,7 @@ describe('SessionPersistenceQueue checked writes', () => {
      */
     /** Fire `act` at exactly one commit boundary, typed off the hook itself. */
     function cancelAt(hook: 'beforeUnlink' | 'beforeRename' | 'afterRename', act: (key: SessionWriteKey) => void) {
-      queue.commitHooks = { [hook]: act };
+      hooks = { [hook]: act };
     }
 
     const STAGES = [
@@ -400,7 +447,7 @@ describe('SessionPersistenceQueue checked writes', () => {
         cancelAt(stage.hook, (key) => queue.supersedePendingWrites(key));
         const handle = write('grid', (r) => { r.name = 'stale' });
         await handle.tail;
-        queue.commitHooks = undefined;
+        hooks = undefined;
 
         // Cancelled, so the caller is told its bytes did not land...
         expect(await handle.receipt).toMatchObject({ ok: false });
@@ -420,13 +467,20 @@ describe('SessionPersistenceQueue checked writes', () => {
         cancelAt(stage.hook, (key) => queue.cancelForDeletion(key));
         const handle = write('gridd', (r) => { r.name = 'stale' });
         await handle.tail;
-        queue.commitHooks = undefined;
+        hooks = undefined;
 
         expect(await handle.receipt).toMatchObject({ ok: false });
-        // `beforeUnlink` is the one stage where the committed file survives a
-        // deletion cancel — nothing has touched it yet, and `deleteSession`
-        // removes the directory itself. The other two must leave nothing.
-        if (stage.hook !== 'beforeUnlink') {
+        // Stated exactly rather than skipped. At `beforeUnlink` nothing has
+        // touched the target yet, so what a deletion cancel guarantees there is
+        // that THIS generation's bytes never land — the previously committed
+        // file is still present, and removing the session's directory is
+        // `deleteSession`'s job, not this queue's. At the two later stages the
+        // queue has already disturbed the target, so it owes absence.
+        if (stage.hook === 'beforeUnlink') {
+          expect(existsSync(file)).toBe(true);
+          expect(readFileSync(file, 'utf-8')).toContain('"name":"committed"');
+          expect(readFileSync(file, 'utf-8')).not.toContain('"name":"stale"');
+        } else {
           expect(existsSync(file)).toBe(false);
         }
         expect(existsSync(file + '.tmp')).toBe(false);
@@ -449,7 +503,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       const file = getSessionFilePath(root, 'leak');
       let deleted = false;
       let superseded = false;
-      queue.commitHooks = {
+      hooks = {
         // Generation 1: delete it mid-write, and queue generation 2 behind it
         // before this tail can drain. That is what keeps retirement from
         // running and taking the deletion watermark with it.
@@ -475,7 +529,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // Generation 2 was queued mid-commit, so it runs on its own timer; drive
       // it explicitly and wait for the tail that carries it.
       await queue.driveChecked(k('leak'));
-      queue.commitHooks = undefined;
+      hooks = undefined;
 
       expect(deleted).toBe(true);
       expect(superseded).toBe(true);
@@ -492,7 +546,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // already on disk for a session the caller has deleted. The receipt must
       // not say "cancelled" while that artifact could survive, so removal
       // happens before the receipt settles and before the tail releases.
-      queue.commitHooks = { afterRename: (key) => { queue.cancelForDeletion(key) } };
+      hooks = { afterRename: (key) => { queue.cancelForDeletion(key) } };
       const handle = write('c3');
       await handle.tail;
 
@@ -510,7 +564,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       //
       // The write is still cancelled: its receipt says so, and the bytes it
       // committed are simply left for the next write to replace.
-      queue.commitHooks = { afterRename: (key) => { queue.supersedePendingWrites(key) } };
+      hooks = { afterRename: (key) => { queue.supersedePendingWrites(key) } };
       const handle = write('c8', (r) => { r.name = 'superseded'; });
       await handle.tail;
 
@@ -528,7 +582,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // The two callers do not know about each other, so the intent has to be
       // sticky rather than last-writer-wins: nothing un-deletes a session, and
       // a watcher event landing just after a delete must not rescue its file.
-      queue.commitHooks = {
+      hooks = {
         afterRename: (key) => {
           queue.cancelForDeletion(key);
           queue.supersedePendingWrites(key);
@@ -544,7 +598,7 @@ describe('SessionPersistenceQueue checked writes', () => {
     it('a deletion arriving after a supersede still discards the artifact', async () => {
       // The same rule read from the other direction, so the test does not pass
       // merely because one ordering happens to be the one implemented.
-      queue.commitHooks = {
+      hooks = {
         afterRename: (key) => {
           queue.supersedePendingWrites(key);
           queue.cancelForDeletion(key);
@@ -565,7 +619,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       const file = getSessionFilePath(root, 'c9');
       expect(existsSync(file)).toBe(true);
 
-      queue.commitHooks = { beforeUnlink: (key) => { queue.supersedePendingWrites(key) } };
+      hooks = { beforeUnlink: (key) => { queue.supersedePendingWrites(key) } };
       const handle = write('c9', (r) => { r.name = 'stale'; });
       await handle.tail;
 
@@ -615,7 +669,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       let held!: () => void;
       const holding = new Promise<void>((resolve) => { held = resolve });
 
-      queue.commitHooks = {
+      hooks = {
         beforeUnlink: () => { if (existsSync(file)) observed.push(readFileSync(file, 'utf-8')) },
         beforeRename: async () => {
           if (!holdFirst) return;
@@ -632,7 +686,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       held();
       await stale.receipt;
       await fresh.receipt;
-      queue.commitHooks = undefined;
+      hooks = undefined;
 
       expect(observed.some((snapshot) => snapshot.includes('"name":"stale"'))).toBe(false);
       const written = readFileSync(file, 'utf-8');
@@ -760,7 +814,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       };
 
       let observed: Record<string, unknown> | undefined;
-      queue.commitHooks = {
+      hooks = {
         // After G computed its header: the edit lands on disk now, so G's
         // snapshot predates it.
         beforeUnlink: () => { observed = externalEdit(); },
@@ -768,7 +822,7 @@ describe('SessionPersistenceQueue checked writes', () => {
         afterRename: (key) => { queue.supersedePendingWrites(key, observed as never); },
       };
       await write('race1').tail;
-      queue.commitHooks = undefined;
+      hooks = undefined;
 
       // G's stale file is on disk (correctly kept — the session is live). The
       // replacement write must still land the observed edit.
@@ -889,195 +943,152 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(after.lastReadMessageId).toBe('only-in-memory');
     });
 
-    it('drops an observation that has aged out instead of replaying it', async () => {
-      // An observation is normally discharged by the write that lands it, but a
-      // session that is never written again would hold one for the life of the
-      // process. The bound is time, and reaching it in a test means planting the
-      // timestamp: the clock cannot be advanced here, and sleeping out five
-      // minutes is not a test. White-box on purpose, and narrow — it sets the
-      // one field the passage of time would have set.
-      await write('age1', (r) => { (r as unknown as { name: string }).name = 'ours'; }).tail;
+    it('holds an observation indefinitely rather than discarding the edit on a timer', async () => {
+      // An observation is the ONLY surviving copy of an external edit in the
+      // stale-write race, so an age-based drop does not bound anything worth
+      // bounding — it discards user data on a timer, silently, and only for
+      // sessions unlucky enough to be idle. A previous revision honoured them
+      // for five minutes; the number was arbitrary and the loss was real.
+      await write('age1', (r) => { r.name = 'ours' }).tail;
       const file = getSessionFilePath(root, 'age1');
+      const read = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
 
-      const lines = readFileSync(file, 'utf-8').split('\n');
-      const header = JSON.parse(lines[0]!) as Record<string, unknown>;
-      header.lastReadMessageId = 'stale-observation';
-      queue.supersedePendingWrites(k('age1'), header as never);
+      const observed = { ...read(), lastReadMessageId: 'external-only' };
+      queue.supersedePendingWrites(k('age1'), observed as never);
 
-      const held = (queue as unknown as {
-        pendingExternalMetadata: Map<string, { observedAt: number }>
-      }).pendingExternalMetadata;
-      const entry = held.get(k('age1'))!;
-      expect(entry).toBeDefined();
-      entry.observedAt -= 6 * 60_000;
+      // A long time passes with no write for this session and plenty of
+      // activity elsewhere. Nothing may quietly collect the edit.
+      for (let i = 0; i < 5; i++) await write(`unrelated-${i}`).tail;
+      expect(queue.diagnostics().pendingExternalMetadata).toBe(1);
 
-      await write('age1').tail;
-
-      const after = JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
-      // Not replayed — and not left behind either, or it would be reconsidered
-      // by every later write for the rest of the process.
-      expect(after.lastReadMessageId).toBeUndefined();
-      expect(held.has(k('age1'))).toBe(false);
+      // And when the session is finally written, the edit is still there.
+      await write('age1', (r) => { r.name = 'ours' }).tail;
+      expect(read().lastReadMessageId).toBe('external-only');
     });
 
-    /**
-     * The observation baseline is "local as it stood when we looked", and the
-     * two directions have to come apart cleanly.
-     *
-     * Baselining on the last COMMITTED metadata got this wrong, because local
-     * writes are debounced: an in-app change sitting in the queue uncommitted
-     * looked, to a later observation, like an edit made AFTER it. Rule 1 then
-     * fired and wrote our older value over a genuinely newer external one.
-     * Baselining on the newest ENQUEUED metadata asks the real question.
-     *
-     * Run over the two fields this can actually bite on: `permissionMode` and
-     * `lastReadMessageId` are not copied into memory by SessionManager's
-     * reconciliation, so the merge is the only route by which either can reach
-     * disk, and a wrong answer here is a silent data loss rather than a
-     * cosmetic one.
-     */
-    for (const field of ['permissionMode', 'lastReadMessageId'] as const) {
-      it(`external wins ${field} when it lands during an uncommitted local change`, async () => {
-        await write('base1').tail;
-        const file = getSessionFilePath(root, 'base1');
-        const read = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+    it('releases an observation once the write that commits it succeeds', async () => {
+      // Release rule, first half: discharged by its owning commit, so the
+      // normal path leaves nothing behind. `applyExternalSessionMetadata`
+      // supersedes and then persists, so this happens within a debounce.
+      await write('rel1').tail;
+      const header = JSON.parse(
+        readFileSync(getSessionFilePath(root, 'rel1'), 'utf-8').split('\n')[0]!,
+      ) as Record<string, unknown>;
+      queue.supersedePendingWrites(k('rel1'), header as never);
+      expect(queue.diagnostics().pendingExternalMetadata).toBe(1);
 
-        // A local change is enqueued and NOT yet committed — the debounce window.
-        queue.enqueueChecked(session('base1'));
-        const local = queue.enqueueChecked(
-          Object.assign(session('base1'), { [field]: 'ours-uncommitted' }) as StoredSession,
-        );
-        expect(queue.hasPending(k('base1'))).toBe(true);
+      await write('rel1').tail;
+      expect(queue.diagnostics().pendingExternalMetadata).toBe(0);
+    });
 
-        // THEN somebody else changes the same field, and we observe it. Their
-        // edit is newer than our uncommitted one, so theirs must win.
-        const observed = { ...read(), [field]: 'theirs-newer' };
-        queue.supersedePendingWrites(k('base1'), observed as never);
+    it('releases an observation when the session is deleted', async () => {
+      // Release rule, second half: nothing is left for the edit to describe.
+      // Without this the record would outlive the session it belongs to.
+      await write('rel2').tail;
+      const header = JSON.parse(
+        readFileSync(getSessionFilePath(root, 'rel2'), 'utf-8').split('\n')[0]!,
+      ) as Record<string, unknown>;
+      queue.supersedePendingWrites(k('rel2'), header as never);
+      expect(queue.diagnostics().pendingExternalMetadata).toBe(1);
 
-        // The replacement write carries our local value forward as local state.
-        await write('base1', (r) => { (r as unknown as Record<string, unknown>)[field] = 'ours-uncommitted' }).tail;
-        void local;
+      queue.cancelForDeletion(k('rel2'));
+      expect(queue.diagnostics().pendingExternalMetadata).toBe(0);
+    });
 
-        expect(read()[field]).toBe('theirs-newer');
-      });
+    it('does not keep an observation for a write that never committed', async () => {
+      // The other half of "discharged by its owning commit": an abandoned write
+      // must NOT consume it, or the edit is lost with nothing to show for it.
+      await write('rel3').tail;
+      const file = getSessionFilePath(root, 'rel3');
+      const read = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+      queue.supersedePendingWrites(k('rel3'), { ...read(), lastReadMessageId: 'survives' } as never);
 
-      it(`local wins ${field} when the app changes it AFTER the observation`, async () => {
-        await write('base2').tail;
-        const file = getSessionFilePath(root, 'base2');
-        const read = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+      // A write that is cancelled before it commits.
+      hooks = { beforeUnlink: (key) => { queue.supersedePendingWrites(key) } };
+      await write('rel3').tail;
+      hooks = undefined;
 
-        // Observed first, with nothing local outstanding.
-        const observed = { ...read(), [field]: 'theirs' };
-        queue.supersedePendingWrites(k('base2'), observed as never);
-
-        // The app moves the same field afterwards. Ours is the newer edit, so
-        // the remembered external value must not resurrect over it.
-        await write('base2', (r) => { (r as unknown as Record<string, unknown>)[field] = 'ours-newer' }).tail;
-
-        expect(read()[field]).toBe('ours-newer');
-      });
-    }
-
-    /**
-     * The self-echo baseline is set BEFORE the write, so that fs.watch events
-     * fired during the unlink and rename are recognised as our own. That makes
-     * it speculative until the rename lands, and a speculative value left
-     * standing after a write that never committed is a live defect: it claims
-     * "this is what we last wrote" about bytes that do not exist, and the next
-     * write reads it as the answer to "did somebody else change this file?".
-     * The untouched file on disk then looks like an external edit, and the
-     * merge hands disk the win over the local state being saved — so one
-     * failed write silently reverts the app's own unsaved change.
-     *
-     * Both non-committing routes are covered, because they restore from
-     * different places in the code.
-     */
-    for (const route of ['a failed write', 'an abandoned write'] as const) {
-      it(`does not advance the committed baseline after ${route}`, async () => {
-        await write('sig6', (r) => { r.name = 'A' }).tail;
-        const file = getSessionFilePath(root, 'sig6');
-        const read = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
-        expect(read().name).toBe('A');
-
-        if (route === 'a failed write') {
-          // A directory where the temp file goes: the write throws.
-          mkdirSync(file + '.tmp', { recursive: true });
-          await write('sig6', (r) => { r.name = 'B' }).tail;
-          rmSync(file + '.tmp', { recursive: true, force: true });
-        } else {
-          // Superseded before the unlink, and deliberately with NO observed
-          // header — nothing is held that could rescue the value, so the
-          // baseline is the only thing standing between local state and disk.
-          queue.commitHooks = { beforeUnlink: (key) => { queue.supersedePendingWrites(key) } };
-          await write('sig6', (r) => { r.name = 'B' }).tail;
-          queue.commitHooks = undefined;
-        }
-
-        // Disk still holds A and nothing external ever touched it. The next
-        // local write of B must land B.
-        expect(read().name).toBe('A');
-        await write('sig6', (r) => { r.name = 'B' }).tail;
-        expect(read().name).toBe('B');
-      });
-    }
+      // Still held, and still applied by the write that does commit.
+      expect(queue.diagnostics().pendingExternalMetadata).toBe(1);
+      await write('rel3').tail;
+      expect(read().lastReadMessageId).toBe('survives');
+    });
 
     it('keeps the baseline describing a committed file a supersede chose to keep', async () => {
-      // The other edge of the rollback. A supersede landing AFTER the rename is
-      // the one abandon path that deliberately leaves the file in place, so
-      // those bytes ARE ours and the baseline must go on describing them.
-      // Rolling back there is the desync the rollback exists to prevent: the
-      // next write would read its own committed bytes as a foreign edit and
-      // hand disk authority over local state.
+      // The edge that makes promotion-on-rename correct rather than merely
+      // convenient. A supersede landing AFTER the rename deliberately leaves
+      // the file in place, so those bytes ARE ours and the baseline must go on
+      // describing them — otherwise the next write reads its own committed
+      // bytes as a foreign edit and hands disk authority over local state.
       await write('sig7', (r) => { r.name = 'first' }).tail;
 
-      queue.commitHooks = { afterRename: (key) => { queue.supersedePendingWrites(key) } };
+      hooks = { afterRename: (key) => { queue.supersedePendingWrites(key) } };
       const handle = write('sig7', (r) => { r.name = 'kept-by-supersede' });
       await handle.tail;
-      queue.commitHooks = undefined;
+      hooks = undefined;
 
-      // Cancelled, and its bytes are nonetheless what is on disk.
       expect(await handle.receipt).toMatchObject({ ok: false });
       const onDisk = readFileSync(getSessionFilePath(root, 'sig7'), 'utf-8').split('\n')[0]!;
       expect(onDisk).toContain('"name":"kept-by-supersede"');
-
       // The baseline agrees with the file, so nothing reads it as external.
-      const header = JSON.parse(onDisk) as Record<string, unknown>;
-      expect(queue.getLastWrittenSignature(k('sig7'))).toBe(
-        JSON.stringify({
-          name: header.name,
-          labels: header.labels,
-          isFlagged: header.isFlagged,
-          sessionStatus: header.sessionStatus,
-          permissionMode: header.permissionMode,
-          hasUnread: header.hasUnread,
-          lastReadMessageId: header.lastReadMessageId,
-        }),
-      );
+      expect(queue.getLastWrittenSignature(k('sig7'))).toContain('"name":"kept-by-supersede"');
     });
 
-    it('sweeps an aged-out observation for a session that is never written again', async () => {
-      // The observation map is the one that grows on a path which need not end
-      // in a write, so "the next write drops it" is not a bound. Activity
-      // anywhere sweeps it — here, another session's write.
-      await write('sweep1').tail;
-      const header = JSON.parse(
-        readFileSync(getSessionFilePath(root, 'sweep1'), 'utf-8').split('\n')[0]!,
-      ) as Record<string, unknown>;
-      queue.supersedePendingWrites(k('sweep1'), header as never);
-      expect(queue.diagnostics().pendingExternalMetadata).toBe(1);
+    it('does not advance the committed baseline when the RENAME itself fails', async () => {
+      // Why promotion sits AFTER the rename, not before. The failure test above
+      // never reaches the rename at all, so it says nothing about placement.
+      // Here the rename is what fails — the case a promotion one line earlier
+      // gets wrong, leaving the baseline describing bytes that never landed.
+      await write('sig8', (r) => { r.name = 'A' }).tail;
+      const file = getSessionFilePath(root, 'sig8');
+      const committed = queue.getLastWrittenSignature(k('sig8'));
+      expect(committed).toContain('"name":"A"');
 
-      // Age it past the bound. The clock cannot be advanced here and sleeping
-      // out five minutes is not a test, so the timestamp is planted — the one
-      // field the passage of time would have set.
-      const held = (queue as unknown as {
-        pendingExternalMetadata: Map<string, { observedAt: number }>
-      }).pendingExternalMetadata;
-      held.get(k('sweep1'))!.observedAt -= 6 * 60_000;
+      // A non-empty DIRECTORY where the session file goes: `unlink` cannot
+      // remove it (and is ignored), and `rename` onto it fails.
+      rmSync(file, { force: true });
+      mkdirSync(file, { recursive: true });
+      writeFileSync(join(file, 'occupied'), 'x');
 
-      // 'sweep1' is never written again; an unrelated session's write is what
-      // collects it.
-      await write('other').tail;
-      expect(queue.diagnostics().pendingExternalMetadata).toBe(0);
+      const handle = write('sig8', (r) => { r.name = 'B' });
+      await handle.tail;
+      expect(await handle.receipt).toMatchObject({ ok: false });
+
+      // Unchanged: nothing committed, so the baseline still describes A.
+      expect(queue.getLastWrittenSignature(k('sig8'))).toBe(committed!);
+    });
+
+    it('withdraws the in-flight echo value when a write is abandoned', async () => {
+      // The in-flight signature exists only so fs.watch events during the
+      // unlink and rename read as ours. Left behind by an abandoned write it
+      // becomes a permanent lie: `getLastWrittenSignature` keeps answering with
+      // a header nobody wrote, so `ConfigWatcher` would treat a real external
+      // edit matching it as a self-write and drop it.
+      await write('sig9', (r) => { r.name = 'A' }).tail;
+      const committed = queue.getLastWrittenSignature(k('sig9'));
+
+      hooks = { beforeUnlink: (key) => { queue.supersedePendingWrites(key) } };
+      await write('sig9', (r) => { r.name = 'B' }).tail;
+      hooks = undefined;
+
+      expect(queue.getLastWrittenSignature(k('sig9'))).toBe(committed!);
+      expect(queue.diagnostics().inFlightSignature).toBe(0);
+    });
+
+    it('leaves no baseline behind for a session deleted after its rename', async () => {
+      // Promotion happens on the successful rename, which is BEFORE the
+      // post-commit cancellation check — so a deletion landing in that window
+      // has already had its baseline maps cleared, and the promotion puts one
+      // back. Without clearing it there, every session deleted at that instant
+      // leaves an entry for the life of the process.
+      const baseline = queue.diagnostics();
+
+      hooks = { afterRename: (key) => { queue.cancelForDeletion(key) } };
+      await write('del1').tail;
+      hooks = undefined;
+
+      expect(existsSync(getSessionFilePath(root, 'del1'))).toBe(false);
+      expect(queue.diagnostics()).toEqual(baseline);
     });
 
     it('KEEPS the signature baseline through a supersede', async () => {

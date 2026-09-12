@@ -245,6 +245,28 @@ export interface SessionConfig {
 }
 
 /**
+ * Session metadata plus the pending-plan state, for the host's own startup
+ * hydration. **Internal: do not put this on a wire payload.**
+ *
+ * The field has to survive header → memory, because `createManagedSession`
+ * builds the in-memory session from a metadata shape and `persistSession`
+ * rebuilds the header from that in-memory state — so a field the projection
+ * drops lives only on disk until the next persist from any writer silently
+ * deletes it, which is how an accepted plan disappeared across a restart.
+ *
+ * It is a SEPARATE shape rather than a field on {@link SessionMetadata}
+ * because `pendingPlanExecution` carries `draftInputSnapshot` — text the user
+ * typed and did not send. `SessionMetadata` is consumed broadly (artifact
+ * scans, label and status queries, list projections), and widening it would
+ * put unsent user text within reach of every one of those call sites and of
+ * anything that later decides to serialize one. Narrow the type and the data
+ * only reaches the caller that asks for it by name.
+ */
+export interface SessionMetadataWithPendingPlan extends SessionMetadata {
+  pendingPlanExecution?: SessionHeader['pendingPlanExecution'];
+}
+
+/**
  * Stored session with conversation data
  */
 export interface StoredSession extends SessionConfig {
@@ -366,25 +388,13 @@ export interface SessionHeader {
 
 /**
  * Session metadata (lightweight, for lists)
+ *
+ * Deliberately carries NO pending-plan state. See
+ * {@link SessionMetadataWithPendingPlan} for why that is a separate shape.
  */
 export interface SessionMetadata {
   id: string;
   workspaceRootPath: string;
-  /**
-   * Pending "Accept & Compact" state, carried through from the header.
-   *
-   * Deliberately NOT stripped on the way to metadata. `createManagedSession`
-   * builds the in-memory session from this shape, and `persistSession` rebuilds
-   * the header from that in-memory state — so a field dropped here exists only
-   * on disk until the next persist from any writer silently deletes it. Letting
-   * it through is what makes the managed copy a real mirror for the session's
-   * whole lifetime rather than something a write has to remember to rescue.
-   *
-   * It does NOT follow this shape onto the wire: `managedToSession` omits it,
-   * because `draftInputSnapshot` is unsent user text and belongs on disk for
-   * recovery and nowhere else.
-   */
-  pendingPlanExecution?: SessionHeader['pendingPlanExecution'];
   name?: string;
   createdAt: number;
   lastUsedAt: number;

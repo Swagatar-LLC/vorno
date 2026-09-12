@@ -93,11 +93,54 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       and consecutive ordinary writes still coalesce to one disk write.
 - [x] `diagnostics()` exposes every per-key map; an aged-out observation for a
       session that is never written again is swept by unrelated activity.
+- [x] Ids that name one file share one key and tail (`nested/same` == `same`),
+      while the same canonical id under different roots stays separate.
+- [x] A failed rename does not advance the committed baseline; an abandoned
+      write withdraws its in-flight echo value and leaves no map entry.
+- [x] An observation survives unrelated activity indefinitely and is released
+      only by its owning commit or by explicit deletion.
 - [x] Mutation harness run against every guard: 12 rounds pre-review (10 caught,
       1 fixed by adding the cold-load test, 1 labelled an unreachable backstop),
       3 rounds on the round-1 fixes, and 6 on the round-2 fixes — all caught.
 
 ## Review findings
+
+### Round 3 — architecture review
+
+Seven items; two were already satisfied by round 2 and verified rather than
+re-implemented. Of the rest, one was a real defect I had introduced and missed.
+
+1. **`SessionWriteKey` did not canonicalise the id the way the file path does.**
+   `getSessionPath` runs the id through `sanitizeSessionId` (a `basename`) as
+   path-traversal defence, so `nested/same` and `same` address ONE file — and
+   keying on the raw string gave them two keys, two tails, and two writers over
+   one `.tmp`. The lost-bytes race this key exists to prevent, reintroduced from
+   the other direction. Both now use the same canonicaliser.
+2. **One committed baseline, split from the fs-watch echo value.** The
+   speculative-set-then-restore machinery from round 2 is gone: `inFlightSignature`
+   serves echo suppression and is cleared on every exit, `committedMetadata` is
+   the single baseline and is promoted only by a successful rename. This also
+   removed a duplicated signature/fields pair and the subtle
+   "did our bytes reach disk" branch the restore needed.
+3. **The observation TTL is removed, not fixed.** A five-minute drop discarded
+   the only surviving copy of an external edit — data loss on a timer, and only
+   for idle sessions. An observation is now released solely by its owning
+   successful commit or by explicit deletion. It is normally short-lived because
+   the only caller supersedes and then immediately persists. This deliberately
+   reverses round 2's TTL-sweep item: preferring a bounded memory record over
+   silent data loss.
+4. **`pendingPlanExecution` is off the public metadata shape.** It rides the
+   internal `SessionMetadataWithPendingPlan` instead, so unsent draft text is
+   not within reach of the artifact scan, label and status queries, or anything
+   that later decides to serialize a `SessionMetadata`.
+5. **Commit hooks are constructor-injected and `readonly`.** The queue exposes
+   no settable property. Honest residual below on why a named seam still exists
+   for the shared singleton.
+6. **P3:** the `beforeUnlink` deletion acceptance is now stated exactly rather
+   than skipped, and the repeated rationale is collapsed into four named
+   invariants (I1–I4) in the file header that the sites reference.
+
+### Round 2 — independent review
 
 ### Round 2 — independent review
 
@@ -168,10 +211,21 @@ activity.
   page cache. Deliberate: this queue carries every session state change in the
   app, and two syncs per write buys a guarantee no current caller asks for.
   Revisit if a caller ever needs crash-consistency rather than write success.
-- **Held observations are swept on activity, not on a timer.** Bounded whenever
-  the queue is used at all, including by other sessions. With zero activity
-  anywhere the process is idle and the entries are inert; a `setInterval` on a
-  module singleton was judged the worse trade.
+- **A held observation has no time bound, by design.** It is released only by
+  its owning successful commit or by explicit deletion, because it is the sole
+  surviving copy of an external edit in the stale-write race and an age-based
+  drop would discard user data rather than bound anything. What remains is one
+  small record per session that received an external edit, was never
+  successfully written again, and was never deleted — bounded by that anomaly
+  rather than by traffic, and visible in `diagnostics()`.
+- **The shared queue keeps one named test seam**
+  (`setSingletonCommitHooksForTesting`). Hooks are otherwise constructor-only
+  and `readonly`, and the instance exposes nothing assignable. The seam cannot
+  be removed outright because `storage.ts:saveSession` and `SessionManager` must
+  share ONE queue instance — they write the same files, and two instances would
+  mean two tails over one `.tmp`, which is the race this unit exists to prevent.
+  So a SessionManager-level test cannot be handed its own queue. It throws if
+  hooks are already attached, so a leak between suites is loud.
 - Exact-generation receipt matching is unreachable-by-construction today given
   the FIFO, and is kept as defence against coalescing being reintroduced.
 
@@ -195,6 +249,12 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review round 3 (architecture): the write key did not
+  canonicalise the session id the way the file path does, so two ids naming one
+  file raced; the committed baseline was split from the fs-watch echo value,
+  retiring the speculative-restore machinery; the observation TTL was removed as
+  data loss rather than a bound; pending-plan state moved off the public
+  metadata shape; commit hooks became constructor-injected.
 - `2026-09-12` — review round 2 (independent): quit walked past in-flight
   writes, the speculative self-echo baseline was never rolled back, and a
   checked receipt could attest a snapshot that was replaced before it was

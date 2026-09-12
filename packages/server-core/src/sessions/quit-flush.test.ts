@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os'
 import {
   getSessionFilePath,
   sessionPersistenceQueue,
+  setSingletonCommitHooksForTesting,
   sessionWriteKey,
   writeSessionJsonl,
   type StoredSession,
@@ -42,7 +43,7 @@ describe('quit flushes sessions that are mid-commit', () => {
 
   afterEach(() => {
     // Shared module singleton — a leaked hook fires inside every later suite.
-    sessionPersistenceQueue.commitHooks = undefined
+    setSingletonCommitHooksForTesting(undefined)
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -71,10 +72,10 @@ describe('quit flushes sessions that are mid-commit', () => {
     // flush returns — releasing it afterwards would deadlock, which is itself
     // the proof that quit now waits.
     let renamed = false
-    sessionPersistenceQueue.commitHooks = {
+    setSingletonCommitHooksForTesting({
       beforeRename: async () => { await new Promise((r) => setTimeout(r, 120)) },
       afterRename: () => { renamed = true },
-    }
+    })
 
     ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
     const driven = sessionPersistenceQueue.driveChecked(sessionWriteKey(root, SESSION_ID))
