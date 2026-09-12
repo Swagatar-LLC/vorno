@@ -216,6 +216,45 @@ export interface PageActionRequest {
   /** Grant that authorizes this invocation */
   grantId: string;
   invocation: PageActionInvocation;
+  /**
+   * Host-issued single-use proof of trusted interaction, required for every
+   * mutating action. It is an opaque capability: the broker mints it, holds the
+   * binding, and consumes it. A caller cannot forge one because it is random
+   * and server-held, and cannot reuse one because consumption is atomic.
+   */
+  activationTicket?: string;
+}
+
+// ============================================================================
+// Runtime authority (host-attributed; never carried on the wire)
+// ============================================================================
+
+/**
+ * Who declared this action's intent (ADR-0033 §2).
+ *
+ * Deliberately NOT a field on `PageActionRequest`: a caller that could name its
+ * own origin could name the most privileged one, which is the exact mistake
+ * ADR-0021 rules out for session mutation. The host handler that received the
+ * call selects it from what it observed, and it reaches the broker as a
+ * separate argument.
+ *
+ * - `sandboxed-page`    page JS asked, relayed by the host through the bridge
+ * - `host-ui`           host chrome asked directly, with no page JS involved
+ * - `scheduled-refresh` a cron-materialized refresh run, approved at grant time
+ */
+export type PageActionOrigin = 'host-ui' | 'sandboxed-page' | 'scheduled-refresh';
+
+/**
+ * Everything the host asserts about one invocation, re-derived per call rather
+ * than cached: a permission-mode change or a workspace switch between two
+ * actions on the same lease must be seen by the second one.
+ */
+export interface PageActionAuthority {
+  /** Canonical workspace id (never a caller's name-or-id spelling) */
+  workspaceId: string;
+  origin: PageActionOrigin;
+  /** Workspace permission mode as resolved at invocation time */
+  permissionMode: 'safe' | 'ask' | 'allow-all';
 }
 
 /** Result returned to the page (never contains credentials) */

@@ -1,12 +1,12 @@
 ---
 id: SUV-0065
 title: Enforce Page action runtime authority
-status: planned
+status: done
 plan: PLAN-052
 direction: DIR-04
 owner: jh
 created: 2026-09-10
-updated: 2026-09-10
+updated: 2026-09-11
 related: [SUV-0059, ADR-0033]
 blocked-by: []
 ---
@@ -38,23 +38,36 @@ is SUV-0064.
 
 ## Acceptance
 
-- [ ] Table-driven tests classify every descriptor kind; only API GET is
+- [x] Table-driven tests classify every descriptor kind; only API GET is
       non-mutating, a new kind cannot silently evade classification, and
       unattributed mutation fails closed.
-- [ ] The Electron activation experiment is recorded; trusted tickets are
+- [x] The Electron activation experiment is recorded; trusted tickets are
       digest/lease-bound, single-use, within the 10-second ceiling, and required
       first-use confirmation is enforced.
-- [ ] Every invocation revalidates origin, permission mode, workspace, page
+- [x] Every invocation revalidates origin, permission mode, workspace, page
       digest, approved grant, lease/nonce, expiry, and fresh activation proof;
       direct RPC, desktop, and WebUI cannot bypass the checks.
-- [ ] Script actions remain argv/no-shell, workspace-confined,
+- [x] Script actions remain argv/no-shell, workspace-confined,
       minimal-environment, and abort-aware, with a direct runner test.
-- [ ] Replay, lease-scoped in-flight keys/cancellation, page/workspace rate
+- [x] Replay, lease-scoped in-flight keys/cancellation, page/workspace rate
       limits, and timeout have regression coverage.
-- [ ] Rejection, execution, cancellation, timeout, and result are audited
+- [x] Rejection, execution, cancellation, timeout, and result are audited
       without credentials or sensitive payloads.
 
 ## Status log
 
 - `2026-09-10` — created in `planned/` from reserved SUV-0065; split from
   SUV-0059 so runtime authority and trusted activation remain one reviewable PR.
+- `2026-09-11` — moved from `planned` to `in-progress`: runtime authority,
+  trusted activation, and the ADR-0033 activation experiment implementation
+  began on the merged Pages baseline.
+- `2026-09-11` — moved from `in-progress` to `done`. The ADR-0033 activation
+  experiment was **run, not assumed**, and came back negative for its premise:
+  parent `navigator.userActivation` reads `true` for a click over the Page and
+  for one on unrelated app chrome, and Electron's `input-event` carries no
+  frame identity, so no signal at any trust level attributes a gesture to the
+  frame. Recorded with its rerunnable probe in
+  `roadmap/evidence/SUV-0065/`; the implementation therefore takes the ADR's
+  trusted-host-click branch rather than relying on frame proof, and the
+  residual — that a real in-frame click may be invisible to `input-event` — is
+  made safe by shape, since it fails as a refusal and never as a bypass.

@@ -1011,8 +1011,16 @@ export interface ElectronAPI {
   revokePageGrant(workspaceId: string, pageSlug: string, grantId: string): Promise<boolean>
   createPageLease(workspaceId: string, pageSlug: string): Promise<{ lease: import('@craft-agent/shared/pages/types').PageRenderLease; content: string }>
   releasePageLease(workspaceId: string, leaseId: string): Promise<void>
+  /**
+   * Ask the host to mint a single-use activation ticket for one exact request.
+   * Electron-only: it resolves only when the MAIN process saw a fresh, unspent
+   * user gesture, so on the WebUI build this rejects and mutating Page actions
+   * are refused rather than silently allowed.
+   */
+  requestPageActivation(workspaceId: string, pageSlug: string, request: import('@craft-agent/shared/pages/types').PageActionRequest): Promise<{ ticketId: string; expiresAt: number }>
   executePageAction(workspaceId: string, request: import('@craft-agent/shared/pages/types').PageActionRequest): Promise<import('@craft-agent/shared/pages/types').PageActionResult>
-  cancelPageAction(workspaceId: string, requestId: string): Promise<boolean>
+  /** Lease + nonce are required: a request id alone is a caller-minted string. */
+  cancelPageAction(workspaceId: string, requestId: string, leaseId: string, nonce: string): Promise<boolean>
   getPageShareCapabilities(workspaceId: string): Promise<{ pagesEnabled: boolean; sharingEnabled: boolean }>
   /** What `includeData` would publish + key paths that look credential-bearing (warn-only). */
   getPageShareDataScan(workspaceId: string, pageSlug: string): Promise<{ snapshotBytes: number | null; secretCandidates: string[] }>

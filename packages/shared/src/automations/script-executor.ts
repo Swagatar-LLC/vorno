@@ -119,6 +119,11 @@ export async function executeScriptAction(
     if (!page?.refresh || !action.grantId || page.refresh.grantId !== action.grantId) {
       return blockedResult(action, 'Page refresh grant is missing, revoked, or no longer current');
     }
+    // This is the `scheduled-refresh` origin of ADR-0033 §2: the one path with
+    // no user present to click, exempt from activation because the user
+    // approved this exact pinned descriptor when the refresh was persisted.
+    // The exemption is confined to script grants by assertPageRefreshGrant
+    // below, which rejects any other kind outright.
     try {
       assertPageRefreshGrant(page, page.refresh);
       if (

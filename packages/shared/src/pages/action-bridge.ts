@@ -13,9 +13,21 @@
  *   grant         — persisted in page.json, user-approved, content-digest
  *                   bound (like commandHash) AND expiring. Describes a class
  *                   of calls (api method + path regex, or one mcp tool).
+ *   authority     — what the HOST asserts about the call: canonical workspace,
+ *                   declared origin, permission mode. Never wire data; see
+ *                   PageActionAuthority in @craft-agent/core.
+ *   activation    — a host-minted, single-use, ≤10s ticket bound to the exact
+ *                   request. Every mutating action needs one, so a page cannot
+ *                   act on load, on a timer, or from a forged RPC call.
  *   request       — one concrete invocation. Must carry a valid lease
  *                   (id + nonce), a fresh unique requestId (replay check),
  *                   and a grant that matches the invocation.
+ *
+ * This broker is the AUTHORITATIVE gate, not the first one. The renderer runs
+ * its own bounded limiter and its own mutation check, but anything that can
+ * reach the executeAction RPC — a token-holding transport client, the WebUI, a
+ * direct call — skips all of that. Every check the product depends on is
+ * therefore repeated here, per invocation, against state re-read from disk.
  *
  * Execution is delegated to injected executors (built by the host from the
  * shared source machinery), always under an AbortSignal: every action has a
@@ -30,10 +42,12 @@
 
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type {
+  PageActionAuthority,
   PageActionGrant,
   PageActionInvocation,
+  PageActionOrigin,
   PageActionRequest,
   PageActionResult,
   PageActionHttpMethod,
@@ -47,7 +61,12 @@ import { redactSensitiveValues } from '../utils/redaction.ts';
 import { evaluateApiEndpointPolicy, evaluateMcpToolPolicy, type SourceActionPolicyDecision } from '../agent/source-policy.ts';
 import type { PermissionsContext } from '../agent/permissions-config.ts';
 import { proxyToolName } from '../mcp/proxy-tool-name.ts';
-import { hasPathTraversal } from './types.ts';
+import {
+  hasPathTraversal,
+  isMutatingPageAction,
+  pageActionOriginAllowsKind,
+  pageActionOriginPolicy,
+} from './types.ts';
 
 const log = createLogger('page-action-broker');
 
@@ -97,7 +116,44 @@ const PAGE_ACTION_RATE_WINDOW_MS = 60_000;
  */
 export const MAX_LIVE_LEASES = 256;
 
+/**
+ * ADR-0033 §3 caps activation-ticket lifetime at 10 seconds. The cap is the
+ * architecture decision; the exact lifetime below it is implementation policy.
+ * Both live here so a future tuning change cannot quietly cross the ceiling —
+ * the constructor clamps to it rather than trusting the option it is given.
+ */
+export const PAGE_ACTIVATION_TICKET_TTL_CEILING_MS = 10_000;
+export const DEFAULT_PAGE_ACTIVATION_TICKET_TTL_MS = 10_000;
+/**
+ * Outstanding tickets per lease. A ticket is proof of one interaction, so more
+ * than a handful live at once means tickets are being stockpiled rather than
+ * spent — the cap turns that into a refusal instead of a growing map.
+ */
+export const MAX_OUTSTANDING_TICKETS_PER_LEASE = 4;
+/**
+ * Concurrency for MUTATING actions on one render, and the queue behind it.
+ *
+ * Two, not five: a mutating action is a write to a real system, and a page that
+ * genuinely needs a third simultaneous write is a page doing something the user
+ * did not click for. The queue exists so a burst of legitimate clicks serializes
+ * instead of failing, and it is bounded so a burst cannot become a backlog.
+ */
+export const PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE = 2;
+export const PAGE_ACTION_MAX_QUEUED_MUTATING_PER_LEASE = 4;
+/**
+ * Sliding 60-second start budgets above the lease. The per-lease limit alone is
+ * evaded by re-mounting: every fresh render is a fresh lease with a fresh
+ * budget, so cost is only actually bounded when the ceiling also exists at the
+ * page and the workspace, which re-mounting cannot reset.
+ */
+export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_PAGE = 60;
+export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_WORKSPACE = 120;
+
 export type PageActionValidationErrorCode =
+  | 'origin-unattributed'
+  | 'origin-forbidden'
+  | 'permission-mode-forbidden'
+  | 'workspace-mismatch'
   | 'lease-not-found'
   | 'lease-page-mismatch'
   | 'lease-expired'
@@ -112,12 +168,110 @@ export type PageActionValidationErrorCode =
   | 'grant-mismatch'
   | 'grant-pattern-invalid'
   | 'invocation-path-unsafe'
+  | 'activation-required'
+  | 'activation-invalid'
+  | 'first-use-confirmation-required'
+  | 'first-use-confirmation-declined'
   | 'rate-limited'
+  | 'queue-overflow'
+  | 'timeout'
+  | 'cancelled'
   | 'executor-unavailable';
 
 type ValidationOutcome =
-  | { ok: true; grant: PageActionGrant }
+  | { ok: true; grant: PageActionGrant; mutating: boolean }
   | { ok: false; code: PageActionValidationErrorCode; reason: string };
+
+/**
+ * A host-minted, single-use proof that a trusted interaction authorized one
+ * exact request.
+ *
+ * `requestHash` is the whole point: the ticket is not "this render may act", it
+ * is "this render may run THIS call". Without the hash a ticket minted for a
+ * harmless granted GET could be spent on a granted script run, because both are
+ * the same lease and the same page.
+ *
+ * The record is held only here. Nothing bound into it ever travels to the page,
+ * which is what makes the ticket id safe to hand out: it names a capability the
+ * broker holds rather than describing one the caller could rebuild.
+ */
+interface PageActivationTicket {
+  ticketId: string;
+  requestHash: string;
+  workspaceId: string;
+  pageSlug: string;
+  leaseId: string;
+  contentDigest: string;
+  grantId: string;
+  requestId: string;
+  origin: PageActionOrigin;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+/**
+ * The canonical identity of one invocation, as a hash.
+ *
+ * Canonical because key order is not identity: `JSON.stringify` preserves the
+ * insertion order of a caller-supplied object, so `{path,method}` and
+ * `{method,path}` would hash differently and a re-serialized copy of an
+ * authorized request would fail to match its own ticket. Sorting every object
+ * key makes the hash a property of the call rather than of how it was typed.
+ *
+ * Deliberately covers the whole request including `requestId`, so a ticket is
+ * spendable exactly once on exactly one request — replay defence and ticket
+ * binding agree on what "the same call" means instead of each having a view.
+ * `activationTicket` itself is excluded: it is the thing being matched, and
+ * including it would require the ticket to know its own hash.
+ */
+export function canonicalPageActionHash(
+  workspaceId: string,
+  contentDigest: string,
+  request: PageActionRequest,
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify(
+        canonicalizeForHash({
+          workspaceId,
+          contentDigest,
+          requestId: request.requestId,
+          pageSlug: request.pageSlug,
+          leaseId: request.leaseId,
+          nonce: request.nonce,
+          grantId: request.grantId,
+          invocation: request.invocation,
+        }),
+      ),
+    )
+    .digest('hex');
+}
+
+/**
+ * Marker for the broker's own deadline firing, as opposed to an executor
+ * failing. A sentinel class rather than a message check: the two produce
+ * different audit outcomes and different user-facing text, and matching on
+ * message strings is how that distinction rots.
+ */
+class PageActionDeadlineError extends Error {
+  constructor() {
+    super('page action deadline exceeded');
+    this.name = 'PageActionDeadlineError';
+  }
+}
+
+function canonicalizeForHash(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeForHash);
+  if (value && typeof value === 'object') {
+    const source = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(source)
+        .sort()
+        .map((key) => [key, canonicalizeForHash(source[key])]),
+    );
+  }
+  return value;
+}
 
 /**
  * Execution backends, injected by the host process. Implementations resolve
@@ -154,6 +308,8 @@ export interface PageActionBrokerOptions {
   leaseTtlMs?: number;
   /** Per-action timeout in ms */
   actionTimeoutMs?: number;
+  /** Activation-ticket lifetime; clamped to ADR-0033's 10-second ceiling */
+  activationTicketTtlMs?: number;
   /** Workspace context for policy annotation in the audit trail */
   permissionsContext?: PermissionsContext;
   /** Test hook */
@@ -166,27 +322,82 @@ export interface CreateLeaseInput {
   contentDigest: string;
 }
 
+/**
+ * Minting outcome. A failure is a code the host can act on rather than an
+ * exception it has to pattern-match, because the two failures it genuinely
+ * treats differently — "ask the user" and "refuse" — must not be told apart by
+ * reading a message string.
+ */
+export type MintActivationOutcome =
+  | { ok: true; ticketId: string; expiresAt: number }
+  | { ok: false; code: PageActionValidationErrorCode; reason: string };
+
+export interface MintActivationOptions {
+  /**
+   * Host-rendered first-use confirmation for script/session grants, invoked by
+   * the broker only when this render has not yet confirmed this grant.
+   *
+   * Injected rather than called by the host beforehand so that ORDER is
+   * authoritative here: validate, then ask, then re-validate, then mint. A host
+   * that confirmed first and minted after would be asking about state that can
+   * change while the dialog is open.
+   */
+  confirmFirstUse?: () => Promise<boolean>;
+}
+
 export class PageActionBroker {
   private readonly executors: PageActionExecutors;
   private readonly auditLogPath: string;
   private readonly leaseTtlMs: number;
   private readonly actionTimeoutMs: number;
+  private readonly activationTicketTtlMs: number;
   private readonly permissionsContext?: PermissionsContext;
   private readonly now: () => number;
 
   private readonly leases = new Map<string, PageRenderLease>();
   private readonly seenRequestIds = new Map<string, Set<string>>();
+  /**
+   * In-flight actions, keyed by LEASE AND request id.
+   *
+   * A bare requestId key made cancellation a cross-tenant capability: request
+   * ids are minted by the caller, so any client that learned or guessed one
+   * could abort another render's — or another page's — action. Scoping the key
+   * means a cancel must prove the lease it names, and `cancelAction` requires
+   * the lease nonce for exactly that reason.
+   */
   private readonly inFlight = new Map<string, AbortController>();
   /** leaseId → number of actions currently executing */
   private readonly inFlightByLease = new Map<string, number>();
+  /** leaseId → number of MUTATING actions currently executing */
+  private readonly mutatingInFlightByLease = new Map<string, number>();
+  /** leaseId → waiters queued for a mutating slot, in arrival order */
+  private readonly mutatingQueueByLease = new Map<string, Array<() => void>>();
   /** leaseId → start timestamps within the sliding rate window */
   private readonly startTimesByLease = new Map<string, number[]>();
+  /** pageSlug → start timestamps; survives re-mounting, unlike the lease budget */
+  private readonly startTimesByPage = new Map<string, number[]>();
+  /** Workspace-wide start timestamps (this broker serves exactly one workspace) */
+  private startTimesByWorkspace: number[] = [];
+  /** ticketId → the single-use activation record the broker holds */
+  private readonly tickets = new Map<string, PageActivationTicket>();
+  /**
+   * `leaseId grantId` for grants whose host-rendered first-use
+   * confirmation this render has already cleared. Scoped to the lease because
+   * ADR-0033 §3 says per render: new content, or a re-mount, asks again.
+   */
+  private readonly firstUseConfirmed = new Set<string>();
 
   constructor(options: PageActionBrokerOptions) {
     this.executors = options.executors;
     this.auditLogPath = options.auditLogPath ?? join(CONFIG_DIR, 'logs', 'page-actions.jsonl');
     this.leaseTtlMs = options.leaseTtlMs ?? DEFAULT_PAGE_LEASE_TTL_MS;
     this.actionTimeoutMs = options.actionTimeoutMs ?? DEFAULT_PAGE_ACTION_TIMEOUT_MS;
+    // Clamp, never trust: the ceiling is an ADR constant and a caller passing a
+    // generous number must not be able to raise it.
+    this.activationTicketTtlMs = Math.min(
+      Math.max(1, options.activationTicketTtlMs ?? DEFAULT_PAGE_ACTIVATION_TICKET_TTL_MS),
+      PAGE_ACTIVATION_TICKET_TTL_CEILING_MS,
+    );
     this.permissionsContext = options.permissionsContext;
     this.now = options.now ?? Date.now;
   }
@@ -255,49 +466,158 @@ export class PageActionBroker {
     void this.appendAudit({ event: 'page_lease_released', pageSlug: lease.pageSlug, leaseId });
   }
 
+  /**
+   * Forget everything a lease authorized.
+   *
+   * Dropping the lease alone is not enough and the gap is exploitable: an
+   * outstanding ticket is a standalone capability keyed by its own id, so a
+   * ticket that outlived its lease would still name a valid request, and the
+   * digest/lease re-check at redemption is the only thing that would have
+   * caught it. Tickets, first-use consent, and queued waiters are all
+   * lease-scoped authority and all end here — including on the expiry and
+   * eviction paths, which call this rather than deleting the lease themselves.
+   */
   private dropLease(leaseId: string): void {
     this.leases.delete(leaseId);
     this.seenRequestIds.delete(leaseId);
     this.inFlightByLease.delete(leaseId);
+    this.mutatingInFlightByLease.delete(leaseId);
     this.startTimesByLease.delete(leaseId);
+    this.dropTicketsWhere((ticket) => ticket.leaseId === leaseId);
+    for (const key of [...this.firstUseConfirmed]) {
+      if (key.startsWith(`${leaseId} `)) this.firstUseConfirmed.delete(key);
+    }
+    // Release queued waiters instead of stranding them: each re-checks its own
+    // authority when it wakes and will now find the lease gone.
+    const queued = this.mutatingQueueByLease.get(leaseId);
+    this.mutatingQueueByLease.delete(leaseId);
+    for (const wake of queued ?? []) wake();
+  }
+
+  private dropTicketsWhere(predicate: (ticket: PageActivationTicket) => boolean): void {
+    for (const [ticketId, ticket] of this.tickets) {
+      if (predicate(ticket)) this.tickets.delete(ticketId);
+    }
+  }
+
+  private pruneExpiredTickets(): void {
+    const now = this.now();
+    this.dropTicketsWhere((ticket) => now > ticket.expiresAt);
+  }
+
+  /** Key for the in-flight map and for cancellation ownership. */
+  private inFlightKey(leaseId: string, requestId: string): string {
+    return JSON.stringify([leaseId, requestId]);
   }
 
   // ==========================================================
   // Per-lease rate limiting (host-side; the renderer limiter is advisory)
   // ==========================================================
 
-  private rateLimitRejection(leaseId: string): { code: 'rate-limited'; reason: string } | null {
+  /** Trim a sliding window in place and report what is still inside it. */
+  private withinWindow(timestamps: number[]): number[] {
+    const now = this.now();
+    return timestamps.filter((t) => now - t < PAGE_ACTION_RATE_WINDOW_MS);
+  }
+
+  private rateLimitRejection(
+    leaseId: string,
+    pageSlug: string,
+    mutating: boolean,
+  ): { code: 'rate-limited' | 'queue-overflow'; reason: string } | null {
     if ((this.inFlightByLease.get(leaseId) ?? 0) >= PAGE_ACTION_MAX_IN_FLIGHT_PER_LEASE) {
       return {
         code: 'rate-limited',
         reason: `Too many actions in flight for this render (max ${PAGE_ACTION_MAX_IN_FLIGHT_PER_LEASE})`,
       };
     }
-    const now = this.now();
-    const starts = (this.startTimesByLease.get(leaseId) ?? []).filter(
-      (t) => now - t < PAGE_ACTION_RATE_WINDOW_MS,
-    );
-    this.startTimesByLease.set(leaseId, starts);
-    if (starts.length >= PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_LEASE) {
+
+    // Mutating actions queue rather than fail when the two slots are busy, but
+    // the queue is a bounded waiting room: past its depth the answer is a
+    // refusal now, not a longer wait. Checked BEFORE the ticket is consumed so
+    // an overflow refusal does not burn the user's proof of interaction.
+    if (mutating) {
+      const queued = this.mutatingQueueByLease.get(leaseId)?.length ?? 0;
+      if (queued >= PAGE_ACTION_MAX_QUEUED_MUTATING_PER_LEASE) {
+        return {
+          code: 'queue-overflow',
+          reason: `Too many privileged actions waiting for this render (max ${PAGE_ACTION_MAX_QUEUED_MUTATING_PER_LEASE} queued)`,
+        };
+      }
+    }
+
+    const leaseStarts = this.withinWindow(this.startTimesByLease.get(leaseId) ?? []);
+    this.startTimesByLease.set(leaseId, leaseStarts);
+    if (leaseStarts.length >= PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_LEASE) {
       return {
         code: 'rate-limited',
         reason: `Too many actions this minute for this render (max ${PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_LEASE}/minute)`,
       };
     }
+
+    const pageStarts = this.withinWindow(this.startTimesByPage.get(pageSlug) ?? []);
+    this.startTimesByPage.set(pageSlug, pageStarts);
+    if (pageStarts.length >= PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_PAGE) {
+      return {
+        code: 'rate-limited',
+        reason: `Too many actions this minute for this page (max ${PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_PAGE}/minute)`,
+      };
+    }
+
+    this.startTimesByWorkspace = this.withinWindow(this.startTimesByWorkspace);
+    if (this.startTimesByWorkspace.length >= PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_WORKSPACE) {
+      return {
+        code: 'rate-limited',
+        reason: `Too many page actions this minute for this workspace (max ${PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_WORKSPACE}/minute)`,
+      };
+    }
+
     return null;
   }
 
-  private noteActionStart(leaseId: string): void {
+  private noteActionStart(leaseId: string, pageSlug: string, mutating: boolean): void {
     this.inFlightByLease.set(leaseId, (this.inFlightByLease.get(leaseId) ?? 0) + 1);
-    const starts = this.startTimesByLease.get(leaseId) ?? [];
-    starts.push(this.now());
-    this.startTimesByLease.set(leaseId, starts);
+    if (mutating) {
+      this.mutatingInFlightByLease.set(leaseId, (this.mutatingInFlightByLease.get(leaseId) ?? 0) + 1);
+    }
+    const now = this.now();
+    this.startTimesByLease.set(leaseId, [...(this.startTimesByLease.get(leaseId) ?? []), now]);
+    this.startTimesByPage.set(pageSlug, [...(this.startTimesByPage.get(pageSlug) ?? []), now]);
+    this.startTimesByWorkspace = [...this.startTimesByWorkspace, now];
   }
 
-  private noteActionEnd(leaseId: string): void {
+  private noteActionEnd(leaseId: string, mutating: boolean): void {
     const current = this.inFlightByLease.get(leaseId) ?? 0;
     if (current <= 1) this.inFlightByLease.delete(leaseId);
     else this.inFlightByLease.set(leaseId, current - 1);
+    if (mutating) {
+      const currentMutating = this.mutatingInFlightByLease.get(leaseId) ?? 0;
+      if (currentMutating <= 1) this.mutatingInFlightByLease.delete(leaseId);
+      else this.mutatingInFlightByLease.set(leaseId, currentMutating - 1);
+      // Hand the freed slot to the longest waiter. This runs in the execution
+      // path's `finally`, so it happens on timeout and cancellation too — a
+      // stuck executor must not also strand everything queued behind it.
+      const queue = this.mutatingQueueByLease.get(leaseId);
+      const next = queue?.shift();
+      if (queue && queue.length === 0) this.mutatingQueueByLease.delete(leaseId);
+      next?.();
+    }
+  }
+
+  /**
+   * Wait for one of the render's mutating slots. Resolves immediately when a
+   * slot is free; otherwise joins the bounded queue whose depth
+   * `rateLimitRejection` already admitted this request against.
+   */
+  private async awaitMutatingSlot(leaseId: string): Promise<void> {
+    if ((this.mutatingInFlightByLease.get(leaseId) ?? 0) < PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      const queue = this.mutatingQueueByLease.get(leaseId) ?? [];
+      queue.push(resolve);
+      this.mutatingQueueByLease.set(leaseId, queue);
+    });
   }
 
   private pruneExpiredLeases(): void {
@@ -311,8 +631,41 @@ export class PageActionBroker {
   // Validation
   // ==========================================================
 
-  private validate(page: PageConfig, request: PageActionRequest): ValidationOutcome {
+  /**
+   * Every per-invocation check except activation, replay, and rate.
+   *
+   * Shared by minting and execution on purpose: a ticket must not be mintable
+   * for a call that execution would refuse, or the host ends up showing a user
+   * a confirmation for something that cannot run. The three exclusions are the
+   * ones that differ between the two — a mint neither burns a request id nor
+   * consumes the ticket it is about to create.
+   */
+  private validate(
+    page: PageConfig,
+    request: PageActionRequest,
+    authority: PageActionAuthority,
+    // Off for the one caller that re-validates AFTER claiming the request id:
+    // a request waiting for a mutating slot has already burned its id, so
+    // re-checking replay there would reject every queued action as a replay of
+    // itself. Every other check still runs, which is the point of re-validating.
+    options: { checkReplay?: boolean } = {},
+  ): ValidationOutcome {
     const now = this.now();
+
+    // Origin first: an unattributed caller must not learn whether its lease,
+    // grant, or page even exist. ADR-0033's "unattributed default that cannot
+    // mutate" is this branch — there is no default origin to fall back to.
+    const originPolicy = pageActionOriginPolicy(authority?.origin);
+    if (!originPolicy) {
+      return {
+        ok: false,
+        code: 'origin-unattributed',
+        reason: 'Page actions require a host-declared origin',
+      };
+    }
+    if (!authority.workspaceId) {
+      return { ok: false, code: 'workspace-mismatch', reason: 'Page actions require a resolved workspace' };
+    }
 
     const lease = this.leases.get(request.leaseId);
     if (!lease) {
@@ -337,7 +690,7 @@ export class PageActionBroker {
     }
 
     const seen = this.seenRequestIds.get(request.leaseId);
-    if (seen?.has(request.requestId)) {
+    if (options.checkReplay !== false && seen?.has(request.requestId)) {
       return { ok: false, code: 'replay', reason: 'Request id was already used on this lease' };
     }
     if (seen && seen.size >= MAX_SEEN_REQUEST_IDS_PER_LEASE) {
@@ -358,7 +711,228 @@ export class PageActionBroker {
     const mismatch = this.invocationMismatch(grant, request.invocation);
     if (mismatch) return mismatch;
 
-    return { ok: true, grant };
+    if (!pageActionOriginAllowsKind(authority.origin, grant.action.kind)) {
+      return {
+        ok: false,
+        code: 'origin-forbidden',
+        reason: `A ${authority.origin} action may not run a ${grant.action.kind} grant`,
+      };
+    }
+
+    // Classify from the GRANT, not the invocation. They agree here (the
+    // mismatch check above proved the kinds match, and api method equality with
+    // it), and reading the approved descriptor means the privileged/unprivileged
+    // decision is made against what the user consented to rather than against
+    // what the caller sent.
+    const mutating = isMutatingPageAction(grant.action);
+    if (mutating && !originPolicy.mayMutate) {
+      return {
+        ok: false,
+        code: 'origin-forbidden',
+        reason: `A ${authority.origin} action may not mutate`,
+      };
+    }
+    // Explore is read-only across the product, and a Page is not an exception:
+    // a grant approved in a permissive mode must not keep executing writes
+    // after the workspace is switched to safe. Re-read per invocation, so the
+    // switch takes effect on the very next action rather than the next mount.
+    if (mutating && authority.permissionMode === 'safe') {
+      return {
+        ok: false,
+        code: 'permission-mode-forbidden',
+        reason: 'Explore mode does not run mutating page actions',
+      };
+    }
+
+    return { ok: true, grant, mutating };
+  }
+
+  // ==========================================================
+  // Activation tickets (ADR-0033 §3)
+  // ==========================================================
+
+  /**
+   * Mint the single-use proof of trusted interaction for one exact request.
+   *
+   * The caller is the host path that OBSERVED the interaction — in the desktop
+   * app, Electron main, which sees gestures through `input-event` and renders
+   * its own confirmation chrome. Nothing about this is reachable from a
+   * renderer or a transport client, which is the whole point: the ticket is the
+   * one credential a page cannot manufacture, so it is minted where a page
+   * cannot reach.
+   *
+   * The `roadmap/evidence/SUV-0065` experiment is why the signal is main-observed
+   * rather than `navigator.userActivation`: parent activation reads `true`
+   * whether the click landed in the Page or on unrelated app chrome, so it is
+   * freshness and never frame proof.
+   */
+  async mintActivationTicket(
+    page: PageConfig,
+    request: PageActionRequest,
+    authority: PageActionAuthority,
+    options: MintActivationOptions = {},
+  ): Promise<MintActivationOutcome> {
+    this.pruneExpiredTickets();
+
+    const reject = (code: PageActionValidationErrorCode, reason: string): MintActivationOutcome => {
+      void this.appendAudit({
+        event: 'page_activation_rejected',
+        workspaceId: authority?.workspaceId,
+        origin: authority?.origin,
+        pageSlug: request.pageSlug,
+        requestId: request.requestId,
+        leaseId: request.leaseId,
+        grantId: request.grantId,
+        code,
+        reason,
+      });
+      return { ok: false, code, reason };
+    };
+
+    const validation = this.validate(page, request, authority);
+    if (!validation.ok) return reject(validation.code, validation.reason);
+    if (!validation.mutating) {
+      // Not an error the user should see as a failure, but minting one anyway
+      // would put a spendable capability in circulation for a call that needs
+      // none — and every unnecessary ticket is one more thing to leak.
+      return reject('activation-invalid', 'Non-mutating actions do not take an activation ticket');
+    }
+
+    const outstanding = [...this.tickets.values()].filter((t) => t.leaseId === request.leaseId).length;
+    if (outstanding >= MAX_OUTSTANDING_TICKETS_PER_LEASE) {
+      return reject(
+        'rate-limited',
+        `Too many unspent activations for this render (max ${MAX_OUTSTANDING_TICKETS_PER_LEASE})`,
+      );
+    }
+
+    const policy = pageActionOriginPolicy(authority.origin)!;
+    const firstUseKey = `${request.leaseId} ${request.grantId}`;
+    if (
+      policy.requiresFirstUseConfirmation &&
+      validation.grant.action.kind === 'script' &&
+      !this.firstUseConfirmed.has(firstUseKey)
+    ) {
+      if (!options.confirmFirstUse) {
+        return reject(
+          'first-use-confirmation-required',
+          'This host cannot render the required first-use confirmation',
+        );
+      }
+      const confirmed = await options.confirmFirstUse();
+      if (!confirmed) {
+        return reject('first-use-confirmation-declined', 'First use of this grant was not confirmed');
+      }
+      // Re-validate AFTER the dialog. A confirmation is a human-scale pause —
+      // the grant can expire, the content can change, the lease can be released,
+      // and the workspace can switch to Explore while it is open. Approving a
+      // question is not the same as approving the state that follows it.
+      const revalidation = this.validate(page, request, authority);
+      if (!revalidation.ok) return reject(revalidation.code, revalidation.reason);
+      this.firstUseConfirmed.add(firstUseKey);
+    }
+
+    const now = this.now();
+    const ticket: PageActivationTicket = {
+      ticketId: randomBytes(24).toString('hex'),
+      requestHash: canonicalPageActionHash(authority.workspaceId, page.contentDigest!, request),
+      workspaceId: authority.workspaceId,
+      pageSlug: request.pageSlug,
+      leaseId: request.leaseId,
+      contentDigest: page.contentDigest!,
+      grantId: request.grantId,
+      requestId: request.requestId,
+      origin: authority.origin,
+      issuedAt: now,
+      expiresAt: now + this.activationTicketTtlMs,
+    };
+    this.tickets.set(ticket.ticketId, ticket);
+    void this.appendAudit({
+      event: 'page_activation_issued',
+      workspaceId: authority.workspaceId,
+      origin: authority.origin,
+      pageSlug: request.pageSlug,
+      requestId: request.requestId,
+      leaseId: request.leaseId,
+      grantId: request.grantId,
+      actionKind: validation.grant.action.kind,
+      expiresAt: ticket.expiresAt,
+    });
+    return { ok: true, ticketId: ticket.ticketId, expiresAt: ticket.expiresAt };
+  }
+
+  /**
+   * Spend a ticket on the request it was minted for.
+   *
+   * Consumption is unconditional and happens FIRST: the ticket leaves the map
+   * before a single field is compared, so two concurrent redemptions of one id
+   * cannot both find it present, and a redemption that fails its checks has
+   * still burned it. Validating first and deleting after would be a textbook
+   * check-then-act race in the one place a race buys a second privileged run.
+   */
+  private consumeActivationTicket(
+    request: PageActionRequest,
+    authority: PageActionAuthority,
+    contentDigest: string,
+  ): { ok: true } | { ok: false; code: PageActionValidationErrorCode; reason: string } {
+    const ticketId = request.activationTicket;
+    if (typeof ticketId !== 'string' || ticketId.length === 0) {
+      return {
+        ok: false,
+        code: 'activation-required',
+        reason: 'This action needs a fresh trusted interaction',
+      };
+    }
+    const ticket = this.tickets.get(ticketId);
+    this.tickets.delete(ticketId);
+    if (!ticket) {
+      return { ok: false, code: 'activation-invalid', reason: 'Activation is unknown or already used' };
+    }
+    if (this.now() > ticket.expiresAt) {
+      return { ok: false, code: 'activation-invalid', reason: 'Activation expired' };
+    }
+    // Cross-page and cross-workspace refusal is stated explicitly rather than
+    // left to the hash. The hash covers both, but these are the two boundaries
+    // whose breach is a privilege escalation rather than a mismatch, and a
+    // reader looking for "can a ticket move between pages" should find the
+    // answer as code, not as a property of a digest.
+    if (ticket.workspaceId !== authority.workspaceId) {
+      return { ok: false, code: 'workspace-mismatch', reason: 'Activation belongs to a different workspace' };
+    }
+    if (ticket.pageSlug !== request.pageSlug || ticket.leaseId !== request.leaseId) {
+      return { ok: false, code: 'activation-invalid', reason: 'Activation belongs to a different render' };
+    }
+    if (ticket.contentDigest !== contentDigest) {
+      return { ok: false, code: 'activation-invalid', reason: 'Page content changed since this activation' };
+    }
+    if (ticket.origin !== authority.origin) {
+      return { ok: false, code: 'activation-invalid', reason: 'Activation belongs to a different origin' };
+    }
+    if (ticket.requestHash !== canonicalPageActionHash(authority.workspaceId, contentDigest, request)) {
+      return { ok: false, code: 'activation-invalid', reason: 'Activation does not match this request' };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Invalidate every outstanding ticket for a page — the hook a content change
+   * or a grant revocation calls. ADR-0033 §5 requires content changes to
+   * invalidate outstanding tickets, and a ticket is the one piece of authority
+   * that does not re-read page.json on its own.
+   */
+  invalidateActivationsForPage(pageSlug: string, grantId?: string): void {
+    this.dropTicketsWhere(
+      (ticket) => ticket.pageSlug === pageSlug && (grantId === undefined || ticket.grantId === grantId),
+    );
+    for (const key of [...this.firstUseConfirmed]) {
+      if (grantId !== undefined && key.endsWith(` ${grantId}`)) this.firstUseConfirmed.delete(key);
+    }
+  }
+
+  /** Outstanding unspent tickets (diagnostics/tests). */
+  get activationTicketCount(): number {
+    this.pruneExpiredTickets();
+    return this.tickets.size;
   }
 
   /** Check the concrete invocation against the grant's descriptor. */
@@ -417,61 +991,81 @@ export class PageActionBroker {
    * Validate and execute one page action request against the current
    * page.json state. Never throws — failures come back as { ok: false }.
    */
-  async executeAction(page: PageConfig, request: PageActionRequest): Promise<PageActionResult> {
+  async executeAction(
+    page: PageConfig,
+    request: PageActionRequest,
+    authority: PageActionAuthority,
+  ): Promise<PageActionResult> {
     const startTime = this.now();
     const invocationSummary = this.summarizeInvocation(request.invocation);
 
-    const validation = this.validate(page, request);
-    if (!validation.ok) {
+    const rejected = (code: PageActionValidationErrorCode, reason: string): PageActionResult => {
       void this.appendAudit({
         event: 'page_action_rejected',
+        workspaceId: authority?.workspaceId,
+        origin: authority?.origin,
+        permissionMode: authority?.permissionMode,
         pageSlug: request.pageSlug,
         requestId: request.requestId,
         leaseId: request.leaseId,
         grantId: request.grantId,
         invocation: invocationSummary,
-        code: validation.code,
-        reason: validation.reason,
+        code,
+        reason,
       });
       return {
         requestId: request.requestId,
         ok: false,
-        error: `${validation.code}: ${validation.reason}`,
+        error: `${code}: ${reason}`,
         durationMs: this.now() - startTime,
       };
-    }
+    };
 
-    const { grant } = validation;
+    const validation = this.validate(page, request, authority);
+    if (!validation.ok) return rejected(validation.code, validation.reason);
+
+    const { grant, mutating } = validation;
 
     // Rate check AFTER validation (a throttled caller learns nothing about
     // lease/grant validity it didn't already prove) and BEFORE burning the
-    // requestId — a throttled request never executed, so its id stays usable.
-    const limited = this.rateLimitRejection(request.leaseId);
-    if (limited) {
-      void this.appendAudit({
-        event: 'page_action_rejected',
-        pageSlug: request.pageSlug,
-        requestId: request.requestId,
-        leaseId: request.leaseId,
-        grantId: request.grantId,
-        invocation: invocationSummary,
-        code: limited.code,
-        reason: limited.reason,
-      });
-      return {
-        requestId: request.requestId,
-        ok: false,
-        error: `${limited.code}: ${limited.reason}`,
-        durationMs: this.now() - startTime,
-      };
+    // requestId or the activation ticket — a throttled request never executed,
+    // so neither its id nor the user's proof of interaction is spent.
+    const limited = this.rateLimitRejection(request.leaseId, request.pageSlug, mutating);
+    if (limited) return rejected(limited.code, limited.reason);
+
+    // Activation last among the gates, and only for mutating actions. It is the
+    // single-use one: everything that can refuse this request for a reason that
+    // would recur has already run, so a burned ticket means the call really was
+    // going to execute.
+    if (mutating && pageActionOriginPolicy(authority.origin)!.requiresActivationTicket) {
+      const activation = this.consumeActivationTicket(request, authority, page.contentDigest!);
+      if (!activation.ok) return rejected(activation.code, activation.reason);
     }
 
     this.seenRequestIds.get(request.leaseId)?.add(request.requestId);
-    this.noteActionStart(request.leaseId);
+
+    // Queue for a mutating slot before counting the start, so a waiting request
+    // does not hold in-flight budget it is not using. The wait is bounded by
+    // the queue depth admitted above; the ticket is already spent, so queue
+    // time can never expire the proof out from under an authorized call.
+    if (mutating) {
+      await this.awaitMutatingSlot(request.leaseId);
+      // The world moves while a request waits: the lease can be released and
+      // the content can change. Re-validate rather than assume the admission
+      // decision survived the queue.
+      const afterQueue = this.validate(page, request, authority, { checkReplay: false });
+      if (!afterQueue.ok) return rejected(afterQueue.code, afterQueue.reason);
+    }
 
     // Policy annotation: grants ARE the user approval, so a
     // requires-approval verdict does not block a granted call — but the
     // audit trail records how the same call would classify for an agent.
+    //
+    // Computed BEFORE the slot is counted, because it is the last thing here
+    // that can throw outside the try/finally below. Counting first would leak
+    // an in-flight slot AND a mutating slot on that throw, and with only two
+    // mutating slots per render, two such throws wedge the render's privileged
+    // actions for the life of the lease.
     const policy: SourceActionPolicyDecision =
       grant.action.kind === 'api'
         ? evaluateApiEndpointPolicy(
@@ -488,9 +1082,38 @@ export class PageActionBroker {
             // annotated here purely for the audit trail (the grant is the approval).
             { decision: 'requires-approval', description: `script: ${grant.action.script}` };
 
+    // From here to the `finally` that releases them, nothing may throw outside
+    // the try below.
+    this.noteActionStart(request.leaseId, request.pageSlug, mutating);
+
     const controller = new AbortController();
-    this.inFlight.set(request.requestId, controller);
+    const inFlightKey = this.inFlightKey(request.leaseId, request.requestId);
+    this.inFlight.set(inFlightKey, controller);
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(this.actionTimeoutMs)]);
+
+    /**
+     * The broker's own deadline, raced against the executor.
+     *
+     * `signal` asks an executor to stop; this makes it irrelevant whether it
+     * listens. An executor that ignores its AbortSignal and never settles would
+     * otherwise hold an in-flight slot, a mutating slot, and everything queued
+     * behind it forever — a page could hang its own render permanently by
+     * granting a script that never exits. Racing means the slot is always
+     * returned on schedule, whatever the executor does with the signal.
+     */
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, rejectDeadline) => {
+      deadlineTimer = setTimeout(() => {
+        controller.abort();
+        rejectDeadline(new PageActionDeadlineError());
+      }, this.actionTimeoutMs);
+    });
+    const race = <T>(work: Promise<T>): Promise<T> => {
+      // A losing executor may still reject later; without this its rejection is
+      // unhandled and can take the process down under Node's default policy.
+      work.catch(() => {});
+      return Promise.race([work, deadline]);
+    };
 
     let result: PageActionResult;
     try {
@@ -498,7 +1121,7 @@ export class PageActionBroker {
         if (!this.executors.executeApi) {
           result = this.unavailableResult(request, startTime, 'API executor not wired in this host');
         } else {
-          const outcome = await this.executors.executeApi(
+          const outcome = await race(this.executors.executeApi(
             {
               sourceSlug: grant.action.sourceSlug,
               method: request.invocation.method,
@@ -506,7 +1129,7 @@ export class PageActionBroker {
               params: request.invocation.params,
             },
             { signal },
-          );
+          ));
           result = {
             requestId: request.requestId,
             ok: outcome.ok,
@@ -520,14 +1143,14 @@ export class PageActionBroker {
         if (!this.executors.executeMcp) {
           result = this.unavailableResult(request, startTime, 'MCP executor not wired in this host');
         } else {
-          const body = await this.executors.executeMcp(
+          const body = await race(this.executors.executeMcp(
             {
               sourceSlug: grant.action.sourceSlug,
               toolName: request.invocation.toolName,
               args: request.invocation.args ?? {},
             },
             { signal },
-          );
+          ));
           result = {
             requestId: request.requestId,
             ok: true,
@@ -539,7 +1162,7 @@ export class PageActionBroker {
         if (!this.executors.executeScript) {
           result = this.unavailableResult(request, startTime, 'Script executor not wired in this host');
         } else {
-          const outcome = await this.executors.executeScript(
+          const outcome = await race(this.executors.executeScript(
             {
               pageSlug: page.slug,
               script: grant.action.script,
@@ -547,7 +1170,7 @@ export class PageActionBroker {
               args: grant.action.args,
             },
             { signal },
-          );
+          ));
           const ok = outcome.exitCode === 0;
           result = {
             requestId: request.requestId,
@@ -564,10 +1187,15 @@ export class PageActionBroker {
         result = this.unavailableResult(request, startTime, 'Invocation kind does not match grant');
       }
     } catch (error) {
-      const aborted = controller.signal.aborted;
-      const message = aborted
-        ? 'Cancelled'
-        : error instanceof Error ? error.message : 'Unknown error';
+      // Timeout and cancellation are different outcomes and the audit trail has
+      // to tell them apart: one is the host giving up on a slow action, the
+      // other is a user or an unmount withdrawing it.
+      const timedOut = error instanceof PageActionDeadlineError;
+      const message = timedOut
+        ? `timeout: action exceeded ${this.actionTimeoutMs}ms`
+        : controller.signal.aborted
+          ? 'cancelled: action was cancelled'
+          : error instanceof Error ? error.message : 'Unknown error';
       result = {
         requestId: request.requestId,
         ok: false,
@@ -575,16 +1203,22 @@ export class PageActionBroker {
         durationMs: this.now() - startTime,
       };
     } finally {
-      this.inFlight.delete(request.requestId);
-      this.noteActionEnd(request.leaseId);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      this.inFlight.delete(inFlightKey);
+      this.noteActionEnd(request.leaseId, mutating);
     }
 
     void this.appendAudit({
       event: 'page_action_executed',
+      workspaceId: authority.workspaceId,
+      origin: authority.origin,
+      permissionMode: authority.permissionMode,
+      mutating,
       pageSlug: request.pageSlug,
       requestId: request.requestId,
       leaseId: request.leaseId,
       grantId: grant.id,
+      actionKind: grant.action.kind,
       invocation: invocationSummary,
       policyDecision: policy.decision,
       ok: result.ok,
@@ -597,14 +1231,47 @@ export class PageActionBroker {
   }
 
   /**
-   * Abort an in-flight action. Returns false when the request is unknown or
-   * already settled.
+   * Abort an in-flight action, and withdraw any unspent activation for it.
+   * Returns false when the request is unknown, unowned, or already settled.
+   *
+   * Ownership is proven, not claimed. Request ids are minted by the caller, so
+   * the previous `cancelAction(requestId)` shape let anything that reached the
+   * RPC abort another render's — or another page's — work simply by naming its
+   * id. Requiring the lease and its nonce means a canceller must already hold
+   * the render's secret, which is the same bar acting on that render requires.
+   *
+   * Withdrawing tickets is part of cancelling, not cleanup: a request cancelled
+   * between minting and executing would otherwise leave a live ticket that
+   * still authorizes the call the user just took back.
    */
-  cancelAction(requestId: string): boolean {
-    const controller = this.inFlight.get(requestId);
-    if (!controller) return false;
+  cancelAction(leaseId: string, nonce: string, requestId: string): boolean {
+    const lease = this.leases.get(leaseId);
+    if (!lease || lease.nonce !== nonce) return false;
+
+    this.dropTicketsWhere((ticket) => ticket.leaseId === leaseId && ticket.requestId === requestId);
+
+    const controller = this.inFlight.get(this.inFlightKey(leaseId, requestId));
+    // A cancel that only withdrew a ticket is still a real cancellation — the
+    // action it authorized can no longer run — so it is audited and reported as
+    // one rather than reading as "nothing to cancel".
+    if (!controller) {
+      void this.appendAudit({
+        event: 'page_action_cancelled',
+        pageSlug: lease.pageSlug,
+        leaseId,
+        requestId,
+        phase: 'pre-execution',
+      });
+      return false;
+    }
     controller.abort();
-    void this.appendAudit({ event: 'page_action_cancelled', requestId });
+    void this.appendAudit({
+      event: 'page_action_cancelled',
+      pageSlug: lease.pageSlug,
+      leaseId,
+      requestId,
+      phase: 'in-flight',
+    });
     return true;
   }
 

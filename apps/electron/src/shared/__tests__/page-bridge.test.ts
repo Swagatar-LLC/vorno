@@ -15,7 +15,7 @@ import {
   descriptorEquals,
   descriptorSignature,
   grantIdsEqual,
-  isMutatingInvocation,
+  isMutatingPageAction,
   isSafeExternalUrl,
   parsePageBridgeMessage,
   reconcileGrantSummaries,
@@ -257,22 +257,22 @@ describe('isSafeExternalUrl', () => {
   })
 })
 
-describe('isMutatingInvocation', () => {
+describe('isMutatingPageAction', () => {
   test('api GET is the only activation-exempt invocation', () => {
-    expect(isMutatingInvocation({ kind: 'api', method: 'POST', path: '/x' })).toBe(true)
-    expect(isMutatingInvocation({ kind: 'api', method: 'DELETE', path: '/x' })).toBe(true)
-    expect(isMutatingInvocation({ kind: 'api', method: 'GET', path: '/x' })).toBe(false)
+    expect(isMutatingPageAction({ kind: 'api', method: 'POST', path: '/x' })).toBe(true)
+    expect(isMutatingPageAction({ kind: 'api', method: 'DELETE', path: '/x' })).toBe(true)
+    expect(isMutatingPageAction({ kind: 'api', method: 'GET', path: '/x' })).toBe(false)
   })
 
   test('mcp always mutates (opaque tools — no method to infer read vs write)', () => {
     // A granted MCP tool may write ("create issue"); without user activation a
     // page could fire it from setInterval or on load. Never exempt it.
-    expect(isMutatingInvocation({ kind: 'mcp', toolName: 't' })).toBe(true)
-    expect(isMutatingInvocation({ kind: 'mcp', toolName: 'list_issues' })).toBe(true)
+    expect(isMutatingPageAction({ kind: 'mcp', toolName: 't' })).toBe(true)
+    expect(isMutatingPageAction({ kind: 'mcp', toolName: 'list_issues' })).toBe(true)
   })
 
   test('script always mutates (host command execution needs a fresh gesture)', () => {
-    expect(isMutatingInvocation({ kind: 'script' })).toBe(true)
+    expect(isMutatingPageAction({ kind: 'script' })).toBe(true)
   })
 })
 

@@ -48,7 +48,7 @@ import type {
   PageDataSnapshot,
   PageKind,
 } from '@craft-agent/shared/pages/types'
-import { hasPathTraversal, pageActionDescriptorSignature } from '@craft-agent/shared/pages/types'
+import { hasPathTraversal, isMutatingPageAction, pageActionDescriptorSignature } from '@craft-agent/shared/pages/types'
 
 export const PAGE_BRIDGE_PROTOCOL = 'craft-pages/v1'
 
@@ -347,15 +347,16 @@ export function isSafeExternalUrl(url: string): boolean {
   }
 }
 
-/** A mutating invocation needs fresh user activation inside the frame. */
-export function isMutatingInvocation(invocation: PageActionInvocation): boolean {
-  // Only api GET is exempt. script is host command execution, and mcp tools
-  // are opaque — no HTTP method to infer read vs write, and a granted tool
-  // may well mutate ("create issue"). Everything not provably read-only
-  // requires a real click, so a page can never fire it from a timer or on load.
-  if (invocation.kind === 'api') return invocation.method !== 'GET'
-  return true
-}
+/**
+ * Whether an invocation mutates, re-exported from the shared definition.
+ *
+ * The renderer is the first gate and the broker is the authoritative one, so a
+ * second copy of this rule here would be a second answer to "is this
+ * privileged" — and the two would disagree the first time either changed. Only
+ * api GET is exempt: script is host command execution, and mcp tools are opaque
+ * (a granted "create issue" has no method to read).
+ */
+export { isMutatingPageAction }
 
 // ============================================================================
 // Outgoing (host → page)

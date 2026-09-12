@@ -11,6 +11,8 @@
 import type {
   PageActionDescriptor,
   PageActionGrant,
+  PageActionInvocation,
+  PageActionOrigin,
   PageConfig,
   PageKind,
   PageRefreshSpec,
@@ -20,6 +22,8 @@ import type {
 // '@craft-agent/shared/pages' (mirrors how sources/projects expose types).
 export type {
   PageKind,
+  PageActionOrigin,
+  PageActionAuthority,
   PageScriptRuntime,
   PageRefreshSpec,
   PageRefreshStatus,
@@ -89,6 +93,122 @@ export function pageActionDescriptorSignature(descriptor: PageActionDescriptor):
     descriptor.method,
     descriptor.pathPattern,
   ]);
+}
+
+/**
+ * How each action kind classifies for mutation (ADR-0033 §2).
+ *
+ * A **mapped type over the union** rather than a lookup object with a string
+ * index: adding a kind to `PageActionDescriptor` without adding it here stops
+ * compiling, which is the only version of "a new kind cannot silently evade
+ * classification" that survives someone who never reads this comment. A plain
+ * `Record<string, …>` would accept the union's growth in silence and classify
+ * the new kind as `undefined` — the worst answer, because `undefined` is falsy
+ * and falsy means non-mutating means no activation proof required.
+ *
+ * `'conditional'` belongs to `api` alone, and the condition is the method:
+ * ADR-0033 fixes GET as the ONLY non-mutating action. `mcp` tools are opaque
+ * (a granted "create issue" tool has no method to read) and `script` is host
+ * command execution, so neither can ever be proven read-only.
+ */
+type PageActionMutationClass = 'always-mutating' | 'conditional-on-method';
+const PAGE_ACTION_MUTATION: { [K in PageActionDescriptor['kind']]: PageActionMutationClass } = {
+  api: 'conditional-on-method',
+  mcp: 'always-mutating',
+  script: 'always-mutating',
+};
+
+/** Every classified kind, for tests that must enumerate the whole union. */
+export const PAGE_ACTION_KINDS = Object.keys(PAGE_ACTION_MUTATION) as PageActionDescriptor['kind'][];
+
+/**
+ * Whether an action mutates, and therefore needs fresh trusted-interaction
+ * proof. Accepts a grant descriptor or a concrete invocation — they carry the
+ * same `kind`, and the two must never disagree about what is privileged.
+ *
+ * Fails closed twice over. An unrecognized kind is mutating, so a descriptor
+ * that reaches here from a future wire version or an untyped JS caller is
+ * treated as dangerous rather than waved through; and an `api` action without a
+ * readable method is mutating, so a malformed request cannot launder itself
+ * into the GET exemption. Pure and browser-safe: the renderer page-bridge
+ * (first gate) and the broker (authoritative) both call it, and a second
+ * definition on either side is how the two gates start disagreeing.
+ */
+export function isMutatingPageAction(action: PageActionDescriptor | PageActionInvocation): boolean {
+  const mutation: PageActionMutationClass | undefined =
+    PAGE_ACTION_MUTATION[action.kind as PageActionDescriptor['kind']];
+  if (mutation !== 'conditional-on-method') return true;
+  return (action as { method?: unknown }).method !== 'GET';
+}
+
+/** What one origin is permitted to do, before any grant is even consulted. */
+export interface PageActionOriginPolicy {
+  /** May this origin run a mutating action at all? */
+  mayMutate: boolean;
+  /** Must a mutating action carry a host-minted, single-use activation ticket? */
+  requiresActivationTicket: boolean;
+  /**
+   * Must script/session kinds additionally clear host-rendered first-use
+   * confirmation on this render before their first execution?
+   */
+  requiresFirstUseConfirmation: boolean;
+}
+
+/**
+ * The one place an origin becomes a capability (ADR-0033 §2, §3, §5).
+ *
+ * Mapped over `PageActionOrigin` for the same reason as the table above: a new
+ * origin must state its policy to compile. Nothing here is a default — an
+ * origin not in this table does not exist, and an *unattributed* caller gets no
+ * entry at all, which is how ADR-0033's "unattributed default that cannot
+ * mutate" is enforced rather than described.
+ *
+ * `host-ui` is held to exactly the same bar as `sandboxed-page` on purpose.
+ * It is the stricter reading: host chrome initiating a granted action is still
+ * acting on a Page's approved capability, and an origin that relaxed a check
+ * would become the cheapest thing for a future caller to claim.
+ *
+ * `scheduled-refresh` is the deliberate asymmetry, and it is narrow. A cron run
+ * has no user present to click, so requiring interaction proof would mean no
+ * scheduled refresh could ever run. What replaces the click is that the user
+ * approved this exact pinned script descriptor when the refresh was persisted,
+ * and `assertPageRefreshGrant` re-reads that approval from disk at spawn time,
+ * so revocation, expiry, and a content change all stop it. It is confined to
+ * `script` by `pageActionOriginAllowsKind` below — a refresh may never become a
+ * route for api/mcp calls that skip activation.
+ */
+const PAGE_ACTION_ORIGIN_POLICY: { [O in PageActionOrigin]: PageActionOriginPolicy } = {
+  'host-ui': { mayMutate: true, requiresActivationTicket: true, requiresFirstUseConfirmation: true },
+  'sandboxed-page': { mayMutate: true, requiresActivationTicket: true, requiresFirstUseConfirmation: true },
+  'scheduled-refresh': { mayMutate: true, requiresActivationTicket: false, requiresFirstUseConfirmation: false },
+};
+
+/** Every known origin, for tests that must enumerate the whole union. */
+export const PAGE_ACTION_ORIGINS = Object.keys(PAGE_ACTION_ORIGIN_POLICY) as PageActionOrigin[];
+
+/**
+ * The policy for an origin, or `null` when the caller is unattributed.
+ *
+ * Takes `unknown` rather than `PageActionOrigin` because the value it guards is
+ * exactly the one the type system cannot vouch for: a host that forgot to
+ * attribute, a JS caller, a deserialized object. Typing the parameter would
+ * move the check to a place where it is already too late.
+ */
+export function pageActionOriginPolicy(origin: unknown): PageActionOriginPolicy | null {
+  if (typeof origin !== 'string') return null;
+  return PAGE_ACTION_ORIGIN_POLICY[origin as PageActionOrigin] ?? null;
+}
+
+/**
+ * Whether an origin may run this action kind at all. Only the scheduled path is
+ * narrowed, and narrowing it here rather than at its one call site means a
+ * second scheduled caller inherits the confinement instead of re-deriving it.
+ */
+export function pageActionOriginAllowsKind(
+  origin: PageActionOrigin,
+  kind: PageActionDescriptor['kind'],
+): boolean {
+  return origin !== 'scheduled-refresh' || kind === 'script';
 }
 
 /**
