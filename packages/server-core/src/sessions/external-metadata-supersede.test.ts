@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os'
 import {
   getSessionFilePath,
   sessionPersistenceQueue,
+  sessionWriteKey,
   writeSessionJsonl,
   type StoredSession,
 } from '@craft-agent/shared/sessions'
@@ -90,8 +91,10 @@ describe('external metadata reconciliation', () => {
     // abandon, so it would pass under either variant and prove nothing.
     let applied = false
     sessionPersistenceQueue.commitHooks = {
-      afterRename: (id) => {
-        if (applied || id !== SESSION_ID) return
+      afterRename: (hookKey) => {
+        // The hook hands back the QUEUE's key, not a session id — they are
+        // different things, and comparing them would silently never match.
+        if (applied || hookKey !== sessionWriteKey(root, SESSION_ID)) return
         applied = true
         applyExternal({
           id: SESSION_ID,
@@ -178,12 +181,59 @@ describe('external metadata reconciliation', () => {
     expect(existsSync(file)).toBe(true)
   })
 
+  it('supersedes a PURE merge-only edit that changes nothing in memory', async () => {
+    // The supersede used to sit inside `if (changed)`, and `changed` only tracks
+    // fields this reconciliation mirrors into memory. An edit touching only
+    // `permissionMode` left it false — so no supersede, nothing held, and the
+    // in-flight stale write committed straight over the edit.
+    //
+    // It has to be mid-commit to prove anything. With an idle queue the ordinary
+    // disk merge recovers the edit on its own, so the assertions hold with the
+    // fix removed — which is exactly how the first version of this test passed.
+    const managed = seed()
+    const file = getSessionFilePath(root, SESSION_ID)
+    ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
+    await sm.flushSession(SESSION_ID)
+
+    const externalHeader = () => {
+      const lines = readFileSync(file, 'utf-8').split('\n')
+      const header = JSON.parse(lines[0]!) as Record<string, unknown>
+      header.permissionMode = 'safe'
+      writeFileSync(file, [JSON.stringify(header), ...lines.slice(1)].join('\n'))
+      return header
+    }
+
+    let observed: Record<string, unknown> | undefined
+    let changedReported: boolean | undefined
+    sessionPersistenceQueue.commitHooks = {
+      beforeUnlink: () => { if (!observed) observed = externalHeader() },
+      afterRename: () => {
+        if (!observed) return
+        const header = observed
+        observed = undefined
+        changedReported = applyExternal(header)
+      },
+    }
+    ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
+    await sm.flushSession(SESSION_ID)
+    sessionPersistenceQueue.commitHooks = undefined
+
+    // Nothing this method mirrors moved, so it reports no in-memory change —
+    // and it must have superseded anyway.
+    expect(changedReported).toBe(false)
+
+    ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
+    await sm.flushSession(SESSION_ID)
+    const after = JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>
+    expect(after.permissionMode).toBe('safe')
+  })
+
   it('does not strip the header-signature baseline the next write needs', async () => {
     const managed = seed()
     ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
     await sm.flushSession(SESSION_ID)
 
-    const before = sessionPersistenceQueue.getLastWrittenSignature(SESSION_ID)
+    const before = sessionPersistenceQueue.getLastWrittenSignature(sessionWriteKey(root, SESSION_ID))
     expect(before).toBeDefined()
 
     applyExternal({
@@ -197,6 +247,6 @@ describe('external metadata reconciliation', () => {
     // detection goes dark and the next write clobbers exactly the kind of edit
     // this path exists to absorb — `labels`, `isFlagged`, `permissionMode`,
     // `hasUnread` and `lastReadMessageId` are carried by the merge alone.
-    expect(sessionPersistenceQueue.getLastWrittenSignature(SESSION_ID)).toBeDefined()
+    expect(sessionPersistenceQueue.getLastWrittenSignature(sessionWriteKey(root, SESSION_ID))).toBeDefined()
   })
 })

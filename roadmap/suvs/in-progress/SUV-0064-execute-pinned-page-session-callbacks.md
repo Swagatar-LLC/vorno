@@ -887,8 +887,76 @@ for the outstanding observation — changed no test, because retirement never
 touched that map; the guard was removed rather than kept as decoration, since
 its only real effect would have been to pin the generation maps open.
 
+## Round 25 — persistence identity, and a supersede that only fired sometimes
+
+`2026-09-12` — architecture review. Three P1s, all in the persistence work.
+
+**1. Every map was keyed by a bare session id, which is not unique.** Ids are
+minted per workspace, and a copied or restored workspace keeps the ones it came
+with, so two live workspaces can hold the same id. Sharing a key made two
+different sessions one entry: workspace A's deletion raised the watermark over
+workspace B's in-flight write and — because deletion carries `discardCommitted`
+— unlinked B's committed file. A live transcript, deleted by an unrelated
+workspace. Pending snapshots, receipts, signature baselines and observations
+were all shared the same way.
+
+State is now filed under `SessionWriteKey` — a JSON tuple of the resolved
+workspace root and the id. **Not the session's file path**, which looks
+canonical and is not injective: `getSessionFilePath` interpolates the id, so
+root `/w` + id `a/sessions/b` and root `/w/sessions/a` + id `b` produce the same
+string. The root is `resolve`d first, because the opposite failure is just as
+real — `/w` and `/w/` as two keys means two tails and two writers racing over
+one `.tmp`.
+
+The key is **branded**, so the compiler rejected a bare id at every call site.
+That is the only reason to believe none were missed — with one exception worth
+recording: `packages/shared/tests/persistence-queue.test.ts` lives outside the
+typechecked `src/`, so the brand did **not** catch it and it failed at runtime
+instead. A type-level guarantee is only as wide as the files the typechecker
+reads.
+
+**2. The supersede only fired when an in-memory field changed.** It sat inside
+`if (changed)`, and `changed` tracks only the fields the reconciliation mirrors.
+An edit touching only `permissionMode`, `hasUnread` or `lastReadMessageId` left
+it false — no supersede, nothing held, and the in-flight stale write committed
+over the edit. The decision now compares the **full header signature** against
+our last written one, which is the question that was always meant.
+
+`hasUnread` and `lastReadMessageId` are now mirrored into memory as well; they
+are plain display fields riding the `metaChanged` broadcast, like `projectId`.
+**`permissionMode` deliberately is not** — it is a declared-intent mutation with
+its own event and ADR-0021 emit rules, and assigning it from a watcher would
+manufacture a mode change no origin asked for. Persistence still keeps the
+external value. Recorded as a residual rather than smuggled into a persistence
+fix.
+
+**3. A held observation could beat a later in-app edit.** It is remembered
+across time, so replaying it wholesale let an older remote value win over a
+change the user made afterwards — the session renames itself back a beat after
+they renamed it. The observation now stores the local value **as it stood when
+the observation was taken**, and applies each field only if the outgoing value
+still matches. Per field, not wholesale: dropping the whole observation on any
+local change would lose the external edit it exists to carry. It is discharged
+by the write that lands it, and bounded at five minutes for the session that is
+never written again.
+
+**Two tests passed under their own injected regression and were rebuilt.** The
+pure-merge-only test ran against an idle queue, where the ordinary disk merge
+recovers the edit unaided — so it held with the fix removed; it now runs
+mid-commit. And the key-collision suite needed a root-normalisation case, which
+nothing covered. Six injections, six caught after the rebuild.
+
+This is the eleventh and twelfth instance of *the assertion was fine, the
+construction did not reach the path* — and both were caught by injection rather
+than by review, which is now the only method in this SUV that has never missed.
+
 ## Residuals
 
+- **External `permissionMode` edits are not mirrored into memory.** The file
+  keeps the external value (the observation carries it), but the in-memory mode
+  stays as it was until something re-reads the session. Applying it from the
+  watcher would fabricate a declared-intent mode change with ADR-0021 emit
+  semantics, which belongs to the mode-change path, not to persistence.
 - **`commitHooks` is a public mutable field on a module singleton.** It is the
   test seam that makes the cancellation guards exercisable at all, and nothing
   reaches it from a Page, a script action, or any RPC — it has no wire

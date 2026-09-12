@@ -1,5 +1,5 @@
 import { writeFile, rename, unlink } from 'fs/promises'
-import { dirname } from 'path'
+import { dirname, resolve } from 'path'
 import type { StoredSession, SessionHeader } from './types.js'
 import { getSessionFilePath, ensureSessionsDir, ensureSessionDir } from './storage.js'
 import { toPortablePath } from '../utils/paths.js'
@@ -29,7 +29,7 @@ interface HeaderMetadataSignature {
   lastReadMessageId?: string
 }
 
-function getHeaderMetadataSignature(header: SessionHeader): string {
+function getHeaderMetadataFields(header: SessionHeader): HeaderMetadataSignature {
   const signature: HeaderMetadataSignature = {
     name: header.name,
     labels: header.labels,
@@ -39,7 +39,38 @@ function getHeaderMetadataSignature(header: SessionHeader): string {
     hasUnread: header.hasUnread,
     lastReadMessageId: header.lastReadMessageId,
   }
-  return JSON.stringify(signature)
+  return signature
+}
+
+function getHeaderMetadataSignature(header: SessionHeader): string {
+  return JSON.stringify(getHeaderMetadataFields(header))
+}
+
+/**
+ * Apply a held observation field by field, letting a later in-app edit win.
+ *
+ * The question asked of each field is "has anything local happened to it since
+ * we looked?". If the outgoing value still equals what we had at observation
+ * time, nothing has, and the external value applies. If it has moved, the app
+ * changed it after the observation and must not be overwritten by a value that
+ * was already stale when it was stored.
+ *
+ * With no local baseline there is no evidence of a local change, so external
+ * applies — the same default the disk merge has always used.
+ */
+function applyObservation(localHeader: SessionHeader, observation: ExternalObservation): SessionHeader {
+  const outgoing = getHeaderMetadataFields(localHeader)
+  const baseline = observation.localAtObservation
+  const merged: SessionHeader = { ...localHeader }
+
+  for (const field of EXTERNAL_METADATA_FIELDS) {
+    const localMoved =
+      baseline !== undefined &&
+      JSON.stringify(outgoing[field] ?? null) !== JSON.stringify(baseline[field] ?? null)
+    if (localMoved) continue
+    ;(merged as unknown as Record<string, unknown>)[field] = observation.external[field]
+  }
+  return merged
 }
 
 function mergeHeaderWithExternalMetadata(localHeader: SessionHeader, diskHeader: SessionHeader): SessionHeader {
@@ -84,6 +115,87 @@ function mergeHeaderWithExternalMetadata(localHeader: SessionHeader, diskHeader:
  */
 type CancellationWatermark = { through: number; discardCommitted: boolean }
 
+/**
+ * The identity every piece of this queue's per-session state is filed under.
+ *
+ * **A bare session id is not unique.** Ids are minted per workspace, and a
+ * copied or restored workspace keeps the ids it came with, so two live
+ * workspaces can hold the same id. Every map here used to be keyed by that id
+ * alone, which made two different sessions one entry: workspace A's deletion
+ * raised the watermark on workspace B's in-flight write and — because deletion
+ * carries `discardCommitted` — unlinked B's committed file. A live session's
+ * transcript, deleted by an unrelated workspace.
+ *
+ * A JSON tuple rather than the session's file path, deliberately. The path
+ * looks canonical and is not injective: `getSessionFilePath` interpolates the
+ * id into the path, so a root of `/w` with id `a/sessions/b` and a root of
+ * `/w/sessions/a` with id `b` produce the same string. A tuple cannot alias,
+ * because JSON escaping keeps the two components separable.
+ *
+ * The root is `resolve`d first so that `/w`, `/w/`, and `/w/x/..` are one key
+ * rather than three writers racing over one file — the opposite failure from
+ * the one above, and just as real.
+ *
+ * Branded so the compiler rejects a bare `sessionId` at every call site. When
+ * this was introduced it found all of them; that is the only reason to believe
+ * none were missed.
+ */
+export type SessionWriteKey = string & { readonly __sessionWriteKey: unique symbol }
+
+/** Build the canonical, injective key for a session's persistence state. */
+export function sessionWriteKey(workspaceRootPath: string, sessionId: string): SessionWriteKey {
+  return JSON.stringify([resolve(workspaceRootPath), sessionId]) as SessionWriteKey
+}
+
+/**
+ * The seven metadata fields an external writer and this process both own.
+ *
+ * Named once so the merge, the signature, and the observation cannot drift out
+ * of agreement about which fields are in play.
+ */
+const EXTERNAL_METADATA_FIELDS = [
+  'name',
+  'labels',
+  'isFlagged',
+  'sessionStatus',
+  'permissionMode',
+  'hasUnread',
+  'lastReadMessageId',
+] as const satisfies readonly (keyof HeaderMetadataSignature)[]
+
+/**
+ * What an external writer was seen to have, and what WE had at that moment.
+ *
+ * The second half is what makes the observation safe to hold. Applying a
+ * remembered external value unconditionally would let it win over an in-app
+ * change made *after* the observation — the user renames a session a moment
+ * after a watcher event, and the older remote name silently reappears. Keeping
+ * the local value as it stood at observation time turns that into an answerable
+ * question, per field: if the outgoing value still matches what we had when we
+ * looked, nothing local has happened and the external value applies; if it has
+ * moved, the app changed it since and the app wins.
+ *
+ * `localAtObservation` is undefined when this process has never written the
+ * session, in which case there is no evidence of a local change and the
+ * external value applies.
+ */
+type ExternalObservation = {
+  external: HeaderMetadataSignature
+  localAtObservation?: HeaderMetadataSignature
+  observedAt: number
+}
+
+/**
+ * How long an unlanded observation is honoured.
+ *
+ * It is cleared by the write that commits it, but a session that is never
+ * written again would otherwise hold one for the life of the process. The bound
+ * is time rather than count because the risk is staleness, not volume: beyond
+ * this the on-disk state has long since settled and re-reading it is the better
+ * answer. Generous on purpose — the window it exists to cover is milliseconds.
+ */
+const OBSERVATION_MAX_AGE_MS = 5 * 60_000
+
 /** Outcome of a checked persist. `ok:false` carries the reason for the audit. */
 export type SessionWriteReceipt = { ok: true } | { ok: false; error: string }
 
@@ -97,12 +209,18 @@ export type SessionWriteReceipt = { ok: true } | { ok: false; error: string }
  * handle removes the guess: the caller asks about the write it actually made.
  */
 export interface SessionWriteHandle {
+  /**
+   * The state this write belongs to. Retained so a holder can drive or flush
+   * its own write without reconstructing the key — and without the chance of
+   * reconstructing a DIFFERENT one.
+   */
+  key: SessionWriteKey
   generation: number
   receipt: Promise<SessionWriteReceipt>
 }
 
 class SessionPersistenceQueue {
-  private pending = new Map<string, PendingWrite>()
+  private pending = new Map<SessionWriteKey, PendingWrite>()
   /**
    * Per-session write tail. EVERY write — debounced, flushed, or checked —
    * chains onto it, so two writes for one session can never be in flight at
@@ -114,12 +232,12 @@ class SessionPersistenceQueue {
    * error anywhere. Serialising is what makes "the newest enqueued state wins"
    * true rather than probable.
    */
-  private tails = new Map<string, Promise<void>>()
+  private tails = new Map<SessionWriteKey, Promise<void>>()
   /** Highest generation enqueued per session. */
-  private generations = new Map<string, number>()
+  private generations = new Map<SessionWriteKey, number>()
   /** Highest generation successfully written per session. */
-  private writtenGeneration = new Map<string, number>()
-  private receiptWaiters = new Map<string, ReceiptWaiter[]>()
+  private writtenGeneration = new Map<SessionWriteKey, number>()
+  private receiptWaiters = new Map<SessionWriteKey, ReceiptWaiter[]>()
   /**
    * Highest generation cancelled per session — a watermark, not a flag.
    *
@@ -143,7 +261,7 @@ class SessionPersistenceQueue {
    * has two meanings and only one of them may remove the session's file. See
    * `CancellationWatermark`.
    */
-  private cancelledThrough = new Map<string, CancellationWatermark>()
+  private cancelledThrough = new Map<SessionWriteKey, CancellationWatermark>()
   /**
    * Test seam: awaited at each commit boundary so a suite can land a cancel
    * inside a write deterministically.
@@ -169,9 +287,9 @@ class SessionPersistenceQueue {
    * acceptance.
    */
   commitHooks?: {
-    beforeUnlink?: (sessionId: string) => void | Promise<void>
-    beforeRename?: (sessionId: string) => void | Promise<void>
-    afterRename?: (sessionId: string) => void | Promise<void>
+    beforeUnlink?: (key: SessionWriteKey) => void | Promise<void>
+    beforeRename?: (key: SessionWriteKey) => void | Promise<void>
+    afterRename?: (key: SessionWriteKey) => void | Promise<void>
   }
   /**
    * Last write failure per session, cleared on the next success.
@@ -181,8 +299,14 @@ class SessionPersistenceQueue {
    * also meant `flush` resolved happily after a failed write, and a caller who
    * needed to *know* had no way to ask. This is how they ask.
    */
-  private lastWriteFailure = new Map<string, string>()
-  private lastWrittenHeaderSignature = new Map<string, string>()
+  private lastWriteFailure = new Map<SessionWriteKey, string>()
+  private lastWrittenHeaderSignature = new Map<SessionWriteKey, string>()
+  /**
+   * The same thing as `lastWrittenHeaderSignature`, kept as fields rather than
+   * a string, because an observation has to ask per-field questions the
+   * signature can only answer as a whole. Written and cleared together with it.
+   */
+  private lastWrittenMetadata = new Map<SessionWriteKey, HeaderMetadataSignature>()
   /**
    * Metadata an external writer was OBSERVED to have, held until a write lands
    * it.
@@ -198,7 +322,7 @@ class SessionPersistenceQueue {
    * re-derived. Cleared only when a write actually commits it; an abandoned
    * write must not consume it.
    */
-  private pendingExternalMetadata = new Map<string, SessionHeader>()
+  private pendingExternalMetadata = new Map<SessionWriteKey, ExternalObservation>()
   private debounceMs: number
 
   constructor(debounceMs = 500) {
@@ -210,21 +334,22 @@ class SessionPersistenceQueue {
    * session, it will be replaced with the new data and the timer reset.
    */
   enqueue(session: StoredSession): number {
-    const existing = this.pending.get(session.id)
+    const key = sessionWriteKey(session.workspaceRootPath, session.id)
+    const existing = this.pending.get(key)
     if (existing) {
       clearTimeout(existing.timer)
     }
 
-    const generation = (this.generations.get(session.id) ?? 0) + 1
-    this.generations.set(session.id, generation)
+    const generation = (this.generations.get(key) ?? 0) + 1
+    this.generations.set(key, generation)
 
     const timer = setTimeout(() => {
       // Onto the tail like every other write, so the debounced path cannot race
       // a flush for the same `.tmp`.
-      void this.runOnTail(session.id)
+      void this.runOnTail(key)
     }, this.debounceMs)
 
-    this.pending.set(session.id, { data: session, timer, generation })
+    this.pending.set(key, { data: session, timer, generation })
     return generation
   }
 
@@ -248,12 +373,13 @@ class SessionPersistenceQueue {
    * existing caller keeps its best-effort behaviour.
    */
   enqueueChecked(session: StoredSession): SessionWriteHandle {
+    const key = sessionWriteKey(session.workspaceRootPath, session.id)
     const generation = this.enqueue(session)
-    return { generation, receipt: this.receiptFor(session.id, generation) }
+    return { key, generation, receipt: this.receiptFor(key, generation) }
   }
 
   /** Resolve once `generation` (or later) has been written, or has failed. */
-  private receiptFor(sessionId: string, generation: number): Promise<SessionWriteReceipt> {
+  private receiptFor(key: SessionWriteKey, generation: number): Promise<SessionWriteReceipt> {
     // Cancelled generations are TERMINAL and answer immediately, rather than
     // parking a waiter that nothing would settle: `write` returns early when
     // there is no pending entry, which is exactly the state `cancel` leaves
@@ -267,12 +393,12 @@ class SessionPersistenceQueue {
     // above it. No black-box test can reach this branch, and none pretends to;
     // it is here because the invariant — never report success for a cancelled
     // generation — should survive someone changing that arithmetic.
-    if ((this.cancelledThrough.get(sessionId)?.through ?? 0) >= generation) {
+    if ((this.cancelledThrough.get(key)?.through ?? 0) >= generation) {
       return Promise.resolve({ ok: false, error: 'session write cancelled' })
     }
-    const written = this.writtenGeneration.get(sessionId) ?? 0
+    const written = this.writtenGeneration.get(key) ?? 0
     if (written >= generation) {
-      const prior = this.lastWriteFailure.get(sessionId)
+      const prior = this.lastWriteFailure.get(key)
       return Promise.resolve(prior ? { ok: false, error: prior } : { ok: true })
     }
 
@@ -290,17 +416,17 @@ class SessionPersistenceQueue {
     // It is here because the cost of being wrong is a permanent hang, and the
     // invariant — never park on work nothing will finish — should hold by
     // construction rather than by audit of the callers.
-    if (!this.pending.has(sessionId) && !this.tails.has(sessionId)) {
-      const prior = this.lastWriteFailure.get(sessionId)
+    if (!this.pending.has(key) && !this.tails.has(key)) {
+      const prior = this.lastWriteFailure.get(key)
       return Promise.resolve(
         prior ? { ok: false, error: prior } : { ok: false, error: 'session write cancelled' },
       )
     }
 
     return new Promise<SessionWriteReceipt>((settle) => {
-      const waiters = this.receiptWaiters.get(sessionId) ?? []
+      const waiters = this.receiptWaiters.get(key) ?? []
       waiters.push({ generation, settle })
-      this.receiptWaiters.set(sessionId, waiters)
+      this.receiptWaiters.set(key, waiters)
     })
   }
 
@@ -310,18 +436,18 @@ class SessionPersistenceQueue {
    * Chained with `.then(fn, fn)` so one failed write does not strand every
    * later write for that session behind a rejected promise.
    */
-  private runOnTail(sessionId: string): Promise<void> {
-    const previous = this.tails.get(sessionId) ?? Promise.resolve()
+  private runOnTail(key: SessionWriteKey): Promise<void> {
+    const previous = this.tails.get(key) ?? Promise.resolve()
     const next = previous.then(
-      () => this.write(sessionId).then(() => undefined),
-      () => this.write(sessionId).then(() => undefined),
+      () => this.write(key).then(() => undefined),
+      () => this.write(key).then(() => undefined),
     )
-    this.tails.set(sessionId, next)
+    this.tails.set(key, next)
     void next.finally(() => {
       // Only if still ours: a later write may already own the tail.
-      if (this.tails.get(sessionId) === next) {
-        this.tails.delete(sessionId)
-        this.retireIfQuiescent(sessionId)
+      if (this.tails.get(key) === next) {
+        this.tails.delete(key)
+        this.retireIfQuiescent(key)
       }
     })
     return next
@@ -343,10 +469,10 @@ class SessionPersistenceQueue {
    *
    * A session with an unresolved write failure is never retired — see below.
    */
-  private retireIfQuiescent(sessionId: string): void {
-    if (this.pending.has(sessionId)) return
-    if (this.tails.has(sessionId)) return
-    if (this.receiptWaiters.get(sessionId)?.length) return
+  private retireIfQuiescent(key: SessionWriteKey): void {
+    if (this.pending.has(key)) return
+    if (this.tails.has(key)) return
+    if (this.receiptWaiters.get(key)?.length) return
     // An unresolved write failure outlives quiescence. Retiring it turns "the
     // last write failed" into "nothing is outstanding, all good" — a durability
     // claim built out of deleted evidence. It clears on the next successful
@@ -363,7 +489,7 @@ class SessionPersistenceQueue {
     //
     // The cost is one map entry per session whose last write failed and which
     // is never written again — bounded by real write failures, not by traffic.
-    if (this.lastWriteFailure.has(sessionId)) return
+    if (this.lastWriteFailure.has(key)) return
     // No guard for `pendingExternalMetadata`, deliberately. Retirement below
     // does not touch that map, so an undischarged observation already survives
     // a sweep; blocking on it would only pin the generation maps open for a
@@ -373,10 +499,10 @@ class SessionPersistenceQueue {
     // it. (A guard here was written first, then removed: injecting its removal
     // changed no test, because it never had an effect to remove.)
 
-    this.generations.delete(sessionId)
-    this.writtenGeneration.delete(sessionId)
-    this.cancelledThrough.delete(sessionId)
-    this.lastWriteFailure.delete(sessionId)
+    this.generations.delete(key)
+    this.writtenGeneration.delete(key)
+    this.cancelledThrough.delete(key)
+    this.lastWriteFailure.delete(key)
     // `lastWrittenHeaderSignature` is deliberately NOT retired here. It is not
     // generation bookkeeping — it is the live baseline for "did somebody else
     // change this header since we last wrote it", and it has to outlive
@@ -403,45 +529,48 @@ class SessionPersistenceQueue {
   }
 
   /** Settle every receipt this write satisfies, successfully or otherwise. */
-  private settleReceipts(sessionId: string, generation: number, receipt: SessionWriteReceipt): void {
-    const waiters = this.receiptWaiters.get(sessionId)
+  private settleReceipts(key: SessionWriteKey, generation: number, receipt: SessionWriteReceipt): void {
+    const waiters = this.receiptWaiters.get(key)
     if (!waiters?.length) return
     const remaining: ReceiptWaiter[] = []
     for (const waiter of waiters) {
       if (waiter.generation <= generation) waiter.settle(receipt)
       else remaining.push(waiter)
     }
-    if (remaining.length) this.receiptWaiters.set(sessionId, remaining)
-    else this.receiptWaiters.delete(sessionId)
+    if (remaining.length) this.receiptWaiters.set(key, remaining)
+    else this.receiptWaiters.delete(key)
   }
 
   /**
    * Write a session to disk immediately in JSONL format.
    * Uses atomic write (write-to-temp-then-rename) to prevent corruption on crash.
    */
-  private async write(sessionId: string): Promise<boolean> {
-    const entry = this.pending.get(sessionId)
+  private async write(key: SessionWriteKey): Promise<boolean> {
+    const entry = this.pending.get(key)
     if (!entry) return true
 
-    this.pending.delete(sessionId)
+    this.pending.delete(key)
     const { generation } = entry
 
     // Cancelled between enqueue and execution: do not write at all. Nothing was
     // committed, so the intent does not matter here — there is no artifact to
     // keep or discard either way.
-    if ((this.cancelledThrough.get(sessionId)?.through ?? 0) >= generation) {
-      debug(`[PersistenceQueue] Skipped cancelled write for session ${sessionId}`)
-      this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
-      this.settleReceipts(sessionId, generation, { ok: false, error: 'session write cancelled' })
+    if ((this.cancelledThrough.get(key)?.through ?? 0) >= generation) {
+      debug(`[PersistenceQueue] Skipped cancelled write for ${entry.data.id}`)
+      this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
+      this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled' })
       return false
     }
 
     try {
       const { data } = entry
       ensureSessionsDir(data.workspaceRootPath)
-      ensureSessionDir(data.workspaceRootPath, sessionId)
+      // The readable id, NOT the key: these build a filesystem path, and the key
+      // is a JSON tuple. A blanket rename put the key here once and every write
+      // silently landed in a directory named after its own key.
+      ensureSessionDir(data.workspaceRootPath, data.id)
 
-      const filePath = getSessionFilePath(data.workspaceRootPath, sessionId)
+      const filePath = getSessionFilePath(data.workspaceRootPath, data.id)
 
       // Prepare session with portable paths for cross-machine compatibility
       const storageSession: StoredSession = {
@@ -459,13 +588,22 @@ class SessionPersistenceQueue {
       // truth rather than against local state that never heard about it. Disk
       // can still win on top: a newer external change is still a newer external
       // change.
-      const observedExternal = this.pendingExternalMetadata.get(sessionId)
+      // An observation older than the bound is dropped rather than applied: by
+      // then the on-disk state has long since settled, and re-reading it below
+      // is the better answer than replaying something remembered.
+      const held = this.pendingExternalMetadata.get(key)
+      const observedExternal =
+        held && Date.now() - held.observedAt <= OBSERVATION_MAX_AGE_MS ? held : undefined
+      if (held && !observedExternal) {
+        this.pendingExternalMetadata.delete(key)
+        debug(`[PersistenceQueue] Dropped stale external observation for ${data.id}`)
+      }
       const localHeader = observedExternal
-        ? mergeHeaderWithExternalMetadata(createSessionHeader(storageSession), observedExternal)
+        ? applyObservation(createSessionHeader(storageSession), observedExternal)
         : createSessionHeader(storageSession)
       const localSig = getHeaderMetadataSignature(localHeader)
       const diskHeader = readSessionHeader(filePath)
-      const previousSig = this.lastWrittenHeaderSignature.get(sessionId)
+      const previousSig = this.lastWrittenHeaderSignature.get(key)
       const diskSig = diskHeader ? getHeaderMetadataSignature(diskHeader) : undefined
 
       // Queue writes should never clobber session metadata changed externally
@@ -483,7 +621,7 @@ class SessionPersistenceQueue {
       if (hasMetadataMismatch) {
         const baseline = previousSig ? `, previousSig=${previousSig.slice(0, 12)}` : ', previousSig=<none>'
         const mode = hasExternalMetadataChange ? 'disk preserved' : 'local preserved'
-        debug(`[PersistenceQueue] Session ${sessionId} metadata mismatch detected (${mode}${baseline})`)
+        debug(`[PersistenceQueue] Session ${data.id} metadata mismatch detected (${mode}${baseline})`)
       }
 
       const persistableMessages = storageSession.messages
@@ -503,7 +641,8 @@ class SessionPersistenceQueue {
       // Without this, onSessionMetadataChange sees the stale signature
       // and reverts in-memory metadata on idle sessions.
       const finalSignature = getHeaderMetadataSignature(header)
-      this.lastWrittenHeaderSignature.set(sessionId, finalSignature)
+      this.lastWrittenHeaderSignature.set(key, finalSignature)
+      this.lastWrittenMetadata.set(key, getHeaderMetadataFields(header))
 
       const tmpFile = filePath + '.tmp'
 
@@ -529,7 +668,7 @@ class SessionPersistenceQueue {
        * racing this cleanup.
        */
       const abandonIfCancelled = async (committed: boolean): Promise<boolean> => {
-        const watermark = this.cancelledThrough.get(sessionId)
+        const watermark = this.cancelledThrough.get(key)
         if ((watermark?.through ?? 0) < generation) return false
         // The temp file is this generation's private scratch space and is
         // always ours to remove, under either intent.
@@ -544,47 +683,47 @@ class SessionPersistenceQueue {
           // from disk until the replacement write lands.
           try { await unlink(filePath) } catch { /* may not exist */ }
         }
-        debug(`[PersistenceQueue] Abandoned cancelled write for session ${sessionId} (committed=${committed})`)
-        this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
-        this.settleReceipts(sessionId, generation, { ok: false, error: 'session write cancelled' })
+        debug(`[PersistenceQueue] Abandoned cancelled write for session ${data.id} (committed=${committed})`)
+        this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
+        this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled' })
         return true
       }
 
       await writeFile(tmpFile, lines.join('\n') + '\n', 'utf-8')
-      await this.commitHooks?.beforeUnlink?.(sessionId)
+      await this.commitHooks?.beforeUnlink?.(key)
       if (await abandonIfCancelled(false)) return false
 
       // On Windows, rename fails if target exists. Delete first for cross-platform compatibility.
       try { await unlink(filePath) } catch { /* ignore if doesn't exist */ }
-      await this.commitHooks?.beforeRename?.(sessionId)
+      await this.commitHooks?.beforeRename?.(key)
       if (await abandonIfCancelled(false)) return false
 
       await rename(tmpFile, filePath)
-      await this.commitHooks?.afterRename?.(sessionId)
+      await this.commitHooks?.afterRename?.(key)
       if (await abandonIfCancelled(true)) return false
 
-      debug(`[PersistenceQueue] Wrote session ${sessionId}`)
+      debug(`[PersistenceQueue] Wrote session ${data.id}`)
       // Landed, so the observation has been discharged. Deliberately NOT done
       // on the abandon paths: a write that never committed has not carried the
       // edit anywhere, and dropping it there would lose it for good.
-      if (observedExternal && this.pendingExternalMetadata.get(sessionId) === observedExternal) {
-        this.pendingExternalMetadata.delete(sessionId)
+      if (observedExternal && this.pendingExternalMetadata.get(key) === observedExternal) {
+        this.pendingExternalMetadata.delete(key)
       }
-      this.lastWriteFailure.delete(sessionId)
-      this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
-      this.settleReceipts(sessionId, generation, { ok: true })
+      this.lastWriteFailure.delete(key)
+      this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
+      this.settleReceipts(key, generation, { ok: true })
       return true
     } catch (error) {
-      console.error(`[PersistenceQueue] Failed to write session ${sessionId}:`, error)
+      console.error(`[PersistenceQueue] Failed to write session ${entry.data.id}:`, error)
       // Recorded, not thrown. Existing callers are fire-and-forget and must not
       // start failing; a receipt is the opt-in way to learn about this.
       const message = error instanceof Error ? error.message : String(error)
-      this.lastWriteFailure.set(sessionId, message)
+      this.lastWriteFailure.set(key, message)
       // Marked attempted either way, so a waiter learns the outcome promptly
       // instead of hanging until some later write happens to supersede it.
       // Failure is an answer; silence is not.
-      this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
-      this.settleReceipts(sessionId, generation, { ok: false, error: message })
+      this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
+      this.settleReceipts(key, generation, { ok: false, error: message })
       return false
     }
   }
@@ -598,11 +737,11 @@ class SessionPersistenceQueue {
    * writers can rename a half-written temp file over a good session and lose
    * the loser's bytes with no error anywhere.
    */
-  async flush(sessionId: string): Promise<void> {
-    if (!this.pending.has(sessionId) && !this.tails.has(sessionId)) return
-    const entry = this.pending.get(sessionId)
+  async flush(key: SessionWriteKey): Promise<void> {
+    if (!this.pending.has(key) && !this.tails.has(key)) return
+    const entry = this.pending.get(key)
     if (entry) clearTimeout(entry.timer)
-    await this.runOnTail(sessionId)
+    await this.runOnTail(key)
   }
 
   /**
@@ -620,10 +759,10 @@ class SessionPersistenceQueue {
    * "did my bytes land"; the tail additionally covers the cleanup an abandoned
    * write does on its way out, which settles just after the receipt.
    */
-  driveChecked(sessionId: string): Promise<void> {
-    const entry = this.pending.get(sessionId)
+  driveChecked(key: SessionWriteKey): Promise<void> {
+    const entry = this.pending.get(key)
     if (entry) clearTimeout(entry.timer)
-    return this.runOnTail(sessionId)
+    return this.runOnTail(key)
   }
 
   /**
@@ -633,17 +772,18 @@ class SessionPersistenceQueue {
    * the header-signature baseline along with it — there is no session left for
    * that baseline to describe.
    */
-  cancelForDeletion(sessionId: string): void {
-    this.stopPendingWrites(sessionId, { discardCommitted: true })
+  cancelForDeletion(key: SessionWriteKey): void {
+    this.stopPendingWrites(key, { discardCommitted: true })
     // Safe here and only here: the session is gone, so no later write can need
     // this baseline to detect an external edit.
-    this.lastWrittenHeaderSignature.delete(sessionId)
-    this.lastWriteFailure.delete(sessionId)
-    this.pendingExternalMetadata.delete(sessionId)
+    this.lastWrittenHeaderSignature.delete(key)
+    this.lastWrittenMetadata.delete(key)
+    this.lastWriteFailure.delete(key)
+    this.pendingExternalMetadata.delete(key)
     // Drop the bookkeeping, but only if nothing is still in flight. Deleted
     // sessions would otherwise leave an entry in every map for the life of the
     // process; a session with a live tail retires when that tail drains.
-    this.retireIfQuiescent(sessionId)
+    this.retireIfQuiescent(key)
   }
 
   /**
@@ -665,12 +805,21 @@ class SessionPersistenceQueue {
    * baseline here would make the very next write silently clobber the external
    * edit this call exists to protect.
    */
-  supersedePendingWrites(sessionId: string, observedHeader?: SessionHeader): void {
-    this.stopPendingWrites(sessionId, { discardCommitted: false })
-    // Hold what the caller actually saw. Re-reading disk later is not equivalent
-    // — see `pendingExternalMetadata`. Newest observation wins; it is the more
-    // recent view of the same external writer.
-    if (observedHeader) this.pendingExternalMetadata.set(sessionId, observedHeader)
+  supersedePendingWrites(key: SessionWriteKey, observedHeader?: SessionHeader): void {
+    this.stopPendingWrites(key, { discardCommitted: false })
+    // Hold what the caller actually saw, AND what we had when it saw it. The
+    // second half is what stops a remembered external value from beating an
+    // in-app change made after the observation — see `ExternalObservation`.
+    //
+    // Newest observation wins: it is the more recent view of the same external
+    // writer, and it re-baselines against whatever we have written since.
+    if (observedHeader) {
+      this.pendingExternalMetadata.set(key, {
+        external: getHeaderMetadataFields(observedHeader),
+        localAtObservation: this.lastWrittenMetadata.get(key),
+        observedAt: Date.now(),
+      })
+    }
     // No retirement sweep and no baseline drop: this session is live, is about
     // to be written again, and its baseline is load-bearing for that write.
   }
@@ -679,12 +828,12 @@ class SessionPersistenceQueue {
    * Shared core of both intents: raise the watermark and settle anything
    * waiting on the generations it now covers.
    */
-  private stopPendingWrites(sessionId: string, { discardCommitted }: { discardCommitted: boolean }): void {
-    const entry = this.pending.get(sessionId)
+  private stopPendingWrites(key: SessionWriteKey, { discardCommitted }: { discardCommitted: boolean }): void {
+    const entry = this.pending.get(key)
     if (entry) {
       clearTimeout(entry.timer)
-      this.pending.delete(sessionId)
-      debug(`[PersistenceQueue] Cancelled pending write for session ${sessionId}`)
+      this.pending.delete(key)
+      debug(`[PersistenceQueue] Cancelled pending write for session ${entry.data.id}`)
     }
     // Set regardless of whether anything was pending: the write that matters
     // here is the one already on the tail, which `pending` no longer holds.
@@ -694,16 +843,16 @@ class SessionPersistenceQueue {
     // Both fields climb and never fall, so the two callers cannot undo each
     // other in either order: a supersede arriving after a deletion leaves the
     // session deleted.
-    const previous = this.cancelledThrough.get(sessionId)
-    this.cancelledThrough.set(sessionId, {
-      through: Math.max(previous?.through ?? 0, this.generations.get(sessionId) ?? 0),
+    const previous = this.cancelledThrough.get(key)
+    this.cancelledThrough.set(key, {
+      through: Math.max(previous?.through ?? 0, this.generations.get(key) ?? 0),
       discardCommitted: (previous?.discardCommitted ?? false) || discardCommitted,
     })
 
     // Anything holding a receipt for a cancelled generation must be told rather
     // than left hanging, and telling them is also what makes the session
     // eligible for retirement — the order is load-bearing, not cosmetic.
-    this.settleReceipts(sessionId, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled' })
+    this.settleReceipts(key, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled' })
   }
 
   /**
@@ -717,16 +866,16 @@ class SessionPersistenceQueue {
   /**
    * Check if a session has a pending write.
    */
-  hasPending(sessionId: string): boolean {
-    return this.pending.has(sessionId)
+  hasPending(key: SessionWriteKey): boolean {
+    return this.pending.has(key)
   }
 
   /**
    * Get the metadata signature of the last header we wrote for a session.
    * Used by ConfigWatcher to suppress self-triggered metadata change events.
    */
-  getLastWrittenSignature(sessionId: string): string | undefined {
-    return this.lastWrittenHeaderSignature.get(sessionId)
+  getLastWrittenSignature(key: SessionWriteKey): string | undefined {
+    return this.lastWrittenHeaderSignature.get(key)
   }
 
   /**

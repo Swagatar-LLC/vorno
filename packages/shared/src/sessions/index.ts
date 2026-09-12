@@ -81,6 +81,8 @@ export {
   getMostRecentPlanFile,
   // Async persistence queue
   sessionPersistenceQueue,
+  sessionWriteKey,
+  type SessionWriteKey,
   type SessionWriteHandle,
   type SessionWriteReceipt,
   // Header metadata signature (for self-triggered event suppression)

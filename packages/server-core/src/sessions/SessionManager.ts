@@ -66,6 +66,8 @@ import {
   generateSessionId,
   sessionPersistenceQueue,
   type SessionWriteHandle,
+  type SessionWriteKey,
+  sessionWriteKey,
   getHeaderMetadataSignature,
   writeSessionJsonl,
   serializeSession,
@@ -1695,7 +1697,41 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
-    if (changed) {
+    // Read state. Plain display fields with no event contract of their own —
+    // like projectId and kanbanColumn above, they ride the metaChanged
+    // broadcast — so mirroring them here is safe and keeps the badge honest
+    // when another window marks the session read.
+    if (managed.lastReadMessageId !== header.lastReadMessageId) {
+      managed.lastReadMessageId = header.lastReadMessageId
+      changed = true
+    }
+    if ((managed.hasUnread ?? false) !== (header.hasUnread ?? false)) {
+      managed.hasUnread = header.hasUnread
+      changed = true
+    }
+
+    // `permissionMode` is deliberately NOT mirrored here. It is a declared-intent
+    // mutation with its own `permission_mode_changed` event and ADR-0021 emit
+    // rules, and quietly assigning it from a watcher event would manufacture a
+    // mode change that no origin asked for. Persistence still keeps the external
+    // value — the supersede below carries it, and the queue merges it into the
+    // next write — so disk stays correct while in-memory mode remains owned by
+    // the mode-change path. Recorded as a residual rather than smuggled in here.
+
+    // The supersede decision is deliberately INDEPENDENT of `changed`.
+    //
+    // `changed` only tracks fields this method mirrors into memory. An edit that
+    // touches nothing else — a pure `permissionMode` change, or another window
+    // marking the session read before this one loaded that state — left
+    // `changed` false, so no supersede happened, so an in-flight stale write
+    // committed straight over it with nothing held to recover from. The question
+    // that matters is "did an external writer diverge from what we last wrote",
+    // and only the full signature answers it.
+    const observedSignature = getHeaderMetadataSignature(header)
+    const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(this.writeKeyFor(managed))
+    const divergedFromOurLastWrite = observedSignature !== lastWrittenSignature
+
+    if (divergedFromOurLastWrite) {
       sessionLog.info(`External metadata change detected for session ${sessionId}`)
 
       // Supersede, NOT cancel-for-deletion. This session is live and is being
@@ -1710,12 +1746,8 @@ export class SessionManager implements ISessionManager {
       // equivalent: a write that read its header before this edit and renames
       // after we saw it commits a pre-edit snapshot over it, and supersede
       // (correctly) keeps that file — so disk no longer holds the edit, and the
-      // baseline matches the stale file so nothing detects the divergence. The
-      // three fields this reconciliation does NOT copy into memory —
-      // permissionMode, hasUnread, lastReadMessageId — would be lost for good.
-      // (labels, isFlagged, sessionStatus and name are copied above, so they
-      // survive on their own; these three exist only in the observed header.)
-      sessionPersistenceQueue.supersedePendingWrites(sessionId, header)
+      // baseline matches the stale file so nothing detects the divergence.
+      sessionPersistenceQueue.supersedePendingWrites(this.writeKeyFor(managed), header)
       this.persistSession(managed)
     }
 
@@ -1851,7 +1883,7 @@ export class SessionManager implements ISessionManager {
         // Self-writes need nothing here: in-memory state is already up to date,
         // and the mutator fed the automation differ directly at write time.
         const incomingSignature = getHeaderMetadataSignature(header)
-        const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(sessionId)
+        const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(this.writeKeyFor(managed))
         const isSelfWrite = !!(lastWrittenSignature && incomingSignature === lastWrittenSignature)
 
         // For external writes: sync in-memory state + emit UI events.
@@ -2380,6 +2412,17 @@ export class SessionManager implements ISessionManager {
     } as StoredSession
   }
 
+  /**
+   * The persistence-queue identity for a session.
+   *
+   * Session ids are unique per WORKSPACE, so the queue keys its state on both.
+   * Everything here goes through this helper rather than building a key inline,
+   * so there is one place to be wrong instead of a dozen.
+   */
+  private writeKeyFor(managed: Pick<ManagedSession, 'id' | 'workspace'>): SessionWriteKey {
+    return sessionWriteKey(managed.workspace.rootPath, managed.id)
+  }
+
   /** Enqueue and return a claim on that exact snapshot. */
   private enqueuePersistChecked(managed: ManagedSession): SessionWriteHandle {
     return sessionPersistenceQueue.enqueueChecked(this.buildStoredSession(managed))
@@ -2400,7 +2443,13 @@ export class SessionManager implements ISessionManager {
   // Cold-persist hydration is synchronous, so by the time we reach here the
   // queue already has an entry whenever persistSession was just called.
   async flushSession(sessionId: string): Promise<void> {
-    await sessionPersistenceQueue.flush(sessionId)
+    const managed = this.sessions.get(sessionId)
+    // No managed session means no workspace, and therefore no key to flush
+    // under. Nothing is lost: an unloaded session's pending write was keyed by a
+    // root this call cannot reconstruct, and the unload path flushes before
+    // dropping it.
+    if (!managed) return
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
   }
 
   /**
@@ -2424,7 +2473,8 @@ export class SessionManager implements ISessionManager {
     }
     const handle = this.enqueuePersistChecked(managed)
     // Drive the tail so the handle settles without waiting out the debounce.
-    sessionPersistenceQueue.driveChecked(managed.id)
+    // The handle carries its own key, so this cannot drive a different one.
+    sessionPersistenceQueue.driveChecked(handle.key)
     return handle
   }
 
@@ -3116,7 +3166,7 @@ export class SessionManager implements ISessionManager {
 
         // Flush source session to disk to ensure latest message list is available for branch copy.
         this.persistSession(sourceManaged)
-        await sessionPersistenceQueue.flush(sourceManaged.id)
+        await sessionPersistenceQueue.flush(this.writeKeyFor(sourceManaged))
       }
 
       const sourceSession = loadStoredSession(workspaceRootPath, options.branchFromSessionId)
@@ -4025,14 +4075,14 @@ export class SessionManager implements ISessionManager {
           sessionLog.info(`SDK session ID captured for ${managed.id}: ${sdkSessionId}`)
         }
         this.persistSession(managed)
-        sessionPersistenceQueue.flush(managed.id)
+        sessionPersistenceQueue.flush(this.writeKeyFor(managed))
       }
 
       const onSdkSessionIdCleared = () => {
         managed.sdkSessionId = undefined
         sessionLog.info(`SDK session ID cleared for ${managed.id} (resume recovery)`)
         this.persistSession(managed)
-        sessionPersistenceQueue.flush(managed.id)
+        sessionPersistenceQueue.flush(this.writeKeyFor(managed))
       }
 
       const onBranchForkInvalidated = () => {
@@ -4042,7 +4092,7 @@ export class SessionManager implements ISessionManager {
         managed.branchFromSdkTurnId = undefined
         sessionLog.info(`Branch fork invalidated for ${managed.id}: cleared all fork metadata`)
         this.persistSession(managed)
-        sessionPersistenceQueue.flush(managed.id)
+        sessionPersistenceQueue.flush(this.writeKeyFor(managed))
       }
 
       const getRecoveryMessages = () => {
@@ -6434,7 +6484,7 @@ export class SessionManager implements ISessionManager {
     // The session is being deleted, so pending writes are not merely stale —
     // their artifact must not survive either, including one whose rename has
     // already committed.
-    sessionPersistenceQueue.cancelForDeletion(sessionId)
+    sessionPersistenceQueue.cancelForDeletion(this.writeKeyFor(managed))
 
     // Clean up session-scoped tool callbacks to prevent memory accumulation
     unregisterSessionScopedToolCallbacks(sessionId)
@@ -7136,7 +7186,7 @@ export class SessionManager implements ISessionManager {
             sessionLog.info(`Captured SDK session ID via fallback: ${sdkId}`)
             // Also flush here since we're in fallback mode
             this.persistSession(managed)
-            sessionPersistenceQueue.flush(managed.id)
+            sessionPersistenceQueue.flush(this.writeKeyFor(managed))
           }
         }
 
@@ -10420,7 +10470,7 @@ export class SessionManager implements ISessionManager {
     }
 
     this.persistSession(managed)
-    await sessionPersistenceQueue.flush(sessionId)
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
 
     const summary = await this.generateRemoteTransferSummary(managed)
     if (!summary) {
@@ -10461,7 +10511,7 @@ export class SessionManager implements ISessionManager {
     managed.transferredSessionSummary = payload.summary.trim()
     managed.transferredSessionSummaryApplied = false
     this.persistSession(managed)
-    await sessionPersistenceQueue.flush(session.id)
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
 
     return { sessionId: session.id }
   }
@@ -10494,7 +10544,7 @@ export class SessionManager implements ISessionManager {
 
     // Flush pending writes to ensure JSONL is up to date
     this.persistSession(managed)
-    await sessionPersistenceQueue.flush(sessionId)
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
 
     const bundle = serializeSession(managed.workspace.rootPath, sessionId)
     if (!bundle) {

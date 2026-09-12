@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SessionPersistenceQueue } from '../persistence-queue.ts';
+import { SessionPersistenceQueue, sessionWriteKey } from '../persistence-queue.ts';
 import { getSessionFilePath } from '../storage.ts';
 import type { StoredSession } from '../types.ts';
 
@@ -53,6 +53,14 @@ describe('SessionPersistenceQueue checked writes', () => {
     } as unknown as StoredSession;
   }
 
+  /**
+   * The queue keys its state on workspace + id, because a session id is unique
+   * only within a workspace. Tests build keys the same way the product does.
+   */
+  function k(id: string, rootPath: string = root) {
+    return sessionWriteKey(rootPath, id);
+  }
+
   /** Enqueue, drive the tail, and hand back the claim on that exact write. */
   function write(id: string, mutate?: (s: StoredSession) => void) {
     const record = session(id);
@@ -61,7 +69,7 @@ describe('SessionPersistenceQueue checked writes', () => {
     // `tail` is the write FINISHING, which is not the same instant as the
     // receipt: an abandoned write settles its receipt and then finishes tidying
     // up after itself, so filesystem assertions have to wait for the tail.
-    const tail = queue.driveChecked(id);
+    const tail = queue.driveChecked(handle.key);
     return { ...handle, tail };
   }
 
@@ -121,10 +129,99 @@ describe('SessionPersistenceQueue checked writes', () => {
     expect((await write('f1').receipt).ok).toBe(true);
   });
 
+  describe('two workspaces holding the same session id', () => {
+    // Session ids are minted per workspace, and a copied or restored workspace
+    // keeps the ids it came with. Every map in this queue used to be keyed by
+    // the bare id, which made two different sessions one entry.
+    const ID = 'twin';
+    let rootB: string;
+
+    beforeEach(() => {
+      rootB = mkdtempSync(join(tmpdir(), 'persist-checked-b-'));
+    });
+    afterEach(() => {
+      rmSync(rootB, { recursive: true, force: true });
+    });
+
+    function writeIn(rootPath: string, mutate?: (s: StoredSession) => void) {
+      const record = session(ID);
+      (record as unknown as { workspaceRootPath: string }).workspaceRootPath = rootPath;
+      mutate?.(record);
+      const handle = queue.enqueueChecked(record);
+      return { ...handle, tail: queue.driveChecked(handle.key) };
+    }
+
+    it('treats equivalent spellings of one root as ONE writer', async () => {
+      // The opposite failure from the collision above, and just as real. If the
+      // root is not canonicalised, `/w` and `/w/` are two keys for one file —
+      // two tails, no serialisation, and two writers racing over a single
+      // `.tmp` path, where the loser's bytes vanish with no error anywhere.
+      const spellings = [root, `${root}/`, join(root, 'x', '..')];
+      const keys = new Set(spellings.map((r) => k(ID, r)));
+      expect(keys.size).toBe(1);
+
+      // And it holds through the real write path, not just the helper.
+      const a = writeIn(root, (r) => { (r as unknown as { name: string }).name = 'first'; });
+      const b = writeIn(`${root}/`, (r) => { (r as unknown as { name: string }).name = 'second'; });
+      expect(a.key).toBe(b.key);
+      await a.tail; await b.tail;
+      expect(readFileSync(getSessionFilePath(root, ID), 'utf-8')).toContain('"name":"second"');
+    });
+
+    it('keeps pending snapshots and receipts independent', async () => {
+      const a = writeIn(root, (r) => { (r as unknown as { name: string }).name = 'in A'; });
+      const b = writeIn(rootB, (r) => { (r as unknown as { name: string }).name = 'in B'; });
+
+      expect(a.key).not.toBe(b.key);
+      expect(await a.receipt).toEqual({ ok: true });
+      expect(await b.receipt).toEqual({ ok: true });
+
+      // Each landed its OWN snapshot. Sharing a key made the second enqueue
+      // replace the first's pending data, so one workspace wrote the other's.
+      expect(readFileSync(getSessionFilePath(root, ID), 'utf-8')).toContain('"name":"in A"');
+      expect(readFileSync(getSessionFilePath(rootB, ID), 'utf-8')).toContain('"name":"in B"');
+    });
+
+    it('deleting in one workspace cannot unlink the other mid-commit', async () => {
+      await writeIn(rootB).tail;
+      expect(existsSync(getSessionFilePath(rootB, ID))).toBe(true);
+
+      // Workspace A deletes its session at the exact instant B's write has
+      // committed. With one shared key, A's watermark covered B's generation
+      // and A's `discardCommitted` unlinked B's file — a live transcript,
+      // deleted by an unrelated workspace.
+      queue.commitHooks = {
+        afterRename: () => { queue.cancelForDeletion(k(ID, root)); },
+      };
+      const b = writeIn(rootB, (r) => { (r as unknown as { name: string }).name = 'still B'; });
+      await b.tail;
+      queue.commitHooks = undefined;
+
+      expect(await b.receipt).toEqual({ ok: true });
+      expect(existsSync(getSessionFilePath(rootB, ID))).toBe(true);
+      expect(readFileSync(getSessionFilePath(rootB, ID), 'utf-8')).toContain('"name":"still B"');
+    });
+
+    it('keeps supersede observations and signature baselines independent', async () => {
+      await writeIn(root).tail;
+      await writeIn(rootB).tail;
+
+      const sigA = queue.getLastWrittenSignature(k(ID, root));
+      const sigB = queue.getLastWrittenSignature(k(ID, rootB));
+      expect(sigA).toBeDefined();
+      expect(sigB).toBeDefined();
+
+      // A deletion in A drops A's baseline and must leave B's standing.
+      queue.cancelForDeletion(k(ID, root));
+      expect(queue.getLastWrittenSignature(k(ID, root))).toBeUndefined();
+      expect(queue.getLastWrittenSignature(k(ID, rootB))).toBe(sigB!);
+    });
+  });
+
   describe('cancellation', () => {
     it('abandons a write cancelled before it starts', async () => {
       const handle = write('c0');
-      queue.cancelForDeletion('c0');
+      queue.cancelForDeletion(k('c0'));
 
       expect(await handle.receipt).toMatchObject({ ok: false });
       expect(existsSync(getSessionFilePath(root, 'c0'))).toBe(false);
@@ -134,7 +231,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // Real writes take measurable time and a cancel genuinely lands
       // mid-commit; an in-memory suite's writes settle far too fast to hit that
       // by timing. The hook makes the window deterministic.
-      queue.commitHooks = { beforeUnlink: (id) => { queue.cancelForDeletion(id) } };
+      queue.commitHooks = { beforeUnlink: (key) => { queue.cancelForDeletion(key) } };
       const handle = write('c1');
       await handle.tail;
 
@@ -150,7 +247,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // boundary removed and proves nothing about it.
       let renamed = false;
       queue.commitHooks = {
-        beforeRename: (id) => { queue.cancelForDeletion(id) },
+        beforeRename: (key) => { queue.cancelForDeletion(key) },
         afterRename: () => { renamed = true },
       };
       const handle = write('c2');
@@ -167,7 +264,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // already on disk for a session the caller has deleted. The receipt must
       // not say "cancelled" while that artifact could survive, so removal
       // happens before the receipt settles and before the tail releases.
-      queue.commitHooks = { afterRename: (id) => { queue.cancelForDeletion(id) } };
+      queue.commitHooks = { afterRename: (key) => { queue.cancelForDeletion(key) } };
       const handle = write('c3');
       await handle.tail;
 
@@ -185,7 +282,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       //
       // The write is still cancelled: its receipt says so, and the bytes it
       // committed are simply left for the next write to replace.
-      queue.commitHooks = { afterRename: (id) => { queue.supersedePendingWrites(id) } };
+      queue.commitHooks = { afterRename: (key) => { queue.supersedePendingWrites(key) } };
       const handle = write('c8', (r) => { r.name = 'superseded'; });
       await handle.tail;
 
@@ -204,9 +301,9 @@ describe('SessionPersistenceQueue checked writes', () => {
       // sticky rather than last-writer-wins: nothing un-deletes a session, and
       // a watcher event landing just after a delete must not rescue its file.
       queue.commitHooks = {
-        afterRename: (id) => {
-          queue.cancelForDeletion(id);
-          queue.supersedePendingWrites(id);
+        afterRename: (key) => {
+          queue.cancelForDeletion(key);
+          queue.supersedePendingWrites(key);
         },
       };
       const handle = write('c10');
@@ -220,9 +317,9 @@ describe('SessionPersistenceQueue checked writes', () => {
       // The same rule read from the other direction, so the test does not pass
       // merely because one ordering happens to be the one implemented.
       queue.commitHooks = {
-        afterRename: (id) => {
-          queue.supersedePendingWrites(id);
-          queue.cancelForDeletion(id);
+        afterRename: (key) => {
+          queue.supersedePendingWrites(key);
+          queue.cancelForDeletion(key);
         },
       };
       const handle = write('c11');
@@ -236,11 +333,11 @@ describe('SessionPersistenceQueue checked writes', () => {
       // The failure this split exists to prevent, stated as the property that
       // matters to a user: a live session's file is still there afterwards.
       write('c9', (r) => { r.name = 'original'; });
-      await queue.driveChecked('c9');
+      await queue.driveChecked(k('c9'));
       const file = getSessionFilePath(root, 'c9');
       expect(existsSync(file)).toBe(true);
 
-      queue.commitHooks = { beforeUnlink: (id) => { queue.supersedePendingWrites(id) } };
+      queue.commitHooks = { beforeUnlink: (key) => { queue.supersedePendingWrites(key) } };
       const handle = write('c9', (r) => { r.name = 'stale'; });
       await handle.tail;
 
@@ -258,7 +355,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // early with nothing pending WITHOUT settling anything — so a handle held
       // across a cancel would be answered by nobody, ever.
       const handle = queue.enqueueChecked(session('c4'));
-      queue.cancelForDeletion('c4');
+      queue.cancelForDeletion(k('c4'));
 
       const answer = await Promise.race([
         handle.receipt,
@@ -298,7 +395,7 @@ describe('SessionPersistenceQueue checked writes', () => {
 
       const stale = write('c5', (s) => { (s as unknown as { name: string }).name = 'stale' });
       await new Promise((r) => setTimeout(r, 10));
-      queue.cancelForDeletion('c5');
+      queue.cancelForDeletion(k('c5'));
       const fresh = write('c5', (s) => { (s as unknown as { name: string }).name = 'fresh' });
 
       held();
@@ -316,7 +413,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // A cancel bounds itself to the generations that existed when it ran, so
       // a later enqueue is simply a higher generation.
       queue.enqueueChecked(session('c7'));
-      queue.cancelForDeletion('c7');
+      queue.cancelForDeletion(k('c7'));
 
       expect(await write('c7').receipt).toEqual({ ok: true });
       expect(existsSync(getSessionFilePath(root, 'c7'))).toBe(true);
@@ -333,7 +430,7 @@ describe('SessionPersistenceQueue checked writes', () => {
         // still finishing would be measuring the wrong instant rather than a
         // leak.
         await write(`gone-${i}`).tail;
-        queue.cancelForDeletion(`gone-${i}`);
+        queue.cancelForDeletion(k(`gone-${i}`));
       }
 
       // Every map is keyed by session id, so without retirement each deleted
@@ -375,7 +472,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       await write('sig1').receipt;
       await new Promise((r) => setTimeout(r, 10));
 
-      expect(queue.getLastWrittenSignature('sig1')).toBeDefined();
+      expect(queue.getLastWrittenSignature(k('sig1'))).toBeDefined();
     });
 
     it('preserves an external metadata edit made while the queue was idle', async () => {
@@ -402,8 +499,8 @@ describe('SessionPersistenceQueue checked writes', () => {
     it('drops the signature baseline on deletion', () => {
       // The session is going away, so the baseline goes with it.
       queue.enqueueChecked(session('sig3'));
-      queue.cancelForDeletion('sig3');
-      expect(queue.getLastWrittenSignature('sig3')).toBeUndefined();
+      queue.cancelForDeletion(k('sig3'));
+      expect(queue.getLastWrittenSignature(k('sig3'))).toBeUndefined();
     });
 
     it('a stale write that commits after the watcher read cannot eat the edit', async () => {
@@ -437,7 +534,7 @@ describe('SessionPersistenceQueue checked writes', () => {
         // snapshot predates it.
         beforeUnlink: () => { observed = externalEdit(); },
         // The watcher notices and supersedes while G is mid-commit.
-        afterRename: (id) => { queue.supersedePendingWrites(id, observed as never); },
+        afterRename: (key) => { queue.supersedePendingWrites(key, observed as never); },
       };
       await write('race1').tail;
       queue.commitHooks = undefined;
@@ -450,6 +547,64 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(after.lastReadMessageId).toBe('external-only');
     });
 
+    it('lets a later in-app change beat a remembered external value', async () => {
+      // The observation is held across time, so it can be stale by the time it
+      // lands. Applying it unconditionally would let an older remote value win
+      // over an edit the user made afterwards — the session renames itself back
+      // a beat after they renamed it.
+      await write('obs1', (r) => { (r as unknown as { name: string }).name = 'ours'; }).tail;
+      const file = getSessionFilePath(root, 'obs1');
+
+      // Somebody else renames it; we observe that.
+      const lines = readFileSync(file, 'utf-8').split('\n');
+      const header = JSON.parse(lines[0]!) as Record<string, unknown>;
+      header.name = 'theirs';
+      header.lastReadMessageId = 'theirs-too';
+      queue.supersedePendingWrites(k('obs1'), header as never);
+
+      // Then the app changes `name` itself — after the observation.
+      await write('obs1', (r) => { (r as unknown as { name: string }).name = 'ours, newer'; }).tail;
+
+      const after = JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+      // The field the app moved: the app wins.
+      expect(after.name).toBe('ours, newer');
+      // The field it did not touch: the observation still applies. Both halves
+      // matter — dropping the whole observation on any local change would lose
+      // the external edit this mechanism exists to carry.
+      expect(after.lastReadMessageId).toBe('theirs-too');
+    });
+
+    it('drops an observation that has aged out instead of replaying it', async () => {
+      // An observation is normally discharged by the write that lands it, but a
+      // session that is never written again would hold one for the life of the
+      // process. The bound is time, and reaching it in a test means planting the
+      // timestamp: the clock cannot be advanced here, and sleeping out five
+      // minutes is not a test. White-box on purpose, and narrow — it sets the
+      // one field the passage of time would have set.
+      await write('age1', (r) => { (r as unknown as { name: string }).name = 'ours'; }).tail;
+      const file = getSessionFilePath(root, 'age1');
+
+      const lines = readFileSync(file, 'utf-8').split('\n');
+      const header = JSON.parse(lines[0]!) as Record<string, unknown>;
+      header.lastReadMessageId = 'stale-observation';
+      queue.supersedePendingWrites(k('age1'), header as never);
+
+      const held = (queue as unknown as {
+        pendingExternalMetadata: Map<string, { observedAt: number }>
+      }).pendingExternalMetadata;
+      const entry = held.get(k('age1'))!;
+      expect(entry).toBeDefined();
+      entry.observedAt -= 6 * 60_000;
+
+      await write('age1').tail;
+
+      const after = JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+      // Not replayed — and not left behind either, or it would be reconsidered
+      // by every later write for the rest of the process.
+      expect(after.lastReadMessageId).toBeUndefined();
+      expect(held.has(k('age1'))).toBe(false);
+    });
+
     it('KEEPS the signature baseline through a supersede', async () => {
       // The other half of the asymmetry, and the one with teeth. A supersede
       // fires precisely because an external metadata edit was detected, and the
@@ -459,10 +614,10 @@ describe('SessionPersistenceQueue checked writes', () => {
       // write concludes nothing external changed and clobbers the edit this
       // call exists to protect.
       await write('sig4').tail;
-      expect(queue.getLastWrittenSignature('sig4')).toBeDefined();
+      expect(queue.getLastWrittenSignature(k('sig4'))).toBeDefined();
 
-      queue.supersedePendingWrites('sig4');
-      expect(queue.getLastWrittenSignature('sig4')).toBeDefined();
+      queue.supersedePendingWrites(k('sig4'));
+      expect(queue.getLastWrittenSignature(k('sig4'))).toBeDefined();
     });
 
     it('preserves an external label edit across a supersede-then-write cycle', async () => {
@@ -484,7 +639,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // external change is detected the merge takes all seven metadata fields
       // from disk by design ("disk preserved"), so a concurrent local rename
       // would legitimately lose and would say nothing about the baseline.
-      queue.supersedePendingWrites('sig5');
+      queue.supersedePendingWrites(k('sig5'));
       await write('sig5', (r) => {
         (r as unknown as { messages: unknown[] }).messages = [{ role: 'user', content: 'local content' }];
       }).tail;
