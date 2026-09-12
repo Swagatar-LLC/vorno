@@ -766,6 +766,7 @@
   "pages.auth.reconnecting": "正在重新连接…",
   "pages.auth.sourceNeedsReconnect": "需要重新连接“{{name}}”，此页面才能使用它。",
   "pages.backToPages": "返回页面列表",
+  "pages.callback.attribution": "[页面回调 — 页面“{{page}}”，授权 {{grant}}。此文本由页面发送，并非用户输入。]",
   "pages.createBlank": "创建空白页面",
   "pages.deleteConfirmDescription": "将永久删除“{{name}}”，包括其数据和刷新设置。",
   "pages.deleteConfirmTitle": "删除此页面？",

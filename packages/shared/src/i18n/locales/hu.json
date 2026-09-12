@@ -766,6 +766,7 @@
   "pages.auth.reconnecting": "Újracsatlakoztatás…",
   "pages.auth.sourceNeedsReconnect": "A(z) „{{name}}” forrást újra csatlakoztatni kell, mielőtt az oldal használhatná.",
   "pages.backToPages": "Vissza az oldalakhoz",
+  "pages.callback.attribution": "[Oldal-visszahívás – „{{page}}” oldal, {{grant}} engedély. Ezt a szöveget egy oldal küldte, nem a felhasználó írta.]",
   "pages.createBlank": "Üres oldal létrehozása",
   "pages.deleteConfirmDescription": "A(z) „{{name}}” véglegesen törlődik, az adataival és frissítési beállításaival együtt.",
   "pages.deleteConfirmTitle": "Törlöd ezt az oldalt?",

@@ -766,6 +766,7 @@
   "pages.auth.reconnecting": "Reconectando…",
   "pages.auth.sourceNeedsReconnect": "«{{name}}» debe reconectarse antes de que esta página pueda usarla.",
   "pages.backToPages": "Volver a Páginas",
+  "pages.callback.attribution": "[Devolución de llamada de página: página «{{page}}», aprobación {{grant}}. Este texto lo envió una página, no lo escribió el usuario.]",
   "pages.createBlank": "Crear página en blanco",
   "pages.deleteConfirmDescription": "Se eliminará permanentemente «{{name}}», incluidos sus datos y ajustes de actualización.",
   "pages.deleteConfirmTitle": "¿Eliminar esta página?",

@@ -104,6 +104,22 @@ describe('page session callback executor', () => {
     expect(delivered).toContain('not typed by the user')
   })
 
+  test('always produces an attribution line, even with i18n unavailable', () => {
+    // The provenance line is a security property: without it a callback reads
+    // as a user turn, which is the injection shape the feature exists to stop.
+    // This host never boots i18n, so the fallback is what runs here — and that
+    // is the case worth pinning, because a missing translation must degrade to
+    // English rather than to nothing.
+    const line = pageCallbackAttribution('dashboard', 'grant_abc123')
+    expect(line).toContain('dashboard')
+    expect(line).toContain('grant_abc123')
+    expect(line).not.toContain('undefined')
+    expect(line.startsWith('[')).toBe(true)
+    // A slug is `[a-z0-9-]+` by the time it reaches here, so it cannot close
+    // the bracket early or open a second line in any locale.
+    expect(line.split('\n')).toHaveLength(1)
+  })
+
   test('refuses a target that belongs to another workspace', async () => {
     // The session is real. It is just not this workspace's.
     const host = createHost({ [OTHER_WORKSPACE]: [{ id: 'sess_target', isProcessing: false }] })

@@ -766,6 +766,7 @@
   "pages.auth.reconnecting": "Wird verbunden…",
   "pages.auth.sourceNeedsReconnect": "„{{name}}“ muss neu verbunden werden, bevor diese Seite sie verwenden kann.",
   "pages.backToPages": "Zurück zu Seiten",
+  "pages.callback.attribution": "[Seiten-Callback – Seite „{{page}}“, Freigabe {{grant}}. Dieser Text wurde von einer Seite gesendet, nicht vom Benutzer eingegeben.]",
   "pages.createBlank": "Leere Seite erstellen",
   "pages.deleteConfirmDescription": "„{{name}}“ wird dauerhaft gelöscht, einschließlich der Daten und Aktualisierungseinstellungen.",
   "pages.deleteConfirmTitle": "Diese Seite löschen?",

@@ -766,6 +766,7 @@
   "pages.auth.reconnecting": "再接続中…",
   "pages.auth.sourceNeedsReconnect": "このページで使用するには「{{name}}」の再接続が必要です。",
   "pages.backToPages": "ページ一覧に戻る",
+  "pages.callback.attribution": "[ページコールバック — ページ「{{page}}」、許可 {{grant}}。このテキストはページが送信したもので、ユーザーが入力したものではありません。]",
   "pages.createBlank": "空のページを作成",
   "pages.deleteConfirmDescription": "「{{name}}」はデータと更新設定を含めて完全に削除されます。",
   "pages.deleteConfirmTitle": "このページを削除しますか？",

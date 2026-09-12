@@ -391,7 +391,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
    */
   it('performs no state mutation before the delivery guard on the callback path', () => {
     const source = readFileSync(join(import.meta.dir, 'SessionManager.ts'), 'utf-8')
-    const sendAt = source.indexOf('  async sendMessage(')
+    const sendAt = source.indexOf('  private async sendMessageInner(')
     const guardAt = source.indexOf('const vetoed = pageCallback?.guard()')
     expect(sendAt).toBeGreaterThan(-1)
     expect(guardAt).toBeGreaterThan(sendAt)

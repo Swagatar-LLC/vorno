@@ -6360,7 +6360,40 @@ export class SessionManager implements ISessionManager {
     sessionLog.info(`Deleted session ${sessionId}`)
   }
 
+  /**
+   * Public entry point. Announces an ordinary send for the whole of its
+   * lifetime and guarantees the announcement is withdrawn — including on a
+   * throw, which is the case scattered `delete` calls cannot cover and where a
+   * leak would leave the session permanently un-callable by any Page.
+   *
+   * The inner method releases it earlier, at the `isProcessing` handover, so
+   * the announcement stops mattering as soon as a stronger signal exists.
+   * Deleting twice is a no-op.
+   */
   async sendMessage(
+    sessionId: string,
+    message: string,
+    attachments?: FileAttachment[],
+    storedAttachments?: StoredAttachment[],
+    options?: SendMessageInternalOptions,
+    existingMessageId?: string,
+    _isAuthRetry?: boolean,
+    onAck?: (messageId: string) => void,
+    rpcContext?: { callerClientId?: string },
+  ): Promise<void> {
+    const announces = options?.pageCallback === undefined
+    if (announces) this.ordinarySendsInFlight.add(sessionId)
+    try {
+      return await this.sendMessageInner(
+        sessionId, message, attachments, storedAttachments, options,
+        existingMessageId, _isAuthRetry, onAck, rpcContext,
+      )
+    } finally {
+      if (announces) this.ordinarySendsInFlight.delete(sessionId)
+    }
+  }
+
+  private async sendMessageInner(
     sessionId: string,
     message: string,
     attachments?: FileAttachment[],
@@ -6413,6 +6446,7 @@ export class SessionManager implements ISessionManager {
       // whichever arrives first), subsequent matching calls within the deadline drop.
       if (claimAutoRetryPending(managed, message) === 'drop') {
         sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
+        this.ordinarySendsInFlight.delete(sessionId)
         return
       }
 
@@ -6533,6 +6567,9 @@ export class SessionManager implements ISessionManager {
       // enqueues with a 500ms debounce. (#616 reliability fix.)
       await this.flushSession(managed.id)
       onAck?.(userMessage.id)
+      // Mid-stream returns without reaching the handover below, and the session
+      // is already processing — which is what a callback's guard reads anyway.
+      this.ordinarySendsInFlight.delete(sessionId)
       return
     }
 
@@ -6659,6 +6696,11 @@ export class SessionManager implements ISessionManager {
     }
 
     managed.lastMessageAt = Date.now()
+    // Handover. From here `isProcessing` is what a callback's guard reads, so
+    // the announcement has done its job and must not outlive it — a leaked
+    // entry would make this session permanently un-callable by any Page, which
+    // fails closed but is still a bug the user cannot diagnose.
+    this.ordinarySendsInFlight.delete(sessionId)
     this.setProcessing(managed, true)
     managed.streamingText = ''
     managed.streamingTurnId = undefined
@@ -7937,6 +7979,21 @@ export class SessionManager implements ISessionManager {
    */
   private readonly pageCallbackReservations = new Set<string>()
 
+  /**
+   * Sessions with an ORDINARY send between its entry and its commit.
+   *
+   * The asymmetry with the reservation above is the whole design, and it only
+   * points one way: a Page callback yields to a user, and a user never yields
+   * to a Page. Ordinary sends therefore only *announce* here — nothing consults
+   * this set on their behalf, so no user message is ever delayed or refused by
+   * it — while a callback's guard reads it and stands down.
+   *
+   * Without this, the reservation serialised callbacks against each other and
+   * nothing else: a user pressing send during a callback's flush window still
+   * saw an idle session, and both committed.
+   */
+  private readonly ordinarySendsInFlight = new Set<string>()
+
   private readonly sessionTargetLookup: WorkspaceSessionLookup = {
     getSessions: (workspaceId: string) =>
       Array.from(this.sessions.values())
@@ -7970,6 +8027,9 @@ export class SessionManager implements ISessionManager {
       // a turn is about to start — and because distinguishing it would leak
       // one page's activity to another.
       if (this.pageCallbackReservations.has(sessionId)) return 'session-busy'
+      // A user is mid-send. Their message wins; the page stands down and the
+      // click can be repeated. The reverse never happens.
+      if (this.ordinarySendsInFlight.has(sessionId)) return 'session-busy'
       return pageCallbackRefusal(this.sessions.get(sessionId), options.workspaceId, options.signal?.aborted === true)
     }
 

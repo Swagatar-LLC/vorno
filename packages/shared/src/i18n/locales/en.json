@@ -766,6 +766,7 @@
   "pages.auth.reconnecting": "Reconnecting…",
   "pages.auth.sourceNeedsReconnect": "“{{name}}” needs to be reconnected before this page can use it.",
   "pages.backToPages": "Back to Pages",
+  "pages.callback.attribution": "[Page callback — page “{{page}}”, grant {{grant}}. This text was sent by a page, not typed by the user.]",
   "pages.createBlank": "Create blank Page",
   "pages.deleteConfirmDescription": "This permanently deletes “{{name}}”, including its data and refresh settings.",
   "pages.deleteConfirmTitle": "Delete this page?",

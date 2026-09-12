@@ -34,6 +34,7 @@ import { describeOrigin, pageOrigin } from '@craft-agent/shared/statuses'
 import { resolveWorkspaceSessionTarget, type WorkspaceSessionLookup } from '@craft-agent/shared/automations'
 import { isSessionFinished } from '../sessions/page-callback-guards'
 import type { PageSessionRefusalCode } from '@craft-agent/shared/pages'
+import { i18n } from '@craft-agent/shared/i18n'
 import type { Logger } from '@craft-agent/server-core/runtime'
 
 /**
@@ -110,6 +111,19 @@ export interface PagesSessionExecutorDeps {
  * to, which is why it is built here and not stored in the descriptor.
  */
 export function pageCallbackAttribution(pageSlug: string, grantId: string): string {
+  // Localized like every other user-facing string: this lands in the session
+  // transcript, and a reader who cannot understand the warning does not get
+  // the warning. Both values are host-validated before they reach here — the
+  // slug has passed `assertValidPageSlug` and is `[a-z0-9-]+`, the grant id is
+  // host-minted — so interpolating them cannot forge a second line or a
+  // bracket in any locale.
+  const localized = i18n.t('pages.callback.attribution', { page: pageSlug, grant: grantId })
+  // The provenance line is a security property, not decoration: without it a
+  // callback reads as a user turn. A host that never booted i18n — a headless
+  // process, a test harness — must therefore still get one, so a missing or
+  // un-interpolated translation falls back to English rather than degrading to
+  // `undefined` and silently removing the warning.
+  if (typeof localized === 'string' && localized.includes(pageSlug)) return localized
   return `[Page callback — page "${pageSlug}", grant ${grantId}. This text was sent by a page, not typed by the user.]`
 }
 

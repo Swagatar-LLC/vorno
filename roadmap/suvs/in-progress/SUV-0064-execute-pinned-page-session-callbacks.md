@@ -315,6 +315,33 @@ Each is falsified: removing the reservation reddens the concurrency test,
 renaming the commit hook reddens the adjacency test, and the auth-retry refusal
 is asserted against the real method.
 
+## Round 7 — what the two-phase change itself got wrong
+
+`2026-09-12` — three findings against the fixes above, all valid.
+
+- **The reservation serialised callbacks against each other and nothing else.**
+  An ordinary user send during a callback's flush window still saw an idle
+  session and committed, so two turns could start. **Fixed by inverting the
+  asymmetry rather than widening the lock:** ordinary sends *announce*
+  (`ordinarySendsInFlight`) and callbacks *yield*. Nothing consults the set on a
+  user's behalf, so no user message is ever delayed or refused by it — a page
+  stands down for a person, never the reverse. The announcement is released in a
+  `finally` on a thin public wrapper, because scattered `delete` calls cannot
+  cover a throw and a leaked entry would make the session permanently
+  un-callable by any Page.
+- **The commit race dropped the durability answer.** When a deadline won after
+  commit, the row was written before the executor reported durability, so
+  `durable` was silently absent — exactly when an operator most needs to know
+  whether a crash could lose the message. The in-flight delivery is now held and
+  awaited in that branch; it settles promptly, since only the flush is
+  outstanding.
+- **The attribution line bypassed localization.** It lands in the session
+  transcript, so the repo directive applies. Now `pages.callback.attribution`
+  across all seven locales — **with an English fallback**, because the line is a
+  security property rather than decoration: a host that never booted i18n (a
+  headless process, a test harness) returned `undefined` and silently removed
+  the warning. A missing translation must degrade to English, never to nothing.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

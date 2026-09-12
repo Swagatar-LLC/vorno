@@ -766,6 +766,7 @@
   "pages.auth.reconnecting": "Łączenie…",
   "pages.auth.sourceNeedsReconnect": "Źródło „{{name}}” wymaga ponownego połączenia, zanim ta strona będzie mogła z niego korzystać.",
   "pages.backToPages": "Wróć do stron",
+  "pages.callback.attribution": "[Wywołanie zwrotne strony — strona „{{page}}”, zgoda {{grant}}. Ten tekst został wysłany przez stronę, a nie wpisany przez użytkownika.]",
   "pages.createBlank": "Utwórz pustą stronę",
   "pages.deleteConfirmDescription": "„{{name}}” zostanie trwale usunięta wraz z danymi i ustawieniami odświeżania.",
   "pages.deleteConfirmTitle": "Usunąć tę stronę?",

@@ -1612,6 +1612,8 @@ export class PageActionBroker {
     let sessionCommitted = false;
     /** Whether that delivery also reached disk; undefined for other kinds. */
     let sessionDurable: boolean | undefined;
+    /** The in-flight session delivery, so a lost race can still be asked. */
+    let sessionWork: Promise<{ ok: true; durable: boolean } | { ok: false; code: PageSessionRefusalCode; reason: string }> | undefined;
     try {
       if (grant.action.kind === 'api' && request.invocation.kind === 'api') {
         if (!this.executors.executeApi) {
@@ -1697,7 +1699,11 @@ export class PageActionBroker {
           // un-sent. Once the executor says so, this request leaves the
           // cancellable set and the deadline below stops being able to rename
           // the outcome.
-          const sessionOutcome = await race(this.executors.executeSession(
+          // Held so the committed branch below can still learn durability. The
+          // race only decides who answers FIRST; a delivery that committed has
+          // a real durability answer coming, and dropping it would leave the
+          // audit unable to tell a flushed message from one a crash could lose.
+          sessionWork = this.executors.executeSession(
             {
               pageSlug: page.slug,
               grantId: grant.id,
@@ -1705,7 +1711,8 @@ export class PageActionBroker {
               message: grant.action.message,
             },
             { signal, onCommitted: () => { sessionCommitted = true; this.markUncancellable(request.leaseId, request.requestId); } },
-          ));
+          );
+          const sessionOutcome = await race(sessionWork);
           outcome = sessionOutcome.ok ? 'ok' : sessionOutcome.code;
           sessionDurable = sessionOutcome.ok ? sessionOutcome.durable : undefined;
           result = {
@@ -1737,6 +1744,17 @@ export class PageActionBroker {
       if (sessionCommitted) {
         log.warn(`[PageActionBroker] ${timedOut ? 'deadline' : 'abort'} raced a committed session delivery; reporting it as delivered`);
         outcome = 'ok';
+        // Wait for the durability answer the delivery is already producing,
+        // rather than recording a row that silently omits it. It settles
+        // promptly — the commit has happened, only the flush is outstanding —
+        // and a failure here means the flush failed, which is exactly
+        // `durable: false` rather than a missing field.
+        try {
+          const settled = await sessionWork;
+          sessionDurable = settled?.ok === true ? settled.durable : false;
+        } catch {
+          sessionDurable = false;
+        }
         result = { requestId: request.requestId, ok: true, durationMs: this.now() - startTime };
       } else {
         outcome = timedOut ? 'timeout' : controller.signal.aborted ? 'cancelled' : 'executor-error';
