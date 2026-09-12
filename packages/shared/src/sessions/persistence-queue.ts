@@ -49,30 +49,40 @@ function getHeaderMetadataSignature(header: SessionHeader): string {
 /**
  * Decide every externally-owned metadata field, in one place.
  *
- * Three sources can have an opinion and they are ranked by what each one can
- * actually know:
+ * Three sources can have an opinion, and the ranking is applied PER FIELD
+ * because authority is per field. An earlier version asked "did disk diverge at
+ * all" and, if so, took every field from disk — which discarded a retained
+ * observation that was the only surviving copy of a *different* field, just
+ * because some unrelated field had changed on disk since.
  *
- * 1. **The app, if it moved the field since we observed it.** A held
- *    observation is remembered across time, so replaying it would let an older
- *    remote value beat an edit the user made afterwards — the session renames
- *    itself back a beat after they renamed it. A field the app has moved since
- *    the observation belongs to the app, over both other sources.
- * 2. **Disk, when it diverged from our last write.** That divergence IS an
- *    external mutation, and it is more recent than anything remembered.
- * 3. **The observation**, which is the only surviving copy when a stale write
- *    has already committed over the edit on disk.
+ * For each field, in order:
  *
- * With no observation, rule 1 never fires and rule 2 reduces to the wholesale
- * "disk preserved" behaviour this queue has always had — unchanged.
+ * 1. **The app**, if it moved the field since the observation was taken. A held
+ *    observation is a memory, and a memory must not beat an edit the user made
+ *    afterwards — otherwise the session renames itself back a beat after they
+ *    renamed it.
+ * 2. **Disk**, if disk's value for *this* field differs from what we last wrote.
+ *    That is an external writer changing this field, it is happening now, and it
+ *    outranks anything remembered.
+ * 3. **The observation**, if it holds this field. Disk showing our own value
+ *    here is exactly the case the observation exists for: a stale write already
+ *    committed over the edit, so the memory is the only copy left.
+ * 4. **Local**, unchanged — nobody external has an opinion.
+ *
+ * With no observation, rule 1 never fires and the result is the long-standing
+ * "preserve what an external writer changed, keep our own updates otherwise"
+ * behaviour, now decided field by field rather than wholesale.
  */
 function resolveExternalMetadata({
   local,
   disk,
   observation,
+  lastWritten,
 }: {
   local: SessionHeader
   disk?: SessionHeader
   observation?: ExternalObservation
+  lastWritten?: HeaderMetadataSignature
 }): SessionHeader {
   if (!disk && !observation) return local
 
@@ -80,16 +90,30 @@ function resolveExternalMetadata({
   const baseline = observation?.localAtObservation
   const diskFields = disk ? getHeaderMetadataFields(disk) : undefined
   const resolved: SessionHeader = { ...local }
+  const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 
   for (const field of EXTERNAL_METADATA_FIELDS) {
-    const movedLocally =
-      baseline !== undefined &&
-      JSON.stringify(outgoing[field] ?? null) !== JSON.stringify(baseline[field] ?? null)
-    // Rule 1: the app wins outright, including over disk.
-    if (movedLocally) continue
+    // 1. The app moved it since we looked — it wins over both other sources.
+    if (baseline !== undefined && !same(outgoing[field], baseline[field])) continue
 
-    const external = diskFields ? diskFields[field] : observation?.external[field]
-    ;(resolved as unknown as Record<string, unknown>)[field] = external
+    // 2. Disk changed THIS field since our last write.
+    if (diskFields && lastWritten !== undefined && !same(diskFields[field], lastWritten[field])) {
+      ;(resolved as unknown as Record<string, unknown>)[field] = diskFields[field]
+      continue
+    }
+
+    // 3. The observation is the surviving copy of this field.
+    if (observation) {
+      ;(resolved as unknown as Record<string, unknown>)[field] = observation.external[field]
+      continue
+    }
+
+    // 4. Disk with no baseline to compare against: fall back to preserving it
+    // wholesale, which is what this queue did before per-field comparison was
+    // possible. Reachable only when we have never written this session.
+    if (diskFields && lastWritten === undefined) {
+      ;(resolved as unknown as Record<string, unknown>)[field] = diskFields[field]
+    }
   }
   return resolved
 }
@@ -645,6 +669,7 @@ class SessionPersistenceQueue {
         local: localHeader,
         disk: hasExternalMetadataChange ? diskHeader : undefined,
         observation: observedExternal,
+        lastWritten: this.lastWrittenMetadata.get(key),
       })
 
       if (hasMetadataMismatch) {

@@ -627,6 +627,37 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(read().lastReadMessageId).toBe('on-disk-later');
     });
 
+    it('an unrelated disk edit does not discard an observation for another field', async () => {
+      // Authority is per FIELD. Asking only "did disk diverge at all" and then
+      // taking everything from disk throws away a retained observation that is
+      // the only surviving copy of a different field — which is precisely the
+      // case the observation exists for.
+      await write('mix1').tail;
+      const file = getSessionFilePath(root, 'mix1');
+      const read = () => JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+      const put = (h: Record<string, unknown>) => {
+        const lines = readFileSync(file, 'utf-8').split('\n');
+        writeFileSync(file, [JSON.stringify(h), ...lines.slice(1)].join('\n'));
+      };
+
+      // An external writer sets lastReadMessageId; we observe it, but a stale
+      // write has already put our own value back on disk — so the observation
+      // is the only place that edit still exists.
+      const observedHeader = { ...read(), lastReadMessageId: 'only-in-memory' };
+      queue.supersedePendingWrites(k('mix1'), observedHeader as never);
+
+      // Later, an UNRELATED external edit changes the name on disk.
+      put({ ...read(), name: 'renamed on disk' });
+
+      await write('mix1').tail;
+
+      const after = read();
+      // Disk owns the field it actually changed…
+      expect(after.name).toBe('renamed on disk');
+      // …and the observation still owns the one disk never touched.
+      expect(after.lastReadMessageId).toBe('only-in-memory');
+    });
+
     it('drops an observation that has aged out instead of replaying it', async () => {
       // An observation is normally discharged by the write that lands it, but a
       // session that is never written again would hold one for the life of the

@@ -980,6 +980,35 @@ branch that breaks it was not reachable from the setup. Thirteenth instance, and
 the sharpest one yet: *a test that constructs the input by hand instead of
 through the mechanism will miss whatever the mechanism does on the way.*
 
+## Round 27 — authority is per field, not per header
+
+`2026-09-12` — Greptile again, 4/5, on the round-26 head. The single resolver
+was right in shape and wrong in granularity: it asked *"did disk diverge at
+all"* and, if so, took every field from disk. So an unrelated later edit — a
+rename on disk — discarded a retained observation that was the only surviving
+copy of a different field, which is precisely the case the observation exists
+for.
+
+The ranking is now applied **per field**, and rule 2 asks the narrower question
+it should always have asked: does disk differ from our last write *for this
+field*. If it does, an external writer changed it and disk wins. If it does not,
+disk is merely showing our own value back — which is exactly what a stale write
+leaves behind — so the observation supplies it.
+
+A pleasant side effect worth naming: the old wholesale branch also defeated the
+intent stated in its own comment ("they must still persist local metadata
+updates, e.g. a generated title"). Deciding field by field makes that comment
+true.
+
+Three rules, three injections, three caught: disk-wins-everything, the app-wins
+rule removed, and the observation promoted above a live disk change.
+
+Two rounds in a row where the *shape* of my fix was right and the *scope* of one
+predicate was wrong, both found by the same reviewer asking what happens when
+two sources are authoritative for different things. Worth keeping as its own
+lesson: **"did anything change" is rarely the question; "did THIS change" almost
+always is.**
+
 ## Residuals
 
 - **External `permissionMode` edits are not mirrored into memory.** The file
