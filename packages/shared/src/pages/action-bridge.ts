@@ -263,6 +263,20 @@ export type PageActionOutcomeCode =
   | 'cancelled'
   | 'kind-mismatch';
 
+/**
+ * Resolve the live-lease ceiling for a broker.
+ *
+ * Anything that is not a finite integer — `undefined`, `NaN`, `Infinity`, a
+ * float — falls back to the constant, and a valid number is clamped into
+ * `[1, MAX_LIVE_LEASES]`. The option is a test affordance for making
+ * "every lease is busy" cheap to construct; it must not become a way to raise
+ * or remove the cap, because that cap is what bounds memory against a flood.
+ */
+function clampLiveLeaseCap(requested: number | undefined): number {
+  if (requested === undefined || !Number.isInteger(requested)) return MAX_LIVE_LEASES;
+  return Math.min(MAX_LIVE_LEASES, Math.max(1, requested));
+}
+
 export type PageActionValidationErrorCode =
   | 'origin-unattributed'
   | 'origin-forbidden'
@@ -463,15 +477,17 @@ export interface PageActionBrokerOptions {
   /** Activation-ticket lifetime; clamped to ADR-0033's 10-second ceiling */
   activationTicketTtlMs?: number;
   /**
-   * Canonical id of the workspace this broker serves, resolved by the host.
+   * Canonical id of the workspace this broker serves — `workspace.id`, resolved
+   * by the host, never a caller's name-or-id spelling.
    *
-   * Scopes the audit write budget. Without it every workspace shares one
-   * throttle bucket, so churn in workspace A silently suppresses workspace B's
-   * lifecycle rows — one tenant erasing another's audit trail. Must come from
-   * the host's resolved workspace and never from a client-supplied id, or the
-   * scope is chosen by the caller it is meant to contain.
+   * **Required, with no default.** It scopes the audit write budget, and an
+   * optional one invites a shared fallback bucket: every broker that omitted it
+   * would share a throttle, so churn in one workspace would silently suppress
+   * another's lifecycle rows — one tenant erasing another's audit trail, which
+   * is worse than the disk growth the throttle exists to stop. A default here
+   * would be a quiet way to opt out of tenant isolation, so there isn't one.
    */
-  workspaceId?: string;
+  workspaceId: string;
   /** Workspace context for policy annotation in the audit trail */
   permissionsContext?: PermissionsContext;
   /**
@@ -606,7 +622,12 @@ export class PageActionBroker {
     this.executors = options.executors;
     this.auditLogPath = options.auditLogPath ?? join(CONFIG_DIR, 'logs', 'page-actions.jsonl');
     this.leaseTtlMs = options.leaseTtlMs ?? DEFAULT_PAGE_LEASE_TTL_MS;
-    this.maxLiveLeases = Math.max(1, options.maxLiveLeases ?? MAX_LIVE_LEASES);
+    // Clamped to a finite integer in [1, MAX_LIVE_LEASES]: the option exists so
+    // a test can LOWER the ceiling cheaply, never to raise or disable it.
+    // `Math.max(1, x)` alone let `Infinity` through untouched and turned `NaN`
+    // into `NaN`, either of which disables the store cap — the one bound that
+    // holds against a flood regardless of who is calling.
+    this.maxLiveLeases = clampLiveLeaseCap(options.maxLiveLeases);
     this.actionTimeoutMs = options.actionTimeoutMs ?? DEFAULT_PAGE_ACTION_TIMEOUT_MS;
     // Clamp, never trust: the ceiling is an ADR constant and a caller passing a
     // generous number must not be able to raise it.
@@ -615,7 +636,7 @@ export class PageActionBroker {
       PAGE_ACTIVATION_TICKET_TTL_CEILING_MS,
     );
     this.permissionsContext = options.permissionsContext;
-    this.auditScope = options.workspaceId ?? 'unscoped';
+    this.auditScope = options.workspaceId;
     this.loadCurrentAdmission = options.loadCurrentAdmission;
     this.onLeaseDropped = options.onLeaseDropped;
     this.now = options.now ?? Date.now;

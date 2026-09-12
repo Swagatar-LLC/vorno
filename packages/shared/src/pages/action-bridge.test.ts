@@ -65,9 +65,16 @@ describe('pages/action-bridge', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
+  /**
+   * Explicit, because the option is required with no default — a shared
+   * fallback bucket would let one workspace's churn suppress another's rows.
+   */
+  const TEST_AUDIT_SCOPE = 'ws_test0001';
+
   function makeBroker(executors: PageActionExecutors = {}) {
     return new PageActionBroker({
       executors,
+      workspaceId: TEST_AUDIT_SCOPE,
       auditLogPath: auditPath,
       now: () => clock.now,
       // The host re-reads BOTH the page and the authority. Modelling only the
@@ -909,6 +916,7 @@ describe('pages/action-bridge', () => {
       const broker = new PageActionBroker({
         executors: { executeApi: async () => ({ status: 201, ok: true, body: null }) },
         auditLogPath: auditPath,
+        workspaceId: TEST_AUDIT_SCOPE,
         now: () => clock.now,
         // A caller asking for an hour gets the ADR ceiling, not an hour.
         activationTicketTtlMs: 60 * 60 * 1000,
@@ -1272,6 +1280,7 @@ describe('pages/action-bridge', () => {
       const broker = new PageActionBroker({
         executors: { executeApi: () => new Promise(() => {}) },
         auditLogPath: auditPath,
+        workspaceId: TEST_AUDIT_SCOPE,
         actionTimeoutMs: 40,
         now: () => clock.now,
       });
@@ -1885,6 +1894,7 @@ describe('pages/action-bridge', () => {
       const broker = new PageActionBroker({
         executors: { executeApi: async () => ({ status: 201, ok: true, body: null }) },
         auditLogPath: auditPath,
+        workspaceId: TEST_AUDIT_SCOPE,
         now: () => clock.now,
       });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
@@ -2429,15 +2439,8 @@ describe('pages/action-bridge', () => {
       // nothing about the fallback. A small cap makes it cheap to put real
       // outstanding work on every candidate.
       const aborted: string[] = [];
-      const broker = makeBroker({
-        executeApi: (invocation, { signal }) => new Promise((_resolve, reject) => {
-          signal.addEventListener('abort', () => {
-            aborted.push(invocation.path);
-            reject(new Error('aborted'));
-          }, { once: true });
-        }),
-      });
-      // Rebuild with a small cap so "every lease busy" is reachable.
+      // A small cap so "every lease busy" is reachable without 256 never-
+      // resolving actions.
       const small = new PageActionBroker({
         executors: {
           executeApi: (invocation, { signal }) => new Promise((_resolve, reject) => {
@@ -2448,13 +2451,13 @@ describe('pages/action-bridge', () => {
           }),
         },
         auditLogPath: auditPath,
+        workspaceId: TEST_AUDIT_SCOPE,
         now: () => clock.now,
         maxLiveLeases: 3,
         loadCurrentAdmission: async () => disk.page
           ? { page: disk.page, authority: { ...AUTHORITY, permissionMode: disk.permissionMode } }
           : null,
       });
-      void broker;
 
       const page = makePage({ grants: [makeGrant({ expiresAt: clock.now + 24 * 3_600_000 })] });
       disk.page = page;
@@ -2502,6 +2505,7 @@ describe('pages/action-bridge', () => {
       const broker = new PageActionBroker({
         executors: { executeScript: async () => ({ exitCode: 0, stdout: '', stderr: '' }) },
         auditLogPath: auditPath,
+        workspaceId: TEST_AUDIT_SCOPE,
         now: () => clock.now,
         maxLiveLeases: 2,
         loadCurrentAdmission: async () => disk.page
@@ -2544,6 +2548,7 @@ describe('pages/action-bridge', () => {
       const broker = new PageActionBroker({
         executors: {},
         auditLogPath: auditPath,
+        workspaceId: TEST_AUDIT_SCOPE,
         now: () => clock.now,
         maxLiveLeases: 1,
         onLeaseDropped: (leaseId, reason) => { dropped.push([leaseId, reason]); },
@@ -2595,6 +2600,40 @@ describe('pages/action-bridge', () => {
         (e) => e.event === 'page_lease_created' && e.leaseId !== quietLease.leaseId,
       );
       expect(noisyRows.length).toBeLessThanOrEqual(20);
+    });
+
+    it('clamps the live-lease cap so a test can only lower the ceiling', async () => {
+      // The option exists to make "every lease busy" cheap to construct. It
+      // must never be a way to raise or disable the store cap, which is the one
+      // bound that holds against a flood regardless of who is calling — and
+      // `Math.max(1, x)` alone passed `Infinity` through and turned `NaN` into
+      // `NaN`, either of which removes the cap entirely.
+      const withCap = (maxLiveLeases: number) => new PageActionBroker({
+        executors: {},
+        auditLogPath: auditPath,
+        workspaceId: TEST_AUDIT_SCOPE,
+        now: () => clock.now,
+        maxLiveLeases,
+      });
+      const fill = (broker: PageActionBroker, count: number) => {
+        for (let i = 0; i < count; i++) {
+          clock.now += 1;
+          broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+        }
+        return broker.leaseCount;
+      };
+
+      // Nothing can raise or disable the hard ceiling.
+      for (const hostile of [Infinity, Number.NaN, MAX_LIVE_LEASES + 1, 10_000, 2.5]) {
+        expect(fill(withCap(hostile), MAX_LIVE_LEASES + 5)).toBe(MAX_LIVE_LEASES);
+      }
+      // Zero and negatives floor at one rather than wedging the store. `-0` is
+      // a valid integer, so it floors rather than falling back to the default.
+      for (const tiny of [0, -0, -1, -99]) {
+        expect(fill(withCap(tiny), 5)).toBe(1);
+      }
+      // A legitimate lower cap is honoured.
+      expect(fill(withCap(3), 10)).toBe(3);
     });
 
     it('releases only a lease that exists, and audits nothing otherwise', async () => {
