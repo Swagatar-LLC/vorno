@@ -22,11 +22,11 @@ import {
   getHeaderMetadataSignature,
   getSessionFilePath,
   sessionPersistenceQueue,
-  setSingletonCommitHooksForTesting,
   sessionWriteKey,
   writeSessionJsonl,
   type StoredSession,
 } from '@craft-agent/shared/sessions'
+import { installSingletonCommitHooksForTesting } from '@craft-agent/shared/sessions/internal'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
 
 const WORKSPACE_ID = 'ws_external'
@@ -34,6 +34,8 @@ const SESSION_ID = 'sess_external_edit'
 
 describe('external metadata reconciliation', () => {
   let root: string
+  /** Disposer for this suite's own hooks; never clears another owner's. */
+  let disposeHooks: (() => void) | undefined
   let sm: SessionManager
 
   beforeEach(() => {
@@ -45,7 +47,8 @@ describe('external metadata reconciliation', () => {
   afterEach(() => {
     // Shared module singleton — a leaked hook would fire inside every other
     // suite's writes.
-    setSingletonCommitHooksForTesting(undefined)
+    disposeHooks?.()
+    disposeHooks = undefined
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -92,7 +95,7 @@ describe('external metadata reconciliation', () => {
     // differently. An edit arriving while the queue is idle leaves nothing to
     // abandon, so it would pass under either variant and prove nothing.
     let applied = false
-    setSingletonCommitHooksForTesting({
+    disposeHooks = installSingletonCommitHooksForTesting({
       afterRename: (hookKey: string) => {
         // The hook hands back the QUEUE's key, not a session id — they are
         // different things, and comparing them would silently never match.
@@ -115,7 +118,7 @@ describe('external metadata reconciliation', () => {
     // unlinks it at exactly this point, for a session nobody deleted.
     expect(existsSync(file)).toBe(true)
 
-    setSingletonCommitHooksForTesting(undefined)
+    disposeHooks?.()
     await sm.flushSession(SESSION_ID)
     expect(existsSync(file)).toBe(true)
     // And the transcript is intact, not merely the path.
@@ -126,9 +129,8 @@ describe('external metadata reconciliation', () => {
     // The window a supersede alone cannot close. A write that read its header
     // before the edit, and renames after the watcher saw it, commits a pre-edit
     // snapshot over the edit — and supersede correctly keeps that file, so disk
-    // no longer holds the edit and the baseline matches the stale file. `labels`
-    // is one of the five fields this reconciliation does not copy into memory,
-    // so the observed header is the only surviving copy.
+    // no longer holds the edit and the baseline matches the stale file. The
+    // observed header is then the only surviving copy.
     const managed = seed()
     const file = getSessionFilePath(root, SESSION_ID)
     ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
@@ -137,26 +139,32 @@ describe('external metadata reconciliation', () => {
     // The edit has to touch BOTH a field the reconciliation tracks and one it
     // does not, and the second one has to be genuinely merge-only.
     //
-    // Without the tracked field, `applyExternalSessionMetadata` returns
-    // `changed: false` and never calls supersede at all. And `labels` — the
-    // first choice here — turned out to be the WRONG second field: the
-    // reconciliation copies it into the managed session, so the next write
-    // persists it from memory and the assertion holds with the fix removed.
-    // Only `permissionMode`, `hasUnread` and `lastReadMessageId` are carried by
-    // the merge alone. `name` makes the branch run; `lastReadMessageId` is what
-    // can only survive via the observed header.
+    // Picking that second field has now been got wrong twice, so it is worth
+    // stating how to check it. `applyExternalSessionMetadata` copies SIX of the
+    // seven merged fields into the managed session — `name`, `labels`,
+    // `isFlagged`, `sessionStatus`, `lastReadMessageId`, `hasUnread` — so for
+    // any of those the next write persists the value from memory and the
+    // assertion holds with the merge removed, proving nothing. `labels` was the
+    // first wrong choice; `lastReadMessageId` was the second, and it only
+    // became wrong when read-state mirroring was added to that method.
+    //
+    // Exactly ONE field is merge-only: `permissionMode`, deliberately not
+    // mirrored because it is a declared-intent mutation with its own event.
+    // `name` makes the `changed` branch run; `permissionMode` is what can only
+    // survive via the observed header. Verified by disabling the observation
+    // mechanism and watching this test fail.
     const externalHeader = () => {
       const lines = readFileSync(file, 'utf-8').split('\n')
       const header = JSON.parse(lines[0]!) as Record<string, unknown>
       header.name = 'Renamed elsewhere'
-      header.lastReadMessageId = 'external-only'
+      header.permissionMode = 'safe'
       writeFileSync(file, [JSON.stringify(header), ...lines.slice(1)].join('\n'))
       return header
     }
 
     let observed: Record<string, unknown> | undefined
     let superseded = false
-    setSingletonCommitHooksForTesting({
+    disposeHooks = installSingletonCommitHooksForTesting({
       // The edit lands after the in-flight write computed its header.
       beforeUnlink: () => { if (!observed) observed = externalHeader() },
       // The watcher sees it while that write is mid-commit.
@@ -169,7 +177,7 @@ describe('external metadata reconciliation', () => {
     })
     ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
     await sm.flushSession(SESSION_ID)
-    setSingletonCommitHooksForTesting(undefined)
+    disposeHooks?.()
 
     // Fail loudly rather than let the assertions below pass without the path
     // under test ever having run.
@@ -178,7 +186,7 @@ describe('external metadata reconciliation', () => {
     ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
     await sm.flushSession(SESSION_ID)
     const after = JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>
-    expect(after.lastReadMessageId).toBe('external-only')
+    expect(after.permissionMode).toBe('safe')
     expect(after.name).toBe('Renamed elsewhere')
     expect(existsSync(file)).toBe(true)
   })
@@ -207,7 +215,7 @@ describe('external metadata reconciliation', () => {
 
     let observed: Record<string, unknown> | undefined
     let changedReported: boolean | undefined
-    setSingletonCommitHooksForTesting({
+    disposeHooks = installSingletonCommitHooksForTesting({
       beforeUnlink: () => { if (!observed) observed = externalHeader() },
       afterRename: () => {
         if (!observed) return
@@ -218,7 +226,7 @@ describe('external metadata reconciliation', () => {
     })
     ;(sm as unknown as { persistSession(m: unknown): void }).persistSession(managed)
     await sm.flushSession(SESSION_ID)
-    setSingletonCommitHooksForTesting(undefined)
+    disposeHooks?.()
 
     // Nothing this method mirrors moved, so it reports no in-memory change —
     // and it must have superseded anyway.
@@ -287,8 +295,8 @@ describe('external metadata reconciliation', () => {
 
     // The deletion variant drops this. Without it, `write`'s external-change
     // detection goes dark and the next write clobbers exactly the kind of edit
-    // this path exists to absorb — `labels`, `isFlagged`, `permissionMode`,
-    // `hasUnread` and `lastReadMessageId` are carried by the merge alone.
+    // this path exists to absorb — `permissionMode` is carried by the merge
+    // alone, so it has nothing else to fall back on.
     expect(sessionPersistenceQueue.getLastWrittenSignature(sessionWriteKey(root, SESSION_ID))).toBeDefined()
   })
 })

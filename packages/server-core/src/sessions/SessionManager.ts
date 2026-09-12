@@ -47,7 +47,6 @@ import { loadWorkspaceConfig, loadEffectiveHeadroomConfig } from '@craft-agent/s
 import { createSessionHeadroomAdapter, buildHeadroomStatsReport } from '@craft-agent/shared/headroom'
 import {
   // Session persistence functions
-  listSessions as listStoredSessions,
   loadSession as loadStoredSession,
   saveSession as saveStoredSession,
   createSession as createStoredSession,
@@ -105,6 +104,10 @@ import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
 import { listLabels, loadLabelConfig, isValidLabelId } from '@craft-agent/shared/labels/storage'
+// The pending-plan-bearing reader is deliberately off the sessions barrel: it
+// carries `draftInputSnapshot` (unsent user text), and the host's startup
+// hydration is the only caller that may hold it. See sessions/internal.ts.
+import { listSessionsWithPendingPlan as listStoredSessions } from '@craft-agent/shared/sessions/internal'
 import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'

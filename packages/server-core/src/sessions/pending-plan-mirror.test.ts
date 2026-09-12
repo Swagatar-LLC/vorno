@@ -24,14 +24,15 @@ import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   getSessionFilePath,
-  listSessions as listStoredSessions,
+  listSessions,
   sessionPersistenceQueue,
-  setSingletonCommitHooksForTesting,
   writeSessionJsonl,
-  type SessionMetadata,
-  type SessionMetadataWithPendingPlan,
   type StoredSession,
 } from '@craft-agent/shared/sessions'
+import {
+  installSingletonCommitHooksForTesting,
+  listSessionsWithPendingPlan,
+} from '@craft-agent/shared/sessions/internal'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
 
 const WORKSPACE_ID = 'ws_pending_plan'
@@ -41,6 +42,8 @@ const DRAFT = 'the half-typed sentence the user never sent'
 
 describe('pending plan execution mirror', () => {
   let root: string
+  /** Disposer for this suite's own hooks; never clears another owner's. */
+  let disposeHooks: (() => void) | undefined
   let sm: SessionManager
 
   beforeEach(() => {
@@ -50,7 +53,8 @@ describe('pending plan execution mirror', () => {
   })
 
   afterEach(() => {
-    setSingletonCommitHooksForTesting(undefined)
+    disposeHooks?.()
+    disposeHooks = undefined
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -120,7 +124,9 @@ describe('pending plan execution mirror', () => {
       },
     } as unknown as StoredSession)
 
-    const meta = listStoredSessions(root).find((s) => s.id === SESSION_ID)
+    // The INTERNAL reader — the one the host's startup hydration uses. The
+    // public `listSessions` strips the field; see the test below.
+    const meta = listSessionsWithPendingPlan(root).find((s) => s.id === SESSION_ID)
     expect(meta).toBeDefined()
     // The projection carried it. This is the assertion the strip breaks.
     expect(meta!.pendingPlanExecution?.planPath).toBe(PLAN_PATH)
@@ -196,17 +202,12 @@ describe('pending plan execution mirror', () => {
     expect(sm.getPendingPlanExecution(SESSION_ID)).toBeNull()
   })
 
-  it('keeps the draft off the public metadata shape, reachable only by name', async () => {
-    // `SessionMetadata` is consumed broadly — artifact scans, label and status
-    // queries, every list projection — so putting unsent user text on it would
-    // put that text within reach of all of them and of anything that later
-    // decides to serialize one. The field rides the wider
-    // `SessionMetadataWithPendingPlan` instead, which only the host's startup
-    // hydration asks for.
-    //
-    // The runtime assertion that matters is the one below on the wire payloads.
-    // This one pins the narrower claim: the value is present for the caller
-    // that names the internal shape, so hydration still works.
+  it('strips the draft from the public list at RUNTIME, not just in the types', async () => {
+    // A narrower type stops autocomplete from finding the field. It stops
+    // nothing at all from `JSON.stringify`-ing the record onto a wire payload,
+    // which is what an earlier revision of this change relied on and what this
+    // test exists to close. The public reader now returns objects with the key
+    // genuinely absent.
     const filePath = getSessionFilePath(root, SESSION_ID)
     mkdirSync(dirname(filePath), { recursive: true })
     writeSessionJsonl(filePath, {
@@ -225,18 +226,19 @@ describe('pending plan execution mirror', () => {
       },
     } as unknown as StoredSession)
 
-    const internal: SessionMetadataWithPendingPlan | undefined = listStoredSessions(root)
-      .find((s) => s.id === SESSION_ID)
-    expect(internal?.pendingPlanExecution?.draftInputSnapshot).toBe(DRAFT)
+    const publicRecord = listSessions(root).find((s) => s.id === SESSION_ID)
+    expect(publicRecord).toBeDefined()
+    // Absent as a KEY, so a spread or a serialize cannot carry it.
+    expect('pendingPlanExecution' in (publicRecord as object)).toBe(false)
+    // And the draft text appears nowhere in the serialized form, whatever shape
+    // a future field might smuggle it under.
+    expect(JSON.stringify(publicRecord)).not.toContain(DRAFT)
+    expect(JSON.stringify(listSessions(root))).not.toContain(DRAFT)
 
-    // And the public view of the same record: assignable to `SessionMetadata`,
-    // which does not declare the field at all.
-    const asPublic: SessionMetadata = internal as SessionMetadata
-    expect('pendingPlanExecution' in (asPublic as object)).toBe(true)
-    // ^ the DATA is on the object (same reference); what the narrowing buys is
-    // that no `SessionMetadata`-typed caller can reach it without casting, so a
-    // wire projection cannot pick it up by autocomplete. The runtime guarantee
-    // is enforced where it belongs, on the wire shapes, below.
+    // The internal reader still has it — the host needs it to hydrate — and
+    // stripping is a copy, so the two readers do not share the stripped object.
+    const internalRecord = listSessionsWithPendingPlan(root).find((s) => s.id === SESSION_ID)
+    expect(internalRecord?.pendingPlanExecution?.draftInputSnapshot).toBe(DRAFT)
   })
 
   it('keeps the unsent draft out of every wire projection', async () => {

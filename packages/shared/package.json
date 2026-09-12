@@ -34,6 +34,7 @@
     "./mcp": "./src/mcp/index.ts",
     "./prompts": "./src/prompts/index.ts",
     "./sessions": "./src/sessions/index.ts",
+    "./sessions/internal": "./src/sessions/internal.ts",
     "./statuses": "./src/statuses/index.ts",
     "./statuses/storage": "./src/statuses/storage.ts",
     "./context-profiles": "./src/context-profiles/index.ts",

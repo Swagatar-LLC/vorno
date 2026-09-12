@@ -327,7 +327,7 @@ export async function saveSession(session: StoredSession): Promise<void> {
  * Multiple rapid calls are coalesced into a single write.
  * Use this during active sessions to avoid blocking the main thread.
  */
-export { sessionPersistenceQueue, sessionWriteKey, getHeaderMetadataSignature, setSingletonCommitHooksForTesting } from './persistence-queue.js'
+export { sessionPersistenceQueue, sessionWriteKey, getHeaderMetadataSignature } from './persistence-queue.js'
 export type { SessionCommitHooks } from './persistence-queue.js'
 export type { SessionWriteKey } from './persistence-queue.js'
 export type { SessionWriteHandle, SessionWriteReceipt } from './persistence-queue.js'
@@ -359,15 +359,20 @@ export function loadSession(workspaceRootPath: string, sessionId: string): Store
  * Uses JSONL header for fast loading (only reads first line of each file).
  */
 /**
- * List a workspace's sessions.
+ * List a workspace's sessions INCLUDING pending-plan state.
  *
- * Returns {@link SessionMetadataWithPendingPlan}: the public list shape plus
- * the pending-plan state the host needs to hydrate a managed session at
- * startup. Assignable to `SessionMetadata` everywhere, so the many callers
- * that only want list fields are unaffected and cannot see the extra one
- * without asking for the wider type by name.
+ * **Internal: for the host's startup hydration only.** Not on the package
+ * barrel — reach it through `@craft-agent/shared/sessions/internal`, which
+ * exists so that importing it is a deliberate act with a name attached.
+ *
+ * `pendingPlanExecution` carries `draftInputSnapshot`, text the user typed and
+ * did not send. The public {@link listSessions} strips it at RUNTIME rather
+ * than merely typing it away: a narrower type stops autocomplete from finding
+ * the field, and stops nothing at all from `JSON.stringify`-ing the object onto
+ * a wire payload. Only the caller that needs to rebuild a managed session's
+ * mirror should ever hold it.
  */
-export function listSessions(workspaceRootPath: string): SessionMetadataWithPendingPlan[] {
+export function listSessionsWithPendingPlan(workspaceRootPath: string): SessionMetadataWithPendingPlan[] {
   const span = perf.span('session.listSessions');
   const sessionsDir = getWorkspaceSessionsPath(workspaceRootPath);
   if (!existsSync(sessionsDir)) {
@@ -821,6 +826,33 @@ export function listInboxSessions(workspaceRootPath: string): SessionMetadata[] 
     const category = getStatusCategory(workspaceRootPath, s.sessionStatus || 'todo');
     return category === 'open';
   });
+}
+
+/**
+ * List a workspace's sessions.
+ *
+ * Returns records with `pendingPlanExecution` REMOVED — a real delete, not a
+ * cast. Everything on this path (artifact scans, label and status queries, the
+ * session list) gets objects that cannot leak unsent draft text even if
+ * something downstream serializes them wholesale.
+ *
+ * The host's startup hydration wants the field and asks for it by name via
+ * `listSessionsWithPendingPlan` (`@craft-agent/shared/sessions/internal`).
+ */
+export function listSessions(workspaceRootPath: string): SessionMetadata[] {
+  return listSessionsWithPendingPlan(workspaceRootPath).map(stripPendingPlan);
+}
+
+/**
+ * Drop the pending-plan state from a metadata record.
+ *
+ * A fresh object rather than a `delete` on the original: `listSessions` and
+ * `listSessionsWithPendingPlan` would otherwise hand out references to the same
+ * records, and stripping in place would empty the hydration path too.
+ */
+function stripPendingPlan(session: SessionMetadataWithPendingPlan): SessionMetadata {
+  const { pendingPlanExecution: _internalOnly, ...safe } = session;
+  return safe;
 }
 
 /**

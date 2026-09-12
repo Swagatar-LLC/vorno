@@ -248,26 +248,43 @@ export interface SessionCommitHooks {
  * carries `discardCommitted` — unlinked B's committed file. A live session's
  * transcript, deleted by an unrelated workspace.
  *
- * A JSON tuple rather than the session's file path, deliberately. The path
- * looks canonical and is not injective: `getSessionFilePath` interpolates the
- * id into the path, so a root of `/w` with id `a/sessions/b` and a root of
- * `/w/sessions/a` with id `b` produce the same string. A tuple cannot alias,
- * because JSON escaping keeps the two components separable.
+ * A JSON tuple rather than the session's file path, deliberately. A single
+ * interpolated path is not injective over its inputs: `getSessionFilePath`
+ * splices the id in, so root `/w` + id `a/sessions/b` and root `/w/sessions/a`
+ * + id `b` produce the same string. A tuple keeps the two components separable,
+ * because JSON escaping survives round-tripping.
  *
- * **Both components are canonicalised the same way the FILE PATH is**, which is
- * the half that is easy to miss. `getSessionPath` runs the id through
- * `sanitizeSessionId` (a `basename`) as path-traversal defence, so `nested/same`
- * and `same` name the SAME file — and keying on the raw id gave them two keys,
- * two tails, and two writers racing over one `.tmp`, which is precisely the
- * lost-bytes race this key exists to prevent, arrived at from the other
- * direction. The id therefore goes through the same canonicaliser the path uses;
- * there is one of it, and both callers use it.
+ * **Both components are canonicalised the way the FILE PATH canonicalises
+ * them**, which is the half that is easy to miss. `getSessionPath` runs the id
+ * through `sanitizeSessionId` (a `basename`) as path-traversal defence, so
+ * `nested/same` and `same` name the SAME file — and keying on the raw id gave
+ * them two keys, two tails, and two writers racing over one `.tmp`, which is
+ * precisely the lost-bytes race this key exists to prevent, arrived at from the
+ * other direction. The id therefore goes through the same canonicaliser the
+ * path uses; there is one of it, and both callers use it. The root is
+ * `resolve`d, so `/w`, `/w/`, and `/w/x/..` are one key.
  *
- * The root is `resolve`d for the same reason, so that `/w`, `/w/`, and `/w/x/..`
- * are one key rather than three writers racing over one file.
+ * **What "injective" means here, exactly.** The key is injective over the pair
+ * (`resolve`d root STRING, sanitised id) — it is string identity, NOT filesystem
+ * identity, and the difference is a real if narrow gap:
+ *
+ * - **Case.** On a case-insensitive volume (macOS by default, Windows)
+ *   `/Users/x/w` and `/Users/x/W` resolve to different strings and the same
+ *   directory, so they yield two keys over one artifact.
+ * - **Links.** There is no `realpath`, so a symlinked or bind-mounted root is a
+ *   different string for the same file.
+ *
+ * Accepted as a residual rather than fixed here. Both require hitting the same
+ * workspace through two different spellings in one process, which nothing in
+ * the product does — roots come from stored workspace config, not from user
+ * input at write time — and the fix is not free: `realpath` is a syscall per
+ * key on a hot path and fails for a root that does not exist yet, while
+ * case-folding correctly is locale-dependent. If it ever needs closing, do it
+ * by canonicalising the root ONCE where a workspace is loaded, not per write.
+ * Recorded on SUV-0066.
  *
  * Two DIFFERENT roots still give different keys even when the ids canonicalise
- * to the same thing — the point is to match the file, and those are two files.
+ * to the same thing — the point is to match the artifact, and those are two.
  *
  * Branded so the compiler rejects a bare `sessionId` at every call site. When
  * this was introduced it found all of them; that is the only reason to believe
@@ -276,7 +293,12 @@ export interface SessionCommitHooks {
  */
 export type SessionWriteKey = string & { readonly __sessionWriteKey: unique symbol }
 
-/** Build the canonical, injective key for a session's persistence state. */
+/**
+ * Build the key for a session's persistence state.
+ *
+ * Injective over (`resolve`d root string, sanitised id) — see the type's note
+ * on why that is string identity rather than filesystem identity.
+ */
 export function sessionWriteKey(workspaceRootPath: string, sessionId: string): SessionWriteKey {
   // `sanitizeSessionId` is the SAME canonicaliser `getSessionPath` applies, and
   // that is the whole requirement: the key must identify the file, not the
@@ -296,9 +318,25 @@ export function sessionWriteKey(workspaceRootPath: string, sessionId: string): S
  * looked, nothing local has happened and the external value applies; if it has
  * moved, the app changed it since and the app wins.
  *
- * `localAtObservation` is undefined when this process has never written the
- * session, in which case there is no evidence of a local change and the
- * external value applies.
+ * `localAtObservation` is undefined when this process has never enqueued or
+ * written the session, in which case there is no evidence of a local change and
+ * the external value applies.
+ *
+ * **What holding this is load-bearing FOR.** Not "preserving name and labels
+ * after a watcher event" — `applyExternalSessionMetadata` mirrors those into
+ * the managed session itself, so the next outgoing header carries them without
+ * any help from here. It matters for the fields that method deliberately does
+ * NOT mirror: today exactly `permissionMode`. For those the observation is the
+ * only surviving copy once a stale write has committed pre-edit state over the
+ * file, because supersede correctly keeps that file and the baseline then
+ * matches it, so nothing downstream can detect the divergence.
+ *
+ * The per-field later-local rule is what keeps that safe: the comparison above
+ * runs field by field, so an in-app change made AFTER the observation wins that
+ * field while the observation still supplies the fields the app has not touched.
+ * Dropping the whole observation on any local change would lose the external
+ * edit it exists to carry; applying all of it unconditionally would revert the
+ * user's newer edit.
  */
 type ExternalObservation = {
   external: HeaderMetadataSignature
@@ -443,18 +481,31 @@ class SessionPersistenceQueue {
   private cancelledThrough = new Map<SessionWriteKey, CancellationWatermark>()
   /**
    * Awaited at each commit boundary so a suite can land a cancel inside a write
-   * deterministically. **Injected once at construction and never reassignable.**
+   * deterministically. Supplied at construction; there is no setter.
    *
    * Real filesystem writes take measurable time and a cancel genuinely can
    * arrive mid-commit, but an in-memory test's writes settle far too fast to hit
    * those windows by timing. Without a seam the cancellation guards would be
    * untestable — and an untested guard is one nobody can tell is still working.
    *
-   * It used to be a public mutable property, which meant any in-process code
-   * could reassign it and — because the hooks are awaited — stall every session
-   * write. `readonly` and constructor-only removes that from the instance
-   * surface entirely: a queue a test owns gets its hooks at `new`, and the
-   * production singleton below is constructed without any.
+   * **What this does and does not buy, stated precisely**, because the previous
+   * version of this comment overclaimed on all three counts:
+   *
+   * - `readonly` is a TYPESCRIPT constraint. It is erased at runtime, so this
+   *   is not "never reassignable" — compiled JS can still assign to it. What it
+   *   removes is the typed, discoverable API that invited it.
+   * - The production singleton is NOT constructed without hooks. It is
+   *   constructed WITH delegating hooks that forward to a module-scoped holder,
+   *   which is how the few SessionManager-level suites reach a commit boundary.
+   * - The seam is therefore NARROWED, not absent:
+   *   `installSingletonCommitHooksForTesting` exists, off the package barrel and
+   *   behind a test-runner guard, and returns a token-scoped disposer. See its
+   *   own comment for the contract and for why it cannot be removed outright.
+   *
+   * The honest summary: an instance a test constructs needs no mutable surface
+   * at all, and the shared one has a single named, throwing, greppable entry
+   * point instead of an assignable property. Tightening further is a recorded
+   * residual on SUV-0066.
    */
   private readonly commitHooks?: SessionCommitHooks
   /**
@@ -515,6 +566,20 @@ class SessionPersistenceQueue {
    * write must not consume it.
    */
   private pendingExternalMetadata = new Map<SessionWriteKey, ExternalObservation>()
+  /**
+   * Once true, no new work is accepted and the queue is draining for shutdown.
+   *
+   * Without this, "flushed everything" was never actually true: `flushAll`
+   * could drain the union it found while a producer kept enqueueing behind it,
+   * so quit either looped against a moving target or returned with work still
+   * arriving. Freezing intake first is what makes quiescence a reachable state
+   * rather than a coincidence.
+   *
+   * Refusal is explicit and reported — an enqueue after this point returns a
+   * failed receipt rather than being silently dropped, because a caller that
+   * believes it saved something is worse off than one that is told it did not.
+   */
+  private closing = false
   private debounceMs: number
 
   constructor(debounceMs = 500, commitHooks?: SessionCommitHooks) {
@@ -533,6 +598,14 @@ class SessionPersistenceQueue {
   /** Shared by both entry points; `checked` decides whether it may be coalesced into. */
   private enqueueEntry(session: StoredSession, checked: boolean): number {
     const key = sessionWriteKey(session.workspaceRootPath, session.id)
+    if (this.closing) {
+      // Refused, not queued. Returning the current generation keeps the
+      // signature honest for `enqueue`'s fire-and-forget callers; a checked
+      // caller gets a failed receipt from `enqueueChecked` below, which is the
+      // answer that matters.
+      console.error(`[PersistenceQueue] Refused a write for ${session.id}: queue is closing`)
+      return this.generations.get(key) ?? 0
+    }
     const list = this.queued.get(key) ?? []
     const trailing = list[list.length - 1]
 
@@ -593,6 +666,15 @@ class SessionPersistenceQueue {
    */
   enqueueChecked(session: StoredSession): SessionWriteHandle {
     const key = sessionWriteKey(session.workspaceRootPath, session.id)
+    if (this.closing) {
+      // Answered immediately and negatively. A receipt is a durability claim,
+      // and the one claim it must never make is an optimistic one.
+      return {
+        key,
+        generation: this.generations.get(key) ?? 0,
+        receipt: Promise.resolve({ ok: false, error: 'session write refused: queue is closing' }),
+      }
+    }
     const generation = this.enqueueEntry(session, true)
     return { key, generation, receipt: this.receiptFor(key, generation) }
   }
@@ -720,28 +802,11 @@ class SessionPersistenceQueue {
    * Generations and the watermark go together or not at all: keeping one
    * without the other is precisely the inconsistency that would let a fresh
    * write be silently treated as cancelled.
-   *
-   * A session with an unresolved write failure is never retired — see below.
    */
   private retireIfQuiescent(key: SessionWriteKey): void {
     if (this.queued.has(key)) return
     if (this.tails.has(key)) return
     if (this.receiptWaiters.get(key)?.length) return
-    // An unresolved write failure outlives quiescence. Retiring it turns "the
-    // last write failed" into "nothing is outstanding, all good" — a claim
-    // about what is on disk, built out of deleted evidence. It clears on the next successful
-    // write, and retirement proceeds then.
-    //
-    // Honest scope: this guard has no live reader. Every receipt belongs to a
-    // generation minted by `enqueueChecked`, and that path leaves a pending
-    // entry, so it settles from `write`'s own failure handling rather than from
-    // this map. The guard stays because deleting a record of failure is the
-    // wrong default for the next reader, not because one exists today;
-    // `retirement-keeps-failure-evidence` pins it as state, not as behaviour.
-    //
-    // The cost is one map entry per session whose last write failed and which
-    // is never written again — bounded by real write failures, not by traffic.
-    if (this.lastWriteFailure.has(key)) return
     // No guard for `pendingExternalMetadata`, deliberately. Retirement below
     // does not touch that map, so an undischarged observation already survives
     // a sweep; blocking on it would only pin the generation maps open for a
@@ -1144,15 +1209,27 @@ class SessionPersistenceQueue {
    * session's file (I2): in-flight writes carrying pre-edit state must lose,
    * and the live session's file must survive.
    *
-   * The header-signature baseline is deliberately KEPT. It is the input to
-   * `write`'s external-change detection (`hasExternalMetadataChange` requires a
-   * previous signature), and that detection is the only thing that preserves
-   * `permissionMode`, `hasUnread` and `lastReadMessageId` — three of the seven
-   * merged metadata fields, and the only ones `applyExternalSessionMetadata`
-   * does not copy into memory itself. (`labels`, `isFlagged`, `sessionStatus`
-   * and `name` it does copy, so those survive without the merge.) Dropping the
-   * baseline here would make the very next write silently clobber the external
-   * edit this call exists to protect.
+   * The committed baseline is deliberately KEPT. It is the input to `write`'s
+   * external-change detection (`hasExternalMetadataChange` needs a previous
+   * baseline), and dropping it here would make the very next write see no
+   * divergence, conclude nothing external changed, and clobber the edit this
+   * call exists to protect.
+   *
+   * **Which fields actually depend on it, checked rather than assumed.** Of the
+   * seven merged fields, `applyExternalSessionMetadata` copies SIX into the
+   * managed session — `name`, `labels`, `isFlagged`, `sessionStatus`,
+   * `lastReadMessageId`, `hasUnread` — so for those the outgoing header already
+   * carries the external value and the merge is belt-and-braces. Exactly ONE is
+   * not mirrored: **`permissionMode`**, deliberately, because it is a
+   * declared-intent mutation with its own event and ADR-0021 emit rules. For
+   * that field the merge is the ONLY route by which an external edit reaches
+   * disk.
+   *
+   * An earlier version of this comment named three such fields. It was written
+   * before read-state mirroring was added to that method and was never updated
+   * — the two are now mirrored, and a test that picked `lastReadMessageId` as
+   * its merge-only field was silently proving less than it claimed. Re-derive
+   * this list from the method rather than trusting a comment, this one included.
    */
   supersedePendingWrites(key: SessionWriteKey, observedHeader?: SessionHeader): void {
     this.stopPendingWrites(key, 'supersede')
@@ -1225,27 +1302,37 @@ class SessionPersistenceQueue {
   }
 
   /**
-   * Flush every session with outstanding work. Call this on app quit.
+   * Close the queue and drain it. Call this on app quit.
    *
-   * The union of QUEUED and IN-FLIGHT, not just the queued ones. A write that
-   * has already been lifted off the queue onto its tail is exactly the write a
-   * quit must wait for — it is mid-commit, possibly between the unlink and the
-   * rename — and listing only queued keys walked straight past it. `flush`
-   * returns immediately for a key it cannot see, so quit returned while a
-   * session's file was still absent from disk.
+   * **Shutdown is a claim, and this method has to be able to fail.** The
+   * previous version drained the union it found and then, if a bound was hit,
+   * logged and returned normally — so a caller that awaited it and printed
+   * "flushed all pending session writes" printed that whether or not anything
+   * was still outstanding. A false success at shutdown is the worst kind: the
+   * process exits, the writes are gone, and the log says otherwise.
    *
-   * Looped rather than a single pass, because finishing one write can produce
-   * more: a commit hook or a concurrent `persistSession` can queue work while
-   * the first pass is awaiting, and a pass that only read the initial key set
-   * would leave it behind. Each round takes a fresh union and the loop ends
-   * when a round finds nothing, which is the real definition of quiescent.
+   * So it does two things in order, and either finishes or throws:
    *
-   * The bound exists so a pathological producer cannot hang quit forever. It is
-   * generous — a normal quit settles in one or two rounds — and it is reported
-   * rather than swallowed, because silently abandoning writes at quit is the
-   * failure this method exists to prevent.
+   * 1. **Freezes intake** (`closing`). Draining while producers keep enqueueing
+   *    is chasing a moving target; refusing new work first is what makes
+   *    quiescence reachable at all. Refused callers are told — see
+   *    `enqueueChecked`.
+   * 2. **Drains to true quiescence** — queued keys AND active tails, because a
+   *    write already lifted onto its tail is precisely the one a quit must wait
+   *    for: it may sit between the unlink and the rename, where the session has
+   *    no file at all. Re-taken each round, because finishing one write can
+   *    produce another (a commit hook, a watcher-triggered persist).
+   *
+   * The round bound exists so a pathological producer cannot hang quit forever.
+   * Reaching it is a FAILURE and throws; it is not an escape hatch. A caller
+   * that wants to exit anyway must catch it and say so, rather than inheriting
+   * a success it did not get.
+   *
+   * Idempotent for the already-quiet case. Reopening is deliberately explicit —
+   * see {@link reopenAfterFlushAll}; a normal process never reopens, it exits.
    */
   async flushAll(): Promise<void> {
+    this.closing = true
     for (let round = 0; round < FLUSH_ALL_MAX_ROUNDS; round++) {
       const keys = new Set([...this.queued.keys(), ...this.tails.keys()])
       if (!keys.size) return
@@ -1253,10 +1340,27 @@ class SessionPersistenceQueue {
     }
     const stragglers = new Set([...this.queued.keys(), ...this.tails.keys()])
     if (stragglers.size) {
-      console.error(
-        `[PersistenceQueue] flushAll gave up with ${stragglers.size} session(s) still writing after ${FLUSH_ALL_MAX_ROUNDS} rounds`,
+      throw new Error(
+        `Session persistence did not reach quiescence: ${stragglers.size} session(s) still writing after ${FLUSH_ALL_MAX_ROUNDS} drain rounds`,
       )
     }
+  }
+
+  /**
+   * Re-open a closed queue.
+   *
+   * Exists for two callers and no others: a test process that shares this
+   * singleton across suites (one suite exercising the quit path would otherwise
+   * refuse every later suite's writes), and a host that genuinely aborts a
+   * shutdown it had started. A real quit never calls this — it exits.
+   */
+  reopenAfterFlushAll(): void {
+    this.closing = false
+  }
+
+  /** Whether intake is frozen for shutdown. */
+  get isClosing(): boolean {
+    return this.closing
   }
 
   /**
@@ -1290,40 +1394,102 @@ class SessionPersistenceQueue {
 }
 
 /**
- * Hooks for the shared singleton, for the few suites that must exercise
- * mid-commit behaviour through `SessionManager` rather than through a queue
- * they own.
+ * The commit hooks currently installed on the shared queue, plus the token that
+ * owns them.
  *
- * Held here rather than on the instance so the queue itself has no settable
- * property. This is a NARROWED seam, not an absent one, and the honest reason
- * it cannot be removed outright is that `storage.ts:saveSession` and
- * `SessionManager` must share ONE queue instance — they write the same files,
- * and two instances would mean two tails over one `.tmp`, which is the race the
- * whole unit exists to prevent. So a SessionManager-level test cannot be given
- * its own queue, and the only remaining way to make a commit boundary
- * deterministic is a seam on the shared one. Recorded as a residual.
+ * A STACK of owners rather than a single slot, because "clear the hooks" is the
+ * operation that goes wrong. An unconditional `set(undefined)` in one suite's
+ * `afterEach` clears whatever is installed — including a later suite's hooks if
+ * the first one's teardown runs late, which turns a leak into a silent loss of
+ * the very seam the second suite depends on. Every install therefore captures
+ * the owner it displaced and hands back a disposer that restores it, and a
+ * disposer whose token is no longer current does NOTHING.
  */
-let singletonCommitHooks: SessionCommitHooks | undefined
+type SingletonHookOwner = { token: symbol; hooks: SessionCommitHooks; previous?: SingletonHookOwner }
+let singletonHookOwner: SingletonHookOwner | undefined
 
 /**
- * Attach commit hooks to the shared queue. **Tests only**, and they must clear
- * them in `afterEach` — a leaked hook fires inside every later suite's writes.
- * Throws when hooks are already attached, so a leak is loud rather than
- * mysterious.
+ * Install commit hooks on the shared queue and return a disposer.
+ *
+ * **Test-only**, and off the package barrel — reach it through
+ * `@craft-agent/shared/sessions/internal`.
+ *
+ * The seam exists at all because `storage.ts:saveSession` and `SessionManager`
+ * must share ONE queue instance: they write the same files, and two instances
+ * would mean two tails over one `.tmp`, which is the race this whole unit
+ * exists to prevent (I1). So a SessionManager-level test cannot be handed its
+ * own queue, and a shared instance is the only thing left to hook. Suites that
+ * own their queue should construct it with hooks instead and never come here.
+ *
+ * Contract:
+ *
+ * - The returned disposer is the ONLY way to uninstall. It is idempotent, and
+ *   it restores the owner this install displaced rather than clearing outright.
+ * - A disposer that is no longer the current owner is a no-op, so a late
+ *   teardown cannot strip a newer suite's hooks.
+ * - Refuses outside a test runner, so a production process cannot be talked
+ *   into stalling every session write through an awaited hook.
  */
-export function setSingletonCommitHooksForTesting(hooks: SessionCommitHooks | undefined): void {
-  if (hooks && singletonCommitHooks) {
-    throw new Error('Commit hooks are already attached to the shared persistence queue; a suite leaked them')
+export function installSingletonCommitHooksForTesting(hooks: SessionCommitHooks): () => void {
+  // Runtime guard, not a type. `readonly` and naming conventions are erased or
+  // ignorable; this is not.
+  if (!isTestRunner()) {
+    throw new Error('installSingletonCommitHooksForTesting is test-only and refuses to run outside a test runner')
   }
-  singletonCommitHooks = hooks
+  const token = Symbol('singleton-commit-hooks')
+  singletonHookOwner = { token, hooks, previous: singletonHookOwner }
+  let disposed = false
+  return () => {
+    if (disposed) return
+    disposed = true
+    // Unwind only if still ours. If a later install is on top, removing this
+    // owner from the middle of the stack would be worse than leaving it: the
+    // current hooks stay current either way, and the later disposer restores
+    // what IT displaced.
+    if (singletonHookOwner?.token === token) {
+      singletonHookOwner = singletonHookOwner.previous
+      return
+    }
+    // Not current: drop ourselves from the chain so the stack does not keep a
+    // disposed owner that a later unwind could restore.
+    for (let owner = singletonHookOwner; owner; owner = owner.previous) {
+      if (owner.previous?.token === token) {
+        owner.previous = owner.previous.previous
+        return
+      }
+    }
+  }
+}
+
+/**
+ * The hooks currently installed on the shared queue, or undefined.
+ *
+ * Read-only, and exists so the ownership contract above can be TESTED — the
+ * instance deliberately has no settable property, so there is otherwise nothing
+ * to observe. Off the barrel with the installer.
+ */
+export function currentSingletonCommitHooksForTesting(): SessionCommitHooks | undefined {
+  return singletonHookOwner?.hooks
+}
+
+/** Whether the process is running under a test runner. */
+function isTestRunner(): boolean {
+  // Bun sets this for `bun test`; NODE_ENV covers other runners. Deliberately a
+  // positive check for a test environment rather than a negative check for
+  // production, so an unset environment refuses instead of permitting.
+  return (
+    process.env.NODE_ENV === 'test' ||
+    typeof (globalThis as { Bun?: { jest?: unknown } }).Bun?.jest !== 'undefined' ||
+    process.env.BUN_TEST === '1'
+  )
 }
 
 // Singleton instance. Constructed with hooks that delegate to the holder above,
 // so the instance exposes nothing assignable.
 export const sessionPersistenceQueue = new SessionPersistenceQueue(500, {
-  beforeUnlink: (key) => singletonCommitHooks?.beforeUnlink?.(key),
-  beforeRename: (key) => singletonCommitHooks?.beforeRename?.(key),
-  afterRename: (key) => singletonCommitHooks?.afterRename?.(key),
+  beforeUnlink: (key) => singletonHookOwner?.hooks.beforeUnlink?.(key),
+  beforeRename: (key) => singletonHookOwner?.hooks.beforeRename?.(key),
+  afterRename: (key) => singletonHookOwner?.hooks.afterRename?.(key),
 })
 
 // Named exports for testing/customization

@@ -23,8 +23,9 @@ external metadata edit cannot be reverted by a write already in flight.
 ## Scope
 
 - `packages/shared/src/sessions/persistence-queue.ts` — the unit:
-  - `SessionWriteKey` = `sessionWriteKey(resolve(root), sessionId)`, a branded
-    JSON tuple. Injective where the session file path is not.
+  - `SessionWriteKey` = `sessionWriteKey(resolve(root), sanitizeSessionId(id))`,
+    a branded JSON tuple, canonicalised the way the file path is. Injective over
+    those two strings — string identity, not filesystem identity; see Residuals.
   - One per-key write tail. Every write chains onto it; a shared `.tmp` path
     makes concurrency a correctness problem, not a fairness one.
   - Owner receipts over a per-key FIFO (`enqueueChecked` → `SessionWriteHandle`).
@@ -39,14 +40,19 @@ external metadata edit cannot be reverted by a write already in flight.
     supersede completes the rename instead of walking away from nothing.
   - `resolveExternalMetadata` — one merge point, per-field authority
     (app-since-observation > disk-since-our-write > retained observation > local).
-  - `lastWrittenHeaderSignature` outlives quiescence; dropped only on deletion.
-    Set speculatively before the write for fs.watch self-echo detection, and
-    **restored on every non-committing branch** — only a successful rename
-    advances the committed baseline.
-  - `flushAll` awaits queued keys **and active tails**, looping to quiescence,
-    so quit cannot return with a session mid-commit.
+  - `inFlightSignature` (fs.watch echo suppression, published pre-write, cleared
+    on every exit) split from `committedMetadata` — the ONE baseline, promoted
+    only by a successful rename. It outlives quiescence, because that is exactly
+    when an external edit happens, and is dropped only on deletion.
+  - An observation is released only by its owning successful commit or by
+    explicit deletion — never on a timer.
+  - `flushAll` is shutdown: freeze intake (`closing`, refusing producers with a
+    failed receipt), drain queued keys **and** active tails to true quiescence,
+    and THROW rather than report a success it did not achieve.
 - `packages/shared/src/sessions/{storage,types,index}.ts` — header passthrough
-  for `pendingPlanExecution`, key-aware `saveSession`, exports.
+  for `pendingPlanExecution`, key-aware `saveSession`, exports; the public list
+  readers strip the draft at runtime and `sessions/internal.ts` carries the
+  off-barrel hydration reader and hook seam.
 - `packages/server-core/src/sessions/SessionManager.ts` — `writeKeyFor` and all
   13 rekeyed call sites; `applyExternalSessionMetadata` supersedes on the full
   header signature; read-state mirroring; the four pending-plan owners keep the
@@ -78,7 +84,7 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       and neither ordering of the two can undo the other.
 - [x] `applyExternalSessionMetadata` supersedes on a pure merge-only edit that
       changes nothing in memory, and does not strip the signature baseline.
-- [x] `pendingPlanExecution` survives the cold-load projection and an unrelated
+- [x] `pendingPlanExecution` survives the cold-load hydration and an unrelated
       persist; `draftInputSnapshot` appears in no wire projection.
 - [x] Observation baseline resolves both directions: an external edit landing
       during an uncommitted local change wins, and an in-app change made after
@@ -91,8 +97,15 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       disk's A, including for a supersede carrying no observed header.
 - [x] A checked receipt never reports success for a snapshot that was replaced,
       and consecutive ordinary writes still coalesce to one disk write.
-- [x] `diagnostics()` exposes every per-key map; an aged-out observation for a
-      session that is never written again is swept by unrelated activity.
+- [x] `diagnostics()` exposes every per-key map.
+- [x] The public list readers return records with `pendingPlanExecution`
+      deleted; the draft text appears in no serialized form of them, and the
+      off-barrel internal reader still carries it for hydration.
+- [x] A producer arriving after shutdown starts is refused with a receipt that
+      says so; `flushAll` throws rather than reporting false success; reopening
+      is explicit.
+- [x] A stale hook disposer cannot clear a newer owner's hooks, and the seam
+      refuses outside a test runner.
 - [x] Ids that name one file share one key and tail (`nested/same` == `same`),
       while the same canonical id under different roots stays separate.
 - [x] A failed rename does not advance the committed baseline; an abandoned
@@ -105,7 +118,45 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
 
 ## Review findings
 
-### Round 3 — architecture review
+### Review 4 — architecture final + security final
+
+Security cleared P0–P2 and left three prose corrections; the architecture pass
+found four more, one of which showed a round-3 fix had been type-level only.
+
+1. **`pendingPlanExecution` is now stripped at RUNTIME.** Round 3 narrowed the
+   type, which stops autocomplete and stops nothing from `JSON.stringify`-ing
+   the record onto a wire payload. The public `listSessions` /
+   `listActiveSessions` / `listArchivedSessions` now return records with the key
+   deleted, and the bearing reader is `listSessionsWithPendingPlan`, exported
+   from `@craft-agent/shared/sessions/internal` and off the barrel. The
+   type-level test was replaced by one asserting the serialized form.
+2. **The hook seam is a token/disposer with a runtime guard.** No unconditional
+   `set(undefined)`: installing captures the owner it displaced, the disposer
+   restores that owner, and a stale disposer is a no-op so a late teardown
+   cannot strip a newer suite's hooks. Refuses outside a test runner. Off the
+   barrel.
+3. **`flushAll` is shutdown, and can fail.** It sets a `closing` state that
+   refuses new producers (a refused checked write gets a failed receipt, not
+   silence), drains queued keys and active tails to true quiescence, and
+   **throws** if the round bound is exhausted rather than returning as though it
+   had succeeded. Reopening is explicit. The electron quit path now says writes
+   may be lost when it catches, instead of logging an ordinary cleanup error.
+4. **Stale comments cleaned.** The merge-only field list was wrong — six of the
+   seven fields are mirrored and only `permissionMode` is not, a claim my own
+   round-1 read-state mirroring invalidated. Worse, a test had picked
+   `lastReadMessageId` as its "merge-only" field and therefore **passed with the
+   observation mechanism disabled**; it now uses `permissionMode` and fails
+   without it. Also removed: the retirement failure-evidence guard, which had no
+   reader, and its test.
+
+Security prose corrections, all three applied: `readonly` is TypeScript-only and
+the singleton IS constructed with delegating hooks, so the seam is narrowed
+rather than absent; the write key is injective over (resolved root string,
+sanitised id) — string identity, not filesystem identity, with case-insensitive
+and symlinked spellings a recorded residual; and the observation doc no longer
+claims to preserve fields `applyExternalSessionMetadata` already mirrors.
+
+### Review 3 — architecture (2e9d7060)
 
 Seven items; two were already satisfied by round 2 and verified rather than
 re-implemented. Of the rest, one was a real defect I had introduced and missed.
@@ -140,7 +191,7 @@ re-implemented. Of the rest, one was a real defect I had introduced and missed.
    than skipped, and the repeated rationale is collapsed into four named
    invariants (I1–I4) in the file header that the sites reference.
 
-### Round 2 — independent review
+### Review 2 — independent (5f9d2319)
 
 ### Round 2 — independent review
 
@@ -175,7 +226,7 @@ failing test before being fixed, and each fix is mutation-verified.
    not provide — `ok: true` means committed, with the missing `fsync` recorded
    as a residual instead of implied away.
 
-### Round 1 — Greptile
+### Review 1 — Greptile (797f1ebb)
 
 Greptile returned 3/5 with two P1s and a P2. All three were valid; the first was
 reproduced before being fixed.
@@ -218,14 +269,28 @@ activity.
   small record per session that received an external edit, was never
   successfully written again, and was never deleted — bounded by that anomaly
   rather than by traffic, and visible in `diagnostics()`.
-- **The shared queue keeps one named test seam**
-  (`setSingletonCommitHooksForTesting`). Hooks are otherwise constructor-only
-  and `readonly`, and the instance exposes nothing assignable. The seam cannot
-  be removed outright because `storage.ts:saveSession` and `SessionManager` must
-  share ONE queue instance — they write the same files, and two instances would
-  mean two tails over one `.tmp`, which is the race this unit exists to prevent.
-  So a SessionManager-level test cannot be handed its own queue. It throws if
-  hooks are already attached, so a leak between suites is loud.
+- **The shared queue keeps one narrowed test seam**
+  (`installSingletonCommitHooksForTesting`, `sessions/internal`). Hooks are
+  otherwise constructor-only; note that `readonly` is a TypeScript constraint
+  and erased at runtime, so what it removes is the discoverable API, not the
+  ability. The seam is additionally guarded at runtime (refuses outside a test
+  runner) and hands back a token-scoped disposer. It cannot be removed outright
+  because `storage.ts:saveSession` and `SessionManager` must share ONE queue
+  instance — they write the same files, and two instances would mean two tails
+  over one `.tmp`, which is the race this unit exists to prevent. So a
+  SessionManager-level test cannot be handed its own queue.
+- **The write key is injective over strings, not over filesystem identity.**
+  (`resolve`d root string, sanitised id). On a case-insensitive volume two
+  spellings of one root yield two keys over one artifact, and there is no
+  `realpath`, so a symlinked root is a different string for the same directory.
+  Accepted rather than fixed: it needs the same workspace reached through two
+  spellings in one process, which nothing does (roots come from stored config),
+  and `realpath` is a syscall per key on a hot path that also fails for a root
+  that does not exist yet. If it needs closing, canonicalise the root ONCE where
+  a workspace is loaded.
+- **Shutdown can fail and says so.** `flushAll` throws when it cannot reach
+  quiescence within its round bound. Callers must not report success on that
+  path; the electron quit handler logs that writes may be lost.
 - Exact-generation receipt matching is unreachable-by-construction today given
   the FIFO, and is kept as defence against coalescing being reintroduced.
 
@@ -249,6 +314,12 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 4 (architecture final + security final): the round-3
+  pending-plan narrowing was type-level only and is now a runtime strip behind
+  an off-barrel internal reader; the hook seam became a guarded token/disposer;
+  `flushAll` became a real shutdown that freezes intake and throws rather than
+  reporting a success it did not achieve; and a test that named a now-mirrored
+  field as merge-only was proven vacuous and rewritten.
 - `2026-09-12` — review round 3 (architecture): the write key did not
   canonicalise the session id the way the file path does, so two ids naming one
   file raced; the committed baseline was split from the fs-watch echo value,

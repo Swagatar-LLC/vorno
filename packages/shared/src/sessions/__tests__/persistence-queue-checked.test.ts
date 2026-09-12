@@ -12,7 +12,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SessionPersistenceQueue, sessionWriteKey, type SessionCommitHooks, type SessionWriteKey } from '../persistence-queue.ts';
+import {
+  SessionPersistenceQueue,
+  sessionWriteKey,
+  type SessionCommitHooks,
+  type SessionWriteKey,
+  type SessionWriteReceipt,
+} from '../persistence-queue.ts';
 import { getSessionFilePath } from '../storage.ts';
 import type { StoredSession } from '../types.ts';
 
@@ -129,10 +135,10 @@ describe('SessionPersistenceQueue checked writes', () => {
     // What this proves: a persistently broken session never gets an optimistic
     // receipt, and a fixed one is not stuck reporting the old failure.
     //
-    // What it does NOT prove, despite an earlier comment here claiming it: that
-    // retirement preserves failure evidence. Each write below fails on its own
-    // merits, so the assertions hold whether or not `retireIfQuiescent` keeps
-    // `lastWriteFailure`. That invariant is pinned separately, as state.
+    // Each write below fails on its own merits rather than by inheriting a
+    // remembered failure, which is why retirement no longer needs to preserve
+    // `lastWriteFailure` across quiescence — the guard that did so had no
+    // reader and is gone.
     mkdirSync(join(root, 'sessions', 'f1', 'session.jsonl.tmp'), { recursive: true });
     expect((await write('f1').receipt).ok).toBe(false);
 
@@ -174,27 +180,72 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(existsSync(getSessionFilePath(root, 'quit1'))).toBe(true);
     });
 
-    it('flushAll keeps going for work that appears while it is draining', async () => {
-      // One pass over the initial key set is not quiescence: finishing a write
-      // can produce more, and a pass that only read the first union would leave
-      // it behind. Here a commit enqueues a second session mid-flush.
-      let queuedMore = false;
+    it('refuses a producer that arrives once shutdown has started', async () => {
+      // Draining while producers keep enqueueing is chasing a moving target, so
+      // shutdown freezes intake FIRST. A write attempted after that point is
+      // refused and TOLD so — the previous behaviour swept it into the drain,
+      // which made "flushed everything" true only by accident of timing.
+      let refused: SessionWriteReceipt | undefined
       hooks = {
         afterRename: () => {
-          if (queuedMore) return;
-          queuedMore = true;
-          queue.enqueue(session('quit3'));
+          if (refused) return
+          // Mid-drain, so `closing` is already set.
+          const late = queue.enqueueChecked(session('late1'));
+          void late.receipt.then((r) => { refused = r });
         },
       };
       queue.enqueueChecked(session('quit2'));
       await queue.flushAll();
       hooks = undefined;
 
-      expect(queuedMore).toBe(true);
-      // Both on disk, and nothing left outstanding.
+      expect(queue.isClosing).toBe(true);
+      // The first session landed; the late one was refused rather than queued.
       expect(existsSync(getSessionFilePath(root, 'quit2'))).toBe(true);
-      expect(existsSync(getSessionFilePath(root, 'quit3'))).toBe(true);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(refused).toEqual({ ok: false, error: 'session write refused: queue is closing' });
+      expect(existsSync(getSessionFilePath(root, 'late1'))).toBe(false);
+      // And nothing is left outstanding, which is what quit is entitled to know.
       expect(queue.pendingCount).toBe(0);
+    });
+
+    it('reopening is explicit, so a closed queue accepts work again only on request', async () => {
+      // A real quit exits and never reopens. This exists for a test process
+      // sharing one queue across suites, and for a host that aborts a shutdown
+      // it had begun — without it, one flushAll would refuse every later write
+      // in the process.
+      await queue.flushAll();
+      expect(queue.isClosing).toBe(true);
+      expect((await queue.enqueueChecked(session('after1')).receipt).ok).toBe(false);
+
+      queue.reopenAfterFlushAll();
+      expect(queue.isClosing).toBe(false);
+      await write('after1').tail;
+      expect(existsSync(getSessionFilePath(root, 'after1'))).toBe(true);
+    });
+
+    it('fails loudly when it cannot reach quiescence, instead of reporting success', async () => {
+      // The bound is a safety net, not an escape hatch. A caller that awaited
+      // the old version and logged "flushed all pending session writes" logged
+      // that whether or not anything was still outstanding — the worst kind of
+      // false success, because the process then exits.
+      //
+      // A hook that re-enqueues via the private queue bypasses the `closing`
+      // refusal, which is the only way to hold work open past the bound; a real
+      // producer is refused long before this.
+      const internals = queue as unknown as { queued: Map<string, unknown[]>; closing: boolean };
+      hooks = {
+        afterRename: (key) => {
+          // Put the entry straight back, forever.
+          const list = internals.queued.get(key) ?? [];
+          list.push({ data: session('stuck1'), timer: setTimeout(() => {}, 0), generation: 1, checked: false });
+          internals.queued.set(key, list);
+        },
+      };
+      queue.enqueueChecked(session('stuck1'));
+
+      await expect(queue.flushAll()).rejects.toThrow(/did not reach quiescence/);
+      hooks = undefined;
+      internals.queued.clear();
     });
   });
 
@@ -721,30 +772,6 @@ describe('SessionPersistenceQueue checked writes', () => {
       // Every map is keyed by session id, so without retirement each deleted
       // session leaves an entry in all of them for the life of the process.
       expect(queue.diagnostics()).toEqual(baseline);
-    });
-
-    it('retirement-keeps-failure-evidence: a failed write is not retired away', async () => {
-      // Scope, stated plainly: this pins STATE, not behaviour. No caller reads
-      // `lastWriteFailure` after quiescence — every receipt belongs to a
-      // generation that leaves a pending entry and settles from `write`'s own
-      // failure handling. So no black-box assertion can show a wrong ANSWER if
-      // the guard goes; what it can show is that the record of the failure
-      // still exists, which is the invariant the guard is there to hold for the
-      // next reader.
-      mkdirSync(join(root, 'sessions', 'ev1', 'session.jsonl.tmp'), { recursive: true });
-      expect((await write('ev1').receipt).ok).toBe(false);
-      await write('ev1').tail;
-
-      // Quiescent: nothing pending, tail drained, no waiters. Retirement has
-      // run and must have declined to take the failure with it.
-      expect(queue.diagnostics().lastWriteFailure).toBe(1);
-
-      // And it is not kept forever: a successful write clears it, after which
-      // the session retires like any other.
-      rmSync(join(root, 'sessions', 'ev1', 'session.jsonl.tmp'), { recursive: true, force: true });
-      expect((await write('ev1').receipt).ok).toBe(true);
-      await write('ev1').tail;
-      expect(queue.diagnostics().lastWriteFailure).toBe(0);
     });
 
     it('keeps the header-signature baseline across ordinary quiescence', async () => {
