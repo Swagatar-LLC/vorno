@@ -814,9 +814,10 @@ in the meantime — permanently, if the process dies in the window.
   lose, and **never unlinks the final file**. It also keeps the baseline, which
   is the second half of the same bug: the baseline is the input to `write`'s
   external-change detection, and that detection is the only thing carrying
-  `labels`, `isFlagged`, `permissionMode`, `hasUnread` and `lastReadMessageId` —
-  five fields the caller's own reconciliation does not touch. Dropping it would
-  make the next write clobber the very edit the call exists to protect.
+  `permissionMode`, `hasUnread` and `lastReadMessageId` — three of the seven
+  merged fields, and the only ones the caller's own reconciliation does not copy
+  into memory. Dropping it would make the next write clobber the very edit the
+  call exists to protect.
 
 The intent rides on the watermark (`{ through, discardCommitted }`) rather than
 being inferred at the unlink, and both fields are **monotonic**: a supersede
@@ -837,6 +838,54 @@ the first one I caught by injecting rather than by being told.
 
 Five injections, five caught: supersede-discards-file, supersede-drops-baseline,
 deletion-stops-discarding, intent-not-sticky, and the caller binding itself.
+
+## Round 24 — the split fixed the deletion and left the data loss
+
+`2026-09-12` — Greptile P1 on the round-23 head. Accepted: correct, and it is
+the half of the same bug the split did not reach.
+
+Supersede keeping the committed file is right, but it leaves a window. A write
+that read its header *before* an external edit, and renames *after* the watcher
+observed it, commits its pre-edit snapshot over that edit. Supersede then
+(correctly) keeps that file — so disk no longer holds the edit, **and** the
+signature baseline now equals the stale file's own signature, so the next write
+detects no divergence at all. Re-reading disk cannot recover this: disk is
+exactly what was lost. At that instant the edit exists only in what the watcher
+read.
+
+So the observation now travels with the call — `supersedePendingWrites(id,
+observedHeader)` — and `write` applies it before comparing against disk, with
+disk still able to win on top. It is cleared only by a write that actually
+commits it; an abandoned write must not consume it.
+
+Note this was NOT introduced by the split: the old `cancel` lost the same fields
+*and* deleted the file. Round 23 fixed the deletion; this fixes the loss.
+
+**Two corrections to round 23's own claims, both found by falsification.**
+
+1. **"Five fields" was wrong — it is three.** `applyExternalSessionMetadata`
+   does copy `labels` and `isFlagged` into the managed session, which round 23's
+   write-up missed by reading only the tail of the method. The genuinely
+   merge-only fields are `permissionMode`, `hasUnread` and `lastReadMessageId`.
+   Corrected in the queue, the caller, and this document.
+2. **Both new tests were asserting on `labels`, so neither could fail.** Because
+   the reconciliation copies `labels` into memory, the next write persists it
+   regardless and the assertions held with the fix removed. Retargeted at
+   `lastReadMessageId`. The end-to-end test also needed a *tracked* field in the
+   same edit — without one the reconciliation returns `changed: false` and never
+   calls supersede at all — so it now edits `name` as well and asserts the
+   supersede actually ran before making any claim about what survived.
+
+That is the ninth and tenth instance in this SUV of *the assertion was fine, the
+construction did not reach the path*. The pattern is now specific enough to
+state as a rule: **a test for "X is preserved" must choose an X that nothing
+else preserves.** Picking a field with a second owner proves only that the other
+owner works.
+
+Four injections, three caught at both levels. The fourth — a retirement guard
+for the outstanding observation — changed no test, because retirement never
+touched that map; the guard was removed rather than kept as decoration, since
+its only real effect would have been to pin the generation maps open.
 
 ## Residuals
 

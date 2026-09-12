@@ -406,6 +406,50 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(queue.getLastWrittenSignature('sig3')).toBeUndefined();
     });
 
+    it('a stale write that commits after the watcher read cannot eat the edit', async () => {
+      // The narrow window the supersede split left open, and the reason the
+      // observed header has to travel with the call.
+      //
+      // Ordering: generation G reads the header, THEN the external edit lands,
+      // THEN the watcher sees it and supersedes, THEN G's rename commits its
+      // pre-edit snapshot over the edit. Supersede (correctly) keeps that file,
+      // so disk no longer holds the edit — and the baseline now equals the
+      // stale file's own signature, so the next write detects no divergence.
+      // Merging "from disk" cannot recover this; the edit only still exists in
+      // what the watcher observed.
+      await write('race1').tail;
+      const file = getSessionFilePath(root, 'race1');
+
+      const externalEdit = () => {
+        const lines = readFileSync(file, 'utf-8').split('\n');
+        const header = JSON.parse(lines[0]!) as Record<string, unknown>;
+        // `lastReadMessageId` is merge-only: unlike labels/name, nothing copies
+        // it into the caller's in-memory session, so the merge is the sole path
+        // by which it can survive.
+        header.lastReadMessageId = 'external-only';
+        writeFileSync(file, [JSON.stringify(header), ...lines.slice(1)].join('\n'));
+        return header;
+      };
+
+      let observed: Record<string, unknown> | undefined;
+      queue.commitHooks = {
+        // After G computed its header: the edit lands on disk now, so G's
+        // snapshot predates it.
+        beforeUnlink: () => { observed = externalEdit(); },
+        // The watcher notices and supersedes while G is mid-commit.
+        afterRename: (id) => { queue.supersedePendingWrites(id, observed as never); },
+      };
+      await write('race1').tail;
+      queue.commitHooks = undefined;
+
+      // G's stale file is on disk (correctly kept — the session is live). The
+      // replacement write must still land the observed edit.
+      await write('race1').tail;
+
+      const after = JSON.parse(readFileSync(file, 'utf-8').split('\n')[0]!) as Record<string, unknown>;
+      expect(after.lastReadMessageId).toBe('external-only');
+    });
+
     it('KEEPS the signature baseline through a supersede', async () => {
       // The other half of the asymmetry, and the one with teeth. A supersede
       // fires precisely because an external metadata edit was detected, and the

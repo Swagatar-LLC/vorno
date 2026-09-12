@@ -183,6 +183,22 @@ class SessionPersistenceQueue {
    */
   private lastWriteFailure = new Map<string, string>()
   private lastWrittenHeaderSignature = new Map<string, string>()
+  /**
+   * Metadata an external writer was OBSERVED to have, held until a write lands
+   * it.
+   *
+   * Recovering an external edit by re-reading disk is not sound, because disk is
+   * exactly what can be lost: a write that read its header before the edge and
+   * renames after the watcher saw it commits a pre-edit snapshot over the edit,
+   * and — since supersede correctly keeps that file — the baseline then equals
+   * the stale file's own signature, so the next write detects no divergence at
+   * all. The edit at that point exists only in what the watcher read.
+   *
+   * So the observation travels with `supersedePendingWrites` instead of being
+   * re-derived. Cleared only when a write actually commits it; an abandoned
+   * write must not consume it.
+   */
+  private pendingExternalMetadata = new Map<string, SessionHeader>()
   private debounceMs: number
 
   constructor(debounceMs = 500) {
@@ -348,6 +364,14 @@ class SessionPersistenceQueue {
     // The cost is one map entry per session whose last write failed and which
     // is never written again — bounded by real write failures, not by traffic.
     if (this.lastWriteFailure.has(sessionId)) return
+    // No guard for `pendingExternalMetadata`, deliberately. Retirement below
+    // does not touch that map, so an undischarged observation already survives
+    // a sweep; blocking on it would only pin the generation maps open for a
+    // session that may never be written again. Retiring generations under an
+    // outstanding observation is harmless — the next enqueue simply starts at
+    // generation 1 with a zero watermark, and the observation still applies to
+    // it. (A guard here was written first, then removed: injecting its removal
+    // changed no test, because it never had an effect to remove.)
 
     this.generations.delete(sessionId)
     this.writtenGeneration.delete(sessionId)
@@ -430,7 +454,15 @@ class SessionPersistenceQueue {
 
       // Create JSONL content: header + messages (one per line)
       // Filter out intermediate messages - they're transient streaming status updates
-      const localHeader = createSessionHeader(storageSession)
+      // An observed external edit is applied FIRST, so the header we intend to
+      // write already carries it and the disk comparison below runs against the
+      // truth rather than against local state that never heard about it. Disk
+      // can still win on top: a newer external change is still a newer external
+      // change.
+      const observedExternal = this.pendingExternalMetadata.get(sessionId)
+      const localHeader = observedExternal
+        ? mergeHeaderWithExternalMetadata(createSessionHeader(storageSession), observedExternal)
+        : createSessionHeader(storageSession)
       const localSig = getHeaderMetadataSignature(localHeader)
       const diskHeader = readSessionHeader(filePath)
       const previousSig = this.lastWrittenHeaderSignature.get(sessionId)
@@ -532,6 +564,12 @@ class SessionPersistenceQueue {
       if (await abandonIfCancelled(true)) return false
 
       debug(`[PersistenceQueue] Wrote session ${sessionId}`)
+      // Landed, so the observation has been discharged. Deliberately NOT done
+      // on the abandon paths: a write that never committed has not carried the
+      // edit anywhere, and dropping it there would lose it for good.
+      if (observedExternal && this.pendingExternalMetadata.get(sessionId) === observedExternal) {
+        this.pendingExternalMetadata.delete(sessionId)
+      }
       this.lastWriteFailure.delete(sessionId)
       this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
       this.settleReceipts(sessionId, generation, { ok: true })
@@ -601,6 +639,7 @@ class SessionPersistenceQueue {
     // this baseline to detect an external edit.
     this.lastWrittenHeaderSignature.delete(sessionId)
     this.lastWriteFailure.delete(sessionId)
+    this.pendingExternalMetadata.delete(sessionId)
     // Drop the bookkeeping, but only if nothing is still in flight. Deleted
     // sessions would otherwise leave an entry in every map for the life of the
     // process; a session with a live tail retires when that tail drains.
@@ -619,13 +658,19 @@ class SessionPersistenceQueue {
    * The header-signature baseline is deliberately KEPT. It is the input to
    * `write`'s external-change detection (`hasExternalMetadataChange` requires a
    * previous signature), and that detection is the only thing that preserves
-   * `labels`, `isFlagged`, `permissionMode`, `hasUnread` and
-   * `lastReadMessageId` — five fields the caller's own reconciliation does not
-   * carry. Dropping the baseline here would make the very next write silently
-   * clobber the external edit this call exists to protect.
+   * `permissionMode`, `hasUnread` and `lastReadMessageId` — three of the seven
+   * merged metadata fields, and the only ones `applyExternalSessionMetadata`
+   * does not copy into memory itself. (`labels`, `isFlagged`, `sessionStatus`
+   * and `name` it does copy, so those survive without the merge.) Dropping the
+   * baseline here would make the very next write silently clobber the external
+   * edit this call exists to protect.
    */
-  supersedePendingWrites(sessionId: string): void {
+  supersedePendingWrites(sessionId: string, observedHeader?: SessionHeader): void {
     this.stopPendingWrites(sessionId, { discardCommitted: false })
+    // Hold what the caller actually saw. Re-reading disk later is not equivalent
+    // — see `pendingExternalMetadata`. Newest observation wins; it is the more
+    // recent view of the same external writer.
+    if (observedHeader) this.pendingExternalMetadata.set(sessionId, observedHeader)
     // No retirement sweep and no baseline drop: this session is live, is about
     // to be written again, and its baseline is load-bearing for that write.
   }

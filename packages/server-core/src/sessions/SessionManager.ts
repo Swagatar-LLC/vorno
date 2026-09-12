@@ -1705,7 +1705,17 @@ export class SessionManager implements ISessionManager {
       // leaving it absent from disk until the replacement write lands — and
       // would drop the header-signature baseline that the replacement write
       // needs to detect this very edit.
-      sessionPersistenceQueue.supersedePendingWrites(sessionId)
+      //
+      // The observed header travels with the call. Re-reading disk later is not
+      // equivalent: a write that read its header before this edit and renames
+      // after we saw it commits a pre-edit snapshot over it, and supersede
+      // (correctly) keeps that file — so disk no longer holds the edit, and the
+      // baseline matches the stale file so nothing detects the divergence. The
+      // three fields this reconciliation does NOT copy into memory —
+      // permissionMode, hasUnread, lastReadMessageId — would be lost for good.
+      // (labels, isFlagged, sessionStatus and name are copied above, so they
+      // survive on their own; these three exist only in the observed header.)
+      sessionPersistenceQueue.supersedePendingWrites(sessionId, header)
       this.persistSession(managed)
     }
 
