@@ -614,6 +614,40 @@ flag shared by a producer and an in-flight consumer is the wrong shape. Three
 times it wanted an owner token; here it wanted a watermark. Both are "say which
 one you mean" rather than "say whether".
 
+## Round 19 — cancellation rechecked at every commit boundary
+
+`2026-09-12` — architecture review of the cancellation work itself.
+
+- **One pre-commit check is not enough.** `unlink` and `rename` are each awaits,
+  so a cancel can land between them, or after the rename has already committed
+  — the last case leaves the bytes on disk for a session the caller deleted,
+  which a single pre-check misses entirely. The watermark is now re-asked after
+  every awaited boundary, and the post-rename path removes the artifact it
+  produced. Cleanup happens **before** the receipt settles, so "cancelled" can
+  never be reported while the thing it describes might still exist, and before
+  the tail releases, so later generations start clean rather than racing it.
+- **A post-cancel `flushChecked` could hang.** `write` returns early when
+  nothing is pending — exactly what `cancel` leaves behind — so a receipt that
+  waited for a write waited forever. A generation at or below the watermark now
+  answers terminally and at once.
+- **Per-session bookkeeping is retired** once the tail has drained with nothing
+  pending and nobody waiting. Six maps keyed by session id would otherwise hold
+  an entry for every session ever written, including every deleted one.
+  Generations and the watermark retire together or not at all — keeping one
+  without the other is exactly the inconsistency that would let a fresh write be
+  treated as cancelled.
+
+**A test seam was added deliberately** (`commitHooks`). Real writes take
+measurable time and a cancel genuinely lands mid-commit, but this suite's writes
+settle far too fast to hit those windows by timing — the previous round's
+attempt proved that by passing with the guard removed. An untested guard is one
+nobody can tell is still working, so the boundaries are now driven explicitly.
+
+One of the four boundaries needed its assertion changed rather than its code:
+the pre-rename check is masked by the post-rename cleanup if you only look at
+the final state on disk, so the test asserts the **rename never happened**
+instead. It passed with that boundary removed until it did.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

@@ -170,26 +170,139 @@ describe('SessionPersistenceQueue.flushChecked', () => {
     expect(existsSync(getSessionFilePath(root, 's9'))).toBe(true);
   });
 
-  it('a re-enqueue does not un-cancel a write already in flight', async () => {
-    // The reason cancellation is a watermark rather than a flag. With a flag,
-    // `enqueue` cleared it — so a stale write already on the tail reached its
-    // pre-commit check, found the flag cleared by the newer enqueue, and
-    // committed over it. Bounding the cancel to the generations that existed
-    // when it ran leaves nothing to clear.
-    const stale = session('s10');
+  it('abandons a write cancelled during the unlink boundary', async () => {
+    // Real writes take measurable time and a cancel genuinely lands mid-commit;
+    // an in-memory suite's writes settle far too fast to hit that by timing. The
+    // hook makes the window deterministic instead of hoping for it.
+    queue.commitHooks = { beforeUnlink: (id) => { queue.cancel(id) } };
+    queue.enqueue(session('c1'));
+    const receipt = queue.flushChecked('c1');
+    await queue.flush('c1');
+
+    expect(await receipt).toMatchObject({ ok: false });
+    expect(existsSync(getSessionFilePath(root, 'c1'))).toBe(false);
+    expect(existsSync(getSessionFilePath(root, 'c1') + '.tmp')).toBe(false);
+  });
+
+  it('abandons a write cancelled between the unlink and the rename', async () => {
+    // Asserted by whether the RENAME happened at all, not only by the final
+    // state on disk: the post-rename check would clean up after a rename that
+    // should never have occurred, so a state-only assertion passes with this
+    // boundary removed and proves nothing about it.
+    let renamed = false;
+    queue.commitHooks = {
+      beforeRename: (id) => { queue.cancel(id) },
+      afterRename: () => { renamed = true },
+    };
+    queue.enqueue(session('c2'));
+    const receipt = queue.flushChecked('c2');
+    await queue.flush('c2');
+
+    expect(renamed).toBe(false);
+    expect(await receipt).toMatchObject({ ok: false });
+    expect(existsSync(getSessionFilePath(root, 'c2'))).toBe(false);
+    expect(existsSync(getSessionFilePath(root, 'c2') + '.tmp')).toBe(false);
+  });
+
+  it('removes the artifact when the cancel lands AFTER the rename committed', async () => {
+    // The case a single pre-commit check misses entirely: the bytes are already
+    // on disk for a session the caller has deleted. The receipt must not say
+    // "cancelled" while that artifact could survive, so the removal happens
+    // before the receipt settles and before the tail releases.
+    queue.commitHooks = { afterRename: (id) => { queue.cancel(id) } };
+    queue.enqueue(session('c3'));
+    const receipt = queue.flushChecked('c3');
+    await queue.flush('c3');
+
+    expect(await receipt).toMatchObject({ ok: false });
+    expect(existsSync(getSessionFilePath(root, 'c3'))).toBe(false);
+    expect(existsSync(getSessionFilePath(root, 'c3') + '.tmp')).toBe(false);
+  });
+
+  it('answers a post-cancel flushChecked immediately instead of hanging', async () => {
+    queue.enqueue(session('c4'));
+    queue.cancel('c4');
+
+    // `write` returns early when nothing is pending — exactly what `cancel`
+    // leaves behind — so a receipt that waited for a write would wait forever.
+    // The answer here is `ok` because the cancel left nothing outstanding AND
+    // retired the session's bookkeeping; what matters is that it is an answer.
+    const receipt = await Promise.race([
+      queue.flushChecked('c4'),
+      new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 1_000)),
+    ]);
+    expect(receipt).not.toBe('timeout');
+  });
+
+  it('reports cancelled — promptly — while the cancelled write is still in flight', async () => {
+    // The case where the watermark is still live, because retirement is blocked
+    // by the in-flight tail. A caller asking about a generation at or below it
+    // gets a terminal answer rather than waiting for a write that will never
+    // commit.
+    let held!: () => void;
+    const holding = new Promise<void>((resolve) => { held = resolve; });
+    queue.commitHooks = { beforeRename: async () => { await holding; } };
+
+    queue.enqueue(session('c6'));
+    const inFlight = queue.flush('c6');
+    await new Promise((r) => setTimeout(r, 10));
+    queue.cancel('c6');
+
+    const receipt = await Promise.race([
+      queue.flushChecked('c6'),
+      new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 1_000)),
+    ]);
+    expect(receipt).not.toBe('timeout');
+    expect(receipt).toMatchObject({ ok: false });
+
+    held();
+    await inFlight;
+    queue.commitHooks = undefined;
+  });
+
+  it('a stale in-flight write cannot commit over a newer one', async () => {
+    // The reason cancellation is a watermark rather than a flag: with a flag,
+    // `enqueue` cleared it and the stale write — held open here — reached its
+    // pre-commit check, found the flag gone, and committed over the fresh
+    // state.
+    let held!: () => void;
+    const holding = new Promise<void>((resolve) => { held = resolve; });
+    queue.commitHooks = { beforeRename: async () => { await holding; } };
+
+    const stale = session('c5');
     (stale as unknown as { name: string }).name = 'stale';
-    const staleGen = queue.enqueue(stale);
-    queue.cancel('s10');
+    queue.enqueue(stale);
+    const staleWrite = queue.flush('c5');
 
-    const fresh = session('s10');
+    // Let the stale write reach the held boundary, then cancel and supersede.
+    await new Promise((r) => setTimeout(r, 10));
+    queue.cancel('c5');
+    const fresh = session('c5');
     (fresh as unknown as { name: string }).name = 'fresh';
-    const freshGen = queue.enqueue(fresh);
-    expect(freshGen).toBeGreaterThan(staleGen);
+    queue.enqueue(fresh);
 
-    await queue.flush('s10');
-    const written = readFileSync(getSessionFilePath(root, 's10'), 'utf-8');
+    held();
+    await staleWrite;
+    queue.commitHooks = undefined;
+    await queue.flush('c5');
+
+    const written = readFileSync(getSessionFilePath(root, 'c5'), 'utf-8');
     expect(written).toContain('"name":"fresh"');
     expect(written).not.toContain('"name":"stale"');
+  });
+
+  it('retires per-session bookkeeping so cancelled sessions do not leak', async () => {
+    const baseline = queue.diagnostics();
+
+    for (let i = 0; i < 25; i++) {
+      queue.enqueue(session(`gone-${i}`));
+      await queue.flush(`gone-${i}`);
+      queue.cancel(`gone-${i}`);
+    }
+
+    // Every map is keyed by session id, so without retirement each deleted
+    // session leaves an entry in all of them for the life of the process.
+    expect(queue.diagnostics()).toEqual(baseline);
   });
 
   it('keeps reporting failure until a later write succeeds', async () => {

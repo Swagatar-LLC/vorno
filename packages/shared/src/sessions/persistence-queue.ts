@@ -107,6 +107,21 @@ class SessionPersistenceQueue {
    */
   private cancelledThrough = new Map<string, number>()
   /**
+   * Test seam: awaited at each commit boundary so a suite can land a cancel
+   * inside a write deterministically.
+   *
+   * Real filesystem writes take measurable time and a cancel genuinely can
+   * arrive mid-commit, but an in-memory test's writes settle far too fast to
+   * hit those windows by timing. Without a seam the guards above would be
+   * untestable — and an untested guard is one nobody can tell is still working.
+   * Unset in production, where it costs one optional-chain per boundary.
+   */
+  commitHooks?: {
+    beforeUnlink?: (sessionId: string) => void | Promise<void>
+    beforeRename?: (sessionId: string) => void | Promise<void>
+    afterRename?: (sessionId: string) => void | Promise<void>
+  }
+  /**
    * Last write failure per session, cleared on the next success.
    *
    * `write` deliberately swallows its errors so the fire-and-forget callers
@@ -160,6 +175,14 @@ class SessionPersistenceQueue {
 
   /** Resolve once `generation` (or later) has been written, or has failed. */
   private receiptFor(sessionId: string, generation: number): Promise<SessionWriteReceipt> {
+    // Cancelled generations are TERMINAL and answer immediately. Waiting would
+    // hang: `write` returns early when there is no pending entry, which is
+    // exactly the state `cancel` leaves behind, so nothing would ever arrive to
+    // settle this. A caller asking about work that has been cancelled deserves
+    // the answer now, not at process exit.
+    if ((this.cancelledThrough.get(sessionId) ?? 0) >= generation) {
+      return Promise.resolve({ ok: false, error: 'session write cancelled' })
+    }
     const written = this.writtenGeneration.get(sessionId) ?? 0
     if (written >= generation) {
       const prior = this.lastWriteFailure.get(sessionId)
@@ -187,9 +210,52 @@ class SessionPersistenceQueue {
     this.tails.set(sessionId, next)
     void next.finally(() => {
       // Only if still ours: a later write may already own the tail.
-      if (this.tails.get(sessionId) === next) this.tails.delete(sessionId)
+      if (this.tails.get(sessionId) === next) {
+        this.tails.delete(sessionId)
+        this.retireIfQuiescent(sessionId)
+      }
     })
     return next
+  }
+
+  /**
+   * Drop a session's bookkeeping once nothing can still refer to it.
+   *
+   * These maps are keyed by session id and would otherwise grow for the life of
+   * the process — one entry per session ever written, including every deleted
+   * one. Retirement is only safe when the tail has drained, nothing is pending,
+   * and nobody is waiting on a receipt; otherwise a later write would find its
+   * generation reset under an older cancellation watermark, or a waiter would
+   * be orphaned.
+   *
+   * Generations and the watermark go together or not at all: keeping one
+   * without the other is precisely the inconsistency that would let a fresh
+   * write be silently treated as cancelled.
+   */
+  private retireIfQuiescent(sessionId: string): void {
+    if (this.pending.has(sessionId)) return
+    if (this.tails.has(sessionId)) return
+    if (this.receiptWaiters.get(sessionId)?.length) return
+
+    this.generations.delete(sessionId)
+    this.writtenGeneration.delete(sessionId)
+    this.cancelledThrough.delete(sessionId)
+    this.lastWriteFailure.delete(sessionId)
+    this.lastWrittenHeaderSignature.delete(sessionId)
+  }
+
+  /** Per-session bookkeeping sizes, for tests that assert nothing leaks. */
+  diagnostics(): Record<string, number> {
+    return {
+      pending: this.pending.size,
+      tails: this.tails.size,
+      generations: this.generations.size,
+      writtenGeneration: this.writtenGeneration.size,
+      cancelledThrough: this.cancelledThrough.size,
+      receiptWaiters: this.receiptWaiters.size,
+      lastWriteFailure: this.lastWriteFailure.size,
+      lastWrittenHeaderSignature: this.lastWrittenHeaderSignature.size,
+    }
   }
 
   /** Settle every receipt this write satisfies, successfully or otherwise. */
@@ -286,28 +352,49 @@ class SessionPersistenceQueue {
       this.lastWrittenHeaderSignature.set(sessionId, finalSignature)
 
       const tmpFile = filePath + '.tmp'
-      await writeFile(tmpFile, lines.join('\n') + '\n', 'utf-8')
 
-      // Re-checked immediately before the commit. The write above is real I/O
-      // and a cancel can land during it; renaming now would put a deleted
-      // session's state back on disk. The temp file goes with it — leaving it
-      // behind is litter a later reader could mistake for a real write.
-      //
-      // Not covered by a deterministic test: the in-memory suite's writes
-      // settle too fast to land a cancel inside them, and the unit test says so
-      // rather than pretending otherwise. This guards the real filesystem case,
-      // where `writeFile` takes measurable time.
-      if ((this.cancelledThrough.get(sessionId) ?? 0) >= generation) {
-        try { await unlink(tmpFile) } catch { /* best effort */ }
-        debug(`[PersistenceQueue] Abandoned cancelled write for session ${sessionId}`)
+      /**
+       * Abandon this generation if it has been cancelled, leaving NOTHING of it
+       * behind.
+       *
+       * Re-asked after every awaited step, because each one is a window: a
+       * cancel can land while the data is being written, between the unlink and
+       * the rename, or after the rename has already committed. The last case is
+       * the one a single pre-commit check misses entirely — the bytes are on
+       * disk for a session the caller has deleted.
+       *
+       * Cleanup happens BEFORE the receipt is settled, so "cancelled" can never
+       * be reported while the artifact it describes might still exist. And it
+       * happens before the tail releases, so later generations — which are
+       * serialised behind this one — start from a clean slate rather than
+       * racing this cleanup.
+       */
+      const abandonIfCancelled = async (committed: boolean): Promise<boolean> => {
+        if ((this.cancelledThrough.get(sessionId) ?? 0) < generation) return false
+        try { await unlink(tmpFile) } catch { /* may not exist */ }
+        if (committed) {
+          // The rename already happened: remove what it produced.
+          try { await unlink(filePath) } catch { /* may not exist */ }
+        }
+        debug(`[PersistenceQueue] Abandoned cancelled write for session ${sessionId} (committed=${committed})`)
         this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
         this.settleReceipts(sessionId, generation, { ok: false, error: 'session write cancelled' })
-        return false
+        return true
       }
+
+      await writeFile(tmpFile, lines.join('\n') + '\n', 'utf-8')
+      await this.commitHooks?.beforeUnlink?.(sessionId)
+      if (await abandonIfCancelled(false)) return false
 
       // On Windows, rename fails if target exists. Delete first for cross-platform compatibility.
       try { await unlink(filePath) } catch { /* ignore if doesn't exist */ }
+      await this.commitHooks?.beforeRename?.(sessionId)
+      if (await abandonIfCancelled(false)) return false
+
       await rename(tmpFile, filePath)
+      await this.commitHooks?.afterRename?.(sessionId)
+      if (await abandonIfCancelled(true)) return false
+
       debug(`[PersistenceQueue] Wrote session ${sessionId}`)
       this.lastWriteFailure.delete(sessionId)
       this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
@@ -388,15 +475,20 @@ class SessionPersistenceQueue {
     // Everything enqueued up to now is cancelled; anything enqueued after is
     // a higher generation and unaffected.
     this.cancelledThrough.set(sessionId, this.generations.get(sessionId) ?? 0)
+
+    // Waiters first. Anything holding a receipt for a cancelled generation must
+    // be told rather than left hanging, and telling them is also what makes the
+    // session eligible for retirement below — the order is load-bearing, not
+    // cosmetic.
+    this.settleReceipts(sessionId, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled' })
     this.lastWrittenHeaderSignature.delete(sessionId)
     this.lastWriteFailure.delete(sessionId)
-    // A cancelled session will never write, so anything waiting on it must be
-    // told rather than left hanging for the life of the process.
-    this.settleReceipts(sessionId, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled' })
-    // Generations are NOT reset: the watermark above is expressed in them, and
-    // restarting the counter would make a future write's generation fall back
-    // under a past cancellation.
-    this.writtenGeneration.delete(sessionId)
+
+    // Then drop the bookkeeping, but only if nothing is still in flight.
+    // Deleted sessions are the common case here and would otherwise leave an
+    // entry in every map for the life of the process; a session with a live
+    // tail retires when that tail drains instead.
+    this.retireIfQuiescent(sessionId)
   }
 
   /**
