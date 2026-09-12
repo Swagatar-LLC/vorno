@@ -341,21 +341,29 @@ describe('Pages RPC workspace capability gate', () => {
     expect(calls).toBe(0)
   })
 
-  test('tells the host which fact to warn about, so a revoked page is not described as possibly public', async () => {
-    const reasons: string[] = []
-    const invoke = createHarness('unavailable', undefined, async ({ reason }) => { reasons.push(reason); return true })
+  test('tells the host both facts, so a revoked page is not described as possibly public', async () => {
+    // The dialog needs WHICH capability is gone and WHETHER the copy is offline.
+    // They vary independently, so one value cannot stand in for the other.
+    const asked: Array<{ reason: string; alreadyRevoked: boolean }> = []
+    const invoke = createHarness('unavailable', undefined, async ({ reason, alreadyRevoked }) => {
+      asked.push({ reason, alreadyRevoked })
+      return true
+    })
 
     // Never confirmed revoked: the alarming wording is the correct one.
     const unconfirmed = await seedUnrevocablePublication(invoke, 'Unconfirmed', 'publication-unconfirmed')
     await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, unconfirmed.slug, { forgetLocal: true }))
       .resolves.toMatchObject({ warning: undefined })
 
-    // Already revoked with only physical cleanup outstanding.
+    // Already revoked, with only physical cleanup outstanding.
     const revoked = await seedUnrevocablePublication(invoke, 'Revoked', 'publication-revoked', true)
     await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, revoked.slug, { forgetLocal: true }))
       .resolves.toMatchObject({ warning: undefined })
 
-    expect(reasons).toEqual(['token-missing', 'cleanup-credential-missing'])
+    expect(asked).toEqual([
+      { reason: 'token-missing', alreadyRevoked: false },
+      { reason: 'token-missing', alreadyRevoked: true },
+    ])
   })
 
   test('coalesces duplicate local-recovery requests into one host confirmation and one write', async () => {

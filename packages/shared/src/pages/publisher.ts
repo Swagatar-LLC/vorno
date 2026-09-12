@@ -163,25 +163,34 @@ interface WorkerPublicationResponse {
 
 const ERROR_BODY_MAX_CHARS = 300;
 
-/**
- * Why a retained share pointer can no longer be managed through the normal path.
- *
- *   token-missing              the capability is gone and revocation was never
- *                              confirmed — the copy may still be public
- *   origin-unusable            the stored origin is not one we will talk to
- *   cleanup-credential-missing already revoked; only the physical-cleanup retry
- *                              is unreachable
- *
- * This drives the wording of an irreversible confirmation, so the distinction is
- * load-bearing: telling someone a revoked page "may remain online" asks them to
- * approve against a false premise.
- */
-export type LocalPublicationRecoveryReason = 'token-missing' | 'origin-unusable' | 'cleanup-credential-missing';
+/** Which capability is unavailable, and therefore why the normal path is closed. */
+export type LocalPublicationRecoveryReason = 'token-missing' | 'origin-unusable';
 
+/**
+ * Everything the irreversible confirmation needs to describe what is being given
+ * up. The two fields are deliberately independent, because they answer different
+ * questions and either combination can occur:
+ *
+ *   reason         WHICH capability is gone — the admin key, or a usable origin
+ *   alreadyRevoked WHETHER the public copy is already offline
+ *
+ * Folding them into one enum is what produced a real defect: a cleanup-pending
+ * publication whose key still worked but whose development origin had moved got
+ * described as missing its key, which is simply not what happened. One value
+ * cannot carry two facts, and this one is used to write a warning a human
+ * approves against.
+ */
 export interface LocalPublicationRecovery {
   /** The publication a human is about to be asked about, and the only one the approval covers. */
   publicationId: string;
   reason: LocalPublicationRecoveryReason;
+  /**
+   * True when logical revocation is already confirmed (`share.cleanupPending`):
+   * public routes 404 and only the physical bytes remain. Telling someone in
+   * this state that the page "may remain online" asks them to approve against a
+   * false premise.
+   */
+  alreadyRevoked: boolean;
 }
 
 // ============================================================================
@@ -501,11 +510,14 @@ export class PagePublisher {
           : 'This page can still be unpublished normally. Unpublish it so the public copy is actually revoked.',
       );
     }
-    // Checked before the other two: when revocation is already recorded, that is
-    // the fact the human needs, and it outranks which half of the capability is
-    // the one we lost.
-    if (share.cleanupPending) return { publicationId: share.publicationId, reason: 'cleanup-credential-missing' };
-    return { publicationId: share.publicationId, reason: token ? 'origin-unusable' : 'token-missing' };
+    // Reported separately rather than ranked against each other: the missing
+    // capability and the revocation status are both true at once, and the
+    // confirmation needs each of them to say an accurate sentence.
+    return {
+      publicationId: share.publicationId,
+      reason: token ? 'origin-unusable' : 'token-missing',
+      alreadyRevoked: share.cleanupPending === true,
+    };
   }
 
   /**

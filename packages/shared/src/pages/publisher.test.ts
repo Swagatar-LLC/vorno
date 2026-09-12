@@ -178,7 +178,7 @@ describe('Pages sharing default gate', () => {
       expect((await publisher.unpublish(workspace, 'workspace', page.slug)).warning).toBe('remote-copy-may-remain');
       expect(loadPageConfig(workspace, page.slug)?.share?.publicationId).toBe('publication-1');
       const recovery = await publisher.describeLocalPublicationRecovery(workspace, 'workspace', page.slug);
-      expect(recovery).toEqual({ publicationId: 'publication-1', reason: 'token-missing' });
+      expect(recovery).toEqual({ publicationId: 'publication-1', reason: 'token-missing', alreadyRevoked: false });
       await publisher.forgetLocalPublication(workspace, 'workspace', page.slug, recovery.publicationId);
       expect(loadPageConfig(workspace, page.slug)?.share).toBeUndefined();
     } finally { rmSync(workspace, { recursive: true, force: true }); }
@@ -213,13 +213,46 @@ describe('Pages sharing default gate', () => {
 
       // And the recovery prompt is told which fact to describe.
       await expect(publisher.describeLocalPublicationRecovery(workspace, 'workspace', page.slug))
-        .resolves.toEqual({ publicationId: 'publication-1', reason: 'cleanup-credential-missing' });
+        .resolves.toEqual({ publicationId: 'publication-1', reason: 'token-missing', alreadyRevoked: true });
 
       // Deleting is still blocked, but with accurate wording.
       await expect(deletePageWithUnpublish(workspace, 'workspace', page.slug, {
         tokenStore: { get: async () => null, set: async () => {}, delete: async () => false },
         fetchFn: (async () => new Response('', { status: 204 })) as unknown as typeof fetch,
       })).rejects.toThrow('no longer public, but the key needed to finish remote data cleanup is missing');
+    } finally { rmSync(workspace, { recursive: true, force: true }); }
+  });
+
+  test('names the origin, not the key, when a revoked publication still has its key', async () => {
+    // Greptile P2 on 6140ddde. A single enum was carrying two independent facts,
+    // so a cleanup-pending localhost publication whose dev origin had moved was
+    // reported as missing its admin key — which was sitting right there in the
+    // vault. The warning a human approves against has to be true about both.
+    process.env.CRAFT_FEATURE_PAGES_SHARING = '1';
+    delete process.env.CRAFT_PAGES_SHARE_API_URL;
+    const workspace = mkdtempSync(join(tmpdir(), 'pages-revoked-origin-'));
+    enablePages(workspace);
+    const page = createPage(workspace, { name: 'Revoked origin', content: '<p>moved</p>' });
+    setPageShareState(workspace, page.slug, {
+      publicationId: 'publication-1',
+      // A development origin that is no longer the configured one.
+      url: 'http://localhost:8787/p/publication-1',
+      publishedRevision: 'r1', publishedContentDigest: page.contentDigest!, includesData: false,
+      publishedAt: 1, updatedAt: 1, passwordProtected: false, cleanupPending: true,
+    });
+    const publisher = new PagePublisher({
+      tokenStore: { get: async () => 'token-still-here', set: async () => {}, delete: async () => true },
+      fetchFn: (async () => { throw new Error('eligibility must not reach the network'); }) as unknown as typeof fetch,
+    });
+    try {
+      await expect(publisher.describeLocalPublicationRecovery(workspace, 'workspace', page.slug))
+        .resolves.toEqual({
+          publicationId: 'publication-1',
+          // The key is present; the origin is the blocker.
+          reason: 'origin-unusable',
+          // And the copy is still known to be offline.
+          alreadyRevoked: true,
+        });
     } finally { rmSync(workspace, { recursive: true, force: true }); }
   });
 
@@ -274,10 +307,10 @@ describe('Pages sharing default gate', () => {
 
       // The two states recovery exists for.
       await expect(build(null).describeLocalPublicationRecovery(workspace, 'workspace', page.slug))
-        .resolves.toEqual({ publicationId: 'publication-1', reason: 'token-missing' });
+        .resolves.toEqual({ publicationId: 'publication-1', reason: 'token-missing', alreadyRevoked: false });
       setPageShareState(workspace, page.slug, { ...share, url: 'http://localhost:8787/p/publication-1' });
       await expect(build('token').describeLocalPublicationRecovery(workspace, 'workspace', page.slug))
-        .resolves.toEqual({ publicationId: 'publication-1', reason: 'origin-unusable' });
+        .resolves.toEqual({ publicationId: 'publication-1', reason: 'origin-unusable', alreadyRevoked: false });
     } finally { rmSync(workspace, { recursive: true, force: true }); }
   });
 
@@ -360,7 +393,7 @@ describe('Pages sharing default gate', () => {
     });
     try {
       const approved = await publisher.describeLocalPublicationRecovery(workspace, 'workspace', page.slug);
-      expect(approved).toEqual({ publicationId: 'publication-1', reason: 'token-missing' });
+      expect(approved).toEqual({ publicationId: 'publication-1', reason: 'token-missing', alreadyRevoked: false });
 
       // Same publication, but the keychain unlocked while the sheet was up, so
       // the ordinary revocation path works again.

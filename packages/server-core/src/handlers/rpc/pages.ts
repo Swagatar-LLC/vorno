@@ -230,6 +230,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     workspaceName: string,
     pageSlug: string,
     reason: import('@craft-agent/shared/pages').LocalPublicationRecoveryReason,
+    alreadyRevoked: boolean,
   ): Promise<boolean> {
     if (!deps.confirmForgetPagePublication) throw new Error('Local publication recovery requires trusted host confirmation')
     if (pendingHostConfirmationCount >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) throw new Error('PAGE_GRANT_CONFIRMATION_QUEUE_FULL')
@@ -238,7 +239,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       grantConfirmationQueue.push(async () => {
         const deadline = new AbortController()
         try {
-          const confirmation = deps.confirmForgetPagePublication!({ workspaceName, pageSlug, reason, signal: deadline.signal })
+          const confirmation = deps.confirmForgetPagePublication!({ workspaceName, pageSlug, reason, alreadyRevoked, signal: deadline.signal })
           let timer: ReturnType<typeof setTimeout> | undefined
           try {
             const timeout = new Promise<never>((_resolve, rejectTimeout) => {
@@ -285,7 +286,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     pageSlug: string,
   ): Promise<import('@craft-agent/core').PageConfig> {
     const publisher = await buildPublisher()
-    const { publicationId, reason } = await publisher.describeLocalPublicationRecovery(workspace.rootPath, workspace.id, pageSlug)
+    const { publicationId, reason, alreadyRevoked } = await publisher.describeLocalPublicationRecovery(workspace.rootPath, workspace.id, pageSlug)
     const key = JSON.stringify([workspace.id, pageSlug, publicationId])
     const inFlight = pendingForgetRecoveries.get(key)
     if (inFlight) return inFlight
@@ -294,6 +295,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
         sanitizePageGrantIdentity(pageSlug, 'Unnamed page'),
         reason,
+        alreadyRevoked,
       )
       if (!confirmed) throw new Error('PAGE_FORGET_CONFIRMATION_CANCELLED')
       return publisher.forgetLocalPublication(workspace.rootPath, workspace.id, pageSlug, publicationId)
