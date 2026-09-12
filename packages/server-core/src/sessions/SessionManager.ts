@@ -138,6 +138,13 @@ interface PageCallbackDeliverySeam {
    */
   markCommitted: () => void
   /**
+   * The `isProcessing` handover: a turn is now running, and that flag is the
+   * authoritative "busy" answer from here on. Lets the caller drop a
+   * reservation it would otherwise hold until the whole turn ends — so a stuck
+   * turn is governed by `isProcessing` rather than by a leaked reservation.
+   */
+  onProcessingStarted: () => void
+  /**
    * Phase two: the message is persisted and flushed to disk.
    *
    * Separate because a crash between the two loses a message the page was told
@@ -957,6 +964,19 @@ interface ManagedSession {
    * consent checks that authorized it the first time.
    */
   lastSentWasPageCallback?: boolean
+  /**
+   * A Page callback has committed a message but its turn has not started yet.
+   *
+   * `isProcessing` does not cover this window — it flips at the handover, which
+   * is several awaits later (persist, flush, and on a first message the title
+   * generation flush). An ordinary send arriving in between would otherwise see
+   * an idle session and commit a second message, and two turns would start.
+   *
+   * User priority is preserved where it belongs: BEFORE the callback commits, a
+   * user send wins and the callback stands down. After it commits, there is a
+   * turn to be behind, so the user's message queues rather than racing it.
+   */
+  pageCallbackTurnPending?: boolean
   // Flag to prevent infinite retry loops (reset at start of each sendMessage)
   authRetryAttempted?: boolean
   // Flag indicating auth retry is in progress (to prevent complete handler from interfering)
@@ -6494,7 +6514,11 @@ export class SessionManager implements ISessionManager {
     // - 'queue': hold the message untouched; the current turn keeps running
     //   to natural completion; replay as a new turn afterwards. NO call to
     //   `agent.redirect()`, NO forceAbort, NO interruption.
-    if (managed.isProcessing) {
+    // `pageCallbackTurnPending` joins `isProcessing` here, not instead of it: a
+    // callback that has committed has an accepted turn, so a send arriving now
+    // belongs behind it exactly as it would behind a running one. Without this
+    // the user's message commits alongside and two turns start.
+    if (managed.isProcessing || managed.pageCallbackTurnPending === true) {
       const connection = resolveSessionConnection(managed.llmConnection, undefined)
       // Fallback to 'steer' when no connection is resolvable — preserves
       // today's exact behavior (call redirect, take whatever it returns).
@@ -6602,7 +6626,12 @@ export class SessionManager implements ISessionManager {
       // but the caller has not been told: a deadline or a cancel landing in that
       // window would audit delivered work as a timeout. Once this returns, the
       // action has succeeded and nothing downstream may relabel it.
-      pageCallback?.markCommitted()
+      if (pageCallback) {
+        // Marks the accepted-but-not-started window for any send that arrives
+        // before `setProcessing` — see `pageCallbackTurnPending`.
+        managed.pageCallbackTurnPending = true
+        pageCallback.markCommitted()
+      }
 
       // Update lastMessageRole for badge display. Skip for hidden messages so the
       // session-list preview isn't briefly driven by an invisible system nudge.
@@ -6692,10 +6721,17 @@ export class SessionManager implements ISessionManager {
     }
 
     managed.lastMessageAt = Date.now()
-    // No early release here. The wrapper owns exactly one announce/withdraw
-    // pair; decrementing again inside would under-count an overlapping send and
-    // reopen the window. Holding the announcement until the turn ends costs
-    // nothing — from this line on `isProcessing` refuses a callback anyway.
+    // The ORDINARY announcement is deliberately not released here — the wrapper
+    // owns exactly one decrement, and a second would under-count a sibling send
+    // still pre-handoff.
+    //
+    // The callback RESERVATION is different and is released here, because from
+    // this line `isProcessing` is the authoritative answer and holding both
+    // would mean a stuck turn leaks a reservation nobody clears. Token-scoped
+    // and idempotent; the wrapper's backstop then finds nothing to do.
+    if (pageCallback) pageCallback.onProcessingStarted()
+    // `isProcessing` now covers the window this flag stood in for.
+    managed.pageCallbackTurnPending = false
     this.setProcessing(managed, true)
     managed.streamingText = ''
     managed.streamingTurnId = undefined
@@ -7972,7 +8008,32 @@ export class SessionManager implements ISessionManager {
    * never awaited across and cannot deadlock: the reservation is taken inside
    * the guard and released when the send settles, success or failure.
    */
-  private readonly pageCallbackReservations = new Set<string>()
+  private readonly pageCallbackReservations = new Map<string, symbol>()
+
+  /**
+   * Claim the callback reservation for a session, returning the owning token.
+   *
+   * A token rather than a bare flag because release is deferred and can race a
+   * successor: without identity, a finishing callback's release would clear a
+   * *later* callback's reservation and reopen the window for whatever arrives
+   * next. Only the holder of the matching token may release.
+   */
+  private reservePageCallback(sessionId: string): symbol {
+    const token = Symbol(sessionId)
+    this.pageCallbackReservations.set(sessionId, token)
+    return token
+  }
+
+  /**
+   * Release the reservation, but only if this token still owns it. Idempotent:
+   * called at the `isProcessing` handover and again when the send settles, and
+   * the second call is a no-op.
+   */
+  private releasePageCallback(sessionId: string, token: symbol): void {
+    if (this.pageCallbackReservations.get(sessionId) === token) {
+      this.pageCallbackReservations.delete(sessionId)
+    }
+  }
 
   /**
    * Sessions with an ORDINARY send between its entry and its commit.
@@ -8001,8 +8062,13 @@ export class SessionManager implements ISessionManager {
    * a key: with a Set, whichever finished first deleted the shared entry while
    * the other was still pre-handoff, and a callback could then commit alongside
    * the survivor — the exact overlap the announcement exists to prevent.
-   * Idempotent per caller: the inner method releases early at the handover and
-   * the wrapper releases again on exit, and only the first of those decrements.
+   *
+   * **Exactly one decrement per send**, from the wrapper's `finally` and
+   * nowhere else. There is deliberately no early release at the handover: a
+   * second decrement inside would take the count below the number of sends
+   * actually outstanding, clearing the announcement for a sibling that is still
+   * pre-handoff — which is the same shared-entry bug in a new shape. Guards
+   * against an unmatched call anyway (`undefined` returns, never goes negative).
    */
   private withdrawOrdinarySend(sessionId: string): void {
     const outstanding = this.ordinarySendsInFlight.get(sessionId)
@@ -8056,7 +8122,7 @@ export class SessionManager implements ISessionManager {
     let refused: PageCallbackRefusalCode | null = null
     let committed = false
     let durable = false
-    let reserved = false
+    let reservation: symbol | undefined
     /**
      * The underlying send, settled independently of when the CALLER is
      * answered.
@@ -8068,7 +8134,11 @@ export class SessionManager implements ISessionManager {
      * left a window with `isProcessing` still false — and a second callback or
      * an ordinary send could commit into it, starting overlapping turns.
      *
-     * The reservation therefore follows the SEND, not the answer.
+     * The reservation therefore follows the SEND, not the answer — released at
+     * the `isProcessing` handover if the send gets that far, and by this
+     * fallback otherwise. A stuck turn is then governed by `isProcessing`,
+     * which is the flag that already means "a turn is running", rather than by
+     * a reservation nobody will ever clear.
      */
     let sendSettled: Promise<void> | undefined
     try {
@@ -8085,10 +8155,7 @@ export class SessionManager implements ISessionManager {
                 // Reserve in the SAME synchronous frame that clears the
                 // session. A reservation taken any later is a reservation two
                 // callers can both pass.
-                if (!refused) {
-                  this.pageCallbackReservations.add(sessionId)
-                  reserved = true
-                }
+                if (!refused) reservation = this.reservePageCallback(sessionId)
                 return refused
               },
               markCommitted: () => {
@@ -8096,6 +8163,9 @@ export class SessionManager implements ISessionManager {
                 // Tell the broker before anything can await: from here the
                 // delivery cannot be cancelled, timed out, or relabelled.
                 options.onCommitted?.()
+              },
+              onProcessingStarted: () => {
+                if (reservation) this.releasePageCallback(sessionId, reservation)
               },
               onDurable: () => {
                 durable = true
@@ -8124,17 +8194,17 @@ export class SessionManager implements ISessionManager {
           .finally(() => resolve())
       })
     } finally {
-      if (reserved) {
+      if (reservation) {
+        const token = reservation
         if (sendSettled) {
-          // Held until the send genuinely finishes, which is at or after the
-          // `isProcessing` handover — so there is no instant at which this
-          // session is unreserved and not yet processing. Costs nothing: a
-          // callback arriving during the turn is refused by `isProcessing`
-          // anyway, so the reservation is only ever the stricter of two
-          // already-agreeing answers.
-          void sendSettled.finally(() => this.pageCallbackReservations.delete(sessionId))
+          // Backstop only. The handover inside `sendMessageInner` normally
+          // releases first, the moment `isProcessing` becomes the authoritative
+          // answer; this covers the paths that never reach it (a refusal, a
+          // throw before the handover). Token-scoped, so a release arriving
+          // late cannot clear a LATER callback's reservation.
+          void sendSettled.finally(() => this.releasePageCallback(sessionId, token))
         } else {
-          this.pageCallbackReservations.delete(sessionId)
+          this.releasePageCallback(sessionId, token)
         }
       }
     }

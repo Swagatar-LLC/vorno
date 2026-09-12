@@ -120,6 +120,34 @@ describe('page session callback executor', () => {
     expect(line.split('\n')).toHaveLength(1)
   })
 
+  test('falls back to English when a locale drops EITHER placeholder', async () => {
+    // Both halves of the provenance are load-bearing: the page says who sent
+    // it, the grant says which approval authorized it — and the grant is what
+    // an operator revokes. A locale that kept only the slug would still pass a
+    // page-only check and silently ship a half-useless warning, so a
+    // translation that loses either value is treated as no translation.
+    const { i18n } = await import('@craft-agent/shared/i18n')
+    const original = i18n.t.bind(i18n)
+    try {
+      for (const partial of [
+        // Grant dropped.
+        (_k: string, v: Record<string, string>) => `[Page callback — page "${v.page}".]`,
+        // Page dropped.
+        (_k: string, v: Record<string, string>) => `[Page callback — grant ${v.grant}.]`,
+        // Neither interpolated at all.
+        () => '[Page callback.]',
+      ]) {
+        ;(i18n as unknown as { t: unknown }).t = partial
+        const line = pageCallbackAttribution('dashboard', 'grant_abc123')
+        expect(line).toContain('dashboard')
+        expect(line).toContain('grant_abc123')
+        expect(line).toContain('not typed by the user')
+      }
+    } finally {
+      ;(i18n as unknown as { t: unknown }).t = original
+    }
+  })
+
   test('refuses a target that belongs to another workspace', async () => {
     // The session is real. It is just not this workspace's.
     const host = createHost({ [OTHER_WORKSPACE]: [{ id: 'sess_target', isProcessing: false }] })

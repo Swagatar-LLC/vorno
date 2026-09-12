@@ -150,36 +150,62 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
   })
 
   /**
-   * The defect this exists for: `sendMessage` clears pending plan execution
-   * before it decides anything, so a callback that was about to be refused
-   * still destroyed a plan the user had not answered yet.
+   * The defect this exists for: `sendMessage` cleared pending plan execution
+   * before it decided anything, so a callback about to be REFUSED still
+   * destroyed a plan the user had not answered.
+   *
+   * Getting real coverage of it is fiddly, and an earlier version of this test
+   * did not have any. It seeded a plan, called with an already-busy session,
+   * and asserted survival — but `tryDeliverPageCallback` early-outs on that
+   * state and never enters `sendMessage` at all, so the clearing code was never
+   * reached. The delivery case was masked differently: `persistSession` writes
+   * managed state back, restoring the field even when the clear had run. Both
+   * passed with the defect injected.
+   *
+   * So this drives a refusal at the GUARD — inside `sendMessage`, past the
+   * point the clear would have executed — by making the session read idle at
+   * the synchronous early-out and busy at the guard.
    */
-  it('never clears pending plan execution — not on refusal, not on delivery', async () => {
-    for (const [state, expected] of [
-      [{ isProcessing: true }, 'session-busy'],
-      [{ isArchived: true }, 'session-closed'],
-      [{}, null],
-    ] as const) {
-      root = mkdtempSync(join(tmpdir(), 'page-callback-plan-'))
-      mkdirSync(join(root, 'statuses'), { recursive: true })
-      sm = new SessionManager()
-      const managed = seed(state as Record<string, unknown>) as unknown as Record<string, unknown>
-      await seedPendingPlan(managed)
+  it('never clears pending plan execution when the guard refuses inside sendMessage', async () => {
+    const managed = seed() as unknown as Record<string, unknown>
+    await seedPendingPlan(managed)
 
-      const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
-      if (expected) expect(outcome).toMatchObject({ ok: false, code: expected })
-      else expect(outcome).toMatchObject({ ok: true })
+    // Make the session read idle at the synchronous early-out and busy at the
+    // guard. That is precisely the state change the guard exists to catch, and
+    // modelling it with an accessor is deterministic — a timer cannot be made
+    // to land inside `ensureMessagesLoaded`, whose only await here is a
+    // microtask.
+    let reads = 0
+    Object.defineProperty(managed, 'isProcessing', {
+      configurable: true,
+      get() { reads += 1; return reads > 1 },
+    })
 
-      // A page's button is not the user moving on. The plan survives on BOTH
-      // paths — a refused callback obviously must not destroy it, and a
-      // delivered one must not either: the user is still deciding about that
-      // plan, and nothing they can see did this.
-      const survived = getPendingPlanExecution(root, SESSION_ID)
-      expect(survived).not.toBeNull()
-      expect(survived!.planPath).toBe('plans/do-the-thing.md')
-      expect(survived!.draftInputSnapshot).toBe('draft text')
-    }
+    const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+
+    // Refused INSIDE `sendMessage`, past the point the clearing code sits in
+    // the preamble — which is what makes the assertion below meaningful.
+    expect(reads).toBeGreaterThan(1)
+    expect(outcome).toMatchObject({ ok: false, code: 'session-busy' })
+
+    // A page's button is not the user moving on: the plan the user has not
+    // answered survives a callback that was refused on its way through.
+    const survived = getPendingPlanExecution(root, SESSION_ID)
+    expect(survived).not.toBeNull()
+    expect(survived!.planPath).toBe('plans/do-the-thing.md')
+    expect(survived!.draftInputSnapshot).toBe('draft text')
   })
+
+  /**
+   * The delivery path deliberately has NO behavioural assertion here.
+   *
+   * It cannot have an honest one: `persistSession` rebuilds the header from
+   * managed state, so the field is restored whether or not the clear ran, and
+   * any assertion would pass with the defect present. Branch placement on that
+   * path is covered by the structural test below, which brace-matches the
+   * `if (!pageCallback)` block — and a claim of coverage that a structural test
+   * actually provides belongs where the structural test is, not here.
+   */
 
   it('a NON-callback send still clears pending plan execution', () => {
     // The control for the test above. Without it, "the plan survived" would
@@ -305,6 +331,57 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     expect(counts.has(SESSION_ID)).toBe(false)
   })
 
+  it('keeps refusing until every overlapping announcement is withdrawn', async () => {
+    seed()
+    const announce = (sm as unknown as { announceOrdinarySend(id: string): void }).announceOrdinarySend.bind(sm)
+    const withdraw = (sm as unknown as { withdrawOrdinarySend(id: string): void }).withdrawOrdinarySend.bind(sm)
+
+    // Two user sends outstanding. One finishing must not clear the
+    // announcement for the other — with a flag it did, and a callback then
+    // committed alongside the survivor.
+    announce(SESSION_ID)
+    announce(SESSION_ID)
+    withdraw(SESSION_ID)
+
+    await expect(sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID }))
+      .resolves.toMatchObject({ ok: false, code: 'session-busy' })
+
+    // Only when the second withdraws is the session free for a callback.
+    withdraw(SESSION_ID)
+    await expect(sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID }))
+      .resolves.toMatchObject({ ok: true })
+  })
+
+  /**
+   * User priority is a rule about WHEN, not a blanket precedence.
+   *
+   * Before a callback commits, the user wins and the callback stands down.
+   * After it commits there is an accepted turn to be behind, so the user's
+   * message queues rather than committing alongside it — otherwise two turns
+   * start in one session.
+   */
+  it('queues an ordinary send that arrives after a callback has committed', async () => {
+    const managed = seed() as unknown as Record<string, unknown> & {
+      messages: Array<{ role: string; content: string }>
+      messageQueue: unknown[]
+      pageCallbackTurnPending?: boolean
+    }
+
+    await sm.tryDeliverPageCallback(SESSION_ID, 'from the page', { workspaceId: WORKSPACE_ID })
+
+    // The push→handover gap: committed, but the turn has not started.
+    managed.pageCallbackTurnPending = true
+    managed.isProcessing = false
+
+    await sm.sendMessage(SESSION_ID, 'from the user')
+
+    // Both messages exist — the user is never dropped — but the user's is
+    // queued behind the accepted turn rather than racing it.
+    const users = managed.messages.filter((m) => m.role === 'user')
+    expect(users.map((m) => m.content)).toContain('from the user')
+    expect(managed.messageQueue.length).toBeGreaterThan(0)
+  })
+
   it('stands down for an announced ordinary send', async () => {
     seed()
     ;(sm as unknown as { announceOrdinarySend(id: string): void }).announceOrdinarySend(SESSION_ID)
@@ -414,7 +491,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     const source = readFileSync(join(import.meta.dir, 'SessionManager.ts'), 'utf-8')
 
     const guardAt = source.indexOf('const vetoed = pageCallback?.guard()')
-    const commitAt = source.indexOf('pageCallback?.markCommitted()')
+    const commitAt = source.indexOf('pageCallback.markCommitted()')
     expect(guardAt).toBeGreaterThan(-1)
     expect(commitAt).toBeGreaterThan(guardAt)
 
@@ -424,7 +501,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // the assertion about the path a callback ACTUALLY takes — and keeps it
     // honest, because a slice that quietly ignored a reachable branch would
     // pass while the window was wide open.
-    const branchAt = source.indexOf('if (managed.isProcessing) {', guardAt)
+    const branchAt = source.indexOf('if (managed.isProcessing || managed.pageCallbackTurnPending', guardAt)
     expect(branchAt).toBeGreaterThan(guardAt)
     expect(branchAt).toBeLessThan(commitAt)
 

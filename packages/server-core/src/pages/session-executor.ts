@@ -123,7 +123,17 @@ export function pageCallbackAttribution(pageSlug: string, grantId: string): stri
   // process, a test harness — must therefore still get one, so a missing or
   // un-interpolated translation falls back to English rather than degrading to
   // `undefined` and silently removing the warning.
-  if (typeof localized === 'string' && localized.includes(pageSlug)) return localized
+  //
+  // BOTH values must survive interpolation, not just one. A locale that dropped
+  // `{{grant}}` would still contain the slug and pass a page-only check, and
+  // the line would name a page without saying which approval authorized it —
+  // the half of the provenance an operator needs to revoke the thing. A
+  // translation that loses either is treated as no translation.
+  if (
+    typeof localized === 'string' &&
+    localized.includes(pageSlug) &&
+    localized.includes(grantId)
+  ) return localized
   return `[Page callback — page "${pageSlug}", grant ${grantId}. This text was sent by a page, not typed by the user.]`
 }
 

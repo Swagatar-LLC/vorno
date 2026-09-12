@@ -387,6 +387,44 @@ two already-agreeing answers.
 The invariant is now asserted directly — after a delivery, the session is either
 still reserved or already processing, never neither.
 
+## Round 10 — test integrity, and the last of the acceptance window
+
+`2026-09-12` — security final. Two of these are corrections to tests that were
+claiming coverage they did not have, which is worse than absent coverage because
+it reads as proof.
+
+- **The pending-plan test proved nothing.** Its refusal cases never entered
+  `sendMessage` at all — `tryDeliverPageCallback` early-outs on an already-busy
+  or archived session — and its delivery case was masked by `persistSession`
+  writing managed state back, restoring the field whether or not the clear had
+  run. Both passed with the defect injected. It now drives a refusal at the
+  **guard**, inside `sendMessage` and past where the clearing code sits, by
+  making the session read idle at the synchronous early-out and busy at the
+  guard. Verified red with the defect injected. The delivery path deliberately
+  carries **no** behavioural assertion, because an honest one is not available
+  there; branch placement is the structural test's job and the comment now says
+  so instead of implying otherwise.
+- **A stale comment described an early withdraw that no longer exists.** The
+  ordinary-send announcement is decremented exactly once, from the wrapper's
+  `finally`. A direct refcount test now covers announce-twice / withdraw-once:
+  the callback still refuses, and only the second withdrawal releases.
+- **The reservation now carries an ownership token** and is released at the
+  `isProcessing` handover, idempotently, with the wrapper's deferred release as
+  a token-scoped backstop. Without identity, a finishing callback's deferred
+  release could clear a *later* callback's reservation; without the handover
+  release, a stuck turn leaked a reservation nobody would ever clear. A stuck
+  turn is now governed by `isProcessing`, which is the flag that already means
+  what it needs to mean.
+- **User priority is a rule about WHEN, not blanket precedence.** Before a
+  callback commits, the user wins and the callback stands down. After it
+  commits there is an accepted turn to be behind, so an ordinary send now
+  **queues** (`pageCallbackTurnPending` joins `isProcessing` at the mid-stream
+  branch) rather than committing alongside it and starting a second turn.
+- **The i18n fallback requires BOTH placeholders.** A locale that dropped
+  `{{grant}}` still contained the slug and passed a page-only check, shipping a
+  line that named a page without saying which approval authorized it — the half
+  an operator needs in order to revoke it.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been
