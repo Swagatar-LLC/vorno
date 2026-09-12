@@ -187,6 +187,39 @@ export function isPrivilegedPageGrantKind(kind: PageActionDescriptor['kind']): b
   return PAGE_GRANT_PRIVILEGED[kind] ?? true;
 }
 
+/**
+ * Why a Page session callback was not delivered — the ONE definition.
+ *
+ * Four modules answer this question at different depths: the pure guard in
+ * `SessionManager`, the executor that calls it, the broker that audits the
+ * result, and the tests that pin all three. They were three separate unions
+ * with identical members, which is a drift waiting to happen — adding a code in
+ * one place and not the others compiles fine and simply stops matching what
+ * operators grep for. It lives here, with the other browser-safe Page policy,
+ * so every layer can import it without pulling in Node.
+ *
+ * Closed and host-observed: each value describes something the host learned
+ * about its own state, so an audit row carrying one leaks nothing a caller
+ * supplied.
+ */
+export type PageSessionRefusalCode =
+  /** No such session in THIS workspace — missing, deleted, or another tenant's. */
+  | 'session-not-found'
+  /** Archived, or sitting in a `closed`-category status. Finished work. */
+  | 'session-closed'
+  /** Mid-turn. A callback must not land inside a running turn. */
+  | 'session-busy'
+  /** Withdrawn — cancelled, lease released, or the broker deadline — before commit. */
+  | 'cancelled';
+
+/** Every refusal code, for tests that must enumerate the whole union. */
+export const PAGE_SESSION_REFUSAL_CODES: readonly PageSessionRefusalCode[] = [
+  'session-not-found',
+  'session-closed',
+  'session-busy',
+  'cancelled',
+];
+
 /** What one origin is permitted to do, before any grant is even consulted. */
 export interface PageActionOriginPolicy {
   /** Must a mutating action carry a host-minted, single-use activation ticket? */

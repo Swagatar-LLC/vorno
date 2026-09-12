@@ -77,12 +77,31 @@ export interface RenderIdentity {
   renderGeneration: number
 }
 
+/**
+ * How much of a pinned callback body the consent sheet renders in full.
+ *
+ * The schema caps the body at 2,000 characters, which is the right ceiling for
+ * a stored capability but far more than a native dialog shows before it
+ * scrolls or clips. A body long enough to push the rest of the descriptor out
+ * of view is a body that hides the descriptor, so the sheet shows a generous
+ * leading slice and says plainly that it truncated. The full text is still
+ * visible in the Page's Approved-actions list, which scrolls.
+ *
+ * This is presentation only — the grant persists and executes the whole body.
+ */
+const DIALOG_MESSAGE_PREVIEW_CHARS = 600
+
 /** Exact, escaped host-dialog representation of a consented action descriptor. */
 export function formatPageGrantDescriptor(action: import('@craft-agent/core').PageActionDescriptor): string {
   const serialized = JSON.stringify(
     action.kind === 'script'
       ? { ...action, runtime: action.runtime ?? 'bun', args: action.args ?? [] }
-      : action,
+      : action.kind === 'session' && action.message.length > DIALOG_MESSAGE_PREVIEW_CHARS
+        ? {
+            ...action,
+            message: `${action.message.slice(0, DIALOG_MESSAGE_PREVIEW_CHARS)}… [truncated for display; ${action.message.length} characters total]`,
+          }
+        : action,
     null,
     2,
   )

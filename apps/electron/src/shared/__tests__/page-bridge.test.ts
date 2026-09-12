@@ -195,20 +195,35 @@ describe('parsePageBridgeMessage: grant-request', () => {
     ).toBeNull() // too many args
   })
 
-  test('accepts a well-formed session descriptor and rebuilds it field by field', () => {
+  test('accepts a well-formed session descriptor', () => {
     const withAction = (action: unknown) => ({ ...valid, requests: [{ key: 'k', action }] })
-    // Rebuilt, not passed through: a page must not be able to smuggle an extra
-    // key into a descriptor the host will later persist as an approved
-    // capability. Anything beyond the two pinned fields is dropped here, and
-    // the host's strict schema refuses it outright if it ever arrives.
     expect(parsePageBridgeMessage(withAction({
       kind: 'session', sessionId: 'sess_target', message: 'Refresh the numbers.',
-      action: 'set-status', status: 'done', allowClosed: true, target: { label: 'x' },
     }))).toEqual({
       type: 'grant-request',
       nonce: 'n',
       requests: [{ key: 'k', action: { kind: 'session', sessionId: 'sess_target', message: 'Refresh the numbers.' } }],
     })
+  })
+
+  test('REJECTS a session descriptor carrying any unknown key, never strips it', () => {
+    const withAction = (action: unknown) => ({ ...valid, requests: [{ key: 'k', action }] })
+    // Stripping is the wrong answer here, and it is the answer every other arm
+    // gives. A page asking for `action: 'set-status'` wants something this
+    // descriptor cannot express; handing it back an approved send-message grant
+    // would answer a different question than the one it asked, with no way for
+    // it to tell. The host's schema arm is `.strict()` for the same reason, so
+    // both gates refuse rather than one dropping what the other rejects.
+    for (const hostile of [
+      { kind: 'session', sessionId: 'sess_target', message: 'hi', action: 'set-status' },
+      { kind: 'session', sessionId: 'sess_target', message: 'hi', status: 'done' },
+      { kind: 'session', sessionId: 'sess_target', message: 'hi', allowClosed: true },
+      { kind: 'session', sessionId: 'sess_target', message: 'hi', target: { label: 'x' } },
+      { kind: 'session', sessionId: 'sess_target', message: 'hi', sourceSlug: 'gh' },
+      { kind: 'session', sessionId: 'sess_target', message: 'hi', extra: null },
+    ]) {
+      expect(parsePageBridgeMessage(withAction(hostile))).toBeNull()
+    }
   })
 
   test('rejects malformed session descriptors', () => {

@@ -607,16 +607,6 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     // cannot end up describing different commands.
     const grant = page.grants?.find((candidate) => candidate.id === grantId)
     if (!grant) return false
-    // Re-resolved for THIS sheet. A session renamed, archived, or deleted since
-    // approval must not be described here by the name it had then — and an
-    // unresolvable target refuses the first use outright rather than asking the
-    // user to run something aimed at nothing.
-    let targetSession: { id: string; name: string } | undefined
-    try {
-      targetSession = await describeSessionTarget(workspace.rootPath, workspace.id, grant.action)
-    } catch {
-      return false
-    }
     pendingHostConfirmationCount++
     return await new Promise<boolean>((resolve, reject) => {
       grantConfirmationQueue.push(async () => {
@@ -629,6 +619,21 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
           if (!isLeaseRequesterCurrent(
             workspace.rootPath, leaseId, workspace.id, page.slug, expectedContentDigest, requester,
           )) throw new Error('PAGE_ACTIVATION_TRUSTED_CONTEXT_REQUIRED')
+
+          // Resolved HERE, inside the queued callback and immediately before
+          // the sheet opens — not before the queue. This request may have
+          // waited behind other native chrome for the full timeout, and a
+          // session renamed, archived, closed, or deleted in that window must
+          // not be described by the identity it had when the request was made.
+          // An unresolvable or finished target refuses the first use outright
+          // rather than asking the user to run something aimed at nothing.
+          let targetSession: { id: string; name: string } | undefined
+          try {
+            targetSession = await describeSessionTarget(workspace.rootPath, workspace.id, grant.action)
+          } catch {
+            resolve(false)
+            return
+          }
 
           const confirmation = confirm(requester, {
             workspace: { id: workspace.id, name: sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace') },
@@ -653,6 +658,20 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
           if (accepted && !isLeaseRequesterCurrent(
             workspace.rootPath, leaseId, workspace.id, page.slug, expectedContentDigest, requester,
           )) { resolve(false); return }
+          // And once more after the answer, before the broker mints a ticket on
+          // the strength of it. A sheet can sit open for the whole confirmation
+          // timeout; approving a run against a session archived or deleted while
+          // the user was reading would mint an activation for work that cannot
+          // happen, and the refusal the executor would then produce is a worse
+          // answer than never minting.
+          if (accepted) {
+            try {
+              await describeSessionTarget(workspace.rootPath, workspace.id, grant.action)
+            } catch {
+              resolve(false)
+              return
+            }
+          }
           resolve(accepted)
         } catch (error) {
           reject(error)

@@ -15,13 +15,16 @@
  */
 
 import { getStatusCategory } from '@craft-agent/shared/statuses/storage';
+import type { PageSessionRefusalCode } from '@craft-agent/shared/pages';
 
-/** Why a callback will not be delivered. `null` means deliver it. */
-export type PageCallbackRefusalCode =
-  | 'session-not-found'
-  | 'session-closed'
-  | 'session-busy'
-  | 'cancelled';
+/**
+ * Why a callback will not be delivered. `null` means deliver it.
+ *
+ * Re-exported from the one definition in `@craft-agent/shared/pages` rather
+ * than restated: the broker audits these values and the executor returns them,
+ * so a second union here would be free to drift from the one they read.
+ */
+export type { PageSessionRefusalCode as PageCallbackRefusalCode };
 
 /** The session facts this decision reads, and nothing more. */
 export interface PageCallbackTargetState {
@@ -85,7 +88,7 @@ export function pageCallbackRefusal(
   target: PageCallbackTargetState | undefined,
   workspaceId: string,
   aborted: boolean,
-): PageCallbackRefusalCode | null {
+): PageSessionRefusalCode | null {
   // Containment re-proven against live state, however the caller resolved the
   // target earlier. A missing session and a foreign one answer identically so a
   // caller cannot enumerate other workspaces' session ids.

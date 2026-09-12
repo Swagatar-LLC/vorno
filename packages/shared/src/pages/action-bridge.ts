@@ -62,7 +62,7 @@ import { evaluateApiEndpointPolicy, evaluateMcpToolPolicy, type SourceActionPoli
 import type { PermissionsContext } from '../agent/permissions-config.ts';
 import { proxyToolName } from '../mcp/proxy-tool-name.ts';
 import { authorizePageAction } from './admission.ts';
-import { pageActionDescriptorSignature, pageActionOriginPolicy } from './types.ts';
+import { pageActionDescriptorSignature, pageActionOriginPolicy, type PageSessionRefusalCode } from './types.ts';
 
 const log = createLogger('page-action-broker');
 
@@ -465,15 +465,20 @@ export interface PageActionExecutors {
   executeSession?: (
     invocation: { pageSlug: string; grantId: string; sessionId: string; message: string },
     options: { signal: AbortSignal },
-  ) => Promise<{ ok: true } | { ok: false; code: PageSessionOutcomeCode; reason: string }>;
+  ) => Promise<{ ok: true } | { ok: false; code: PageSessionRefusalCode; reason: string }>;
 }
 
 /**
  * The session-callback subset of {@link PageActionOutcomeCode}, plus
  * `cancelled`, which the executor reports itself when it refuses at the commit
  * point rather than letting the race decide.
+ *
+ * An alias, not a second union: `PageSessionRefusalCode` in `./types.ts` is the
+ * one definition, and every layer that names these values imports it. Three
+ * identical unions is how a code added in one place quietly stops matching what
+ * the other two produce.
  */
-export type PageSessionOutcomeCode = 'session-not-found' | 'session-closed' | 'session-busy' | 'cancelled';
+export type { PageSessionRefusalCode } from './types.ts';
 
 export interface PageActionBrokerOptions {
   executors: PageActionExecutors;

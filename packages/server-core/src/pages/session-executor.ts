@@ -33,21 +33,17 @@
 import { describeOrigin, pageOrigin } from '@craft-agent/shared/statuses'
 import { resolveWorkspaceSessionTarget, type WorkspaceSessionLookup } from '@craft-agent/shared/automations'
 import { isSessionFinished } from '../sessions/page-callback-guards'
+import type { PageSessionRefusalCode } from '@craft-agent/shared/pages'
 import type { Logger } from '@craft-agent/server-core/runtime'
 
 /**
  * Why a callback did not reach its session. A closed set: each value is
  * host-observed state, so a row carrying one leaks nothing a caller supplied.
  */
-export type PageSessionRefusalCode =
-  /** No such session in THIS workspace — missing, deleted, or another tenant's. */
-  | 'session-not-found'
-  /** Archived, or sitting in a `closed`-category status. */
-  | 'session-closed'
-  /** Mid-turn. A callback must not land inside a running turn — see below. */
-  | 'session-busy'
-  /** Withdrawn — cancelled, lease released, or the broker deadline — before commit. */
-  | 'cancelled'
+// The one definition lives in `@craft-agent/shared/pages` — the broker audits
+// these values and the guard produces them, so restating the union here would
+// let this layer drift from both.
+export type { PageSessionRefusalCode }
 
 export type PageSessionOutcome =
   | { ok: true }

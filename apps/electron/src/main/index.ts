@@ -314,12 +314,18 @@ void applyConfiguredProxySettings()
  * page names take; re-cleaning it here with a second, differently-written
  * cleaner is how the two start disagreeing about what is safe.
  */
-function appendPageGrantTargetLine(
+function withPageGrantTargetLine(
   detail: string,
   target: { id: string; name: string } | undefined,
 ): string {
   if (!target) return detail
-  return `${detail}\n\n${i18n.t('pages.grants.confirm.targetSession', { name: target.name, sessionId: target.id })}`
+  // PREPENDED, not appended. The descriptor JSON in `detail` carries the pinned
+  // message, which may run to the full 2,000-character cap — long enough to
+  // push a trailing target line off the visible area of a native sheet, so the
+  // one fact the user most needs ("which session am I authorizing this
+  // against?") would be the first thing buried. Host-resolved identity leads;
+  // the caller-supplied body follows.
+  return `${i18n.t('pages.grants.confirm.targetSession', { name: target.name, sessionId: target.id })}\n\n${detail}`
 }
 
 function normalizeOriginForCert(urlStr: string): string {
@@ -903,7 +909,7 @@ app.whenReady().then(async () => {
                 type: spec.action.kind === 'script' || spec.action.kind === 'session' ? 'warning' : 'question',
                 title: i18n.t('pages.grants.confirm.title'),
                 message: i18n.t('pages.grants.confirm.message', { page: spec.page.name, workspace: spec.workspace.name, action }),
-                detail: appendPageGrantTargetLine(
+                detail: withPageGrantTargetLine(
                   i18n.t('pages.grants.confirm.detail', {
                     workspace: spec.workspace.name,
                     workspaceId: spec.workspace.id,
@@ -936,7 +942,7 @@ app.whenReady().then(async () => {
                 type: 'warning',
                 title: i18n.t('pages.actions.confirm.title'),
                 message: i18n.t('pages.actions.confirm.message', { page: spec.page.name, workspace: spec.workspace.name }),
-                detail: appendPageGrantTargetLine(
+                detail: withPageGrantTargetLine(
                   i18n.t('pages.actions.confirm.detail', {
                     workspace: spec.workspace.name,
                     page: spec.page.name,

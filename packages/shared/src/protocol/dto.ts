@@ -455,24 +455,12 @@ export interface SendMessageOptions {
    * surfacing) that should wake the agent without looking user-authored.
    */
   hidden?: boolean
-  /**
-   * Last-moment veto, evaluated SYNCHRONOUSLY at `sendMessage`'s own decision
-   * point — after every await it performs and immediately before it branches on
-   * `isProcessing` and pushes the message.
-   *
-   * That position is the whole point (SUV-0064). A caller that checks session
-   * state itself and then calls `sendMessage` has a gap: `sendMessage` awaits
-   * twice before it decides, so a turn can start, or the session can be
-   * archived, in between — and the message lands in a running turn or in
-   * finished work. There is nowhere else to put this check that is in the same
-   * JS turn as the commit, which is why it is a parameter rather than
-   * something the caller could have done for itself.
-   *
-   * Returning a non-null code makes `sendMessage` return having mutated
-   * nothing. Returning null commits. Keep the implementation synchronous and
-   * allocation-free; an `async` guard would reintroduce the gap it closes.
-   */
-  deliveryGuard?: () => string | null
+  // NOTE: this type is a WIRE DTO — it crosses RPC, is stored on
+  // `managed.lastSentOptions`, and is replayed by the auth-retry path. Only
+  // add serializable, replay-safe fields. The Page-callback delivery seam
+  // deliberately lives OUTSIDE this shape, in SessionManager's internal
+  // options, because it carries closures that must never be persisted,
+  // serialized, or re-run by a retry.
 }
 
 // ---------------------------------------------------------------------------

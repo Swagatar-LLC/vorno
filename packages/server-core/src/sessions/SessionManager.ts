@@ -107,6 +107,45 @@ import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craf
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
 import { pageCallbackRefusal, type PageCallbackRefusalCode } from './page-callback-guards.ts'
+
+/**
+ * The Page-callback delivery seam (SUV-0064) — `sendMessage`'s only internal
+ * extension, and deliberately NOT part of the wire `SendMessageOptions`.
+ *
+ * It carries closures. `SendMessageOptions` crosses RPC, is stored on
+ * `managed.lastSentOptions`, and is replayed verbatim by the auth-retry path;
+ * a closure on that shape would be dropped by serialization (silently
+ * disabling the guard on a remote caller) or re-run by a retry against a world
+ * that has moved on. Keeping it here means neither can happen by accident, and
+ * `toPersistableSendOptions` makes it impossible on purpose.
+ */
+interface PageCallbackDeliverySeam {
+  /**
+   * Evaluated SYNCHRONOUSLY at `sendMessage`'s decision point. Returning a code
+   * refuses, having mutated nothing; returning null commits. An `async` guard
+   * would reintroduce the exact window this exists to close.
+   */
+  guard: () => PageCallbackRefusalCode | null
+  /** Fired synchronously the instant the message is pushed, before any await. */
+  onCommitted: () => void
+}
+
+/** What `sendMessage` actually accepts: the wire shape plus the internal seam. */
+type SendMessageInternalOptions = SendMessageOptions & { pageCallback?: PageCallbackDeliverySeam }
+
+/**
+ * Drop the internal seam before options are stored or replayed.
+ *
+ * Assignability alone would not protect this: `SendMessageInternalOptions`
+ * extends `SendMessageOptions`, so TypeScript accepts it wherever the wire
+ * shape is expected and the closures would ride along at runtime. The strip has
+ * to be an action, not a type.
+ */
+function toPersistableSendOptions(options?: SendMessageInternalOptions): SendMessageOptions | undefined {
+  if (!options || !('pageCallback' in options)) return options
+  const { pageCallback: _internal, ...wire } = options
+  return wire
+}
 import {
   type StatusChangeOrigin,
   UNATTRIBUTED_ORIGIN,
@@ -115,7 +154,7 @@ import {
   mayCloseSession,
   describeOrigin,
 } from '@craft-agent/shared/statuses'
-import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, checkContextAction, sessionActionOutcome, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, checkContextAction, sessionActionOutcome, resolveWorkspaceSessionTarget, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
 import type { PromptAction as AutomationPromptAction, PendingSessionAction, AutomationCause, SessionActionSkip, ContextActionRejection } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, buildRuntimeEnvelope, filterAttachmentsForModelInput } from './runtime-config'
 import { validateArchiveTarget } from './archive-guards'
@@ -888,6 +927,11 @@ interface ManagedSession {
   lastSentMessage?: string
   lastSentAttachments?: FileAttachment[]
   lastSentStoredAttachments?: StoredAttachment[]
+  /**
+   * Replayed verbatim by the auth-retry path, so this is deliberately the WIRE
+   * shape and never {@link SendMessageInternalOptions}. See
+   * `toPersistableSendOptions`.
+   */
   lastSentOptions?: SendMessageOptions
   // Flag to prevent infinite retry loops (reset at start of each sendMessage)
   authRetryAttempted?: boolean
@@ -6297,7 +6341,7 @@ export class SessionManager implements ISessionManager {
     message: string,
     attachments?: FileAttachment[],
     storedAttachments?: StoredAttachment[],
-    options?: SendMessageOptions,
+    options?: SendMessageInternalOptions,
     existingMessageId?: string,
     _isAuthRetry?: boolean,
     /**
@@ -6320,34 +6364,63 @@ export class SessionManager implements ISessionManager {
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
     }
-    this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
 
-    // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
-    // has just scheduled or committed a "[<slug> activated]" retry, drop a matching
-    // duplicate that arrives from a legacy renderer still running the client-side
-    // auto_retry. The first matching caller wins (server timer or legacy RPC,
-    // whichever arrives first), subsequent matching calls within the deadline drop.
-    if (claimAutoRetryPending(managed, message) === 'drop') {
-      sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
-      return
+    /**
+     * The Page-callback delivery seam (SUV-0064). Never on the wire, never
+     * persisted — see `SendMessageInternalOptions`.
+     *
+     * Its presence reorders this method's preamble, and that reordering is the
+     * point rather than an optimization. Everything a user's own send does
+     * before deciding — pinning the browser-host client, claiming the
+     * auto-retry slot, clearing pending plan execution — is a MUTATION, and two
+     * of them touch state a refused callback has no business touching. A
+     * callback that is about to be refused must leave the session exactly as it
+     * found it.
+     */
+    const pageCallback = options?.pageCallback
+
+    if (!pageCallback) {
+      this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
+
+      // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
+      // has just scheduled or committed a "[<slug> activated]" retry, drop a matching
+      // duplicate that arrives from a legacy renderer still running the client-side
+      // auto_retry. The first matching caller wins (server timer or legacy RPC,
+      // whichever arrives first), subsequent matching calls within the deadline drop.
+      if (claimAutoRetryPending(managed, message) === 'drop') {
+        sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
+        return
+      }
+
+      // Clear any pending plan execution state when a new user message is sent.
+      // This acts as a safety valve - if the user moves on, we don't want to
+      // auto-execute an old plan later.
+      //
+      // A Page callback deliberately does NOT do this, refused or delivered. It
+      // is a page's button, not the user moving on: discarding a plan the user
+      // is still deciding about would be destructive, silent, and attributable
+      // to nobody they can see.
+      await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
     }
 
-    // Clear any pending plan execution state when a new user message is sent.
-    // This acts as a safety valve - if the user moves on, we don't want to
-    // auto-execute an old plan later.
-    await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
-
-    // Ensure messages are loaded before we try to add new ones
+    // Ensure messages are loaded before we try to add new ones. For the
+    // callback path this is the ONLY await preceding the guard, and it mutates
+    // nothing observable — which is what makes "no await or mutation before the
+    // guard" true of that path rather than merely intended.
     await this.ensureMessagesLoaded(managed)
 
     // Last-moment veto, and the LAST statement before the branch below for a
     // reason: this is the only point in the process where session state has
     // been settled by every await this method performs and nothing yields
     // before the message is committed. A caller that checked `isProcessing`
-    // itself and then called this method would be checking across those two
-    // awaits, so a turn could start in between and its message would be steered
-    // into it. See `tryDeliverPageCallback`, the one caller.
-    const vetoed = options?.deliveryGuard?.()
+    // itself and then called this method would be checking across those awaits,
+    // so a turn could start in between and its message would be steered into
+    // it. See `tryDeliverPageCallback`, the one caller.
+    //
+    // Do not insert an `await` between here and the `messages.push` below —
+    // `page-callback-acceptance.test.ts` reads this source and fails if one
+    // appears, because such an await silently re-opens the window this closes.
+    const vetoed = pageCallback?.guard()
     if (vetoed) {
       sessionLog.info(`sendMessage: delivery guard refused for ${sessionId} (${vetoed})`)
       return
@@ -6417,7 +6490,11 @@ export class SessionManager implements ISessionManager {
         // for both queue-direct (current turn still running) and
         // queue-after-abort (backend already aborted) — the replay path in
         // processNextQueuedMessage is identical.
-        managed.messageQueue.push({ message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId })
+        // Stripped: a queued message is replayed on a later turn, and the
+        // callback seam's guard and commit hook belong to THIS attempt only.
+        // (A callback never reaches here — its guard refuses a processing
+        // session — but the strip is structural rather than reliant on that.)
+        managed.messageQueue.push({ message, attachments, storedAttachments, options: toPersistableSendOptions(options), messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId })
         // Only claim interruption when a steer attempt actually aborted the
         // in-flight turn. In 'queue' mode the current turn runs to natural
         // completion, so the replayed turn must NOT inject the "previous response
@@ -6458,6 +6535,17 @@ export class SessionManager implements ISessionManager {
         ...(options?.hidden ? { hidden: true } : {}),
       }
       managed.messages.push(userMessage)
+
+      // COMMIT POINT. Fired synchronously, immediately after the push and
+      // before any await, because this — not the ack below — is the instant the
+      // message becomes real.
+      //
+      // `onAck` fires after `flushSession`, so resolving a callback there would
+      // leave a window in which the message is already in `managed.messages`
+      // but the caller has not been told: a deadline or a cancel landing in that
+      // window would audit delivered work as a timeout. Once this returns, the
+      // action has succeeded and nothing downstream may relabel it.
+      pageCallback?.onCommitted()
 
       // Update lastMessageRole for badge display. Skip for hidden messages so the
       // session-list preview isn't briefly driven by an invisible system nudge.
@@ -6563,7 +6651,7 @@ export class SessionManager implements ISessionManager {
     managed.lastSentMessage = message
     managed.lastSentAttachments = attachments
     managed.lastSentStoredAttachments = storedAttachments
-    managed.lastSentOptions = options
+    managed.lastSentOptions = toPersistableSendOptions(options)
 
     // Capture the generation to detect if a new request supersedes this one.
     // This prevents the finally block from clobbering state when a follow-up message arrives.
@@ -7794,7 +7882,7 @@ export class SessionManager implements ISessionManager {
     if (early) return { ok: false, code: early }
 
     let refused: PageCallbackRefusalCode | null = null
-    let accepted = false
+    let committed = false
     await new Promise<void>((resolve) => {
       void this.sendMessage(
         sessionId,
@@ -7802,29 +7890,38 @@ export class SessionManager implements ISessionManager {
         undefined,
         undefined,
         {
-          deliveryGuard: () => {
-            refused = refusal()
-            return refused
+          pageCallback: {
+            guard: () => {
+              refused = refusal()
+              return refused
+            },
+            // The message is in `managed.messages` as of this call, with no
+            // await since the guard ran. Resolving HERE rather than at `onAck`
+            // is what makes "cancel after commit cannot relabel a delivery"
+            // true: the ack fires after `flushSession`, and a deadline landing
+            // in that gap would otherwise audit delivered work as a timeout.
+            onCommitted: () => { committed = true; resolve() },
           },
         },
         undefined,
         undefined,
-        // Acceptance: the user message is persisted and flushed. Resolve here
-        // and let the turn run on.
-        () => { accepted = true; resolve() },
+        undefined,
       )
         .catch((error) => {
           sessionLog.warn(`tryDeliverPageCallback: send failed for ${sessionId}: ${error}`)
         })
-        // Covers the guard-refused path, which returns without ever acking, and
-        // the failure path. Resolving twice is a no-op.
+        // Covers the guard-refused path, which returns without ever committing,
+        // and the failure path. Resolving twice is a no-op, so a send that
+        // commits and then throws while flushing still reports success — the
+        // message is real either way, and saying otherwise would be the same
+        // false audit in the other direction.
         .finally(() => resolve())
     })
 
-    if (accepted) return { ok: true }
-    // A send that neither acked nor named a refusal failed for some other
-    // reason; report it as the most conservative truthful thing available
-    // rather than as a delivery.
+    if (committed) return { ok: true }
+    // Neither committed nor named a refusal: the send failed for some other
+    // reason. Report the most conservative truthful thing available rather than
+    // a delivery.
     return { ok: false, code: refused ?? 'session-not-found' }
   }
 
@@ -9232,7 +9329,13 @@ export class SessionManager implements ISessionManager {
     workspaceRootPath: string,
     action: PendingSessionAction,
   ): Promise<void> {
-    const sessionId = this.resolveAutomationTargetSession(workspaceId, action)
+    // fork(SUV-0064): was a private copy that answered an explicit `{ id }` from
+    // `this.sessions` — the process-wide map — with no workspace comparison, so
+    // an app-event automation registered in one workspace could mutate a session
+    // in another. One resolver now, shared with the desktop webhook executor and
+    // Page callbacks, and containment is a property of the lookup rather than a
+    // check each caller has to remember.
+    const sessionId = resolveWorkspaceSessionTarget(this, workspaceId, action.target)
     if (!sessionId) {
       await this.appendSessionActionHistory(workspaceRootPath, action, sessionActionOutcome.targetNotFound, false, {
         target: action.target,
@@ -9362,17 +9465,6 @@ export class SessionManager implements ISessionManager {
    * workspace carrying that label (exact entry match, so valued `id::value` entries are
    * included). `getSessions` is sorted most-recent-first.
    */
-  private resolveAutomationTargetSession(workspaceId: string, action: PendingSessionAction): string | null {
-    if (action.target.id) {
-      return this.sessions.has(action.target.id) ? action.target.id : null
-    }
-    if (action.target.label) {
-      for (const meta of this.getSessions(workspaceId)) {
-        if ((meta.labels ?? []).includes(action.target.label)) return meta.id
-      }
-    }
-    return null
-  }
 
   /** Session-action history envelope. Matches the desktop webhook executor's shape. */
   private async appendSessionActionHistory(

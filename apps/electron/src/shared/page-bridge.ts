@@ -221,12 +221,21 @@ function parseDescriptor(value: unknown): PageActionDescriptor | null {
   if (value.kind === 'session') {
     if (!isBoundedString(value.sessionId, MAX_ID_CHARS)) return null
     if (!isBoundedString(value.message, MAX_SESSION_MESSAGE_CHARS)) return null
-    // Rebuilt field by field, like every arm here, so a page cannot smuggle an
-    // extra key (`action`, `allowClosed`, a target selector) into a descriptor
-    // the host will later persist. Whether this session EXISTS is not asked
-    // here — the renderer has no session state and guessing would be worse than
-    // not answering. The host resolves it inside the owning workspace before it
-    // shows a dialog.
+    // REJECT an unknown key; do not reconstruct-and-strip. Every other arm here
+    // rebuilds field by field, which silently discards extras — fine when the
+    // extra is noise, wrong here. A page that sends `action: 'set-status'` or
+    // `allowClosed: true` is asking for something this descriptor cannot
+    // express, and stripping would hand it back an approved send-message grant
+    // for a request that wanted something else, with no way to tell the
+    // difference. The host's schema arm is `.strict()` for the same reason;
+    // this is the renderer-side half of that decision, so the two gates agree
+    // rather than one dropping what the other refuses.
+    for (const key of Object.keys(value)) {
+      if (key !== 'kind' && key !== 'sessionId' && key !== 'message') return null
+    }
+    // Whether this session EXISTS is deliberately not asked here — the renderer
+    // has no session state, and guessing would be worse than not answering. The
+    // host resolves it inside the owning workspace before it shows a dialog.
     return { kind: 'session', sessionId: value.sessionId, message: value.message }
   }
   return null

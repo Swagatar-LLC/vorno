@@ -162,6 +162,64 @@ that could never fire — worse than a refusal, because it looks like it works.
   on timing the user can neither see nor choose. Busy therefore refuses at
   delivery only, where the remedy is clicking again.
 
+## Reopened a third time
+
+`2026-09-12` — independent architecture review blocked the PR. The round-1 fix
+was right in shape and wrong in depth: it moved the guard to `sendMessage`'s
+decision point but left three things ahead of it, and resolved at the wrong
+instant.
+
+- **Mutations preceded the guard.** `sendMessage` pins the browser-host client,
+  claims the auto-retry slot, and `await`s `clearStoredPendingPlanExecution`
+  before it decides anything. So a callback that was about to be *refused* still
+  destroyed a pending plan the user had not answered — destructive, silent, and
+  attributable to nobody they can see.
+- **Acceptance was signalled at `onAck`, which fires after `flushSession`.** The
+  message was already in `managed.messages` during that await, so a deadline or
+  cancel landing in the gap could still audit delivered work as a timeout.
+- **A second resolver survived.** `SessionManager.resolveAutomationTargetSession`
+  answered an explicit `{ id }` from the process-wide session map with no
+  workspace comparison, then acted with the calling workspace's root path — the
+  same containment break the webhook path had, still live on the app-event path.
+- **The delivery seam sat on the wire DTO.** `deliveryGuard` was a closure on
+  `SendMessageOptions`, which crosses RPC, is stored on `lastSentOptions`, and is
+  replayed verbatim by auth-retry.
+- **The production bridge stripped rather than rejected.** A page sending
+  `action: 'set-status'` got a well-formed send-message descriptor back.
+- **Three identical refusal unions** in three packages.
+
+`2026-09-12` — closed again:
+
+- **`pageCallback` seam reorders the preamble.** For the callback path the only
+  await before the guard is `ensureMessagesLoaded`, which mutates nothing
+  observable; the three mutations stay inside the non-callback branch. A callback
+  **never** clears pending plan execution — refused or delivered. It is a page's
+  button, not the user moving on.
+- **`onCommitted` fires synchronously immediately after `messages.push`**, before
+  any await, and that is what `tryDeliverPageCallback` resolves on. Cancel after
+  commit cannot relabel a delivery; abort before commit leaves no message and no
+  mutation.
+- **One resolver.** `resolveAutomationTargetSession` is deleted; the app-event
+  executor uses `resolveWorkspaceSessionTarget`, with cross-workspace regressions
+  for status, labels, send-message, context, and label targeting.
+- **The seam is SessionManager-internal** (`SendMessageInternalOptions`) and
+  `toPersistableSendOptions` strips it at both storage sites. Assignability alone
+  would not have protected this — the strip has to be an action, not a type.
+- **The bridge rejects unknown keys** on the session arm rather than
+  reconstructing and stripping, matching the host schema's `.strict()`.
+- **One refusal union**, `PageSessionRefusalCode`, in `shared/pages/types.ts`;
+  the other two are re-exports.
+- **First-use consent re-resolves inside the queued callback** immediately before
+  chrome and again after the answer, before the ticket is minted.
+- **Consent leads with host-resolved target identity** and truncates the pinned
+  body for display, so a 2,000-character message cannot bury which session is
+  being authorized.
+
+The adjacency itself is pinned by a test that reads the source and fails if an
+`await` appears between the guard and the commit — **verified by injecting one**,
+because the behavioral tests pass either way (the window it opens is a race, and
+races do not fail deterministically).
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been
