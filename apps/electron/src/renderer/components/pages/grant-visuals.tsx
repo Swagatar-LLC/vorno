@@ -7,17 +7,23 @@
  */
 
 import * as React from 'react'
-import { Globe2, ShieldAlert, TerminalSquare, type LucideIcon } from 'lucide-react'
+import { Globe2, MessageSquareWarning, ShieldAlert, TerminalSquare, type LucideIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 import type { PageActionDescriptor, PageActionGrant } from '@craft-agent/shared/pages/types'
-import { isPageGrantUsable } from '@craft-agent/shared/pages/types'
+import { isPageGrantUsable, isPrivilegedPageGrantKind } from '@craft-agent/shared/pages/types'
 import { relativeTime } from './page-visuals'
+
+// Re-exported, not re-implemented: the renderer and the host must agree about
+// which grants block publishing, or the Share dialog offers a publish the host
+// then refuses on submit.
+export { isPrivilegedPageGrantKind }
 
 type Translate = (key: string, opts?: Record<string, unknown>) => string
 
 export function grantKindIcon(kind: PageActionDescriptor['kind']): LucideIcon {
   if (kind === 'script') return ShieldAlert
+  if (kind === 'session') return MessageSquareWarning
   if (kind === 'mcp') return TerminalSquare
   return Globe2
 }
@@ -29,6 +35,12 @@ export function describeGrantAction(action: PageActionDescriptor, t: Translate):
   }
   if (action.kind === 'script') {
     return t('pages.grants.scriptAction', { script: action.script })
+  }
+  if (action.kind === 'session') {
+    // The session id, not the pinned body. This label appears in a list of
+    // approvals; the body is what the approval SHEET showed in full, and
+    // repeating 2,000 characters of it per row would bury every other grant.
+    return t('pages.grants.sessionAction', { session: action.sessionId })
   }
   return t('pages.grants.apiAction', {
     method: action.method,

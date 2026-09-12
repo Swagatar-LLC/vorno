@@ -261,7 +261,14 @@ export type PageActionOutcomeCode =
   | 'executor-unavailable'
   | 'timeout'
   | 'cancelled'
-  | 'kind-mismatch';
+  | 'kind-mismatch'
+  // Session-callback refusals (SUV-0064). Closed values describing host-observed
+  // session state, so the row stays metadata: an operator can see that a page
+  // aimed at a session that was gone, finished, or mid-turn without the file
+  // learning anything the caller or the session said.
+  | 'session-not-found'
+  | 'session-closed'
+  | 'session-busy';
 
 /**
  * Resolve the live-lease ceiling for a broker.
@@ -438,7 +445,27 @@ export interface PageActionExecutors {
     invocation: { pageSlug: string; script: string; runtime?: PageScriptRuntime; args?: string[] },
     options: { signal: AbortSignal },
   ) => Promise<{ exitCode: number | null; stdout: string; stderr: string }>;
+  /**
+   * Deliver a session-kind grant's pinned message to its pinned session.
+   *
+   * Everything privileged is read off the matched grant and passed in here; the
+   * invocation the page sent carries neither the target nor the body. Resolves
+   * with a structured refusal when the target is gone, finished, or mid-turn —
+   * those are host-observed states the audit trail must be able to name, not
+   * executor failures. It throws only when delivery itself failed.
+   *
+   * No `signal`, unlike its three siblings. The delivery is a single
+   * `sendMessage` into an idle session; there is no long-running work to abort,
+   * and the broker's own deadline still races it, so an executor that hangs
+   * cannot hold a slot. A signal here would be a parameter nothing honours.
+   */
+  executeSession?: (
+    invocation: { pageSlug: string; grantId: string; sessionId: string; message: string },
+  ) => Promise<{ ok: true } | { ok: false; code: PageSessionOutcomeCode; reason: string }>;
 }
+
+/** The session-callback subset of {@link PageActionOutcomeCode}. */
+export type PageSessionOutcomeCode = 'session-not-found' | 'session-closed' | 'session-busy';
 
 export interface PageActionBrokerOptions {
   executors: PageActionExecutors;
@@ -1432,9 +1459,16 @@ export class PageActionBroker {
               proxyToolName(grant.action.sourceSlug, grant.action.toolName),
               (request.invocation.kind === 'mcp' ? request.invocation.args : undefined) ?? {},
             )
-          : // script: host command execution — always approval-worthy for an agent,
-            // annotated here purely for the audit trail (the grant is the approval).
-            { decision: 'requires-approval', description: `script: ${grant.action.script}` };
+          : grant.action.kind === 'script'
+            ? // script: host command execution — always approval-worthy for an agent,
+              // annotated here purely for the audit trail (the grant is the approval).
+              { decision: 'requires-approval', description: `script: ${grant.action.script}` }
+            : // session: writing into a live session is approval-worthy for the
+              // same reason. The description names the target, not the pinned
+              // body — `policyDecision` is the only part of this that reaches
+              // the audit row, but a description that carried the message would
+              // be one refactor away from doing so.
+              { decision: 'requires-approval', description: `session: ${grant.action.sessionId}` };
 
     // Registered BEFORE any waiting, not after. A queued request has already
     // spent its activation ticket, so if its controller only appeared once it
@@ -1623,6 +1657,31 @@ export class PageActionBroker {
           };
           outcome = ok ? 'ok' : 'non-zero-exit';
         }
+      } else if (grant.action.kind === 'session' && request.invocation.kind === 'session') {
+        if (!this.executors.executeSession) {
+          outcome = 'executor-unavailable';
+          result = this.unavailableResult(request, startTime, 'Session executor not wired in this host');
+        } else {
+          // Target and body come from the APPROVED grant. The invocation is a
+          // bare trigger and is not read here at all — there is nothing on it
+          // that could reach a session even if a caller put something there.
+          const sessionOutcome = await race(this.executors.executeSession({
+            pageSlug: page.slug,
+            grantId: grant.id,
+            sessionId: grant.action.sessionId,
+            message: grant.action.message,
+          }));
+          outcome = sessionOutcome.ok ? 'ok' : sessionOutcome.code;
+          result = {
+            requestId: request.requestId,
+            ok: sessionOutcome.ok,
+            // No body. A page learns whether its message was delivered and, on
+            // a refusal, why in the closed vocabulary above — never anything
+            // about the session's contents, status, or activity beyond that.
+            ...(sessionOutcome.ok ? {} : { error: `${sessionOutcome.code}: ${sessionOutcome.reason}` }),
+            durationMs: this.now() - startTime,
+          };
+        }
       } else {
         // The admission primitive makes this unreachable; keep a safe fallback.
         outcome = 'kind-mismatch';
@@ -1786,6 +1845,16 @@ export class PageActionBroker {
         sourceSlug: bounded(grant.action.sourceSlug),
         toolName: bounded(grant.action.toolName),
       };
+    }
+    if (grant.action.kind === 'session') {
+      // The target is recorded; the body never is. They are different kinds of
+      // fact. `targetSessionId` is a host-generated identifier for a session
+      // this workspace owns, and it is the single thing that makes a callback
+      // row checkable — "which session did this page reach" is the containment
+      // question the log exists to answer. The pinned `message` is payload, and
+      // payload is what every other rule here strips; it is also the one field
+      // most likely to carry whatever an agent wrote into the page.
+      return { actionKind: 'session', targetSessionId: bounded(grant.action.sessionId) };
     }
     // script: the grant id in the same row carries the pinned path, runtime,
     // and args, and none of those belong in the log.

@@ -110,3 +110,69 @@ describe('script path bounds in action descriptors', () => {
     }
   });
 });
+
+/**
+ * SUV-0064 — the session-callback descriptor.
+ *
+ * This schema is the last gate before a privileged capability is persisted, and
+ * the one place a page's request is compared against a shape rather than
+ * against state. Everything state-dependent — does this session exist, does
+ * this workspace own it — is answered server-side and is deliberately not here.
+ */
+describe('PageActionDescriptorSchema session arm', () => {
+  const valid = { kind: 'session', sessionId: 'sess_target', message: 'Refresh the numbers.' };
+
+  it('accepts a pinned target and body', () => {
+    expect(PageActionDescriptorSchema.safeParse(valid).success).toBe(true);
+  });
+
+  it('requires both fields — neither is optional', () => {
+    // A descriptor missing either one is not a capability: a target with no
+    // body has nothing to send, and a body with no target has nowhere to go.
+    expect(PageActionDescriptorSchema.safeParse({ kind: 'session', sessionId: 'sess_target' }).success).toBe(false);
+    expect(PageActionDescriptorSchema.safeParse({ kind: 'session', message: 'hi' }).success).toBe(false);
+    expect(PageActionDescriptorSchema.safeParse({ kind: 'session', sessionId: '', message: 'hi' }).success).toBe(false);
+    expect(PageActionDescriptorSchema.safeParse({ kind: 'session', sessionId: 'sess_target', message: '' }).success).toBe(false);
+  });
+
+  it('rejects a smuggled action, status, or target selector rather than stripping it', () => {
+    // Stripping would hand back an approved send-message grant for a request
+    // that asked for something else, with no way for the page to tell. This arm
+    // is `.strict()` precisely so that cannot happen.
+    for (const extra of [
+      { action: 'set-status' },
+      { action: 'set-labels' },
+      { status: 'done' },
+      { allowClosed: true },
+      { target: { label: 'anything' } },
+      { sessionId: 'sess_target', target: { id: 'sess_other' } },
+    ]) {
+      expect(PageActionDescriptorSchema.safeParse({ ...valid, ...extra }).success).toBe(false);
+    }
+  });
+
+  it('bounds the pinned body at the length a human can actually read in a sheet', () => {
+    const longest = 'x'.repeat(2000);
+    expect(PageActionDescriptorSchema.safeParse({ ...valid, message: longest }).success).toBe(true);
+
+    const tooLong = PageActionDescriptorSchema.safeParse({ ...valid, message: `${longest}y` });
+    expect(tooLong.success).toBe(false);
+    expect(tooLong.error!.issues.some(issue => issue.message.includes('cannot exceed 2000 characters'))).toBe(true);
+
+    // Far past the cap is the shape abuse actually takes — a body nobody reads
+    // is a body nobody consented to.
+    expect(PageActionDescriptorSchema.safeParse({ ...valid, message: 'x'.repeat(200_000) }).success).toBe(false);
+  });
+
+  it('bounds the target id, which also reaches host chrome', () => {
+    expect(PageActionDescriptorSchema.safeParse({ ...valid, sessionId: 'x'.repeat(128) }).success).toBe(true);
+    expect(PageActionDescriptorSchema.safeParse({ ...valid, sessionId: 'x'.repeat(129) }).success).toBe(false);
+  });
+
+  it('rejects non-string fields instead of coercing them', () => {
+    for (const bad of [42, null, {}, ['sess_target'], true]) {
+      expect(PageActionDescriptorSchema.safeParse({ ...valid, sessionId: bad }).success).toBe(false);
+      expect(PageActionDescriptorSchema.safeParse({ ...valid, message: bad }).success).toBe(false);
+    }
+  });
+});

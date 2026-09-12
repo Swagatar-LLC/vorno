@@ -30,6 +30,11 @@
  * - `automation` — a rule written into `automations.json` by a human and reviewed at registration
  *   time. May close **only** with `allowClosed: true`, preserving ADR-0021 §2 exactly.
  * - `agent` — a model mid-turn. May never close, on any event. Unchanged and unconditional.
+ * - `page` — a Page callback, acting under a user-approved grant (ADR-0033 §4). May never close,
+ *   unconditionally, and there is deliberately **no `allowClosed` counterpart**. `automation` gets
+ *   one because a human wrote the rule into `automations.json` and reviewed it at registration;
+ *   a Page has no registration step — its content is agent-authored, can be rewritten at any time,
+ *   and the thing a user approved was one pinned message to one session.
  * - `unattributed` — a caller that did not say. May never close. This is the default precisely so
  *   that new code fails closed: forgetting the parameter costs you the ability to close a session,
  *   not the protection against doing so accidentally.
@@ -39,6 +44,7 @@ export type StatusChangeOrigin =
   | { kind: 'host'; reason: string }
   | { kind: 'automation'; matcherId: string; allowClosed: boolean }
   | { kind: 'agent' }
+  | { kind: 'page'; pageSlug: string; grantId: string }
   | { kind: 'unattributed' };
 
 /** The origin assumed when a caller doesn't declare one. Cannot close. */
@@ -50,6 +56,18 @@ export const USER_ORIGIN: StatusChangeOrigin = { kind: 'user' };
 /** Deterministic host code (TaskRunner, mini-agent completion). `reason` is for the refusal log. */
 export function hostOrigin(reason: string): StatusChangeOrigin {
   return { kind: 'host', reason };
+}
+
+/**
+ * A Page acting under one approved grant (ADR-0033 §4).
+ *
+ * Both fields are host-validated before an origin is built: the slug has passed
+ * `assertValidPageSlug` and the grant id names a grant the host just matched on
+ * disk. Neither is a caller's claim, which is what makes them safe to name in a
+ * refusal log.
+ */
+export function pageOrigin(pageSlug: string, grantId: string): StatusChangeOrigin {
+  return { kind: 'page', pageSlug, grantId };
 }
 
 /**
@@ -65,6 +83,7 @@ export function mayCloseSession(origin: StatusChangeOrigin): boolean {
     case 'automation':
       return origin.allowClosed;
     case 'agent':
+    case 'page':
     case 'unattributed':
       return false;
   }
@@ -81,6 +100,8 @@ export function describeOrigin(origin: StatusChangeOrigin): string {
       return `automation (matcher ${origin.matcherId}, allowClosed=${origin.allowClosed})`;
     case 'agent':
       return 'agent (model-mediated)';
+    case 'page':
+      return `page (${origin.pageSlug}, grant ${origin.grantId})`;
     case 'unattributed':
       return 'unattributed caller';
   }

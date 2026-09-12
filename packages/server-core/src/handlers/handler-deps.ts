@@ -11,12 +11,31 @@ import type { PageActionDescriptor, PageActionGrant } from '@craft-agent/core'
  * This is deliberately not a transport/client dialog spec: remote clients do
  * not participate in Page grant consent.
  */
+/**
+ * Host-resolved identity of a session-callback's pinned target (SUV-0064).
+ *
+ * Present only for `session` descriptors, and never taken from the descriptor:
+ * the descriptor carries an id, and an id is not something a human can consent
+ * to. The host looks the session up in the workspace that owns the page and
+ * passes back the name it actually found, so "may this page message
+ * «Quarterly review»" is the question asked rather than "may this page message
+ * `sess_8f21…`". A descriptor whose target does not resolve never reaches
+ * chrome at all.
+ */
+export interface PageGrantTargetSession {
+  id: string
+  /** Sanitized, bounded display name as the host resolved it. */
+  name: string
+}
+
 export interface PageGrantConfirmationSpec {
   workspace: { id: string; name: string }
   page: { slug: string; name: string }
   action: PageActionDescriptor
   /** Sanitized, bounded optional prose supplied by the page author. */
   pageMessage?: string
+  /** Host-resolved target, for `session` descriptors only. */
+  targetSession?: PageGrantTargetSession
 }
 
 /**
@@ -81,6 +100,15 @@ export interface PageActionConfirmationSpec {
   workspace: { id: string; name: string }
   page: { slug: string; name: string }
   action: PageActionDescriptor
+  /**
+   * Host-resolved target, for `session` descriptors only.
+   *
+   * Re-resolved for this sheet rather than carried over from approval: a
+   * session can be renamed, archived, or deleted between approving a grant and
+   * first using it, and "run now" has to describe the world as it is when the
+   * user is asked, not as it was when they agreed in principle.
+   */
+  targetSession?: PageGrantTargetSession
 }
 
 /**

@@ -34,7 +34,7 @@ import {
   canonicalPageActionHash,
   type PageActionExecutors,
 } from './action-bridge.ts';
-import { PAGE_ACTION_KINDS, PAGE_ACTION_ORIGINS, isMutatingPageAction, pageActionOriginPolicy } from './types.ts';
+import { PAGE_ACTION_KINDS, PAGE_ACTION_ORIGINS, isMutatingPageAction, pageActionOriginAllowsKind, pageActionOriginPolicy } from './types.ts';
 
 const DIGEST_V1 = 'a'.repeat(64);
 const DIGEST_V2 = 'b'.repeat(64);
@@ -635,7 +635,7 @@ describe('pages/action-bridge', () => {
     it('classifies every descriptor kind, and only api GET is non-mutating', () => {
       // Enumerated from the table itself, so a kind added to the union without
       // a classification fails here as well as at the type level.
-      expect([...PAGE_ACTION_KINDS].sort()).toEqual(['api', 'mcp', 'script']);
+      expect([...PAGE_ACTION_KINDS].sort()).toEqual(['api', 'mcp', 'script', 'session']);
 
       expect(isMutatingPageAction({ kind: 'api', sourceSlug: 'gh', method: 'GET', pathPattern: '.*' })).toBe(false);
       for (const method of ['POST', 'PUT', 'PATCH', 'DELETE'] as const) {
@@ -643,20 +643,34 @@ describe('pages/action-bridge', () => {
       }
       expect(isMutatingPageAction({ kind: 'mcp', sourceSlug: 'linear', toolName: 'create_issue' })).toBe(true);
       expect(isMutatingPageAction({ kind: 'script', script: 'run.sh' })).toBe(true);
+      expect(isMutatingPageAction({ kind: 'session', sessionId: 'sess_1', message: 'hi' })).toBe(true);
 
       // Invocations classify identically to descriptors — the two gates must
       // never disagree about what is privileged.
       expect(isMutatingPageAction({ kind: 'api', method: 'GET', path: '/x' })).toBe(false);
       expect(isMutatingPageAction({ kind: 'api', method: 'DELETE', path: '/x' })).toBe(true);
       expect(isMutatingPageAction({ kind: 'script' })).toBe(true);
+      expect(isMutatingPageAction({ kind: 'session' })).toBe(true);
     });
 
     it('treats an unknown kind, and a method-less api action, as mutating', () => {
       // A future wire version or an untyped JS caller must fail closed rather
       // than fall into the GET exemption.
-      expect(isMutatingPageAction({ kind: 'session' } as never)).toBe(true);
+      expect(isMutatingPageAction({ kind: 'webhook' } as never)).toBe(true);
       expect(isMutatingPageAction({} as never)).toBe(true);
       expect(isMutatingPageAction({ kind: 'api' } as never)).toBe(true);
+    });
+
+    it('confines the scheduled origin to script, so no callback runs on a timer', () => {
+      // A cron tick has no user watching and no interaction proof. A scheduled
+      // session callback would be recurring prompt injection into a live
+      // session, so the confinement that exists to keep refreshes off api/mcp
+      // is load-bearing for `session` above all.
+      expect(pageActionOriginAllowsKind('scheduled-refresh', 'script')).toBe(true);
+      for (const kind of ['api', 'mcp', 'session'] as const) {
+        expect(pageActionOriginAllowsKind('scheduled-refresh', kind)).toBe(false);
+        expect(pageActionOriginAllowsKind('sandboxed-page', kind)).toBe(true);
+      }
     });
 
     it('gives every origin a policy and no policy to an unattributed caller', () => {

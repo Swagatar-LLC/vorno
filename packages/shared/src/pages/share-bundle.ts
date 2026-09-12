@@ -28,7 +28,7 @@
 
 import { existsSync, readFileSync } from 'fs';
 import type { PageKind } from '@craft-agent/core';
-import { isPageGrantUsable } from './types.ts';
+import { isPageGrantUsable, isPrivilegedPageGrantKind } from './types.ts';
 import { isSensitiveKeyName } from '../utils/redaction.ts';
 import {
   computePageContentDigest,
@@ -51,6 +51,7 @@ export type PageShareErrorCode =
   | 'PAGE_SHARE_SNAPSHOT_INVALID'
   | 'PAGE_SHARE_ACTIONS_ACK_REQUIRED'
   | 'PAGE_SHARE_SCRIPT_GRANT'
+  | 'PAGE_SHARE_SESSION_GRANT'
   | 'PAGE_SHARING_DISABLED'
   | 'PAGE_SHARE_TOKEN_MISSING'
   | 'PAGE_SHARE_ALREADY_PUBLISHED'
@@ -136,12 +137,21 @@ export function buildPageShareBundle(
     throw new PageShareError('PAGE_NO_CONTENT', `Page has no content to publish: ${pageSlug}`);
   }
 
-  // Host command execution must never reach a public URL — refuse outright,
-  // ahead of the softer view-only acknowledgment path below.
-  if (config.grants?.some((grant) => grant.action.kind === 'script')) {
+  // Privileged capability must never reach a public URL — refuse outright,
+  // ahead of the softer view-only acknowledgment path below. A published copy
+  // cannot exercise a grant (there is no bridge and no host on the other side),
+  // so the risk this closes is not execution: it is that the HTML which asks
+  // for host command execution, or which asks to write into someone's live
+  // session, is exactly the HTML that should not be handed to strangers to
+  // read, adapt, and re-host. The check counts stale and expired grants too —
+  // what the page is built to do does not expire.
+  const privilegedGrant = config.grants?.find((grant) => isPrivilegedPageGrantKind(grant.action.kind));
+  if (privilegedGrant) {
     throw new PageShareError(
-      'PAGE_SHARE_SCRIPT_GRANT',
-      'This page has permission to run a script on this computer, so it cannot be published — not even as a view-only copy.',
+      privilegedGrant.action.kind === 'session' ? 'PAGE_SHARE_SESSION_GRANT' : 'PAGE_SHARE_SCRIPT_GRANT',
+      privilegedGrant.action.kind === 'session'
+        ? 'This page has permission to send a message into one of your sessions, so it cannot be published — not even as a view-only copy.'
+        : 'This page has permission to run a script on this computer, so it cannot be published — not even as a view-only copy.',
     );
   }
 

@@ -79,6 +79,35 @@ describe('host grant descriptor rendering', () => {
     expect(rendered).not.toContain('line\nbreak')
   })
 
+  test('renders a session descriptor with its target and its full pinned body', () => {
+    // The sheet has to show BOTH, because approving a session callback means
+    // agreeing to this exact sentence going to this exact session. Truncating
+    // the body here would be approving something the user never read.
+    const rendered = formatPageGrantDescriptor({
+      kind: 'session',
+      sessionId: 'sess_target',
+      message: 'Please re-run the quarterly export and post the totals.',
+    })
+    expect(rendered).toContain('"kind": "session"')
+    expect(rendered).toContain('"sessionId": "sess_target"')
+    expect(rendered).toContain('Please re-run the quarterly export and post the totals.')
+  })
+
+  test('escapes invisible characters inside a pinned callback body', () => {
+    // A pinned body is agent-authored prose heading for a native dialog, so it
+    // is the widest surface in this descriptor for hiding text a user is being
+    // asked to approve — bidi overrides, zero-width joins, the lot.
+    const rendered = formatPageGrantDescriptor({
+      kind: 'session',
+      sessionId: 'sess_target',
+      message: 'harmless\u202ereversed\u200bhidden\u2028break',
+    })
+    expect(rendered).toContain('\\u202e')
+    expect(rendered).toContain('\\u200b')
+    expect(rendered).toContain('\\u2028')
+    expect(rendered).not.toContain('\u202e')
+  })
+
   test('escapes every invisible or reordering category, not a hand-picked list of them', () => {
     // These are all Cc/Cf/Zl/Zp and every one of them renders as nothing in a
     // native dialog, so an unescaped one lets a descriptor hide or reorder text

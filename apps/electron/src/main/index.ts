@@ -299,6 +299,29 @@ void applyConfiguredProxySettings()
 //
 // Electron's certificate-error always reports URLs with https:// scheme, so we normalize
 // wss:// → https:// (and ws:// → http://) to ensure origins compare correctly.
+/**
+ * Append the host-resolved target line to a Page consent sheet (SUV-0064).
+ *
+ * A `session` descriptor carries an id, and an id is not something a human
+ * recognizes. The host resolved that id to a name inside the workspace that
+ * owns the page, and this puts the name next to the exact descriptor rather
+ * than in place of it — so the sheet says both "«Quarterly review»" and the id
+ * that disambiguates two sessions sharing a title.
+ *
+ * A no-op for every other kind, which is why both dialogs can call it
+ * unconditionally instead of each branching on the descriptor. `name` was
+ * sanitized server-side through the same bounded-identity path workspace and
+ * page names take; re-cleaning it here with a second, differently-written
+ * cleaner is how the two start disagreeing about what is safe.
+ */
+function appendPageGrantTargetLine(
+  detail: string,
+  target: { id: string; name: string } | undefined,
+): string {
+  if (!target) return detail
+  return `${detail}\n\n${i18n.t('pages.grants.confirm.targetSession', { name: target.name, sessionId: target.id })}`
+}
+
 function normalizeOriginForCert(urlStr: string): string {
   const u = new URL(urlStr)
   if (u.protocol === 'wss:') u.protocol = 'https:'
@@ -873,17 +896,24 @@ app.whenReady().then(async () => {
               // (or parenting it to the focused window) would make the host's
               // timeout unenforceable — the modal would outlive its request.
               return (await dialog.showMessageBox(win, {
-                type: spec.action.kind === 'script' ? 'warning' : 'question',
+                // `session` joins `script` on the warning face. Both reach past
+                // the page's own data — one runs a host command, the other
+                // writes into a live session — and the visual weight of the
+                // sheet is the only part of this dialog a user reads instantly.
+                type: spec.action.kind === 'script' || spec.action.kind === 'session' ? 'warning' : 'question',
                 title: i18n.t('pages.grants.confirm.title'),
                 message: i18n.t('pages.grants.confirm.message', { page: spec.page.name, workspace: spec.workspace.name, action }),
-                detail: i18n.t('pages.grants.confirm.detail', {
-                  workspace: spec.workspace.name,
-                  workspaceId: spec.workspace.id,
-                  page: spec.page.name,
-                  pageSlug: spec.page.slug,
-                  action,
-                  pageMessage: spec.pageMessage ?? i18n.t('pages.grants.confirm.noPageMessage'),
-                }),
+                detail: appendPageGrantTargetLine(
+                  i18n.t('pages.grants.confirm.detail', {
+                    workspace: spec.workspace.name,
+                    workspaceId: spec.workspace.id,
+                    page: spec.page.name,
+                    pageSlug: spec.page.slug,
+                    action,
+                    pageMessage: spec.pageMessage ?? i18n.t('pages.grants.confirm.noPageMessage'),
+                  }),
+                  spec.targetSession,
+                ),
                 buttons: [i18n.t('pages.grants.confirm.deny'), i18n.t('pages.grants.confirm.approve')],
                 defaultId: 0,
                 cancelId: 0,
@@ -906,12 +936,15 @@ app.whenReady().then(async () => {
                 type: 'warning',
                 title: i18n.t('pages.actions.confirm.title'),
                 message: i18n.t('pages.actions.confirm.message', { page: spec.page.name, workspace: spec.workspace.name }),
-                detail: i18n.t('pages.actions.confirm.detail', {
-                  workspace: spec.workspace.name,
-                  page: spec.page.name,
-                  pageSlug: spec.page.slug,
-                  action,
-                }),
+                detail: appendPageGrantTargetLine(
+                  i18n.t('pages.actions.confirm.detail', {
+                    workspace: spec.workspace.name,
+                    page: spec.page.name,
+                    pageSlug: spec.page.slug,
+                    action,
+                  }),
+                  spec.targetSession,
+                ),
                 buttons: [i18n.t('pages.actions.confirm.cancel'), i18n.t('pages.actions.confirm.run')],
                 defaultId: 0,
                 cancelId: 0,

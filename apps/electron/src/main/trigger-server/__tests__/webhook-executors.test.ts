@@ -205,3 +205,89 @@ describe('createDesktopWebhookExecutors', () => {
     expect(res.note).toBe('unhandled-action');
   });
 });
+
+/**
+ * SUV-0064 — workspace containment on the existing webhook path.
+ *
+ * Before the shared resolver, an explicit `{ id }` target was answered by
+ * `sm.getSession(id)` — a by-id lookup across the process's whole session map,
+ * with no workspace comparison — and the action then ran with the CALLING
+ * workspace's root path. A webhook registered in one workspace could therefore
+ * mutate a session in another. Page callbacks share this primitive, so the
+ * regression is stated once, here, against the host that had the exposure.
+ */
+describe('webhook session-action workspace containment', () => {
+  /**
+   * A SessionManager whose `getSessions` actually filters, as the real one
+   * does. The suite's other fake returns everything regardless of the id it is
+   * given — fine for tests about outcomes, useless for this one, because it
+   * would make a containment break unrepresentable.
+   */
+  function makeWorkspaceAwareSM(byWorkspace: Record<string, Array<{ id: string; labels?: string[] }>>) {
+    const calls: Call[] = [];
+    const sm: WebhookSessionManager = {
+      async executePromptAutomation() { return { sessionId: 'sess-new' }; },
+      async getSession(id) {
+        // Deliberately global, exactly like the real by-id map — so if the
+        // executor ever reaches for this again, this test fails.
+        calls.push({ fn: 'getSession', args: [id] });
+        const found = Object.values(byWorkspace).flat().find((s) => s.id === id);
+        return (found ? { ...found } : null) as never;
+      },
+      getSessions(workspaceId?: string) {
+        calls.push({ fn: 'getSessions', args: [workspaceId] });
+        return (workspaceId ? byWorkspace[workspaceId] ?? [] : Object.values(byWorkspace).flat()) as never;
+      },
+      async setSessionStatus(id, status) { calls.push({ fn: 'setSessionStatus', args: [id, status] }); },
+      setSessionLabels(id, labels) { calls.push({ fn: 'setSessionLabels', args: [id, labels] }); },
+      async sendMessage(id, message) { calls.push({ fn: 'sendMessage', args: [id, message] }); },
+      applyContextProfile(id, profileId, cause) {
+        calls.push({ fn: 'applyContextProfile', args: [id, profileId, cause] });
+        return { rejection: null, applied: ['permissionMode'] };
+      },
+    };
+    return { sm, calls };
+  }
+
+  test('refuses an explicit id owned by another workspace', async () => {
+    const { sm, calls } = makeWorkspaceAwareSM({
+      ws1: [{ id: 'sess-mine' }],
+      ws2: [{ id: 'sess-theirs' }],
+    });
+    const ex = createDesktopWebhookExecutors(sm);
+
+    const res = await ex.executeSessionAction(ws, action({ type: 'send-message', target: { id: 'sess-theirs' }, message: 'hi' }));
+
+    // Terminal, not transient: the target genuinely is not here, and retrying
+    // will not change that.
+    expect(res.ok).toBe(true);
+    expect(res.note).toBe('target-not-found');
+    expect(calls.some((c) => c.fn === 'sendMessage')).toBe(false);
+    // And it never consulted the global by-id map to decide.
+    expect(calls.some((c) => c.fn === 'getSession')).toBe(false);
+  });
+
+  test('still resolves an explicit id the workspace owns', async () => {
+    const { sm, calls } = makeWorkspaceAwareSM({ ws1: [{ id: 'sess-mine' }], ws2: [{ id: 'sess-theirs' }] });
+    const ex = createDesktopWebhookExecutors(sm);
+
+    const res = await ex.executeSessionAction(ws, action({ type: 'send-message', target: { id: 'sess-mine' }, message: 'hi' }));
+
+    expect(res.ok).toBe(true);
+    expect(res.sessionId).toBe('sess-mine');
+    expect(calls.find((c) => c.fn === 'sendMessage')!.args).toEqual(['sess-mine', 'hi']);
+  });
+
+  test('refuses a label carried only by another workspace', async () => {
+    const { sm, calls } = makeWorkspaceAwareSM({
+      ws1: [{ id: 'sess-mine' }],
+      ws2: [{ id: 'sess-theirs', labels: ['ci-target'] }],
+    });
+    const ex = createDesktopWebhookExecutors(sm);
+
+    const res = await ex.executeSessionAction(ws, action({ type: 'send-message', target: { label: 'ci-target' }, message: 'hi' }));
+
+    expect(res.note).toBe('target-not-found');
+    expect(calls.some((c) => c.fn === 'sendMessage')).toBe(false);
+  });
+});

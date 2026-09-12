@@ -146,6 +146,46 @@ export type PageActionDescriptor =
        * approves an exact command, not a family of them.
        */
       args?: string[];
+    }
+  | {
+      /**
+       * A pinned callback into ONE existing session (ADR-0033 §4).
+       *
+       * Everything privileged about this action is fixed at approval: the page
+       * names a session and a body when it *asks*, a human reads both in host
+       * chrome, and the invocation that follows carries neither. There is
+       * deliberately no ambient "the current session" target — a capability
+       * whose meaning depends on what the user happens to be looking at is a
+       * capability nobody can approve, because the thing approved is not the
+       * thing that runs.
+       *
+       * There is also deliberately no `action` field. Sending a message is the
+       * only thing a Page may do to a session, so a single-valued discriminator
+       * would be a knob that does not turn; `kind: 'session'` already says it.
+       * The descriptor schema is `.strict()`, so a page that sends
+       * `action: 'set-status'` is refused at parse rather than having the field
+       * quietly ignored — which is the failure mode an optional field invites.
+       */
+      kind: 'session';
+      /**
+       * The pinned target. Resolved server-side against the workspace that owns
+       * the page — both when consent is requested and again immediately before
+       * execution, because a session can be archived, closed, or deleted in
+       * between. The page never supplies a target at call time.
+       */
+      sessionId: string;
+      /**
+       * The pinned body, delivered verbatim as a user message.
+       *
+       * Pinning rather than parameterizing is the single most important
+       * decision here. Page content is agent-authored and its data snapshot is
+       * written by an agent-authored refresh script, so a call-time body would
+       * make Pages a prompt-injection pipeline aimed at a live session running
+       * under the user's permission mode. Pinned, approving a grant means "this
+       * page may send THIS sentence to THAT session". Typed slots with a length
+       * cap are a separate decision, not a v1 field.
+       */
+      message: string;
     };
 
 /**
@@ -203,6 +243,14 @@ export type PageActionInvocation =
        * grant descriptor, never from the page. There is nothing to carry here.
        */
       kind: 'script';
+    }
+  | {
+      /**
+       * Pure trigger, for the same reason `script` is one: the target session
+       * and the message body both come from the matched grant descriptor. A
+       * field here would be a field the user never approved.
+       */
+      kind: 'session';
     };
 
 /** A page's request to execute a granted source action */

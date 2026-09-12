@@ -30,7 +30,9 @@ import {
   ensurePageDataDir,
   recordPageThumbnail,
   isThumbnailFresh,
+  pageGrantTtlMs,
 } from './storage.ts';
+import { isPrivilegedPageGrantKind } from './types.ts';
 import { isValidPageSlug, InvalidPageSlugError } from './validation.ts';
 import { atomicWriteFileSync } from '../utils/files.ts';
 
@@ -323,6 +325,39 @@ describe('pages/storage', () => {
       expect(loadPageConfig(workspaceDir, created.slug)?.grants).toHaveLength(1);
       expect(revokePageGrant(workspaceDir, created.slug, scriptGrant.id)).toBe(true);
       expect(loadPageConfig(workspaceDir, created.slug)?.grants).toEqual([]);
+    });
+
+    it('gives a session grant the same short clamp a script grant gets', () => {
+      // Both reach past the page's own data — one runs a host command, the
+      // other writes into a live session — and neither is bounded by an
+      // anchored path pattern or a named tool the way api/mcp grants are. A
+      // constant named after only one of its two users is a constant the next
+      // kind gets classified against by whoever happens to remember.
+      const created = createPage(workspaceDir, { name: 'Callback', content: 'v1' });
+      const sessionGrant = addPageGrant(workspaceDir, created.slug, {
+        action: { kind: 'session', sessionId: 'sess_target', message: 'Refresh.' },
+        ttlMs: Number.MAX_SAFE_INTEGER,
+      });
+      expect(sessionGrant.expiresAt - sessionGrant.createdAt).toBe(7 * 24 * 60 * 60 * 1000);
+
+      // Default, with nothing requested: one day, not the seven-day api/mcp default.
+      const defaulted = addPageGrant(workspaceDir, created.slug, {
+        action: { kind: 'session', sessionId: 'sess_other', message: 'Refresh.' },
+      });
+      expect(defaulted.expiresAt - defaulted.createdAt).toBe(24 * 60 * 60 * 1000);
+    });
+
+    it('classifies every descriptor kind as privileged or not', () => {
+      // A mapped type over the union, so a new kind must state its side of the
+      // line to compile. An unknown one falls to the privileged side.
+      expect(isPrivilegedPageGrantKind('api')).toBe(false);
+      expect(isPrivilegedPageGrantKind('mcp')).toBe(false);
+      expect(isPrivilegedPageGrantKind('script')).toBe(true);
+      expect(isPrivilegedPageGrantKind('session')).toBe(true);
+      expect(isPrivilegedPageGrantKind('future-kind' as never)).toBe(true);
+
+      // A shorter request is honoured; the clamp is a ceiling, not a floor.
+      expect(pageGrantTtlMs({ kind: 'session', sessionId: 's', message: 'm' }, 60_000)).toBe(60_000);
     });
 
     it('allows unrelated updates after a configured refresh grant expires', () => {

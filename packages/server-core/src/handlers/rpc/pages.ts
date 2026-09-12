@@ -103,6 +103,17 @@ function sanitizePageGrantIdentity(value: string, fallback: string): string {
   return normalized.slice(0, PAGE_GRANT_IDENTITY_MAX_CHARS) || fallback
 }
 
+/**
+ * Raised when a `session` descriptor's pinned target is not a live session of
+ * the workspace that owns the page.
+ *
+ * Thrown before any host chrome opens. Two reasons, and both matter: a user
+ * must never be asked to approve a capability aimed at something that does not
+ * exist, and a page must not get to learn whether an id it guessed is real
+ * somewhere else by watching whether a dialog appears at all.
+ */
+const PAGE_GRANT_SESSION_TARGET_ERROR = 'PAGE_GRANT_SESSION_TARGET_UNAVAILABLE'
+
 export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): void {
   const log = deps.platform.logger
   const assertAvailable = (workspaceRootPath: string | undefined) => assertPagesEnabled(workspaceRootPath)
@@ -460,6 +471,40 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     return { workspaceId: workspace.id, origin, permissionMode }
   }
 
+  /**
+   * Resolve a `session` descriptor's pinned target inside the workspace that
+   * owns the page, for display in host chrome.
+   *
+   * Returns `undefined` for every other descriptor kind — that is the "nothing
+   * to show" answer, not a failure. For a session descriptor it either returns
+   * the resolved identity or throws, because an unresolvable target must stop
+   * the request rather than open a sheet with a blank where the session should
+   * be. Containment comes from the shared resolver, which matches inside this
+   * workspace's own session list rather than comparing after a global lookup.
+   *
+   * This is display resolution only. It does NOT authorize the callback: the
+   * executor re-resolves the same target immediately before delivery, because a
+   * session can be archived, closed, or deleted between approving a grant and
+   * using it, and a name shown days ago proves nothing about now.
+   */
+  async function describeSessionTarget(
+    workspaceId: string,
+    action: import('@craft-agent/core').PageActionDescriptor,
+  ): Promise<{ id: string; name: string } | undefined> {
+    if (action.kind !== 'session') return undefined
+    const { resolveWorkspaceSessionTarget } = await import('@craft-agent/shared/automations')
+    const resolved = resolveWorkspaceSessionTarget(deps.sessionManager, workspaceId, { id: action.sessionId })
+    if (!resolved) throw new Error(PAGE_GRANT_SESSION_TARGET_ERROR)
+    const session = deps.sessionManager.getSessions(workspaceId).find((candidate) => candidate.id === resolved)
+    if (!session) throw new Error(PAGE_GRANT_SESSION_TARGET_ERROR)
+    return {
+      id: resolved,
+      // A session name is user- or model-authored text going into native
+      // chrome, so it takes the same sanitizer workspace and page names take.
+      name: sanitizePageGrantIdentity(session.name ?? '', 'Untitled session'),
+    }
+  }
+
   async function resolveWorkspacePermissionMode(
     workspaceRootPath: string,
   ): Promise<PageActionAuthority['permissionMode']> {
@@ -547,6 +592,16 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     // cannot end up describing different commands.
     const grant = page.grants?.find((candidate) => candidate.id === grantId)
     if (!grant) return false
+    // Re-resolved for THIS sheet. A session renamed, archived, or deleted since
+    // approval must not be described here by the name it had then — and an
+    // unresolvable target refuses the first use outright rather than asking the
+    // user to run something aimed at nothing.
+    let targetSession: { id: string; name: string } | undefined
+    try {
+      targetSession = await describeSessionTarget(workspace.id, grant.action)
+    } catch {
+      return false
+    }
     pendingHostConfirmationCount++
     return await new Promise<boolean>((resolve, reject) => {
       grantConfirmationQueue.push(async () => {
@@ -564,6 +619,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
             workspace: { id: workspace.id, name: sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace') },
             page: { slug: page.slug, name: sanitizePageGrantIdentity(page.name, 'Unnamed page') },
             action: grant.action,
+            ...(targetSession ? { targetSession } : {}),
           }, deadline.signal)
           // Published for exactly as long as the sheet is open, keyed the same
           // way grant consent is. Without this, releasing the lease or retiring
@@ -622,6 +678,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const { McpClientPool } = await import('@craft-agent/shared/mcp')
     const { createPagesMcpExecutor } = await import('../../pages/mcp-executor')
     const { createPagesScriptExecutor } = await import('../../pages/script-executor-bridge')
+    const { createPagesSessionExecutor } = await import('../../pages/session-executor')
     let mcpPool = mcpPools.get(workspaceRootPath)
     if (!mcpPool) {
       mcpPool = new McpClientPool({
@@ -636,6 +693,19 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         executeApi: buildApiExecutor(workspaceRootPath),
         executeMcp: createPagesMcpExecutor({ workspaceRootPath, pool: mcpPool, log }),
         executeScript: createPagesScriptExecutor({ workspaceRootPath, log }),
+        // Deliberately handed `deps.sessionManager` through the narrow
+        // `SessionCallbackHost` shape rather than as itself: the executor's
+        // whole no-close guarantee is that it was never given a method that
+        // could close anything, and widening that interface is the reviewable
+        // moment at which a Page would gain a new power.
+        executeSession: createPagesSessionExecutor({
+          sessionManager: deps.sessionManager,
+          // Canonical, host-resolved — the same id the audit scope uses. A
+          // callback's containment check is only as good as this argument.
+          workspaceId,
+          workspaceRootPath,
+          log,
+        }),
       },
       permissionsContext: { workspaceRootPath, activeSourceSlugs },
       // Host-resolved, never client-supplied: it scopes the audit write budget,
@@ -848,6 +918,22 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       return null
     }
 
+    // A `session` descriptor's target is settled here — after the lease proves
+    // this is a live render, and well before any host chrome. A page that pins
+    // a session belonging to another workspace, or to no session at all, is
+    // refused without a human ever being asked, which is also what stops the
+    // dialog becoming an oracle for which session ids exist elsewhere. Placed
+    // AFTER the lease check for the same reason: an unmounted caller owns no
+    // consent work and must not get to probe session existence either. The
+    // resolved identity is what the user is then shown.
+    let targetSession: { id: string; name: string } | undefined
+    try {
+      targetSession = await describeSessionTarget(canonicalWorkspaceId, request.action)
+    } catch {
+      await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
+      throw new Error(PAGE_GRANT_SESSION_TARGET_ERROR)
+    }
+
     // Identity of an outstanding request. The digest belongs here so changed
     // content starts a new request instead of coalescing behind a stale
     // confirmation, and the descriptor enters through the one canonical
@@ -931,6 +1017,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
             },
             action: request.action,
             pageMessage: sanitizePageGrantMessage(request.description),
+            ...(targetSession ? { targetSession } : {}),
           }, deadline.signal)
           let timer: ReturnType<typeof setTimeout> | undefined
           try {

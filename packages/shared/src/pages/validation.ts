@@ -158,6 +158,25 @@ export const PageRefreshStatusSchema = z.object({
 
 export const PageActionHttpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
+/**
+ * Upper bound on a pinned callback body.
+ *
+ * Two things bound it and the smaller one wins. A human has to READ this in a
+ * host confirmation sheet before approving it, and a body nobody reads is a
+ * body nobody consented to — so the cap is set where a dialog stays legible,
+ * not where a session's context window gives out. It also has to survive on
+ * disk in `page.json` and cross the consent dialog intact.
+ */
+const SESSION_CALLBACK_MESSAGE_MAX_CHARS = 2000;
+
+/**
+ * Upper bound on a pinned target session id. Session ids are generated
+ * identifiers, so this only has to be wide enough for one; it exists because
+ * the field reaches a host dialog and unbounded text in host chrome is how a
+ * descriptor buries the action it is describing.
+ */
+const SESSION_CALLBACK_ID_MAX_CHARS = 128;
+
 export const PageActionDescriptorSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('api'),
@@ -176,6 +195,23 @@ export const PageActionDescriptorSchema = z.discriminatedUnion('kind', [
     runtime: PageScriptRuntimeSchema.optional(),
     args: z.array(z.string().max(500)).max(20).optional(),
   }),
+  z.object({
+    kind: z.literal('session'),
+    // Non-empty and bounded only. Whether this session EXISTS, and whether it
+    // belongs to the workspace that owns the page, are not schema questions —
+    // they are answered server-side against live session state before consent
+    // is even requested, and again immediately before execution.
+    sessionId: z.string().min(1, 'A session callback must name a session').max(SESSION_CALLBACK_ID_MAX_CHARS),
+    message: z
+      .string()
+      .min(1, 'A session callback must carry a message')
+      .max(SESSION_CALLBACK_MESSAGE_MAX_CHARS, `Message cannot exceed ${SESSION_CALLBACK_MESSAGE_MAX_CHARS} characters`),
+  // `.strict()`, unlike its sibling arms, because a stripped field on THIS
+  // descriptor is a silent downgrade of what the page asked for. A page that
+  // sends `action: 'set-status'` has to be told no; stripping it would hand
+  // back an approved send-message grant for a request that wanted something
+  // else, and the page would have no way to tell the difference.
+  }).strict(),
 ]);
 
 /** Client-facing request shape. The host adds the expected content digest after consent. */

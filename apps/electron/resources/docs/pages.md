@@ -153,7 +153,7 @@ keep the page useful with buttons disabled and show what approval would unlock.
 
 What you must know about grants:
 
-- Grants are **user-approved capabilities** persisted in the page config: `{ kind: 'api', sourceSlug, method, pathPattern }` (anchored regex), `{ kind: 'mcp', sourceSlug, toolName }`, or `{ kind: 'script', script, runtime?, args? }` (see below). You cannot mint them with a session tool — the page requests them (`grant-request`) and the user approves them in the host dialog.
+- Grants are **user-approved capabilities** persisted in the page config: `{ kind: 'api', sourceSlug, method, pathPattern }` (anchored regex), `{ kind: 'mcp', sourceSlug, toolName }`, `{ kind: 'script', script, runtime?, args? }`, or `{ kind: 'session', sessionId, message }` (both see below). You cannot mint them with a session tool — the page requests them (`grant-request`) and the user approves them in the host dialog.
 - Grants are bound to the **exact content digest** at approval time and have a hard expiry (30 days). Editing the page's HTML invalidates all grants by design — the page should simply re-request on next open.
 - The user can **remove any approval at any time** (page ⋯ menu → Approved actions, or inline in the Share dialog). Open renders receive an updated `grants` message when that happens, so drive button state from `handleGrants` instead of caching the init-time list.
 - If a granted source **loses authentication**, actions fail fast with an error starting with `source-auth-required` (e.g. `source-auth-required: reconnect "gmail" in the app`). The host shows a reconnect banner above the page. Treat it as retryable: show a "reconnect in the app" hint and let the user simply click again after reconnecting — do not permanently disable the button.
@@ -188,6 +188,37 @@ Rules specific to script grants:
 - **Always mutating** — only fire from a real click handler; it will be rejected without fresh user activation.
 - **Not shareable.** A page that holds a script grant **cannot be published** at all (publish fails with `PAGE_SHARE_SCRIPT_GRANT`) — even the inert view-only path is refused, and stale/expired script grants count too. The user can remove the approval (⋯ → Approved actions, or inline in the Share dialog) and then publish; you cannot revoke grants with a tool. Mention this trade-off when adding a script action to a page the user may want to share.
 - The script's working directory is the workspace root; `CRAFT_PAGE_DIR` / `CRAFT_PAGE_DATA_DIR` / `CRAFT_WORKSPACE_PATH` point it at the page's own data. Running a script does **not** touch the page's scheduled-refresh status.
+
+### Messaging a session (session callbacks)
+
+A `session` grant lets a **local** page deliver **one fixed message** to **one existing session** — a button that nudges a running piece of work, not a general messaging API.
+
+```js
+// Descriptor requested via grant-request — BOTH fields are pinned at approval:
+//   { kind: 'session', sessionId: '<an existing session id>', message: 'Re-run the export.' }
+// The invocation is a BARE TRIGGER — target and body both come from the grant:
+window.parent.postMessage({
+  protocol: 'craft-pages/v1', type: 'action',
+  requestId: crypto.randomUUID(), nonce,
+  grantId: sessionGrant.id,
+  invocation: { kind: 'session' }             // nothing else — no target, no body
+}, '*');
+// action-result carries no body: ok:true means delivered, and a refusal names
+// a closed code (session-not-found / session-closed / session-busy). The page
+// never learns anything else about the session.
+```
+
+Rules specific to session grants:
+
+- **The message is pinned at approval time, verbatim.** You cannot template it, parameterize it, or change it at call time. Approving the grant means "this page may send *this exact sentence* to *that session*". To say something different, request a different grant.
+- **The target must already exist, in this workspace.** Name a real session id (`list_sessions` in your own session, or ask the user which one). There is **no "current session" default** — an id that doesn't resolve inside the page's workspace is refused before the user is even asked, so the request just fails. The approval dialog shows the session's real name, resolved by the host.
+- **A page can never close, archive, delete, or re-status a session**, and there is no flag that changes this. The only thing a callback does is send a message.
+- **Delivery is attributed.** The host prepends an unforgeable line naming the page and grant, so the transcript shows the message came from a page rather than from the user. Your pinned text follows it unchanged — write it to read well after that line.
+- **Refused when the session is busy.** If the target is mid-turn the callback fails with `session-busy` rather than interrupting or queueing behind the running turn. Surface it as "try again in a moment", not as a permanent error. Archived and closed (`done`/`cancelled`) sessions refuse with `session-closed`.
+- **Always mutating** — only fire from a real click handler, and the user confirms the first use in each render.
+- **Shorter expiry:** session grants expire in 24 hours by default (7 days maximum), like script grants, rather than the 7/30 days api and mcp grants get.
+- **Not shareable.** A page holding a session grant **cannot be published** at all (publish fails with `PAGE_SHARE_SESSION_GRANT`), including the view-only path, and stale/expired ones count. Same trade-off as script grants — mention it before adding a callback to a page the user may want to share.
+- **Never runs on a schedule.** A `refresh` spec may only name a `script` grant; a scheduled tick can never fire a callback.
 
 ## Scheduled refresh
 

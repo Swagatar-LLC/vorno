@@ -36,6 +36,9 @@ import { generateUniqueSlug } from '../utils/slug.ts';
 import { debug } from '../utils/debug.ts';
 import { validatePageConfig, assertValidPageSlug, isValidPageSlug } from './validation.ts';
 import type { CreatePageInput, LoadedPage } from './types.ts';
+// One definition of "privileged", shared with the renderer, which cannot import
+// this module. See the table in types.ts.
+import { isPrivilegedPageGrantKind } from './types.ts';
 
 /** Filename of a page's config (also the watcher's completion marker) */
 export const PAGE_CONFIG_FILENAME = 'page.json';
@@ -55,8 +58,18 @@ export const PAGE_THUMBNAIL_FILENAME = 'thumbnail.jpg';
 /** Grant policy is deliberately local and changeable within ADR-0033's 30-day ceiling. */
 export const PAGE_GRANT_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PAGE_GRANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-export const DEFAULT_PAGE_SCRIPT_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
-export const PAGE_SCRIPT_GRANT_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * The short clamp, for the kinds that reach past the page's own data.
+ *
+ * Named for the property rather than for `script` because `session` now shares
+ * it, and a constant named after one of its two users is a constant the next
+ * kind gets classified against by whoever remembers. A script runs a host
+ * command; a session callback writes into a live session running under the
+ * user's permission mode. Neither is bounded by an anchored path pattern or a
+ * named tool the way api/mcp grants are, so neither earns the long default.
+ */
+export const DEFAULT_PAGE_PRIVILEGED_GRANT_TTL_MS = 24 * 60 * 60 * 1000;
+export const PAGE_PRIVILEGED_GRANT_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Max stored length for lastRefresh.error */
 const REFRESH_ERROR_MAX_LENGTH = 2000;
@@ -543,9 +556,9 @@ export interface AddPageGrantInput {
 }
 
 export function pageGrantTtlMs(action: PageActionDescriptor, requestedTtlMs?: number): number {
-  const isScript = action.kind === 'script';
-  const defaultTtl = isScript ? DEFAULT_PAGE_SCRIPT_GRANT_TTL_MS : DEFAULT_PAGE_GRANT_TTL_MS;
-  const maxTtl = isScript ? PAGE_SCRIPT_GRANT_MAX_TTL_MS : PAGE_GRANT_MAX_TTL_MS;
+  const privileged = isPrivilegedPageGrantKind(action.kind);
+  const defaultTtl = privileged ? DEFAULT_PAGE_PRIVILEGED_GRANT_TTL_MS : DEFAULT_PAGE_GRANT_TTL_MS;
+  const maxTtl = privileged ? PAGE_PRIVILEGED_GRANT_MAX_TTL_MS : PAGE_GRANT_MAX_TTL_MS;
   const requested = Number.isFinite(requestedTtlMs) ? requestedTtlMs! : defaultTtl;
   return Math.min(requested, maxTtl);
 }

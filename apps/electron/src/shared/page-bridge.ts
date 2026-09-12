@@ -31,10 +31,11 @@
  *                                                             ask the user to approve source
  *                                                             actions (host shows a dialog)
  *
- * Descriptors come in three kinds (see PageActionDescriptor): `api`, `mcp`, and
- * `script`. A `script` descriptor runs a workspace-relative script on the HOST
- * — its invocation is a bare trigger (script/runtime/args live in the grant,
- * never in the page message) and it always counts as mutating.
+ * Descriptors come in four kinds (see PageActionDescriptor): `api`, `mcp`,
+ * `script`, and `session`. `script` runs a workspace-relative script on the
+ * HOST; `session` delivers one pinned message to one pinned session. Both are
+ * bare triggers — everything privileged lives in the grant the user approved,
+ * never in the page message — and both always count as mutating.
  *
  * This module is deliberately pure (no React/DOM) so validation is unit-testable.
  */
@@ -58,6 +59,14 @@ const MAX_ID_CHARS = 128
 const MAX_PATH_CHARS = 2048
 const MAX_URL_CHARS = 2048
 const MAX_TOOL_NAME_CHARS = 256
+/**
+ * Must match `SESSION_CALLBACK_MESSAGE_MAX_CHARS` in `pages/validation.ts`,
+ * which is the authority. The renderer bound exists so an oversized body is
+ * dropped at the frame rather than travelling to the host to be rejected there;
+ * a mismatch fails safe in one direction only — a smaller value here just
+ * refuses earlier, and a larger one is caught by the schema.
+ */
+const MAX_SESSION_MESSAGE_CHARS = 2000
 const MAX_OBJECT_DEPTH = 8
 const MAX_GRANT_REQUESTS = 8
 const MAX_GRANT_DESCRIPTION_CHARS = 500
@@ -208,6 +217,17 @@ function parseDescriptor(value: unknown): PageActionDescriptor | null {
       ...(runtime !== undefined ? { runtime } : {}),
       ...(args !== undefined ? { args } : {}),
     }
+  }
+  if (value.kind === 'session') {
+    if (!isBoundedString(value.sessionId, MAX_ID_CHARS)) return null
+    if (!isBoundedString(value.message, MAX_SESSION_MESSAGE_CHARS)) return null
+    // Rebuilt field by field, like every arm here, so a page cannot smuggle an
+    // extra key (`action`, `allowClosed`, a target selector) into a descriptor
+    // the host will later persist. Whether this session EXISTS is not asked
+    // here — the renderer has no session state and guessing would be worse than
+    // not answering. The host resolves it inside the owning workspace before it
+    // shows a dialog.
+    return { kind: 'session', sessionId: value.sessionId, message: value.message }
   }
   return null
 }

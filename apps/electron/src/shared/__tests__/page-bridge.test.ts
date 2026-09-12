@@ -195,6 +195,40 @@ describe('parsePageBridgeMessage: grant-request', () => {
     ).toBeNull() // too many args
   })
 
+  test('accepts a well-formed session descriptor and rebuilds it field by field', () => {
+    const withAction = (action: unknown) => ({ ...valid, requests: [{ key: 'k', action }] })
+    // Rebuilt, not passed through: a page must not be able to smuggle an extra
+    // key into a descriptor the host will later persist as an approved
+    // capability. Anything beyond the two pinned fields is dropped here, and
+    // the host's strict schema refuses it outright if it ever arrives.
+    expect(parsePageBridgeMessage(withAction({
+      kind: 'session', sessionId: 'sess_target', message: 'Refresh the numbers.',
+      action: 'set-status', status: 'done', allowClosed: true, target: { label: 'x' },
+    }))).toEqual({
+      type: 'grant-request',
+      nonce: 'n',
+      requests: [{ key: 'k', action: { kind: 'session', sessionId: 'sess_target', message: 'Refresh the numbers.' } }],
+    })
+  })
+
+  test('rejects malformed session descriptors', () => {
+    const withAction = (action: unknown) => ({ ...valid, requests: [{ key: 'k', action }] })
+    expect(parsePageBridgeMessage(withAction({ kind: 'session' }))).toBeNull()
+    expect(parsePageBridgeMessage(withAction({ kind: 'session', sessionId: 'sess_target' }))).toBeNull()
+    expect(parsePageBridgeMessage(withAction({ kind: 'session', message: 'hi' }))).toBeNull()
+    expect(parsePageBridgeMessage(withAction({ kind: 'session', sessionId: '', message: 'hi' }))).toBeNull()
+    expect(parsePageBridgeMessage(withAction({ kind: 'session', sessionId: 'sess_target', message: '' }))).toBeNull()
+    expect(parsePageBridgeMessage(withAction({ kind: 'session', sessionId: 42, message: 'hi' }))).toBeNull()
+    expect(parsePageBridgeMessage(withAction({ kind: 'session', sessionId: 'sess_target', message: 42 }))).toBeNull()
+    // Bounded at the frame so an oversized body never travels to the host.
+    expect(parsePageBridgeMessage(withAction({
+      kind: 'session', sessionId: 'sess_target', message: 'x'.repeat(2001),
+    }))).toBeNull()
+    expect(parsePageBridgeMessage(withAction({
+      kind: 'session', sessionId: 'x'.repeat(129), message: 'hi',
+    }))).toBeNull()
+  })
+
   test('rejects oversized descriptions', () => {
     expect(
       parsePageBridgeMessage({ ...valid, requests: [{ ...mcpEntry, description: 'x'.repeat(501) }] }),
