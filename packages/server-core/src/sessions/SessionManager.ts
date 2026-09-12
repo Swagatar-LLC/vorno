@@ -1015,7 +1015,22 @@ interface ManagedSession {
    * finaliser must not resolve — or clear — the deferred belonging to the turn
    * that started after it.
    */
-  turnFinalization?: { token: symbol; promise: Promise<void>; resolve: () => void }
+  turnFinalization?: {
+    token: symbol
+    promise: Promise<void>
+    resolve: () => void
+    /**
+     * Whether `onProcessingStopped` is the one that will resolve this.
+     *
+     * Set when that handler starts, and it is what lets `setProcessing(false)`
+     * tell its two cases apart: the flag going false from INSIDE the finaliser
+     * is the normal path and must not resolve early, while the flag going false
+     * anywhere else means no finaliser is coming and the deferred has to be
+     * released — otherwise shutdown waits out its whole bound on a promise
+     * nothing will ever settle.
+     */
+    finalizerRunning: boolean
+  }
   autoRetryPending?: {
     content: string
     deadlineMs: number
@@ -1358,9 +1373,24 @@ export class SessionManager implements ISessionManager {
       // state has been written — see `turnFinalization`.
       let resolve!: () => void
       const promise = new Promise<void>((r) => { resolve = r })
-      managed.turnFinalization = { token: Symbol(managed.id), promise, resolve }
+      managed.turnFinalization = { token: Symbol(managed.id), promise, resolve, finalizerRunning: false }
       sessionRuntimeHooks.onSessionStarted()
     } else if (was && !processing) {
+      // A turn can stop WITHOUT being finalised, and those paths have to
+      // release the deferred or shutdown blocks on a promise nothing settles.
+      //
+      // Plan submission and auth requests are handoff interrupts: control moves
+      // to the UI, the flag goes false, and `onProcessingStopped` is never
+      // reached — the turn is paused, not finished. Same for the auth-retry
+      // path, which clears the flag before resending. `finalizerRunning`
+      // distinguishes those from the normal route, where this same line runs
+      // from inside the finaliser and resolving here would be exactly the
+      // early-resolve the deferred exists to prevent.
+      const finalization = managed.turnFinalization
+      if (finalization && !finalization.finalizerRunning) {
+        finalization.resolve()
+        managed.turnFinalization = undefined
+      }
       // Turn completion is the activity signal for idle-TTL eviction:
       // lastMessageAt is stamped at turn START, so without this a long turn
       // would count as idle time and could be evicted right after finishing.
@@ -7779,6 +7809,10 @@ export class SessionManager implements ISessionManager {
     // The token this invocation owns. Captured at ENTRY so a slow finaliser
     // cannot resolve the deferred belonging to a turn that started after it.
     const finalizationToken = this.sessions.get(sessionId)?.turnFinalization?.token
+    // Claim the deferred before anything below clears `isProcessing`, so
+    // `setProcessing(false)` knows a finaliser is running and leaves it alone.
+    const claimed = this.sessions.get(sessionId)?.turnFinalization
+    if (claimed && claimed.token === finalizationToken) claimed.finalizerRunning = true
     try {
         const managed = this.sessions.get(sessionId)
         if (!managed) return

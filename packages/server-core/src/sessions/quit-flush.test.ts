@@ -570,6 +570,32 @@ describe('quit flushes sessions that are mid-commit', () => {
     }, 20000)
   })
 
+  describe('handoff interrupts release the finalisation deferred', () => {
+    it('does not leave shutdown waiting when a turn pauses instead of finishing', async () => {
+      // Plan submission and auth requests are HANDOFF interrupts: control moves
+      // to the UI, `isProcessing` goes false, and `onProcessingStopped` is never
+      // reached — the turn is paused, not finished. The deferred is created
+      // whenever processing starts, so those paths have to release it or
+      // shutdown blocks on a promise nothing will ever settle, burns its whole
+      // bound, and then reports a stuck turn that is not stuck.
+      const sessionId = 'sess_handoff'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+
+      ;(sm as unknown as { setProcessing(m: unknown, p: boolean): void }).setProcessing(managed, true)
+      expect(managed.turnFinalization).toBeDefined()
+
+      // The handoff: the flag goes false without the finaliser running.
+      ;(sm as unknown as { setProcessing(m: unknown, p: boolean): void }).setProcessing(managed, false)
+      expect(managed.turnFinalization).toBeUndefined()
+
+      // Resolves promptly, and cleanly — not after the drain bound, and not as
+      // a stuck turn.
+      const started = Date.now()
+      await sm.flushAllSessions()
+      expect(Date.now() - started).toBeLessThan(2000)
+    }, 20000)
+  })
+
   describe('a cancelled final receipt is never accepted', () => {
     it('re-snapshots after a supersession and commits the merged state', async () => {
       // The positive half. A supersession is a RETRY, not an acceptance: the

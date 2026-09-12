@@ -128,6 +128,9 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       shutdown — receipts distinguish `cancelled` from `failed`.
 - [x] An active turn's final state is persisted even when an intermediate
       write is already queued for it.
+- [x] A handoff interrupt (plan submit, auth request, auth retry) releases the
+      finalisation deferred, so shutdown resolves promptly instead of waiting
+      out its bound on a turn that merely paused.
 - [x] Shutdown stays pending while a finaliser is parked after `isProcessing`
       has gone false, and the read-state and final response it writes are on
       disk before the queue closes.
@@ -180,6 +183,16 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
 Both wait mechanisms are deliberately redundant, which is why each survived
 mutation alone and only removing both fails the test — recorded so the next
 reader does not delete one as dead.
+
+Greptile then caught what creating the deferred on every turn start implied: a
+turn can stop WITHOUT being finalised. Plan submission and auth requests are
+handoff interrupts — control moves to the UI, the flag goes false, and
+`onProcessingStopped` is never reached — as is the auth-retry resend. Those left
+a deferred nothing would settle, so shutdown burned its whole bound and then
+reported a stuck turn that was not stuck. `setProcessing(false)` now releases
+the deferred unless `finalizerRunning` marks the finaliser as the caller, which
+is the one case where releasing would be the early-resolve the deferred exists
+to prevent.
 
 ### Review 9 — security: shutdown scope and cancellation intent
 
@@ -510,6 +523,10 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 11 (Greptile P1): creating a finalisation deferred on
+  every turn start meant handoff interrupts (plan submit, auth request, auth
+  retry) left one nothing would settle, hanging shutdown for its full bound;
+  `setProcessing(false)` now releases it unless the finaliser is the caller.
 - `2026-09-12` — review 10 (architecture): `isProcessing = false` was treated
   as finalisation complete, so shutdown closed the queue while the stop
   handler's tail was still assembling and persisting state; turns now carry a
