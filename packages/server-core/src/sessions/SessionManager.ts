@@ -8057,9 +8057,23 @@ export class SessionManager implements ISessionManager {
     let committed = false
     let durable = false
     let reserved = false
+    /**
+     * The underlying send, settled independently of when the CALLER is
+     * answered.
+     *
+     * The two lifetimes are genuinely different and conflating them was a bug:
+     * the caller is answered at durability, but on a session's first message
+     * `sendMessage` performs another flush (title generation) before
+     * `setProcessing`, so releasing the reservation when the caller returns
+     * left a window with `isProcessing` still false — and a second callback or
+     * an ordinary send could commit into it, starting overlapping turns.
+     *
+     * The reservation therefore follows the SEND, not the answer.
+     */
+    let sendSettled: Promise<void> | undefined
     try {
       await new Promise<void>((resolve) => {
-        void this.sendMessage(
+        sendSettled = this.sendMessage(
           sessionId,
           message,
           undefined,
@@ -8110,7 +8124,19 @@ export class SessionManager implements ISessionManager {
           .finally(() => resolve())
       })
     } finally {
-      if (reserved) this.pageCallbackReservations.delete(sessionId)
+      if (reserved) {
+        if (sendSettled) {
+          // Held until the send genuinely finishes, which is at or after the
+          // `isProcessing` handover — so there is no instant at which this
+          // session is unreserved and not yet processing. Costs nothing: a
+          // callback arriving during the turn is refused by `isProcessing`
+          // anyway, so the reservation is only ever the stricter of two
+          // already-agreeing answers.
+          void sendSettled.finally(() => this.pageCallbackReservations.delete(sessionId))
+        } else {
+          this.pageCallbackReservations.delete(sessionId)
+        }
+      }
     }
 
     if (committed) return { ok: true, durable }

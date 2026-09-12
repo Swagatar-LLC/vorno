@@ -367,6 +367,26 @@ is asserted against the real method.
   "normally prompt" is not a guarantee to hold a queue slot on, and unknown
   durability records as not-durable rather than claiming a flush nobody saw.
 
+## Round 9 — the reservation outlives the answer
+
+`2026-09-12` — one P1. Resolving the caller at durability was right; releasing
+the **reservation** there was not. On a session's first message `sendMessage`
+performs a second flush (title generation) before `setProcessing`, so the
+reservation lifted while `isProcessing` was still false — and a second callback
+or an ordinary send could commit into that window, which is the overlapping turn
+the whole mechanism exists to prevent.
+
+The two lifetimes are genuinely different and conflating them was the bug. The
+caller is answered at durability; the reservation now follows the **send**,
+released when `sendMessage` itself settles — at or after the `isProcessing`
+handover. There is therefore no instant at which a session is unreserved and not
+yet processing. It costs nothing, because a callback arriving during the turn is
+refused by `isProcessing` anyway: the reservation is only ever the stricter of
+two already-agreeing answers.
+
+The invariant is now asserted directly — after a delivery, the session is either
+still reserved or already processing, never neither.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

@@ -214,10 +214,32 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     expect(managed.messages.filter((m) => m.role === 'user')).toHaveLength(1)
   })
 
+  it('holds the reservation past the caller\'s answer, until the send settles', async () => {
+    seed()
+    const held = (sm as unknown as { pageCallbackReservations: Set<string> }).pageCallbackReservations
+
+    // The caller is answered at durability. On a session's FIRST message
+    // `sendMessage` then flushes again for title generation before
+    // `setProcessing`, so a reservation released when the caller returns leaves
+    // a window with `isProcessing` still false — and a second callback could
+    // commit into it. The reservation must therefore outlive the answer.
+    const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+    expect(outcome.ok).toBe(true)
+
+    // Either still reserved, or already processing — never neither, which is
+    // the state that admits an overlapping turn.
+    const managed = (sm as unknown as { sessions: Map<string, { isProcessing: boolean }> }).sessions.get(SESSION_ID)!
+    expect(held.has(SESSION_ID) || managed.isProcessing).toBe(true)
+  })
+
   it('releases the reservation so a later callback can still be delivered', async () => {
     const managed = seed()
 
     await sm.tryDeliverPageCallback(SESSION_ID, 'first', { workspaceId: WORKSPACE_ID })
+
+    // The reservation now outlives the caller's answer and is released when the
+    // SEND settles, so let that settle before asserting release.
+    await new Promise((r) => setTimeout(r, 50))
 
     // A delivery starts a turn, so the session is legitimately busy afterwards
     // — that is `session-busy` doing its job, not a leak. Clear it to isolate
