@@ -176,21 +176,30 @@ const PAGE_ACTION_RATE_WINDOW_MS = 60_000;
  */
 export const MAX_LIVE_LEASES = 256;
 /**
- * Lease creations allowed per workspace per minute.
+ * Lease creations allowed per CALLER per minute.
  *
- * `pages:createLease` is transport-reachable and, before this, unbounded: each
- * call minted a lease AND wrote a `page_lease_created` row, and past
- * `MAX_LIVE_LEASES` it also evicted one and wrote a second row — so a flood
- * amplified two audit lines per request, on a durable file, with no lease
- * needed to get in.
+ * `pages:createLease` is transport-reachable and was unbounded: each call minted
+ * a lease and wrote a `page_lease_created` row, and past `MAX_LIVE_LEASES` it
+ * also evicted one and wrote a second — two durable lines per request, with no
+ * lease needed to get in.
  *
- * Sixty is generous for the thing this actually serves: a lease is minted when
- * a Page mounts and when its content changes. A user opening dashboards does
- * not approach it; a loop does so immediately. The budget is per broker, and
- * there is one broker per workspace, so reconnecting or changing client id does
- * not reset it — the state lives on the host side of the boundary.
+ * **Per caller, not per workspace**, and that distinction is the whole design.
+ * A workspace-wide budget bounds the file but lets any authenticated client
+ * spend a workspace's entire allowance, so a hostile or looping client stops
+ * the user's own windows from mounting Pages until the window rolls — trading a
+ * denial of service against the disk for one against the person. Keying on the
+ * caller means a client can only exhaust itself.
+ *
+ * A caller that rotates its identity escapes this budget, which is why it is
+ * not the only defence: the lifecycle audit rows are throttled workspace-wide
+ * (`throttleKey`), so rotation buys a rotating attacker more leases — bounded
+ * by `MAX_LIVE_LEASES` and lease TTL — but no additional durable writes. The
+ * two limits guard different things on purpose.
+ *
+ * Sixty is generous for what this serves: a lease is minted when a Page mounts
+ * and when its content changes.
  */
-export const PAGE_LEASE_CREATIONS_PER_MINUTE_PER_WORKSPACE = 60;
+export const PAGE_LEASE_CREATIONS_PER_MINUTE_PER_CALLER = 60;
 
 /** Thrown by `createLease` when the workspace's lease budget is spent. */
 export class PageLeaseRateLimitedError extends Error {
@@ -483,6 +492,12 @@ export interface CreateLeaseInput {
   pageSlug: string;
   /** Digest of the content actually being rendered */
   contentDigest: string;
+  /**
+   * Who is asking, for the creation budget. Hosts pass the transport client id
+   * so one caller cannot spend another's allowance; callers that omit it share
+   * a single bucket, which is the conservative reading of "unknown".
+   */
+  budgetKey?: string;
 }
 
 /**
@@ -547,8 +562,8 @@ export class PageActionBroker {
   private readonly startTimesByPage = new Map<string, number[]>();
   /** Workspace-wide start timestamps (this broker serves exactly one workspace) */
   private startTimesByWorkspace: number[] = [];
-  /** Lease-creation timestamps within the sliding window, workspace-wide */
-  private leaseCreationTimes: number[] = [];
+  /** Caller identity → lease-creation timestamps within the sliding window */
+  private readonly leaseCreationTimesByCaller = new Map<string, number[]>();
   /** ticketId → the single-use activation record the broker holds */
   private readonly tickets = new Map<string, PageActivationTicket>();
   /**
@@ -605,11 +620,21 @@ export class PageActionBroker {
     // Refused BEFORE anything is created, audited, or evicted. Checking after
     // would leave the amplification intact: the refusal itself would be the
     // second row, and the eviction it triggered would be the third.
-    this.leaseCreationTimes = this.withinWindow(this.leaseCreationTimes);
-    if (this.leaseCreationTimes.length >= PAGE_LEASE_CREATIONS_PER_MINUTE_PER_WORKSPACE) {
+    const budgetKey = input.budgetKey ?? 'anonymous';
+    const recent = this.withinWindow(this.leaseCreationTimesByCaller.get(budgetKey) ?? []);
+    if (recent.length >= PAGE_LEASE_CREATIONS_PER_MINUTE_PER_CALLER) {
+      this.leaseCreationTimesByCaller.set(budgetKey, recent);
       throw new PageLeaseRateLimitedError();
     }
-    this.leaseCreationTimes.push(this.now());
+    recent.push(this.now());
+    this.leaseCreationTimesByCaller.set(budgetKey, recent);
+    // Bound the map: one entry per caller identity seen, swept once the oldest
+    // entry in a bucket has aged out.
+    if (this.leaseCreationTimesByCaller.size > 256) {
+      for (const [key, times] of this.leaseCreationTimesByCaller) {
+        if (this.withinWindow(times).length === 0) this.leaseCreationTimesByCaller.delete(key);
+      }
+    }
 
     if (this.leases.size >= MAX_LIVE_LEASES) {
       let oldest: PageRenderLease | undefined;
@@ -623,7 +648,7 @@ export class PageActionBroker {
           pageSlug: oldest.pageSlug,
           leaseId: oldest.leaseId,
           reason: 'lease-store-full',
-        });
+        }, 'lease-lifecycle');
       }
     }
 
@@ -639,13 +664,16 @@ export class PageActionBroker {
 
     this.leases.set(lease.leaseId, lease);
     this.seenRequestIds.set(lease.leaseId, new Set());
+    // Throttled workspace-wide: the per-caller budget stops one client starving
+    // another, and this stops a caller that rotates identity from growing the
+    // durable file. Different limits, different jobs.
     void this.appendAudit({
       event: 'page_lease_created',
       pageSlug: lease.pageSlug,
       leaseId: lease.leaseId,
       contentDigest: lease.contentDigest,
       expiresAt: lease.expiresAt,
-    });
+    }, 'lease-lifecycle');
     return lease;
   }
 
@@ -661,7 +689,7 @@ export class PageActionBroker {
     const lease = this.leases.get(leaseId);
     if (!lease) return;
     this.dropLease(leaseId);
-    void this.appendAudit({ event: 'page_lease_released', pageSlug: lease.pageSlug, leaseId });
+    void this.appendAudit({ event: 'page_lease_released', pageSlug: lease.pageSlug, leaseId }, 'lease-lifecycle');
   }
 
   /**

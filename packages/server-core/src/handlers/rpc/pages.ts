@@ -1014,7 +1014,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   // Issue a render lease. Returns the lease AND the exact content it is bound
   // to — the renderer must render THIS content string (not a separately
   // fetched copy), closing the read/lease race.
-  server.handle(RPC_CHANNELS.pages.CREATE_LEASE, async (_ctx, workspaceId: string, pageSlug: string) => {
+  server.handle(RPC_CHANNELS.pages.CREATE_LEASE, async (ctx, workspaceId: string, pageSlug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     assertAvailable(workspace.rootPath)
@@ -1026,8 +1026,16 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     const broker = await getBroker(workspaceId, workspace.rootPath)
     const contentDigest = computePageContentDigest(content)
     // Propagates PAGE_LEASE_RATE_LIMITED as a stable, actionable message. The
-    // renderer surfaces it; a flood gets it instead of a lease.
-    const lease = broker.createLease({ pageSlug, contentDigest })
+    // budget is keyed on the CALLER, so a looping client exhausts only itself
+    // and the user's own windows keep mounting Pages. `clientId` is a
+    // client-asserted handshake field and is not treated as authority here —
+    // it is an availability partition, and the durable-write bound that does
+    // not depend on it lives in the broker's lifecycle audit throttle.
+    const lease = broker.createLease({
+      pageSlug,
+      contentDigest,
+      budgetKey: typeof ctx?.clientId === 'string' ? ctx.clientId : undefined,
+    })
     // Transport clients may create leases, but only the sender-derived IPC
     // grant entry point can bind one to consent authority.
     return { lease, content }
