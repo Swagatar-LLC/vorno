@@ -98,16 +98,32 @@ describe('automation refusals reach history through the live wiring', () => {
   }
 
   /** The callback is fire-and-forget, so the write lands a tick or two after emit. */
-  async function historyWhenWritten(): Promise<Array<Record<string, unknown>>> {
+  /**
+   * Poll until the history holds `expected` entries.
+   *
+   * It used to return as soon as the file had ANY line, which made every test
+   * asserting two outcomes a race: two entries are appended by separate awaits,
+   * so a poll that caught the file between them read one and the assertion
+   * failed on whichever entry lost. It passed only because the timing happened
+   * to favour it — SUV-0066's persistence changes shifted dispatch timing by a
+   * few microseconds and it began failing.
+   *
+   * Waiting for a count makes the wait mean what the assertions need. The
+   * timeout still returns whatever it has, so a genuine failure to write
+   * surfaces as the real mismatch rather than as a hang.
+   */
+  async function historyWhenWritten(expected = 1): Promise<Array<Record<string, unknown>>> {
     const path = join(tmpRoot, 'automations-history.jsonl')
+    let seen: Array<Record<string, unknown>> = []
     for (let i = 0; i < 50; i++) {
       if (existsSync(path)) {
         const lines = readFileSync(path, 'utf-8').split('\n').filter(Boolean)
-        if (lines.length > 0) return lines.map((l) => JSON.parse(l) as Record<string, unknown>)
+        seen = lines.map((l) => JSON.parse(l) as Record<string, unknown>)
+        if (seen.length >= expected) return seen
       }
       await new Promise((r) => setTimeout(r, 10))
     }
-    return []
+    return seen
   }
 
   function refusals(entries: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
@@ -184,7 +200,9 @@ describe('automation refusals reach history through the live wiring', () => {
 
     await emit(statusChange('todo'))
 
-    const entries = await historyWhenWritten()
+    // Two actions, two entries — wait for both rather than for whichever
+    // lands first.
+    const entries = await historyWhenWritten(2)
     const outcomes = entries.map((e) => (e.sessionAction as { outcome?: string } | undefined)?.outcome)
     expect(outcomes).toContain('skipped:unknown-action')
     expect(outcomes).toContain('set-status:needs-review')

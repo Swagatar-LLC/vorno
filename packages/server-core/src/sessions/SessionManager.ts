@@ -65,6 +65,8 @@ import {
   getSessionFilePath,
   generateSessionId,
   sessionPersistenceQueue,
+  type SessionWriteKey,
+  sessionWriteKey,
   getHeaderMetadataSignature,
   writeSessionJsonl,
   serializeSession,
@@ -888,6 +890,16 @@ interface ManagedSession {
   lastSentAttachments?: FileAttachment[]
   lastSentStoredAttachments?: StoredAttachment[]
   lastSentOptions?: SendMessageOptions
+  /**
+   * Mirror of the stored record's pending-plan state.
+   *
+   * `persistSession` rebuilds the header from managed state, so a value that
+   * exists only on disk is dropped by the next persist from any writer. The
+   * mirror is what makes the field survive an ordinary session lifetime. Every
+   * owner of this state updates both — see `setPendingPlanExecution` and its
+   * three siblings.
+   */
+  pendingPlanExecution?: StoredSession['pendingPlanExecution']
   // Flag to prevent infinite retry loops (reset at start of each sendMessage)
   authRetryAttempted?: boolean
   // Flag indicating auth retry is in progress (to prevent complete handler from interfering)
@@ -1081,8 +1093,22 @@ const DEFAULT_TOKEN_USAGE = {
  * Uses pickSessionFields() for persistent fields so new fields propagate automatically.
  */
 function managedToSession(m: ManagedSession, overrides?: Partial<Session>): Session {
+  // `pendingPlanExecution` is persisted state, not transport state, and it is
+  // omitted here on purpose.
+  //
+  // It carries `draftInputSnapshot` — whatever the user had typed and not sent
+  // when they accepted a plan. That belongs on disk for recovery and nowhere
+  // else: this projection feeds every session-list push, so including it would
+  // put unsent user text on the wire for every session, repeatedly, to every
+  // connected client. It became reachable the moment the field started living
+  // on the managed session (it is in `SESSION_PERSISTENT_FIELDS`, so
+  // `pickSessionFields` takes it automatically), which is exactly the kind of
+  // silent widening that a spread invites.
+  //
+  // Read it through `getPendingPlanExecution`, which is the deliberate door.
+  const { pendingPlanExecution: _persistedOnly, ...persistedFields } = pickSessionFields(m)
   return {
-    ...pickSessionFields(m),
+    ...persistedFields,
     // Pre-computed fields from header (not in SESSION_PERSISTENT_FIELDS)
     preview: m.preview,
     lastMessageRole: m.lastMessageRole,
@@ -1570,11 +1596,73 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
-    if (changed) {
+    // Read state. Mirrored for the same reason projectId and kanbanColumn above
+    // are: these have no dedicated event on THIS path, so what the mirroring
+    // buys is that the in-memory value stops being wrong — the next list read
+    // is right, and the badge stops claiming unread work the user has already
+    // seen in another window. It emits nothing itself; `session_metadata_changed`
+    // is raised by the mutator methods, and both callers of this one discard the
+    // boolean. Said plainly because the neighbouring comments read as though a
+    // broadcast happens here, and it does not.
+    //
+    // Disk is already safe without this: the queue's per-field merge lets disk
+    // win a field it changed since our last write. This is about the copy in
+    // memory, which nothing else was correcting.
+    if (managed.lastReadMessageId !== header.lastReadMessageId) {
+      managed.lastReadMessageId = header.lastReadMessageId
+      changed = true
+    }
+    if ((managed.hasUnread ?? false) !== (header.hasUnread ?? false)) {
+      managed.hasUnread = header.hasUnread
+      changed = true
+    }
+
+    // `permissionMode` is deliberately NOT mirrored here. It is a declared-intent
+    // mutation with its own `permission_mode_changed` event and ADR-0021 emit
+    // rules, and quietly assigning it from a watcher event would manufacture a
+    // mode change that no origin asked for. Persistence still keeps the external
+    // value — the supersede below carries it, and the queue merges it into the
+    // next write — so disk stays correct while in-memory mode remains owned by
+    // the mode-change path. Recorded as a residual rather than smuggled in here.
+
+    // The supersede decision is deliberately INDEPENDENT of `changed`.
+    //
+    // `changed` only tracks fields this method mirrors into memory. An edit that
+    // touches nothing else — a pure `permissionMode` change, or another window
+    // marking the session read before this one loaded that state — left
+    // `changed` false, so no supersede happened, so an in-flight stale write
+    // committed straight over it with nothing held to recover from. The question
+    // that matters is "did an external writer diverge from what we last wrote",
+    // and only the full signature answers it.
+    // With no baseline — a session this process has loaded but never written —
+    // this reads as diverged, and that is the right answer: an external writer
+    // has touched a header we have no claim on, so we absorb it and write once.
+    // It cannot ping-pong between two running copies. Our write adopts the
+    // external values for all seven merged fields, so our next baseline equals
+    // the other instance's, and its echo of our write compares equal and stops.
+    // Only those seven fields are in the signature, so message counts and
+    // timestamps drifting apart do not restart it.
+    const observedSignature = getHeaderMetadataSignature(header)
+    const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(this.writeKeyFor(managed))
+    const divergedFromOurLastWrite = observedSignature !== lastWrittenSignature
+
+    if (divergedFromOurLastWrite) {
       sessionLog.info(`External metadata change detected for session ${sessionId}`)
 
-      // Prevent stale pending writes from reverting externally-updated metadata.
-      sessionPersistenceQueue.cancel(sessionId)
+      // Supersede, NOT cancel-for-deletion. This session is live and is being
+      // written again on the next line; the only thing that has to stop is an
+      // in-flight write carrying pre-edit state. The deletion variant would
+      // unlink the committed file — deleting a live session's transcript and
+      // leaving it absent from disk until the replacement write lands — and
+      // would drop the header-signature baseline that the replacement write
+      // needs to detect this very edit.
+      //
+      // The observed header travels with the call. Re-reading disk later is not
+      // equivalent: a write that read its header before this edit and renames
+      // after we saw it commits a pre-edit snapshot over it, and supersede
+      // (correctly) keeps that file — so disk no longer holds the edit, and the
+      // baseline matches the stale file so nothing detects the divergence.
+      sessionPersistenceQueue.supersedePendingWrites(this.writeKeyFor(managed), header)
       this.persistSession(managed)
     }
 
@@ -1710,7 +1798,7 @@ export class SessionManager implements ISessionManager {
         // Self-writes need nothing here: in-memory state is already up to date,
         // and the mutator fed the automation differ directly at write time.
         const incomingSignature = getHeaderMetadataSignature(header)
-        const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(sessionId)
+        const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(this.writeKeyFor(managed))
         const isSelfWrite = !!(lastWrittenSignature && incomingSignature === lastWrittenSignature)
 
         // For external writes: sync in-memory state + emit UI events.
@@ -2217,6 +2305,17 @@ export class SessionManager implements ISessionManager {
 
   // Build the StoredSession snapshot and hand it to the persistence queue.
   // Caller must ensure `managed.messagesLoaded` is true.
+  /**
+   * The persistence-queue identity for a session.
+   *
+   * Session ids are unique per WORKSPACE, so the queue keys its state on both.
+   * Everything here goes through this helper rather than building a key inline,
+   * so there is one place to be wrong instead of a dozen.
+   */
+  private writeKeyFor(managed: Pick<ManagedSession, 'id' | 'workspace'>): SessionWriteKey {
+    return sessionWriteKey(managed.workspace.rootPath, managed.id)
+  }
+
   private enqueuePersist(managed: ManagedSession): void {
     try {
       // Filter out transient status messages (progress indicators like "Compacting...")
@@ -2245,7 +2344,21 @@ export class SessionManager implements ISessionManager {
   // Cold-persist hydration is synchronous, so by the time we reach here the
   // queue already has an entry whenever persistSession was just called.
   async flushSession(sessionId: string): Promise<void> {
-    await sessionPersistenceQueue.flush(sessionId)
+    const managed = this.sessions.get(sessionId)
+    // No managed session means no workspace root, and therefore no key to flush
+    // under — the key is a function of both, and a bare id cannot name one.
+    //
+    // Reachable only for an id this process does not hold. Every in-product
+    // caller passes `managed.id`, having just looked the session up; and
+    // `this.sessions` is emptied in exactly two places, neither of which leaves
+    // a write that needs flushing — `deleteSession` cancels its writes outright,
+    // and the branch-creation failure path is unwinding a session that was never
+    // established. A pending write for a session dropped some other way would
+    // still land on its own debounce timer rather than being lost; it simply
+    // would not be awaited here. "Cold" in `cold-session-metadata.test.ts` means
+    // messages-not-loaded, not absent from the map, so that path is unaffected.
+    if (!managed) return
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
   }
 
   // Flush all pending sessions (call on app quit).
@@ -2936,7 +3049,7 @@ export class SessionManager implements ISessionManager {
 
         // Flush source session to disk to ensure latest message list is available for branch copy.
         this.persistSession(sourceManaged)
-        await sessionPersistenceQueue.flush(sourceManaged.id)
+        await sessionPersistenceQueue.flush(this.writeKeyFor(sourceManaged))
       }
 
       const sourceSession = loadStoredSession(workspaceRootPath, options.branchFromSessionId)
@@ -3845,14 +3958,14 @@ export class SessionManager implements ISessionManager {
           sessionLog.info(`SDK session ID captured for ${managed.id}: ${sdkSessionId}`)
         }
         this.persistSession(managed)
-        sessionPersistenceQueue.flush(managed.id)
+        sessionPersistenceQueue.flush(this.writeKeyFor(managed))
       }
 
       const onSdkSessionIdCleared = () => {
         managed.sdkSessionId = undefined
         sessionLog.info(`SDK session ID cleared for ${managed.id} (resume recovery)`)
         this.persistSession(managed)
-        sessionPersistenceQueue.flush(managed.id)
+        sessionPersistenceQueue.flush(this.writeKeyFor(managed))
       }
 
       const onBranchForkInvalidated = () => {
@@ -3862,7 +3975,7 @@ export class SessionManager implements ISessionManager {
         managed.branchFromSdkTurnId = undefined
         sessionLog.info(`Branch fork invalidated for ${managed.id}: cleared all fork metadata`)
         this.persistSession(managed)
-        sessionPersistenceQueue.flush(managed.id)
+        sessionPersistenceQueue.flush(this.writeKeyFor(managed))
       }
 
       const getRecoveryMessages = () => {
@@ -5264,6 +5377,11 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await setStoredPendingPlanExecution(managed.workspace.rootPath, sessionId, planPath, draftInputSnapshot)
+      // Mirror, not cache: `persistSession` rebuilds the header from managed
+      // state, so a value that exists only on disk is dropped by the next
+      // persist from any writer. The mirror is what makes the field survive an
+      // ordinary session lifetime.
+      managed.pendingPlanExecution = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId) ?? undefined
       sessionLog.info(`Session ${sessionId}: set pending plan execution for ${planPath}`)
     }
   }
@@ -5277,6 +5395,11 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
+      // The mirror moves with it. Every owner of this state updates both, or
+      // the copy goes stale and a later persist writes the old value back —
+      // here that would restore `awaitingCompaction: true` and un-complete a
+      // compaction that had finished.
+      managed.pendingPlanExecution = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId) ?? undefined
       sessionLog.info(`Session ${sessionId}: compaction marked complete for pending plan`)
     }
   }
@@ -5290,6 +5413,7 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await markStoredPendingPlanExecutionDispatched(managed.workspace.rootPath, sessionId)
+      managed.pendingPlanExecution = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId) ?? undefined
       sessionLog.info(`Session ${sessionId}: marked pending plan execution as dispatched`)
     }
   }
@@ -5303,6 +5427,8 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+      // Both, or a later persist writes the dismissed plan straight back.
+      managed.pendingPlanExecution = undefined
       sessionLog.info(`Session ${sessionId}: cleared pending plan execution`)
     }
   }
@@ -6238,8 +6364,10 @@ export class SessionManager implements ISessionManager {
     this.clearAdminRememberApprovalsForSession(sessionId)
     this.clearPendingPermissionRequestsForSession(sessionId)
 
-    // Cancel any pending persistence write (session is being deleted, no need to save)
-    sessionPersistenceQueue.cancel(sessionId)
+    // The session is being deleted, so pending writes are not merely stale —
+    // their artifact must not survive either, including one whose rename has
+    // already committed.
+    sessionPersistenceQueue.cancelForDeletion(this.writeKeyFor(managed))
 
     // Clean up session-scoped tool callbacks to prevent memory accumulation
     unregisterSessionScopedToolCallbacks(sessionId)
@@ -6335,6 +6463,9 @@ export class SessionManager implements ISessionManager {
     // This acts as a safety valve - if the user moves on, we don't want to
     // auto-execute an old plan later.
     await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+    // And any in-memory mirror, so a later persist cannot write back a plan
+    // the user has just dismissed.
+    managed.pendingPlanExecution = undefined
 
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
@@ -6753,7 +6884,7 @@ export class SessionManager implements ISessionManager {
             sessionLog.info(`Captured SDK session ID via fallback: ${sdkId}`)
             // Also flush here since we're in fallback mode
             this.persistSession(managed)
-            sessionPersistenceQueue.flush(managed.id)
+            sessionPersistenceQueue.flush(this.writeKeyFor(managed))
           }
         }
 
@@ -9768,7 +9899,7 @@ export class SessionManager implements ISessionManager {
     }
 
     this.persistSession(managed)
-    await sessionPersistenceQueue.flush(sessionId)
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
 
     const summary = await this.generateRemoteTransferSummary(managed)
     if (!summary) {
@@ -9809,7 +9940,7 @@ export class SessionManager implements ISessionManager {
     managed.transferredSessionSummary = payload.summary.trim()
     managed.transferredSessionSummaryApplied = false
     this.persistSession(managed)
-    await sessionPersistenceQueue.flush(session.id)
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
 
     return { sessionId: session.id }
   }
@@ -9842,7 +9973,7 @@ export class SessionManager implements ISessionManager {
 
     // Flush pending writes to ensure JSONL is up to date
     this.persistSession(managed)
-    await sessionPersistenceQueue.flush(sessionId)
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
 
     const bundle = serializeSession(managed.workspace.rootPath, sessionId)
     if (!bundle) {

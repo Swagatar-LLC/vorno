@@ -41,7 +41,7 @@ import { validateSessionStatus } from '../statuses/validation.ts';
 import { debug } from '../utils/debug.ts';
 import { getStatusCategory } from '../statuses/storage.ts';
 import { readSessionHeader, readSessionJsonl } from './jsonl.ts';
-import { sessionPersistenceQueue } from './persistence-queue.ts';
+import { sessionWriteKey, sessionPersistenceQueue } from './persistence-queue.ts';
 
 // Re-export types for convenience
 export type { SessionConfig } from './types.ts';
@@ -316,7 +316,9 @@ export async function getOrCreateSessionById(
  */
 export async function saveSession(session: StoredSession): Promise<void> {
   sessionPersistenceQueue.enqueue(session);
-  await sessionPersistenceQueue.flush(session.id);
+  // Keyed by workspace + id, not id alone: session ids are unique only within
+  // a workspace, and flushing the wrong workspace's entry would be silent.
+  await sessionPersistenceQueue.flush(sessionWriteKey(session.workspaceRootPath, session.id));
 }
 
 /**
@@ -324,7 +326,9 @@ export async function saveSession(session: StoredSession): Promise<void> {
  * Multiple rapid calls are coalesced into a single write.
  * Use this during active sessions to avoid blocking the main thread.
  */
-export { sessionPersistenceQueue, getHeaderMetadataSignature } from './persistence-queue.js'
+export { sessionPersistenceQueue, sessionWriteKey, getHeaderMetadataSignature } from './persistence-queue.js'
+export type { SessionWriteKey } from './persistence-queue.js'
+export type { SessionWriteHandle, SessionWriteReceipt } from './persistence-queue.js'
 
 /**
  * Load session by ID
@@ -414,8 +418,12 @@ function headerToMetadata(header: SessionHeader, workspaceRootPath: string): Ses
     const sdkCwd = header.sdkCwd ? expandPath(header.sdkCwd) : workingDir;
 
     // Destructure fields that don't exist on SessionMetadata or need overrides
+    //
+    // `pendingPlanExecution` is deliberately NOT destructured out any more: the
+    // managed session is built from this shape and the header is rebuilt from
+    // the managed session, so stripping it here meant the field lived only on
+    // disk until the next persist from any writer silently dropped it.
     const {
-      pendingPlanExecution: _pp,
       sessionStatus: _ss, workingDirectory: _wd, sdkCwd: _sc,
       workspaceRootPath: _wrp, ...headerFields
     } = header;

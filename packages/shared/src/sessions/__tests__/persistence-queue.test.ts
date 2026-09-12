@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import type { SessionHeader } from '../types'
-import { getHeaderMetadataSignature, mergeHeaderWithExternalMetadata } from '../persistence-queue'
+import { getHeaderMetadataSignature, resolveExternalMetadata } from '../persistence-queue'
 
 function makeHeader(overrides: Partial<SessionHeader> = {}): SessionHeader {
   return {
@@ -37,7 +37,11 @@ describe('session persistence header conflict helpers', () => {
     expect(getHeaderMetadataSignature(a)).not.toBe(getHeaderMetadataSignature(b))
   })
 
-  it('merge preserves external metadata while keeping local computed fields', () => {
+  it('with no baseline, disk owns every metadata field and local keeps its computed ones', () => {
+    // Rule 4 of `resolveExternalMetadata`: we have never written this session,
+    // so there is nothing to compare disk against per field and it is preserved
+    // wholesale — the behaviour this queue had before per-field authority
+    // existed.
     const local = makeHeader({
       name: 'Local Name',
       labels: ['local'],
@@ -62,7 +66,7 @@ describe('session persistence header conflict helpers', () => {
       lastUsedAt: 50,
     })
 
-    const merged = mergeHeaderWithExternalMetadata(local, disk)
+    const merged = resolveExternalMetadata({ local, disk })
 
     expect(merged.name).toBe('Disk Name')
     expect(merged.labels).toEqual(['disk'])
@@ -91,8 +95,22 @@ describe('session persistence header conflict helpers', () => {
 
     expect(hasExternalMetadataChange).toBe(true)
 
-    const merged = mergeHeaderWithExternalMetadata(local, disk)
+    const merged = resolveExternalMetadata({ local, disk })
     expect(merged.name).toBe('External Name')
     expect(merged.labels).toEqual(['external'])
+  })
+
+  it('resolves per field once a baseline exists, rather than taking all of disk', () => {
+    // What a whole-header merge got wrong: disk moved `name` only, so `labels`
+    // must stay as we have it. The old helper took all seven fields from disk
+    // whenever any one of them diverged.
+    const lastWritten = { name: 'Ours', labels: ['ours'] }
+    const local = makeHeader({ name: 'Ours', labels: ['ours'] })
+    const disk = makeHeader({ name: 'Renamed elsewhere', labels: ['ours'] })
+
+    const merged = resolveExternalMetadata({ local, disk, lastWritten })
+
+    expect(merged.name).toBe('Renamed elsewhere')
+    expect(merged.labels).toEqual(['ours'])
   })
 })

@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, rmSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { SessionPersistenceQueue } from '../src/sessions/persistence-queue.ts';
+import { SessionPersistenceQueue, sessionWriteKey } from '../src/sessions/persistence-queue.ts';
 import type { StoredSession } from '../src/sessions/types.ts';
 
 // Create a minimal stored session for testing
@@ -52,7 +52,7 @@ describe('SessionPersistenceQueue', () => {
   it('writes session to disk', async () => {
     const session = createTestSession('test-session', testDir, 'sdk-123');
     queue.enqueue(session);
-    await queue.flush('test-session');
+    await queue.flush(sessionWriteKey(testDir, 'test-session'));
 
     const filePath = join(testDir, 'sessions', 'test-session', 'session.jsonl');
     expect(existsSync(filePath)).toBe(true);
@@ -71,12 +71,12 @@ describe('SessionPersistenceQueue', () => {
     // 1. First write with sdkSessionId = undefined (clearing)
     const session1 = createTestSession('test-session', testDir, undefined);
     queue.enqueue(session1);
-    const flush1 = queue.flush('test-session');
+    const flush1 = queue.flush(sessionWriteKey(testDir, 'test-session'));
 
     // 2. Second write with new sdkSessionId (before first completes)
     const session2 = createTestSession('test-session', testDir, 'new-thread-id');
     queue.enqueue(session2);
-    const flush2 = queue.flush('test-session');
+    const flush2 = queue.flush(sessionWriteKey(testDir, 'test-session'));
 
     // Wait for both to complete
     await Promise.all([flush1, flush2]);
@@ -103,8 +103,8 @@ describe('SessionPersistenceQueue', () => {
 
     // Flush both in parallel
     await Promise.all([
-      queue.flush('session-a'),
-      queue.flush('session-b'),
+      queue.flush(sessionWriteKey(testDir, 'session-a')),
+      queue.flush(sessionWriteKey(testDir, 'session-b')),
     ]);
 
     // Both should be written correctly
