@@ -1046,6 +1046,63 @@ describe('quit flushes sessions that are mid-commit', () => {
         .find((m) => m.content === 'sent as the app was closing')?.isQueued).toBe(true)
     }, 20000)
 
+    it('clears its bounding timers, so a headless host does not linger after a clean quit', async () => {
+      // The losing side of a `Promise.race` is ignored, not cancelled. Both
+      // shutdown waits bound themselves with a 5s timer, and leaving it live
+      // holds a Bun host's event loop open for the full delay after a shutdown
+      // that finished in milliseconds. Electron hides it — `app.quit` tears the
+      // process down anyway — which is exactly why it survived this long.
+      //
+      // Asserted by instrumenting the timer API rather than by reading
+      // `_getActiveHandles`: the claim is about this code's own timers, and the
+      // handle list is a property of the whole runtime.
+      const sessionId = 'sess_timer_hygiene'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+      turns().setProcessing(managed, true)
+      const admission = turns().admitSend(sessionId)
+
+      const outstanding = new Map<unknown, number>()
+      const realSetTimeout = globalThis.setTimeout
+      const realClearTimeout = globalThis.clearTimeout
+      // Long timers only: the persistence debounce and the drain poll are
+      // short-lived by design and are not what this is about.
+      const LONG_MS = 1000
+      ;(globalThis as unknown as { setTimeout: unknown }).setTimeout = ((
+        fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]
+      ) => {
+        let handle: unknown
+        handle = (realSetTimeout as unknown as (...a: unknown[]) => unknown)(
+          (...args: unknown[]) => { outstanding.delete(handle); fn(...args) }, ms, ...rest,
+        )
+        if ((ms ?? 0) >= LONG_MS) outstanding.set(handle, ms ?? 0)
+        return handle
+      }) as unknown as typeof globalThis.setTimeout
+      ;(globalThis as unknown as { clearTimeout: unknown }).clearTimeout = ((handle: unknown) => {
+        outstanding.delete(handle)
+        return (realClearTimeout as unknown as (h: unknown) => void)(handle)
+      }) as unknown as typeof globalThis.clearTimeout
+
+      try {
+        const started = Date.now()
+        const shutdown = sm.flushAllSessions()
+        // Both waits settle promptly: the admitted send takes its decision, and
+        // the turn finishes finalising.
+        await new Promise((r) => realSetTimeout(r, 10))
+        admission.settle()
+        await new Promise((r) => realSetTimeout(r, 10))
+        turns().setProcessing(managed, false, 'no-tail')
+        await shutdown
+
+        // Nothing left holding the loop open, and the shutdown really was the
+        // fast path rather than one that quietly rode out a bound.
+        expect([...outstanding.values()]).toEqual([])
+        expect(Date.now() - started).toBeLessThan(2000)
+      } finally {
+        ;(globalThis as unknown as { setTimeout: unknown }).setTimeout = realSetTimeout
+        ;(globalThis as unknown as { clearTimeout: unknown }).clearTimeout = realClearTimeout
+      }
+    }, 20000)
+
     it('hands ownership from the admission to the turn with no gap', () => {
       // The handover is the one instant where a session could fall between the
       // two things shutdown looks at. Release the admission first and there is

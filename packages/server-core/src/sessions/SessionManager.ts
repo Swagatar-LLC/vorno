@@ -1446,10 +1446,18 @@ export class SessionManager implements ISessionManager {
     if (!this.sendAdmissions.size) return []
     const admitted = [...this.sendAdmissions.values()]
     sessionLog.info(`Shutdown: awaiting ${admitted.length} in-flight send(s) admitted before the freeze`)
-    await Promise.race([
-      Promise.all(admitted.map(a => a.promise)),
-      new Promise<void>(resolve => setTimeout(resolve, SHUTDOWN_TURN_DRAIN_TIMEOUT_MS)),
-    ])
+    // Cleared on every exit — the losing side of a `race` is ignored, not
+    // cancelled, and a live 5s timer keeps a Bun host's event loop open long
+    // after the wait it was bounding is over. Same reasoning as the turn drain.
+    let boundTimer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        Promise.all(admitted.map(a => a.promise)),
+        new Promise<void>(resolve => { boundTimer = setTimeout(resolve, SHUTDOWN_TURN_DRAIN_TIMEOUT_MS) }),
+      ])
+    } finally {
+      clearTimeout(boundTimer)
+    }
     // Whatever is still registered never settled; the map is the live answer.
     return [...this.sendAdmissions.values()].map(a => a.sessionId)
   }
@@ -2819,14 +2827,24 @@ export class SessionManager implements ISessionManager {
     // signal. Bounded as a whole, not per session, because the bound is on the
     // shutdown and not on any one turn.
     const deadline = Date.now() + SHUTDOWN_TURN_DRAIN_TIMEOUT_MS
-    const timeout = new Promise<'timeout'>(resolve =>
-      setTimeout(() => resolve('timeout'), SHUTDOWN_TURN_DRAIN_TIMEOUT_MS),
-    )
     if (pendingFinalizations.length) {
-      await Promise.race([
-        Promise.all(pendingFinalizations.map(f => f.promise)),
-        timeout,
-      ])
+      // The losing side of a `race` is not cancelled — it is merely ignored —
+      // and an uncleared 5s timer holds the event loop open for its full delay.
+      // Electron hides that (`app.quit` tears the process down regardless); a
+      // Bun headless or standalone host does not, so a clean shutdown sat there
+      // for five seconds with nothing left to do. Created only when there is
+      // something to race, and cleared on every exit from it.
+      let drainTimer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          Promise.all(pendingFinalizations.map(f => f.promise)),
+          new Promise<'timeout'>(resolve => {
+            drainTimer = setTimeout(() => resolve('timeout'), SHUTDOWN_TURN_DRAIN_TIMEOUT_MS)
+          }),
+        ])
+      } finally {
+        clearTimeout(drainTimer)
+      }
     }
 
     // Then poll the flag for anything that had no deferred. A turn started

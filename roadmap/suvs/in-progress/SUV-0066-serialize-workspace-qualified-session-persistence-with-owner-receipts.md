@@ -622,6 +622,22 @@ activity.
 - The auth-retry resend is the one turn-stop site with no test of its own. Its
   tail is two synchronous statements, and a forgotten release there is bounded
   by the supersede-at-turn-start backstop rather than by coverage.
+- **`generateTitle` is fired un-awaited from the send path and is not covered by
+  `stopPersistenceProducers`.** A quit in the seconds after a first message can
+  therefore land while a title is still being generated, and that write is
+  refused by the closing queue. Assessed **P3** and accepted: what is lost is a
+  DERIVED value — the transcript, the user message and the turn state are all
+  written by paths that shutdown does wait for — and it regenerates on the next
+  turn. Pre-existing, not introduced here. Fixing it means either awaiting a
+  model call inside the send path or giving the title its own admission.
+- **`isQueued` replay is at-least-once, not exactly-once.** A message committed
+  during shutdown is marked `isQueued` and re-queued by the cold-load scan;
+  `processNextQueuedMessage` clears the flag and persists, so a crash in the
+  window between the clear and that persist replays the message a second time.
+  The direction is deliberate: duplicating a user message is recoverable and
+  losing one is not. Exactly-once needs the clear and the send to share a
+  durable transaction, which this queue does not offer — see the `fsync`
+  residual for the other half of that story.
 - `clearStoredPendingPlan` is a one-line, one-caller indirection around a module
   import, kept as a test seam. What it buys is the only way to hold the window
   where a quit lands INSIDE the plan clear — the window a P1 was found in — open
@@ -637,6 +653,16 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 15 (security: P0–P2 clear, one P3): both shutdown waits
+  bounded themselves with a 5s timer and never cleared the losing side of the
+  race, so a Bun headless or standalone host sat with its event loop held open
+  for five seconds after a shutdown that had finished. Electron hid it —
+  `app.quit` tears the process down regardless. Timers are hoisted and cleared
+  in a `finally`; asserted by instrumenting the timer API rather than reading
+  `_getActiveHandles`, because the claim is about this code's timers and not
+  about the runtime's handle list. Two residuals recorded:
+  `generateTitle` (derived-value loss, P3) and `isQueued` replay being
+  at-least-once.
 - `2026-09-12` — review 14 (architecture, 2 P1): a write that failed during the
   closing drain had no reader — ordinary writes have no receipt holder — so a
   quiescent queue reported a clean shutdown over lost state; and a send admitted
