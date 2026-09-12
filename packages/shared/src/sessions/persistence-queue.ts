@@ -231,11 +231,19 @@ class SessionPersistenceQueue {
    * Generations and the watermark go together or not at all: keeping one
    * without the other is precisely the inconsistency that would let a fresh
    * write be silently treated as cancelled.
+   *
+   * A session with an unresolved write failure is never retired — see below.
    */
   private retireIfQuiescent(sessionId: string): void {
     if (this.pending.has(sessionId)) return
     if (this.tails.has(sessionId)) return
     if (this.receiptWaiters.get(sessionId)?.length) return
+    // An unresolved write failure is the one piece of state that must outlive
+    // quiescence. It IS the answer to the next checked flush, and retiring it
+    // turns "the last write failed" into "nothing is outstanding, all good" —
+    // a durability claim built out of deleted evidence. It clears on the next
+    // successful write, and retirement can proceed then.
+    if (this.lastWriteFailure.has(sessionId)) return
 
     this.generations.delete(sessionId)
     this.writtenGeneration.delete(sessionId)

@@ -648,6 +648,25 @@ the pre-rename check is masked by the post-rename cleanup if you only look at
 the final state on disk, so the test asserts the **rename never happened**
 instead. It passed with that boundary removed until it did.
 
+## Round 20 — retirement ate the evidence
+
+`2026-09-12` — one P1, created by the retirement added a round earlier.
+`retireIfQuiescent` cleared `lastWriteFailure` along with everything else, so a
+session whose write had failed went quiet and the next checked flush read that
+absence as success — a durability claim assembled out of deleted evidence.
+
+An unresolved write failure is now the one piece of state that outlives
+quiescence. It **is** the answer to the next checked flush; it clears on the
+next successful write, and retirement proceeds from there. A failed session
+therefore holds two map entries until it is either retried or cancelled, which
+is bounded by real failures rather than by session count.
+
+Worth stating as a pattern, because this SUV has now produced it twice: a
+cleanup that is correct about lifetime can still be wrong about *meaning*.
+Retiring state because nothing is in flight is right; retiring the record of
+what went wrong is not, because that record's whole purpose is to be read after
+the work has stopped.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

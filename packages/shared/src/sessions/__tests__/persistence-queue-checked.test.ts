@@ -291,6 +291,24 @@ describe('SessionPersistenceQueue.flushChecked', () => {
     expect(written).not.toContain('"name":"stale"');
   });
 
+  it('keeps reporting a failure after the tail has drained', async () => {
+    // Retirement must not delete the evidence of a failed write. It IS the
+    // answer to the next checked flush, and dropping it turns "the last write
+    // failed" into "nothing outstanding, all good" — a durability claim built
+    // out of deleted evidence.
+    mkdirSync(join(root, 'sessions', 'f1', 'session.jsonl.tmp'), { recursive: true });
+    expect((await queue.enqueueChecked(session('f1'))).ok).toBe(false);
+
+    // Tail drained, nothing pending — the exact state retirement fires on.
+    await new Promise((r) => setTimeout(r, 10));
+    expect((await queue.flushChecked('f1')).ok).toBe(false);
+
+    // And a later successful write both clears it and makes the session
+    // retirable again.
+    rmSync(join(root, 'sessions', 'f1', 'session.jsonl.tmp'), { recursive: true, force: true });
+    expect((await queue.enqueueChecked(session('f1'))).ok).toBe(true);
+  });
+
   it('retires per-session bookkeeping so cancelled sessions do not leak', async () => {
     const baseline = queue.diagnostics();
 
