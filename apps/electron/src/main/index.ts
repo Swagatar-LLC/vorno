@@ -94,10 +94,12 @@ import type { HandlerDeps } from './handlers/handler-deps'
 import type { PageGrantHostRequest } from '@craft-agent/server-core/handlers'
 import {
   createRenderGenerationTracker,
+  formatPageGrantDescriptor,
   handlePageGrantIpc,
   isRequesterCurrent,
   type RenderIdentity,
 } from './page-grant-identity'
+import { forgetPublicationDetailKey } from './page-forget-consent'
 import { bootstrapServer, releaseServerLock } from '@craft-agent/server-core/bootstrap'
 import { createMessagingBootstrap, type MessagingBootstrapHandle } from '@craft-agent/messaging-gateway'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
@@ -829,11 +831,10 @@ app.whenReady().then(async () => {
                 !win || win.isDestroyed() || signal.aborted ||
                 !renderGenerations.isCurrent(requester)
               ) return false
-              const action = spec.action.kind === 'api'
-                ? i18n.t('pages.grants.confirm.actionApi', { method: spec.action.method, source: spec.action.sourceSlug, path: spec.action.pathPattern })
-                : spec.action.kind === 'mcp'
-                  ? i18n.t('pages.grants.confirm.actionMcp', { source: spec.action.sourceSlug, tool: spec.action.toolName })
-                  : i18n.t('pages.grants.confirm.actionScript', { runtime: spec.action.runtime ?? 'bun', script: spec.action.script, args: spec.action.args?.length ? ` ${spec.action.args.join(' ')}` : '' })
+              // Render the exact descriptor as escaped structured data. Never
+              // concatenate page-authored fields: spaces and controls in script
+              // args/path/tool names must remain visible and unambiguous.
+              const action = formatPageGrantDescriptor(spec.action)
               // The host, rather than the requesting transport client, renders
               // every security-relevant identity and descriptor.
               //
@@ -859,6 +860,24 @@ app.whenReady().then(async () => {
                 cancelId: 0,
                 signal,
               })).response === 1
+            },
+            confirmForgetPagePublication: isHeadless ? undefined : async ({ workspaceName, pageSlug, reason, alreadyRevoked, signal }) => {
+              // Forget recovery has no render-bound requester; on macOS it must
+              // still use an existing trusted parent for AbortSignal to dismiss it.
+              const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+              if (!parent || parent.isDestroyed()) return false
+              const result = await dialog.showMessageBox(parent, {
+                type: 'warning', title: i18n.t('pages.share.forgetLocalTitle'),
+                message: `${i18n.t('pages.share.forgetLocalTitle')}: “${pageSlug}” (${workspaceName})`,
+                // Consent has to describe what is actually being given up, or it
+                // is consent to the wrong thing. Both facts feed the choice:
+                // whether the key exists to be discarded, and whether the copy is
+                // already offline. See page-forget-consent.ts for the table.
+                detail: i18n.t(forgetPublicationDetailKey(reason, alreadyRevoked)),
+                buttons: [i18n.t('pages.share.cancel'), i18n.t('pages.share.forgetLocalButton')],
+                defaultId: 0, cancelId: 0, noLink: true, signal,
+              })
+              return result.response === 1
             },
           }
         },

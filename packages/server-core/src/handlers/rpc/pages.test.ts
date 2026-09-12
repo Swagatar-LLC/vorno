@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
-import { MAX_LIVE_LEASES, savePageContent } from '@craft-agent/shared/pages'
+import { MAX_LIVE_LEASES, savePageContent, setPageShareState } from '@craft-agent/shared/pages'
 import type { HandlerDeps, PageGrantConfirmationSpec, PageGrantRequester } from '../handler-deps'
 import type { HandlerFn, RequestContext, RpcServer } from '../../transport/types'
 import { registerPagesHandlers } from './pages'
@@ -65,7 +65,12 @@ type GrantHarness = ((channel: string, ...args: unknown[]) => Promise<unknown>) 
   invokeTransportWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
 }
 
-function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirmation?: () => void): GrantHarness {
+function createHarness(
+  confirm: GrantConfirmation = 'unavailable',
+  duringConfirmation?: () => void,
+  confirmForgetPagePublication?: HandlerDeps['confirmForgetPagePublication'],
+  confirmationTimeoutMs?: number,
+): GrantHarness {
   const handlers = new Map<string, HandlerFn>()
   const confirmations: PageGrantConfirmationSpec[] = []
   const requesters: PageGrantRequester[] = []
@@ -141,7 +146,8 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
     registerPageGrantHostRequest: (request: import('../handler-deps').PageGrantHostRequest) => { hostRequest = request },
     registerPageGrantInvalidator: (invalidate: (requester: PageGrantRequester) => void) => { invalidateRequester = invalidate },
     confirmPageGrant,
-    ...(confirm === 'no-answer' ? { pageGrantConfirmationTimeoutMs: 1 } : {}),
+    ...((confirm === 'no-answer' || confirmationTimeoutMs !== undefined) ? { pageGrantConfirmationTimeoutMs: confirmationTimeoutMs ?? 1 } : {}),
+    confirmForgetPagePublication,
   } as unknown as HandlerDeps)
   const invokeTransportWithContext = async (ctx: RequestContext, channel: string, ...args: unknown[]) => {
     const handler = handlers.get(channel)
@@ -199,6 +205,45 @@ function createHarness(confirm: GrantConfirmation = 'unavailable', duringConfirm
   })
 }
 
+/**
+ * Seed the only state local recovery is for: a retained share pointer whose
+ * admin capability is absent from the vault, so the public copy cannot be
+ * revoked through the ordinary path.
+ *
+ * The pointer has to be real. A page with no `share` is refused outright now,
+ * and a fixture that skipped this was asserting against a refusal that never
+ * reached the behavior under test.
+ */
+async function seedUnrevocablePublication(
+  invoke: GrantHarness,
+  name: string,
+  publicationId: string,
+  cleanupPending = false,
+): Promise<{ slug: string; publicationId: string }> {
+  const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+    name, content: `<p>${publicationId}</p>`,
+  }) as { slug: string; contentDigest: string }
+  setPageShareState(ROOT_A, page.slug, {
+    publicationId,
+    url: `https://pages.vorno.ai/p/${publicationId}`,
+    publishedRevision: 'r1',
+    publishedContentDigest: page.contentDigest,
+    includesData: false,
+    publishedAt: 1,
+    updatedAt: 1,
+    passwordProtected: false,
+    ...(cleanupPending ? { cleanupPending: true } : {}),
+  })
+  return { slug: page.slug, publicationId }
+}
+
+/** The share pointer as it survives a fresh disk reload. */
+function loadSharedPublicationId(pageSlug: string): string | undefined {
+  const file = join(ROOT_A, 'pages', pageSlug, 'page.json')
+  if (!existsSync(file)) return undefined
+  return (JSON.parse(readFileSync(file, 'utf8')) as { share?: { publicationId?: string } }).share?.publicationId
+}
+
 beforeAll(() => {
   originalConfig = existsSync(CONFIG_FILE) ? readFileSync(CONFIG_FILE, 'utf8') : null
 })
@@ -224,6 +269,156 @@ describe('Pages RPC workspace capability gate', () => {
       .resolves.toMatchObject({ pagesEnabled: true })
     await expect(invoke(RPC_CHANNELS.pages.GET_SHARE_CAPABILITIES, WORKSPACE_B))
       .resolves.toEqual({ pagesEnabled: false, sharingEnabled: false })
+  })
+
+  test('refuses direct local-forget RPC without a trusted host confirmation seam', async () => {
+    const invoke = createHarness()
+    const { slug } = await seedUnrevocablePublication(invoke, 'Keep pointer', 'publication-seam')
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, slug, { forgetLocal: true }))
+      .rejects.toThrow('trusted host confirmation')
+    // A host that cannot ask keeps the recovery state it could not be authorized
+    // to discard, so the copy stays revocable if the capability comes back.
+    expect(loadSharedPublicationId(slug)).toBe('publication-seam')
+  })
+
+  test('honors trusted-host decline and calls the approval seam before local forget', async () => {
+    let calls = 0
+    const invoke = createHarness('unavailable', undefined, async () => { calls++; return false })
+    const { slug } = await seedUnrevocablePublication(invoke, 'Decline pointer', 'publication-decline')
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, slug, { forgetLocal: true }))
+      .rejects.toThrow('PAGE_FORGET_CONFIRMATION_CANCELLED')
+    expect(calls).toBe(1)
+    expect(loadSharedPublicationId(slug)).toBe('publication-decline')
+  })
+
+  test('refuses local recovery without a prompt for a page that has nothing to forget', async () => {
+    let calls = 0
+    const invoke = createHarness('unavailable', undefined, async () => { calls++; return true })
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, { name: 'Never shared', content: '<p>local</p>' }) as { slug: string }
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true }))
+      .rejects.toThrow('PAGE_SHARE_NOT_PUBLISHED')
+    // The destructive question is never put to the user for a page that was
+    // never published — eligibility is settled before any host chrome opens.
+    expect(calls).toBe(0)
+  })
+
+  test('allows an explicit trusted-host approval to perform local-only recovery and bounds its workspace identity', async () => {
+    writeWorkspace(ROOT_A, WORKSPACE_A, true, `Workspace\nForged control\u0000 text${'x'.repeat(5_000)}`)
+    let seen = ''
+    const invoke = createHarness('unavailable', undefined, async ({ workspaceName }) => { seen = workspaceName; return true })
+    const { slug } = await seedUnrevocablePublication(invoke, 'Approved recovery', 'publication-approved')
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, slug, { forgetLocal: true }))
+      .resolves.toMatchObject({ warning: undefined })
+    expect(loadSharedPublicationId(slug)).toBeUndefined()
+    // Server-resolved but still user-authored: controls collapse and the value is
+    // bounded, so a name cannot forge a dialog field or bury the real action.
+    expect(seen).toStartWith('Workspace Forged control text')
+    expect(seen).not.toContain('\n')
+    expect(seen).toHaveLength(100)
+  })
+
+  test('times out a never-settling forget confirmation, aborts native UI, and releases the host-wide slot', async () => {
+    let aborted = false
+    const invoke = createHarness('unavailable', undefined, async ({ signal }) => await new Promise<boolean>(resolve => {
+      signal.addEventListener('abort', () => { aborted = true; resolve(false) }, { once: true })
+    }), 1)
+    const { slug } = await seedUnrevocablePublication(invoke, 'Timed forget', 'publication-timeout')
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, slug, { forgetLocal: true }))
+      .rejects.toThrow('confirmation timed out')
+    expect(aborted).toBe(true)
+    expect(loadSharedPublicationId(slug)).toBe('publication-timeout')
+    await expect(invoke(RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, slug, { action: { kind: 'script', script: 'scripts/refresh.ts' } }))
+      .rejects.toThrow('PAGE_GRANT_TRUSTED_CONFIRMATION_UNAVAILABLE')
+  })
+
+  test('refuses a hostile caller-provided slug before any native forget display', async () => {
+    let calls = 0
+    const invoke = createHarness('unavailable', undefined, async () => { calls++; return true })
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, `safe\nAction: forged\u0000${'x'.repeat(5_000)}`, { forgetLocal: true }))
+      .rejects.toThrow()
+    // Resolving the page first is what keeps hostile text off native chrome
+    // entirely: an unresolvable slug has no publication, so nothing is asked.
+    expect(calls).toBe(0)
+  })
+
+  test('tells the host both facts, so a revoked page is not described as possibly public', async () => {
+    // The dialog needs WHICH capability is gone and WHETHER the copy is offline.
+    // They vary independently, so one value cannot stand in for the other.
+    const asked: Array<{ reason: string; alreadyRevoked: boolean }> = []
+    const invoke = createHarness('unavailable', undefined, async ({ reason, alreadyRevoked }) => {
+      asked.push({ reason, alreadyRevoked })
+      return true
+    })
+
+    // Never confirmed revoked: the alarming wording is the correct one.
+    const unconfirmed = await seedUnrevocablePublication(invoke, 'Unconfirmed', 'publication-unconfirmed')
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, unconfirmed.slug, { forgetLocal: true }))
+      .resolves.toMatchObject({ warning: undefined })
+
+    // Already revoked, with only physical cleanup outstanding.
+    const revoked = await seedUnrevocablePublication(invoke, 'Revoked', 'publication-revoked', true)
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, revoked.slug, { forgetLocal: true }))
+      .resolves.toMatchObject({ warning: undefined })
+
+    expect(asked).toEqual([
+      { reason: 'token-missing', alreadyRevoked: false },
+      { reason: 'token-missing', alreadyRevoked: true },
+    ])
+  })
+
+  test('coalesces duplicate local-recovery requests into one host confirmation and one write', async () => {
+    let prompts = 0
+    let answer!: (accepted: boolean) => void
+    const invoke = createHarness('unavailable', undefined, async () => {
+      prompts++
+      return await new Promise<boolean>(resolve => { answer = resolve })
+    })
+    const { slug } = await seedUnrevocablePublication(invoke, 'Duplicate forget', 'publication-duplicate')
+    const first = invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, slug, { forgetLocal: true })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    const second = invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, slug, { forgetLocal: true })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    // Two native sheets asking the same irreversible question is the failure
+    // here: the second request joins the first instead of stacking on the window.
+    expect(prompts).toBe(1)
+
+    answer(true)
+    for (const settled of await Promise.all([first, second])) {
+      expect((settled as { config: { share?: unknown } }).config.share).toBeUndefined()
+    }
+    expect(loadSharedPublicationId(slug)).toBeUndefined()
+  })
+
+  test('bounds queued host confirmations across grants and local recovery at one shared limit', async () => {
+    let prompts = 0
+    let openGate!: () => void
+    const gate = new Promise<void>(resolve => { openGate = resolve })
+    const invoke = createHarness('unavailable', undefined, async () => { prompts++; await gate; return false })
+    // Distinct publications, so nothing coalesces and each really holds a slot.
+    const pages: Array<{ slug: string }> = []
+    for (let i = 0; i < 32; i++) pages.push(await seedUnrevocablePublication(invoke, `Queue ${i}`, `publication-queue-${i}`))
+    const overflow = await seedUnrevocablePublication(invoke, 'Queue overflow', 'publication-overflow')
+
+    const inflight = pages.map(page => invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, page.slug, { forgetLocal: true })
+      .then(() => 'approved', (error: unknown) => String(error)))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    // The budget counts queued work, not open sheets: one prompt is on screen and
+    // the other 31 are waiting behind it, and all 32 are charged.
+    expect(prompts).toBe(1)
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, overflow.slug, { forgetLocal: true }))
+      .rejects.toThrow('PAGE_GRANT_CONFIRMATION_QUEUE_FULL')
+    // Refusing the 33rd must not consume a slot either, or the bound would decay.
+    expect(prompts).toBe(1)
+
+    openGate()
+    const settled = await Promise.all(inflight)
+    expect(settled).toHaveLength(32)
+    expect(settled.every(outcome => outcome.includes('PAGE_FORGET_CONFIRMATION_CANCELLED'))).toBe(true)
+    expect(prompts).toBe(32)
+    // Every slot is released once the queue drains, so the 33rd now gets asked.
+    await expect(invoke(RPC_CHANNELS.pages.UNPUBLISH, WORKSPACE_A, overflow.slug, { forgetLocal: true }))
+      .rejects.toThrow('PAGE_FORGET_CONFIRMATION_CANCELLED')
+    expect(prompts).toBe(33)
   })
 
   test('allows enabled workspace A through the broker and rejects every productive path in disabled workspace B', async () => {

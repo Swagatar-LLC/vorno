@@ -77,6 +77,52 @@ export interface RenderIdentity {
   renderGeneration: number
 }
 
+/** Exact, escaped host-dialog representation of a consented action descriptor. */
+export function formatPageGrantDescriptor(action: import('@craft-agent/core').PageActionDescriptor): string {
+  const serialized = JSON.stringify(
+    action.kind === 'script'
+      ? { ...action, runtime: action.runtime ?? 'bun', args: action.args ?? [] }
+      : action,
+    null,
+    2,
+  )
+  // JSON only guarantees escaping C0, so the rest is on us. Ask Unicode for the
+  // categories rather than listing code points: the hand-written class this
+  // replaces covered C1 and the bidi controls but silently let LRM/RLM, ZWSP,
+  // BOM, and SOFT HYPHEN through, and any such list is a list someone has to
+  // keep right.
+  //
+  //   Cc, Cf  invisible or reordering — the forge-a-dialog-field characters
+  //   Zl, Zp  line and paragraph separators
+  //   Zs      spaces that are not THE space: NBSP and the em/en family read as
+  //           ordinary spacing while behaving differently, so alignment in this
+  //           dialog can be faked with them
+  //   Mn, Me  combining and enclosing marks, which alter or bury the character
+  //           before them. Mc is left out on purpose: it advances the cursor, so
+  //           it cannot hide anything.
+  //
+  // Two characters are carved out by the lookahead, and both matter:
+  //
+  //   U+0020  is Zs. Escaping it turns every descriptor into unreadable noise,
+  //           trading a real spoofing risk for a worse one.
+  //   U+000A  is Cc, but JSON escapes C0 inside every string it writes, so a raw
+  //           newline in this output can only be the pretty-printer's own. A
+  //           value cannot forge a line break — JSON renders that as a visible
+  //           `\n` — and escaping the structural ones collapsed the whole
+  //           descriptor onto one dense line of `\u000a` markers, which is the
+  //           opposite of what `JSON.stringify(…, null, 2)` above is asking for.
+  //
+  // The cost of including Mn/Me is that decomposed non-Latin text renders escaped
+  // here; descriptors are slugs, tool names, and workspace-relative paths, so
+  // that is rare and exactness wins.
+  return serialized.replace(/[\p{Cf}\p{Zl}\p{Zp}\p{Mn}\p{Me}]|(?![\u0020\u000a])[\p{Cc}\p{Zs}]/gu, char => {
+    const code = char.codePointAt(0)!
+    // Astral format characters exist (the musical beam controls, for one), and a
+    // 5-digit `\uXXXXX` would read as a 4-digit escape plus a stray digit.
+    return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, '0')}`
+  })
+}
+
 export interface RenderGenerationTracker {
   /**
    * Begin tracking `contents` if it is not already tracked, and return its

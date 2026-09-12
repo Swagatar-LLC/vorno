@@ -87,6 +87,8 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   }>>()
   const grantConfirmationQueue: Array<() => Promise<void>> = []
   let drainingGrantConfirmationQueue = false
+  // Counts every queued or open native host confirmation, across grants and forget recovery.
+  let pendingHostConfirmationCount = 0
   /**
    * Confirmations whose host surface is open right now, keyed by lease.
    *
@@ -221,6 +223,89 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         drainingGrantConfirmationQueue = false
       }
     })()
+  }
+
+  /** Queue a destructive local-recovery prompt behind the same host surface as grants. */
+  async function confirmForgetPublication(
+    workspaceName: string,
+    pageSlug: string,
+    reason: import('@craft-agent/shared/pages').LocalPublicationRecoveryReason,
+    alreadyRevoked: boolean,
+  ): Promise<boolean> {
+    if (!deps.confirmForgetPagePublication) throw new Error('Local publication recovery requires trusted host confirmation')
+    if (pendingHostConfirmationCount >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) throw new Error('PAGE_GRANT_CONFIRMATION_QUEUE_FULL')
+    pendingHostConfirmationCount++
+    return await new Promise<boolean>((resolve, reject) => {
+      grantConfirmationQueue.push(async () => {
+        const deadline = new AbortController()
+        try {
+          const confirmation = deps.confirmForgetPagePublication!({ workspaceName, pageSlug, reason, alreadyRevoked, signal: deadline.signal })
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            const timeout = new Promise<never>((_resolve, rejectTimeout) => {
+              timer = setTimeout(() => { deadline.abort(); rejectTimeout(new Error('confirmation timed out')) }, deps.pageGrantConfirmationTimeoutMs ?? PAGE_GRANT_CONFIRM_TIMEOUT_MS)
+            })
+            resolve(await Promise.race([confirmation, timeout]))
+          } finally {
+            if (timer) clearTimeout(timer)
+          }
+        } catch (error) {
+          reject(error)
+        } finally {
+          deadline.abort()
+          pendingHostConfirmationCount--
+        }
+      })
+      drainGrantConfirmationQueue()
+    })
+  }
+
+  /**
+   * One outstanding local-recovery operation per publication.
+   *
+   * Two clicks, or a click and an agent call, must not put two native sheets on
+   * the window asking the same question — and must not each run the destructive
+   * write, where the second would fail the staleness check the first created.
+   * The publication id is in the key because a different publication is a
+   * genuinely different question, and it is snapshotted before the prompt so the
+   * approval and the write that follows name the same thing.
+   */
+  const pendingForgetRecoveries = new Map<string, Promise<import('@craft-agent/core').PageConfig>>()
+
+  /**
+   * Trusted-host-confirmed local recovery for a publication that can no longer
+   * be revoked remotely.
+   *
+   * Eligibility is settled BEFORE any host chrome. That ordering is doing real
+   * work: an unpublished or still-manageable page is refused without asking a
+   * human anything, and a page that does not exist never reaches native display
+   * at all, so the prompt is only ever shown for the one state recovery is for.
+   */
+  async function forgetLocalPublicationWithConfirmation(
+    workspace: { id: string; name: string; rootPath: string },
+    pageSlug: string,
+  ): Promise<import('@craft-agent/core').PageConfig> {
+    const publisher = await buildPublisher()
+    const { publicationId, reason, alreadyRevoked } = await publisher.describeLocalPublicationRecovery(workspace.rootPath, workspace.id, pageSlug)
+    const key = JSON.stringify([workspace.id, pageSlug, publicationId])
+    const inFlight = pendingForgetRecoveries.get(key)
+    if (inFlight) return inFlight
+    const recovery = (async () => {
+      const confirmed = await confirmForgetPublication(
+        sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
+        sanitizePageGrantIdentity(pageSlug, 'Unnamed page'),
+        reason,
+        alreadyRevoked,
+      )
+      if (!confirmed) throw new Error('PAGE_FORGET_CONFIRMATION_CANCELLED')
+      return publisher.forgetLocalPublication(workspace.rootPath, workspace.id, pageSlug, publicationId)
+    })()
+    pendingForgetRecoveries.set(key, recovery)
+    try {
+      return await recovery
+    } finally {
+      if (pendingForgetRecoveries.get(key) === recovery) pendingForgetRecoveries.delete(key)
+    }
   }
 
   /**
@@ -402,8 +487,8 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   })
 
   // Delete a page (content, data, and grants go with the folder). A published
-  // page is unpublished first (best effort) so the public copy does not
-  // silently outlive the local page — deletePageWithUnpublish is shared
+  // page is unpublished first and deletion blocks on any unconfirmed revocation,
+  // so a public copy never silently outlives the local page — deletePageWithUnpublish is shared
   // verbatim with the delete_page session tool.
   server.handle(RPC_CHANNELS.pages.DELETE, async (_ctx, workspaceId: string, pageSlug: string) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
@@ -529,7 +614,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       workspace.rootPath, leaseId, canonicalWorkspaceId, pageSlug, expectedContentDigest, requester,
     )) throw new Error('PAGE_GRANT_TRUSTED_CONTEXT_REQUIRED')
     if (pendingGrantLeases.has(pendingLeaseKey)) throw new Error('PAGE_GRANT_CONFIRMATION_ALREADY_PENDING')
-    if (pendingGrantRequests.size >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) {
+    if (pendingHostConfirmationCount >= MAX_PENDING_PAGE_GRANT_CONFIRMATIONS) {
       throw new Error('PAGE_GRANT_CONFIRMATION_QUEUE_FULL')
     }
 
@@ -541,6 +626,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     })
     pendingGrantRequests.set(pendingKey, issue)
     pendingGrantLeases.set(pendingLeaseKey, issue)
+    pendingHostConfirmationCount++
     grantConfirmationQueue.push(async () => {
       try {
         // Do not show an obsolete request that waited behind another native
@@ -646,6 +732,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
       } finally {
         if (pendingGrantRequests.get(pendingKey) === issue) pendingGrantRequests.delete(pendingKey)
         if (pendingGrantLeases.get(pendingLeaseKey) === issue) pendingGrantLeases.delete(pendingLeaseKey)
+        pendingHostConfirmationCount--
       }
     })
     drainGrantConfirmationQueue()
@@ -812,12 +899,13 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     return updated
   })
 
-  // Unpublish (revoke the public copy, clear the local pointer + vault token)
-  server.handle(RPC_CHANNELS.pages.UNPUBLISH, async (_ctx, workspaceId: string, pageSlug: string) => {
+  // Unpublish, or trusted-host-confirmed local-only recovery for an irretrievable admin capability.
+  server.handle(RPC_CHANNELS.pages.UNPUBLISH, async (_ctx, workspaceId: string, pageSlug: string, options?: { forgetLocal?: boolean }) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
-    const publisher = await buildPublisher()
-    const result = await publisher.unpublish(workspace.rootPath, workspace.id, pageSlug)
+    const result = options?.forgetLocal
+      ? { config: await forgetLocalPublicationWithConfirmation(workspace, pageSlug), warning: undefined }
+      : await (await buildPublisher()).unpublish(workspace.rootPath, workspace.id, pageSlug)
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
     await broadcastChanged(workspaceId, workspace.rootPath)
     return { config: result.config, warning: result.warning }

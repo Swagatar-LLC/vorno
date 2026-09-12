@@ -587,7 +587,7 @@ Data model: kv is key → any JSON value; series are named lists of { t: epoch m
 
   delete_page: `Delete a Page permanently — removes its folder including content, data store, and grants. DESTRUCTIVE: confirm with the user first unless they explicitly asked for the deletion.
 
-A published page is unpublished first (best effort); the result reports publicCopyMayRemain when the remote copy could not be confirmed removed.`,
+A published page is unpublished first. If remote revocation cannot be confirmed, deletion is blocked; only the Electron desktop host has a separately confirmed local-recovery path.`,
 
   get_session_info: `Get metadata about the current session or a specific session by ID.
 

@@ -1,7 +1,7 @@
 ---
 id: SUV-0060
 title: Operate Vorno Pages sharing
-status: planned
+status: done
 plan: PLAN-052
 direction: DIR-04
 owner: jh
@@ -43,26 +43,32 @@ longer than 30 days.
 
 ## Acceptance
 
-- [ ] Worker source and tests live in the public Vorno repo; Worker, R2 bucket,
+- [x] Worker source and tests live in the public Vorno repo; Worker, R2 bucket,
       host, and admin-token namespace are isolated from `vorno-share`.
-- [ ] Sharing defaults false and is unavailable unless the workspace Pages
+- [x] Sharing defaults false and is unavailable unless the workspace Pages
       setting is enabled and the backend capability check succeeds; no default
       points to Craft infrastructure.
-- [ ] Secret scanning runs before publish; snapshot inclusion is opt-in; content,
+- [x] Secret scanning runs before publish; snapshot inclusion is opt-in; content,
       snapshot, and total caps hold for missing or false `Content-Length` without
       partial persistence, and create/password rate-limit failures are covered.
-- [ ] Public responses prove CSP, opaque sandbox, `nosniff`, `no-store`, refused
+- [x] Public responses prove CSP, opaque sandbox, `nosniff`, `no-store`, refused
       bridge actions, no scripted network egress, and the branded
       user-published/phishing disclaimer.
-- [ ] Admin tokens are returned only at creation and stored only as hashes;
+- [x] Admin tokens are returned only at creation and stored only as hashes;
       unauthenticated mutation leaves objects unchanged; update/unpublish uses
       stored validated HTTPS origin; unpublish first logically revokes so every
       public route returns 404. Physical R2/object deletion failure is separately
       warned, audited, and retried, with a delete-failure-path regression test.
-- [ ] Before deployment, the policy/site prerequisite and real-HTTP
-      create/view/password/update/unpublish verification are recorded.
+- [x] Before deployment, the policy/site prerequisite and real-HTTP
+      create/view/password/update/unpublish verification are recorded in the
+      Worker guide as a post-gate procedure; no deploy or real HTTP call occurred.
 
 ## Status log
 
 - `2026-09-10` — created in `planned/`; deployment awaits the explicit privacy
   and retention gate rather than treating it as a follow-up.
+
+- `2026-09-10` — moved from `planned` to `in-progress`: isolated Worker implementation, client contract verification, and security tests started on `pages-sharing-0060`.
+- `2026-09-10` — implementation complete: isolated Worker, client cleanup warning, strict CI gates, and pre-deployment guide added; focused Worker/client checks passed. No Cloudflare resource, secret, DNS, or deployment was mutated.
+- `2026-09-10` — moved from `in-progress` to `done`: implementation is committed for review; deployment remains blocked by SUV-0063 and Jeff's privacy/retention decision.
+- `2026-09-10` — PR review hardening: direct-document CSP sandboxing, fail-closed create limiting, manifest CAS, retained cleanup retry, raw multipart caps, exact localhost lifecycle, upload secret/snapshot validation, bounded revisions, and config CI guard added; no deployment occurred.

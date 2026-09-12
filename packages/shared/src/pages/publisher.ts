@@ -54,13 +54,17 @@ export function isPagesSharingAvailable(
  * Stored URLs are resource identities, not arbitrary fetch authorities: only
  * the legacy Craft and exact Vorno public URL shapes can recover an API base.
  */
-export function resolveStoredPagesShareApiBaseUrl(shareUrl: string): string | undefined {
+export function resolveStoredPagesShareApiBaseUrl(shareUrl: string, activeDevelopmentApiBaseUrl?: string): string | undefined {
   let url: URL;
   try { url = new URL(shareUrl); } catch { return undefined; }
-  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash) return undefined;
+  if (url.username || url.password || url.search || url.hash) return undefined;
   if (!/^\/p\/[A-Za-z0-9_-]+$/.test(url.pathname)) return undefined;
-  if (url.hostname === 'thecraftagents.com') return 'https://thecraftagents.com/p/api';
-  if (url.hostname === 'pages.vorno.ai') return 'https://pages.vorno.ai/api';
+  if (url.protocol === 'https:' && !url.port && url.hostname === 'thecraftagents.com') return 'https://thecraftagents.com/p/api';
+  if (url.protocol === 'https:' && !url.port && url.hostname === 'pages.vorno.ai') return 'https://pages.vorno.ai/api';
+  if (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1') && url.port) {
+    const candidate = `${url.origin}/api`;
+    return activeDevelopmentApiBaseUrl === candidate ? candidate : undefined;
+  }
   return undefined;
 }
 
@@ -131,10 +135,20 @@ export interface PublishPageOptions {
 export interface UnpublishResult {
   config: PageConfig;
   /**
-   * Set when local state was cleared without remote confirmation (vault token
-   * missing) — the public copy may still exist until it is garbage-collected.
+   * Why local state does not yet match a confirmed remote outcome:
+   *
+   *   remote-copy-may-remain            no capability, and revocation was never
+   *                                     confirmed — the copy may still be public
+   *   remote-cleanup-pending            revoked; the Worker owes a physical
+   *                                     cleanup retry and we can still ask for it
+   *   remote-cleanup-credential-missing revoked, but the capability to ask for
+   *                                     that retry is gone
+   *
+   * The last two are NOT "may still be public" and must never be reported as
+   * such. Public routes already 404 in both, and describing a revoked page as
+   * possibly online is how a real alarm gets trained into background noise.
    */
-  warning?: 'remote-copy-may-remain';
+  warning?: 'remote-copy-may-remain' | 'remote-cleanup-pending' | 'remote-cleanup-credential-missing';
 }
 
 interface WorkerPublicationResponse {
@@ -148,6 +162,85 @@ interface WorkerPublicationResponse {
 }
 
 const ERROR_BODY_MAX_CHARS = 300;
+
+/** Which capability is unavailable, and therefore why the normal path is closed. */
+export type LocalPublicationRecoveryReason = 'token-missing' | 'origin-unusable';
+
+/**
+ * Everything the irreversible confirmation needs to describe what is being given
+ * up. The two fields are deliberately independent, because they answer different
+ * questions and either combination can occur:
+ *
+ *   reason         WHICH capability is gone — the admin key, or a usable origin
+ *   alreadyRevoked WHETHER the public copy is already offline
+ *
+ * Folding them into one enum is what produced a real defect: a cleanup-pending
+ * publication whose key still worked but whose development origin had moved got
+ * described as missing its key, which is simply not what happened. One value
+ * cannot carry two facts, and this one is used to write a warning a human
+ * approves against.
+ */
+export interface LocalPublicationRecovery {
+  /** The publication a human is about to be asked about, and the only one the approval covers. */
+  publicationId: string;
+  reason: LocalPublicationRecoveryReason;
+  /**
+   * True when logical revocation is already confirmed (`share.cleanupPending`):
+   * public routes 404 and only the physical bytes remain. Telling someone in
+   * this state that the page "may remain online" asks them to approve against a
+   * false premise.
+   */
+  alreadyRevoked: boolean;
+}
+
+// ============================================================================
+// Per-page serialization
+// ============================================================================
+
+/**
+ * Tails of the in-flight lifecycle operation for each page, so the four entry
+ * points below run one at a time per page.
+ *
+ * Module-scoped on purpose: every RPC call builds a fresh PagePublisher, so an
+ * instance field would serialize nothing. What must not interleave is the
+ * read-modify-write of two pieces of state that only mean anything together —
+ * the `page.json` share pointer and the vault token under
+ * `page_publish_token::{workspaceId}::{pageId}`. A forget that deletes the
+ * token a concurrent publish just minted leaves a live public copy nobody can
+ * revoke, and there is no local state left to notice it from.
+ *
+ * The acquiring entry points are `publish`, `setPassword`, `unpublish`,
+ * `forgetLocalPublication`, and `deleteWithUnpublish`, and none of them calls
+ * another — each delegates to a private `*Locked` body, and composite operations
+ * call those bodies directly. Keep it that way: a public method calling a public
+ * method would wait for itself forever.
+ *
+ * A lifecycle operation must hold this across its WHOLE state transition, not
+ * just its remote call. `deleteWithUnpublish` is the cautionary case — it used to
+ * release between unpublishing and removing the folder, and a publish landing in
+ * that gap left a live public copy with nothing pointing at it.
+ */
+const pageLifecycleTails = new Map<string, Promise<void>>();
+
+function withPageLifecycleLock<T>(
+  workspaceRootPath: string,
+  pageSlug: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const key = JSON.stringify([workspaceRootPath, pageSlug]);
+  const previous = pageLifecycleTails.get(key) ?? Promise.resolve();
+  // Both arms run `run`: a predecessor that rejected has still released the
+  // page, and inheriting its failure would wedge the page for the whole process.
+  const result = previous.then(run, run);
+  const tail = result.then(() => {}, () => {});
+  pageLifecycleTails.set(key, tail);
+  // Drop the entry once nothing is queued behind it, so a long-lived host does
+  // not retain one settled promise per page it ever published.
+  void tail.then(() => {
+    if (pageLifecycleTails.get(key) === tail) pageLifecycleTails.delete(key);
+  });
+  return result;
+}
 
 export class PagePublisher {
   private readonly tokenStore: PagePublishTokenStore;
@@ -168,7 +261,17 @@ export class PagePublisher {
    * Publish a page: create a new publication, or upload a new revision when
    * one already exists. Returns the updated PageConfig (share pointer set).
    */
-  async publish(
+  publish(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+    options: PublishPageOptions,
+  ): Promise<PageConfig> {
+    return withPageLifecycleLock(workspaceRootPath, pageSlug, () =>
+      this.publishLocked(workspaceRootPath, workspaceId, pageSlug, options));
+  }
+
+  private async publishLocked(
     workspaceRootPath: string,
     workspaceId: string,
     pageSlug: string,
@@ -246,7 +349,17 @@ export class PagePublisher {
   }
 
   /** Change or remove the viewer password (metadata-only; content untouched). */
-  async setPassword(
+  setPassword(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+    password: string | null,
+  ): Promise<PageConfig> {
+    return withPageLifecycleLock(workspaceRootPath, pageSlug, () =>
+      this.setPasswordLocked(workspaceRootPath, workspaceId, pageSlug, password));
+  }
+
+  private async setPasswordLocked(
     workspaceRootPath: string,
     workspaceId: string,
     pageSlug: string,
@@ -283,7 +396,16 @@ export class PagePublisher {
    * 404. When the vault token is missing, local state is still cleared but
    * the result carries a warning that the remote copy may remain.
    */
-  async unpublish(
+  unpublish(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+  ): Promise<UnpublishResult> {
+    return withPageLifecycleLock(workspaceRootPath, pageSlug, () =>
+      this.unpublishLocked(workspaceRootPath, workspaceId, pageSlug));
+  }
+
+  private async unpublishLocked(
     workspaceRootPath: string,
     workspaceId: string,
     pageSlug: string,
@@ -293,10 +415,19 @@ export class PagePublisher {
 
     const token = await this.tokenStore.get(workspaceId, config.id);
     if (!token) {
-      // Nothing we can do remotely without the capability; free the local page.
-      const updated = setPageShareState(workspaceRootPath, pageSlug, undefined);
-      this.log(`Unpublished ${pageSlug} locally only — admin token missing from vault`);
-      return { config: updated, warning: 'remote-copy-may-remain' };
+      // Either way the share pointer stays, so a restored vault token can retry
+      // the real remote call. What differs is what we already know.
+      if (share.cleanupPending) {
+        // Logical revocation is recorded: the Worker 404s the public routes and
+        // owed us only a physical-object cleanup. Losing the capability loses
+        // that retry, not the revocation, so this must not be reported as a copy
+        // that might still be online.
+        this.log(`Cleanup retry not attempted for ${pageSlug}: admin token missing, public access already revoked`);
+        return { config, warning: 'remote-cleanup-credential-missing' };
+      }
+      // Here revocation was never confirmed, so the alarming reading is correct.
+      this.log(`Unpublish not attempted for ${pageSlug}: admin token missing from vault`);
+      return { config, warning: 'remote-copy-may-remain' };
     }
 
     const response = await this.request(
@@ -312,10 +443,121 @@ export class PagePublisher {
       );
     }
 
+    // Logical revocation is already complete when this flag is true: public
+    // routes 404, but the Worker recorded a physical-object cleanup retry.
+    // Reuse the existing conservative UI warning rather than hiding an
+    // operator-visible retention failure behind a successful HTTP status.
+    if (await hasPendingRemoteCleanup(response)) {
+      // Keep the ID, token, and state reachable so the same user-visible
+      // Unpublish action retries physical cleanup. Public routes are already 404.
+      const updated = setPageShareState(workspaceRootPath, pageSlug, { ...share, cleanupPending: true, updatedAt: Date.now() });
+      this.log(`Logical unpublish complete; remote cleanup pending for ${pageSlug} (${share.publicationId})`);
+      return { config: updated, warning: 'remote-cleanup-pending' };
+    }
     const updated = setPageShareState(workspaceRootPath, pageSlug, undefined);
     await this.tokenStore.delete(workspaceId, config.id);
     this.log(`Unpublished page ${pageSlug} (${share.publicationId})`);
     return { config: updated };
+  }
+
+  /**
+   * Whether local-only recovery applies to this page right now, and which
+   * publication it would forget.
+   *
+   * Recovery exists for exactly one situation: a *retained* share pointer whose
+   * public copy can no longer be reached through the normal path, because the
+   * admin capability is gone from the vault or the stored origin is not one we
+   * will talk to. The two refusals are the point of the method. A page with no
+   * share pointer has nothing to forget, and a page that is still fully
+   * manageable must go through unpublish — offering the destructive local path
+   * there lets a user strand a live public copy that one ordinary request would
+   * have revoked, which is the opposite of what the escape hatch is for.
+   *
+   * Callers must snapshot the returned `publicationId` and pass it to
+   * `forgetLocalPublication`, so the publication a human approved forgetting is
+   * the only one that can be forgotten.
+   */
+  async describeLocalPublicationRecovery(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+  ): Promise<LocalPublicationRecovery> {
+    return this.evaluateLocalPublicationRecovery(this.requirePage(workspaceRootPath, pageSlug), workspaceId);
+  }
+
+  /**
+   * The eligibility question itself, asked against an already-loaded config so
+   * the locked path can re-ask it without a second read of `page.json`.
+   */
+  private async evaluateLocalPublicationRecovery(
+    config: PageConfig,
+    workspaceId: string,
+  ): Promise<LocalPublicationRecovery> {
+    const share = config.share;
+    if (!share) {
+      throw new PageShareError(
+        'PAGE_SHARE_NOT_PUBLISHED',
+        `Page has no publication state to forget: ${config.slug}`,
+      );
+    }
+    const token = await this.tokenStore.get(workspaceId, config.id);
+    const originUsable = resolveStoredPagesShareApiBaseUrl(share.url, this.publishApiBaseUrl) !== undefined;
+    if (token && originUsable) {
+      throw new PageShareError(
+        'PAGE_SHARE_FORGET_NOT_ELIGIBLE',
+        share.cleanupPending
+          ? 'Remote cleanup can still be retried for this page. Retry it instead of discarding local state.'
+          : 'This page can still be unpublished normally. Unpublish it so the public copy is actually revoked.',
+      );
+    }
+    // Reported separately rather than ranked against each other: the missing
+    // capability and the revocation status are both true at once, and the
+    // confirmation needs each of them to say an accurate sentence.
+    return {
+      publicationId: share.publicationId,
+      reason: token ? 'origin-unusable' : 'token-missing',
+      alreadyRevoked: share.cleanupPending === true,
+    };
+  }
+
+  /**
+   * Deliberately local-only escape hatch for a lost admin capability or stale
+   * development origin. The caller must obtain explicit human confirmation:
+   * this never contacts the remote service and the public copy may remain.
+   *
+   * `expectedPublicationId` is the publication that confirmation was about.
+   * Asking a human is slow and the page stays live underneath the question, so
+   * by the time approval arrives an ordinary unpublish and republish may have
+   * replaced the pointer and minted a NEW admin token under the same vault key.
+   * Deleting it then would strand a publication that was perfectly manageable a
+   * moment ago. So the pointer is re-read *inside* the lock and must still name
+   * the approved publication before either the token or the pointer is touched —
+   * one check covering both writes, which is only sound because the lock is what
+   * stops anything landing between them.
+   */
+  forgetLocalPublication(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+    expectedPublicationId: string,
+  ): Promise<PageConfig> {
+    return withPageLifecycleLock(workspaceRootPath, pageSlug, async () => {
+      const config = this.requirePage(workspaceRootPath, pageSlug);
+      if (config.share?.publicationId !== expectedPublicationId) {
+        throw new PageShareError(
+          'PAGE_SHARE_FORGET_STALE',
+          'This page\'s public copy changed while the confirmation was open, so that approval no longer applies. Review sharing again.',
+        );
+      }
+      // Re-ask eligibility, not just identity. The same publication can become
+      // revocable again while the confirmation is open — an unlocked keychain is
+      // enough — and destroying the local state then would strand a public copy
+      // that one ordinary request could have taken down. Refusing here sends the
+      // user to the path that actually revokes, which is never the worse outcome.
+      await this.evaluateLocalPublicationRecovery(config, workspaceId);
+      await this.tokenStore.delete(workspaceId, config.id);
+      return setPageShareState(workspaceRootPath, pageSlug, undefined);
+    });
   }
 
   // --------------------------------------------------------------------
@@ -405,11 +647,90 @@ export class PagePublisher {
   }
 
   private requireStoredApiBaseUrl(share: PageShareInfo): string {
-    const apiBaseUrl = resolveStoredPagesShareApiBaseUrl(share.url);
+    const apiBaseUrl = resolveStoredPagesShareApiBaseUrl(share.url, this.publishApiBaseUrl);
     if (!apiBaseUrl) {
       throw new PageShareError('PAGE_SHARE_REMOTE_ERROR', 'Published page has no valid HTTPS origin for cleanup.');
     }
     return apiBaseUrl;
+  }
+
+  /**
+   * Unpublish (when published) and then delete the local page, with BOTH halves
+   * inside ONE acquisition of the per-page lock.
+   *
+   * Splitting them is what made this dangerous. Unpublish ends by clearing the
+   * share pointer and the vault token, and if the lock is released there, a
+   * queued publish runs next: it mints a live public copy and a fresh token, and
+   * then the local delete removes the folder that held the only pointer to it.
+   * The result is a public page with no local trace and a token nobody will ever
+   * look up — the exact unrevocable copy the rest of this file exists to prevent.
+   *
+   * Holding the lock across both halves means a concurrent publish can only run
+   * strictly before (its publication is then unpublished normally) or strictly
+   * after (it finds no page and fails), never inside.
+   */
+  deleteWithUnpublish(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+  ): Promise<DeletePageOutcome> {
+    return withPageLifecycleLock(workspaceRootPath, pageSlug, () =>
+      this.deleteWithUnpublishLocked(workspaceRootPath, workspaceId, pageSlug));
+  }
+
+  private async deleteWithUnpublishLocked(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+  ): Promise<DeletePageOutcome> {
+    const wasShared = Boolean(loadPageConfig(workspaceRootPath, pageSlug)?.share);
+    if (wasShared) {
+      let result: UnpublishResult;
+      try {
+        // The private body, not the public method: the public one would try to
+        // take a lock this call already holds and wait for itself forever.
+        result = await this.unpublishLocked(workspaceRootPath, workspaceId, pageSlug);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.log(`Unpublish before delete failed for ${pageSlug}: ${detail}`);
+        throw new Error(`Could not confirm remote revocation; retry unpublish before deleting the local page: ${detail}`);
+      }
+      if (result.warning) {
+        // Each arm states what is actually known. Deleting is blocked in all
+        // three, but a user told "may still be public" about an already-revoked
+        // page will go hunting for a live copy that does not exist.
+        throw new Error(
+          result.warning === 'remote-cleanup-pending'
+            ? 'The page is no longer public, but remote data cleanup is pending. Retry unpublish before deleting the local page.'
+            : result.warning === 'remote-cleanup-credential-missing'
+              ? 'The page is no longer public, but the key needed to finish remote data cleanup is missing, so the published copy\'s stored data may remain on the server. Restore the key, or forget the local publication state, before deleting the local page.'
+              : 'The page may still be public because its admin token is missing. Restore the token or republish before deleting the local page.',
+        );
+      }
+    }
+
+    // Re-read the pointer immediately before the irreversible part. Nothing can
+    // have published under the lock, so this should be unreachable — which is
+    // the reason to check it rather than assume it: the pointer is the only
+    // thing that makes a remote copy findable, and deleting the folder while one
+    // exists cannot be undone or even noticed afterwards.
+    if (loadPageConfig(workspaceRootPath, pageSlug)?.share) {
+      throw new Error('The page still has a public copy recorded locally; retry unpublish before deleting the local page.');
+    }
+
+    try {
+      deletePage(workspaceRootPath, pageSlug);
+    } catch (error) {
+      // The unpublish (if any) already happened by now — a bare fs error would
+      // misreport that state and send the user retrying the remote half too.
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        wasShared
+          ? `The page was unpublished, but deleting the local folder failed: ${detail}`
+          : `Deleting the local page folder failed: ${detail}`,
+      );
+    }
+    return { publicCopyMayRemain: false };
   }
 
   private async requireToken(workspaceId: string, pageId: string): Promise<string> {
@@ -479,58 +800,49 @@ async function safeBodyExcerpt(response: Response): Promise<string> {
   }
 }
 
+/** Best-effort compatibility read: legacy delete endpoints may return an empty 204. */
+async function hasPendingRemoteCleanup(response: Response): Promise<boolean> {
+  if (response.status === 404 || !response.headers.get('content-type')?.includes('application/json')) return false;
+  try {
+    const body = await response.clone().json() as { cleanupPending?: unknown };
+    return body.cleanupPending === true;
+  } catch {
+    return false;
+  }
+}
+
 // ============================================================================
 // Delete with best-effort unpublish (shared flow)
 // ============================================================================
 
 export interface DeletePageOutcome {
-  /** True when the page was published and the remote copy may still exist */
+  /** Always false when returned: unconfirmed revocation throws and blocks deletion. */
   publicCopyMayRemain: boolean;
 }
 
 /**
  * Delete a page, unpublishing it first when it has a share pointer.
  *
- * The single implementation behind BOTH the `pages:delete` RPC and the
+ * The single entry point behind BOTH the `pages:delete` RPC and the
  * `delete_page` session tool — keep it that way so the two paths cannot
  * drift (unpublish-before-delete is a policy, not a handler detail).
- * Unpublish failures are logged and folded into `publicCopyMayRemain`,
- * never blocking the local delete.
+ * Unpublish failures block the local delete; callers must retry revocation or,
+ * in Electron only, explicitly approve forgetting the local recovery state.
+ *
+ * The flow itself lives in `PagePublisher.deleteWithUnpublish` because it has to
+ * run under that class's per-page lock — a free function could only call the
+ * public `unpublish`, which releases the lock before the folder is removed.
  */
 export async function deletePageWithUnpublish(
   workspaceRootPath: string,
   workspaceId: string,
   pageSlug: string,
-  options?: { log?: (message: string) => void },
+  options?: { log?: (message: string) => void; tokenStore?: PagePublishTokenStore; fetchFn?: typeof fetch },
 ): Promise<DeletePageOutcome> {
-  let publicCopyMayRemain = false;
-  const wasShared = Boolean(loadPageConfig(workspaceRootPath, pageSlug)?.share);
-  if (wasShared) {
-    try {
-      const publisher = new PagePublisher({
-        tokenStore: createCredentialPagePublishTokenStore(),
-        log: options?.log,
-      });
-      const result = await publisher.unpublish(workspaceRootPath, workspaceId, pageSlug);
-      publicCopyMayRemain = result.warning === 'remote-copy-may-remain';
-    } catch (error) {
-      publicCopyMayRemain = true;
-      options?.log?.(
-        `Unpublish before delete failed for ${pageSlug}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-  try {
-    deletePage(workspaceRootPath, pageSlug);
-  } catch (error) {
-    // The unpublish (if any) already happened by now — a bare fs error would
-    // misreport that state and send the user retrying the remote half too.
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      wasShared
-        ? `The page was unpublished, but deleting the local folder failed: ${detail}`
-        : `Deleting the local page folder failed: ${detail}`,
-    );
-  }
-  return { publicCopyMayRemain };
+  const publisher = new PagePublisher({
+    tokenStore: options?.tokenStore ?? createCredentialPagePublishTokenStore(),
+    fetchFn: options?.fetchFn,
+    log: options?.log,
+  });
+  return publisher.deleteWithUnpublish(workspaceRootPath, workspaceId, pageSlug);
 }

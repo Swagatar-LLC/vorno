@@ -259,6 +259,8 @@ export interface PageShareInfo {
   /** Last successful publish/update (epoch ms) */
   updatedAt: number;
   passwordProtected: boolean;
+  /** Logically revoked, but the Worker retained the admin capability for a physical-cleanup retry. */
+  cleanupPending?: boolean;
   /** Truncated error of the most recent failed publish attempt, if any */
   lastPublishError?: string;
 }

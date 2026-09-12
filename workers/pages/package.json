@@ -1,0 +1,19 @@
+{
+  "name": "@vorno/pages-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit",
+    "check:config": "bun validate-config.js",
+    "dry-run": "bun validate-config.js",
+    "deploy": "bun validate-config.js --deploy && wrangler deploy",
+    "bench:password": "bun bench-password.js"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250910.0",
+    "typescript": "^5.0.0",
+    "wrangler": "^4.38.0"
+  }
+}

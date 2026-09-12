@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   PAGE_REFRESH_MIN_INTERVAL_MS,
+  PageActionDescriptorSchema,
   PageRefreshSpecSchema,
   validatePageConfig,
 } from './validation.ts';
@@ -75,5 +76,37 @@ describe('PageRefreshSpecSchema cron validation', () => {
     expect(result.errors.some((e) => e.path === 'refresh.cron')).toBe(true);
 
     expect(validatePageConfig({ ...config, refresh: refreshSpec('*/10 * * * *') }).valid).toBe(true);
+  });
+});
+
+describe('script path bounds in action descriptors', () => {
+  const scriptAction = (script: string) => ({ kind: 'script' as const, script });
+
+  it('accepts a realistic path and rejects one past the cap', () => {
+    // Every sibling descriptor field was already capped; this one was the way to
+    // push unbounded text into a host consent dialog.
+    const longest = `scripts/${'a'.repeat(500 - 'scripts/'.length)}`;
+    expect(longest).toHaveLength(500);
+    expect(PageActionDescriptorSchema.safeParse(scriptAction('scripts/refresh.ts')).success).toBe(true);
+    expect(PageActionDescriptorSchema.safeParse(scriptAction(longest)).success).toBe(true);
+
+    const tooLong = PageActionDescriptorSchema.safeParse(scriptAction(`${longest}b`));
+    expect(tooLong.success).toBe(false);
+    expect(tooLong.error!.issues.some(issue => issue.message.includes('cannot exceed 500 characters'))).toBe(true);
+
+    // Far past the cap, which is the shape that actually shows up in abuse.
+    expect(PageActionDescriptorSchema.safeParse(scriptAction('x'.repeat(50_000))).success).toBe(false);
+  });
+
+  it('applies the same bound to refresh specs, which share the schema', () => {
+    expect(PageRefreshSpecSchema.safeParse({
+      cron: '*/10 * * * *', grantId: 'grant_refresh', script: 'x'.repeat(501),
+    }).success).toBe(false);
+  });
+
+  it('still rejects escapes and absolute paths within the cap', () => {
+    for (const script of ['../outside.ts', '/etc/passwd', 'C:\\windows\\x.ts', 'a/../../b.ts']) {
+      expect(PageActionDescriptorSchema.safeParse(scriptAction(script)).success).toBe(false);
+    }
   });
 });

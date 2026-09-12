@@ -104,4 +104,18 @@ export interface HandlerDeps<
   ) => Promise<boolean>
   /** Testable bound for a host confirmation that never settles. */
   pageGrantConfirmationTimeoutMs?: number
+  /** Electron-only trusted UI boundary; absent hosts must refuse destructive local recovery. */
+  /**
+   * Confirm discarding local publication state. Both facts drive the warning
+   * copy and neither substitutes for the other: `alreadyRevoked` decides whether
+   * the page may still be online, `reason` names the capability being given up.
+   * A human approving an irreversible action must be told what is actually true.
+   */
+  confirmForgetPagePublication?: (input: {
+    workspaceName: string
+    pageSlug: string
+    reason: import('@craft-agent/shared/pages').LocalPublicationRecoveryReason
+    alreadyRevoked: boolean
+    signal: AbortSignal
+  }) => Promise<boolean>
 }

@@ -53,13 +53,24 @@ export function assertValidPageSlug(slug: unknown): asserts slug is string {
 export const PageScriptRuntimeSchema = z.enum(['bun', 'node', 'python3']);
 
 /**
- * A workspace-relative script path: no absolute paths, no ".." escape. The
- * executor re-validates with symlink resolution at run time; this is the
+ * Upper bound on a workspace-relative script path. Every other descriptor field
+ * is capped (source slugs at 200, tool names at 500, API path patterns at 1000)
+ * and this one was not, so it was the way to put unbounded text through a grant
+ * descriptor and into a host consent dialog. No real path approaches this —
+ * POSIX `PATH_MAX` is typically 1024 for the whole absolute path and 255 per
+ * component — so the cap constrains abuse and nothing else.
+ */
+const SCRIPT_PATH_MAX_CHARS = 500;
+
+/**
+ * A workspace-relative script path: bounded, no absolute paths, no ".." escape.
+ * The executor re-validates with symlink resolution at run time; this is the
  * static gate shared by refresh specs and script-action grants.
  */
 export const WorkspaceRelativeScriptPathSchema = z
   .string()
   .min(1, 'Script path cannot be empty')
+  .max(SCRIPT_PATH_MAX_CHARS, `Script path cannot exceed ${SCRIPT_PATH_MAX_CHARS} characters`)
   .superRefine((script, ctx) => {
     if (script.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(script)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Script path must be relative to the workspace root' });
@@ -150,20 +161,20 @@ export const PageActionHttpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH',
 export const PageActionDescriptorSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('api'),
-    sourceSlug: z.string().min(1),
+    sourceSlug: z.string().min(1).max(200),
     method: PageActionHttpMethodSchema,
-    pathPattern: z.string().min(1, 'Path pattern cannot be empty'),
+    pathPattern: z.string().min(1, 'Path pattern cannot be empty').max(1000),
   }),
   z.object({
     kind: z.literal('mcp'),
-    sourceSlug: z.string().min(1),
-    toolName: z.string().min(1),
+    sourceSlug: z.string().min(1).max(200),
+    toolName: z.string().min(1).max(500),
   }),
   z.object({
     kind: z.literal('script'),
     script: WorkspaceRelativeScriptPathSchema,
     runtime: PageScriptRuntimeSchema.optional(),
-    args: z.array(z.string()).optional(),
+    args: z.array(z.string().max(500)).max(20).optional(),
   }),
 ]);
 
@@ -194,6 +205,8 @@ export const PageShareInfoSchema = z.object({
   publishedAt: z.number(),
   updatedAt: z.number(),
   passwordProtected: z.boolean(),
+  /** Public routes are revoked; retain capability only to retry physical cleanup. */
+  cleanupPending: z.boolean().optional(),
   lastPublishError: z.string().max(2000).optional(),
 });
 

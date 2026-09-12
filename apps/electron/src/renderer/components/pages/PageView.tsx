@@ -22,7 +22,7 @@ import {
 import { useProjects } from '@/hooks/useProjects'
 import type { LoadedPage, PageDataSnapshot, PageRenderLease } from '@craft-agent/shared/pages/types'
 import { PageFrame } from './PageFrame'
-import { PageFreshness, PageKindBadge } from './page-visuals'
+import { isPagePublic, PageFreshness, PageKindBadge } from './page-visuals'
 import { DeletePageDialog } from './DeletePageDialog'
 import { PageGrantsDialog } from './PageGrantsDialog'
 import { PageSourceAuthBanner } from './PageSourceAuthBanner'
@@ -283,11 +283,11 @@ export function PageView({ pageSlug }: PageViewProps) {
               type="button"
               onClick={() => setShareOpen(true)}
               aria-label={t('pages.share.title')}
-              title={config.share ? t('pages.shared') : t('pages.share.title')}
+              title={isPagePublic(config.share) ? t('pages.shared') : t('pages.share.title')}
               className="flex h-7 items-center gap-1.5 rounded-md px-2 text-foreground/60 transition-colors hover:bg-foreground/5 hover:text-foreground"
             >
-              <Globe2 className={config.share ? 'h-4 w-4 text-sky-600 dark:text-sky-400' : 'h-4 w-4'} />
-              {config.share && (
+              <Globe2 className={isPagePublic(config.share) ? 'h-4 w-4 text-sky-600 dark:text-sky-400' : 'h-4 w-4'} />
+              {isPagePublic(config.share) && (
                 <span className="hidden text-xs @[28rem]/panel:inline">{t('pages.shared')}</span>
               )}
             </button>
@@ -441,7 +441,7 @@ export function PageView({ pageSlug }: PageViewProps) {
 
       <DeletePageDialog
         pageName={confirmingDelete ? config.name : null}
-        shared={Boolean(config.share)}
+        shared={isPagePublic(config.share)}
         onConfirm={handleConfirmDelete}
         onCancel={() => setConfirmingDelete(false)}
       />

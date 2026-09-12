@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
   createRenderGenerationTracker,
+  formatPageGrantDescriptor,
   handlePageGrantIpc,
   isRequesterCurrent,
   type RenderIdentity,
@@ -60,6 +61,89 @@ function fakeWebContents(id: number) {
 }
 
 const DOCUMENT_REPLACED: NavDetails = { isMainFrame: true, isSameDocument: false }
+
+describe('host grant descriptor rendering', () => {
+  test('escapes controls, preserves spaced argument boundaries, and fills script defaults', () => {
+    const rendered = formatPageGrantDescriptor({
+      kind: 'script', script: 'scripts/run.ts', args: ['--label', 'two words', 'line\nbreak', '\u0000control', '\u0085c1', '\u2028line', '\u202ebidi', '\u2066isolate'],
+    })
+    expect(rendered).toContain('"runtime": "bun"')
+    expect(rendered).toContain('"args": [')
+    expect(rendered).toContain('"two words"')
+    expect(rendered).toContain('"line\\nbreak"')
+    expect(rendered).toContain('"\\u0000control"')
+    expect(rendered).toContain('\\u0085c1')
+    expect(rendered).toContain('\\u2028line')
+    expect(rendered).toContain('\\u202ebidi')
+    expect(rendered).toContain('\\u2066isolate')
+    expect(rendered).not.toContain('line\nbreak')
+  })
+
+  test('escapes every invisible or reordering category, not a hand-picked list of them', () => {
+    // These are all Cc/Cf/Zl/Zp and every one of them renders as nothing in a
+    // native dialog, so an unescaped one lets a descriptor hide or reorder text
+    // the user is being asked to approve. The enumerated class this replaced
+    // covered the bidi overrides and missed the rest.
+    const invisible = {
+      '\u200e': '\\u200e', // LEFT-TO-RIGHT MARK
+      '\u200f': '\\u200f', // RIGHT-TO-LEFT MARK
+      '\u200b': '\\u200b', // ZERO WIDTH SPACE
+      '\u00ad': '\\u00ad', // SOFT HYPHEN
+      '\ufeff': '\\ufeff', // ZERO WIDTH NO-BREAK SPACE (BOM)
+      '\u2029': '\\u2029', // PARAGRAPH SEPARATOR
+      '\u061c': '\\u061c', // ARABIC LETTER MARK
+      '\u{1d173}': '\\u{1d173}', // MUSICAL SYMBOL BEGIN BEAM — astral, so a
+      //                              4-padded escape would corrupt it
+    }
+    for (const [raw, escaped] of Object.entries(invisible)) {
+      const rendered = formatPageGrantDescriptor({
+        kind: 'mcp', sourceSlug: 'source', toolName: `before${raw}after`,
+      })
+      expect(rendered).toContain(`"before${escaped}after"`)
+      expect(rendered).not.toContain(raw)
+    }
+  })
+
+  test('escapes deceptive spacing and combining marks while leaving the plain space alone', () => {
+    const deceptive = {
+      '\u00a0': '\\u00a0', // NO-BREAK SPACE — reads as a space, is not one
+      '\u2003': '\\u2003', // EM SPACE — fakes alignment
+      '\u2002': '\\u2002', // EN SPACE
+      '\u3000': '\\u3000', // IDEOGRAPHIC SPACE
+      '\u202f': '\\u202f', // NARROW NO-BREAK SPACE
+      '\u0301': '\\u0301', // COMBINING ACUTE — alters the character before it
+      '\u0489': '\\u0489', // COMBINING CYRILLIC MILLIONS SIGN — Me, not Mn: it
+      //                          encloses, and the first draft of this class missed it
+    }
+    for (const [raw, escaped] of Object.entries(deceptive)) {
+      const rendered = formatPageGrantDescriptor({
+        kind: 'mcp', sourceSlug: 'source', toolName: `before${raw}after`,
+      })
+      expect(rendered).toContain(`"before${escaped}after"`)
+      expect(rendered).not.toContain(raw)
+    }
+  })
+
+  test('keeps U+0020 literal, or every descriptor becomes unreadable noise', () => {
+    // U+0020 is itself Zs, so the escape has to carve it out by name. Losing this
+    // would trade a real spoofing risk for a worse one: a dialog nobody can read.
+    const rendered = formatPageGrantDescriptor({
+      kind: 'script', script: 'scripts/run.ts', args: ['two words', 'three more words'],
+    })
+    expect(rendered).toContain('"two words"')
+    expect(rendered).toContain('"three more words"')
+    expect(rendered).not.toContain('\\u0020')
+    // JSON's own indentation is spaces too, and it must survive.
+    expect(rendered).toContain('\n  "kind"')
+  })
+
+  test('leaves ordinary printable text exactly as JSON wrote it', () => {
+    const rendered = formatPageGrantDescriptor({
+      kind: 'api', sourceSlug: 'linear', method: 'POST', pathPattern: '/issues/{id}?q=a b&r=\u00e9\u4e2d',
+    })
+    expect(rendered).toContain('"/issues/{id}?q=a b&r=\u00e9\u4e2d"')
+  })
+})
 
 describe('render generation tracking', () => {
   test('a tracked render starts current and stays current until something replaces it', () => {

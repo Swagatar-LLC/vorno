@@ -180,13 +180,28 @@ export function SharePageDialog({
     setBusy('unpublish')
     try {
       const result = await window.electronAPI.unpublishPage(workspaceId, config.slug)
-      if (result.warning === 'remote-copy-may-remain') {
-        toast.warning(t('toast.pageUnpublished'), { description: t('toast.pagePublicCopyMayRemain') })
+      if (result.warning === 'remote-cleanup-pending') {
+        toast.warning(t('toast.pageUnpublished'), { description: t('toast.pageRemoteCleanupPending') })
+        return
+      } else if (result.warning === 'remote-copy-may-remain' || result.warning === 'remote-cleanup-credential-missing') {
+        // Two different facts share this branch because both end in the same
+        // local-forget prompt, but they must not share the same words: one page
+        // may still be public, the other is already revoked and is only losing
+        // the ability to reclaim its stored bytes.
+        const revoked = result.warning === 'remote-cleanup-credential-missing'
+        toast.warning(revoked ? t('toast.pageUnpublished') : t('toast.pageUnpublishFailed'), {
+          description: revoked ? t('toast.pageCleanupCredentialMissing') : t('toast.pagePublicCopyMayRemain'),
+        })
+        // The host, not the renderer, owns the irreversible confirmation. The
+        // toast above already said why it is about to appear, so there is no
+        // second identical one after it resolves.
+        await window.electronAPI.unpublishPage(workspaceId, config.slug, { forgetLocal: true })
       } else {
         toast.success(t('toast.pageUnpublished'))
       }
       onOpenChange(false)
     } catch (err) {
+      if (err instanceof Error && err.message.includes('PAGE_FORGET_CONFIRMATION_CANCELLED')) return
       toast.error(t('toast.pageUnpublishFailed'), {
         description: displayShareError(err),
       })
@@ -208,7 +223,8 @@ export function SharePageDialog({
     }
   }, [share, t])
 
-  const contentDrifted = Boolean(share && config.contentDigest && share.publishedContentDigest !== config.contentDigest)
+  const cleanupPending = share?.cleanupPending === true
+  const contentDrifted = Boolean(share && !cleanupPending && config.contentDigest && share.publishedContentDigest !== config.contentDigest)
   const publishBlocked = scriptGrants.length > 0 || (hasUsableActionGrants && !ackViewOnly)
 
   return (
@@ -275,7 +291,12 @@ export function SharePageDialog({
           // Published
           // ------------------------------------------------------------
           <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
+            {cleanupPending ? (
+              <Info_Alert variant="warning" inline icon={<AlertTriangle className="h-4 w-4" />}>
+                <Info_Alert.Title>{t('toast.pageUnpublished')}</Info_Alert.Title>
+                <Info_Alert.Description>{t('toast.pageRemoteCleanupPending')}</Info_Alert.Description>
+              </Info_Alert>
+            ) : <div className="flex flex-col gap-1.5">
               <span className="text-sm">{t('pages.share.linkLabel')}</span>
               <div className="flex items-center gap-2">
                 <Input readOnly value={share.url} onFocus={e => e.currentTarget.select()} className="font-mono text-xs" />
@@ -289,7 +310,7 @@ export function SharePageDialog({
                   ? <><Lock className="h-3 w-3" /> {t('pages.share.passwordProtected')}</>
                   : <><Globe2 className="h-3 w-3" /> {t('pages.share.noPassword')}</>}
               </span>
-            </div>
+            </div>}
 
             {share.lastPublishError && (
               <Info_Alert variant="error" inline icon={<AlertTriangle className="h-4 w-4" />}>
@@ -298,7 +319,7 @@ export function SharePageDialog({
               </Info_Alert>
             )}
 
-            {sharingEnabled ? (
+            {sharingEnabled && !cleanupPending ? (
               <>
                 {/* A script approval added after publishing blocks republish too */}
                 {scriptGrants.length > 0 && (
@@ -370,7 +391,11 @@ export function SharePageDialog({
                   )}
                 </div>
               </>
-            ) : (
+            ) : cleanupPending ? null : (
+              // Only a genuinely disabled build says so. A cleanup-pending page
+              // hides the publish controls for its own reason — it is revoked and
+              // the one action left is retrying cleanup — and claiming publishing
+              // is disabled there is simply false when sharing is enabled.
               <span className="text-xs text-foreground/50">{t('pages.share.disabledNote')}</span>
             )}
           </div>
@@ -385,11 +410,11 @@ export function SharePageDialog({
               {confirmingUnpublish ? (
                 <Button variant="destructive" onClick={runUnpublish} disabled={busy !== null}>
                   {busy === 'unpublish' && <Spinner className="text-xs" />}
-                  {t('pages.share.unpublish')}
+                  {cleanupPending ? t('pages.share.retryCleanup') : t('pages.share.unpublish')}
                 </Button>
               ) : (
                 <Button variant="outline" onClick={() => setConfirmingUnpublish(true)} disabled={busy !== null}>
-                  {t('pages.share.unpublish')}
+                  {cleanupPending ? t('pages.share.retryCleanup') : t('pages.share.unpublish')}
                 </Button>
               )}
             </>
