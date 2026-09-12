@@ -405,6 +405,62 @@ describe('a queued send crossing a process boundary', () => {
     expect(steer.held).toBeNull()
   }, 30000)
 
+  it('promotes the LATEST of two same-text steers, not the first', async () => {
+    // The backend holds ONE steer slot and the newest write wins it, so when two
+    // steers in a turn carry the same text, the text handed back at turn end
+    // belongs to the SECOND. Matching the first re-queued the wrong message id,
+    // with the earlier send's attachments and options — a silent swap, since the
+    // text it reports is identical either way.
+    const sessionId = 'sess_steer_duplicate_text'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId)
+    const turns = sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void }
+
+    const steer = { held: null as string | null }
+    managed.agent = {
+      redirect: (text: string) => { steer.held = text; return true },
+      takeUndeliveredSteer: () => { const held = steer.held; steer.held = null; return held },
+    }
+
+    // The turn end replays the queue as soon as it promotes into it, which would
+    // shift the entry out before it can be inspected. Held, because what is
+    // under test is WHICH envelope was promoted, not the replay.
+    let replayed = 0
+    ;(sm as unknown as { processNextQueuedMessage(id: string): void })
+      .processNextQueuedMessage = () => { replayed++ }
+
+    turns.setProcessing(managed, true)
+    await sm.sendMessage(sessionId, 'do the thing', undefined, [
+      { id: 'att-first', name: 'first.txt' } as never,
+    ], { skillSlugs: [SKILL_SLUG] })
+    await sm.sendMessage(sessionId, 'do the thing', undefined, [
+      { id: 'att-second', name: 'second.txt' } as never,
+    ], undefined)
+
+    const sameText = (managed.messages as Array<{ id: string; content?: string }>)
+      .filter((m) => m.content === 'do the thing')
+    expect(sameText).toHaveLength(2)
+
+    await (sm as unknown as {
+      onProcessingStopped(id: string, reason: string): Promise<void>
+    }).onProcessingStopped(sessionId, 'complete')
+
+    // The SECOND message is the one that comes back, with its own attachments
+    // and its own (empty) slugs.
+    const queue = managed.messageQueue as Array<{ messageId?: string; storedAttachments?: Array<{ id: string }>; options?: unknown }>
+    expect(queue).toHaveLength(1)
+    expect(queue[0]!.messageId).toBe(sameText[1]!.id)
+    expect(queue[0]!.storedAttachments?.[0]?.id).toBe('att-second')
+    expect(queue[0]!.options).toBeUndefined()
+
+    // And the first is left exactly as it was: answered, not re-queued.
+    const first = (managed.messages as Array<{ id: string; isQueued?: boolean }>)
+      .find((m) => m.id === sameText[0]!.id)
+    expect(first?.isQueued).toBeFalsy()
+    // The turn end did try to replay it — the promotion is not a dead end.
+    expect(replayed).toBe(1)
+  }, 30000)
+
   it('does not re-queue a steer from an earlier turn', async () => {
     // The envelopes are per-TURN. A steer that was delivered is not coming back,
     // and leaving its envelope behind meant the next undelivered steer with the

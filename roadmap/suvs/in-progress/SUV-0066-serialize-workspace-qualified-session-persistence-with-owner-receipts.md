@@ -327,9 +327,11 @@ them.
    `loadSkillBySlug` FIRST — reading whatever the caller sent. There is one
    normalization now, at send ingress, and the raw value is never read again, so
    the pre-enable, every runtime queue entry and the persisted field take the
-   same list. The shape moved to the repo's standing slug rule: lowercase
-   alphanumeric with hyphens, no leading hyphen — the same rule `isValidSlug` and
-   the source/status schemas use.
+   same list. The shape moved to the repo's slug convention: lowercase
+   alphanumeric with hyphens, no leading hyphen. Not a call to `isValidSlug`, and
+   slightly looser than it — that predicate also forbids a trailing hyphen —
+   because the job is to reject anything that is not a plain name, not to police
+   cosmetics on a directory the user owns.
 
    **Compatibility, stated:** a skill DIRECTORY may be named anything the
    filesystem allows, and one with an underscore or a capital is mentionable
@@ -918,6 +920,12 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 20 (security P3): the steer promotion matched the FIRST
+  envelope with a given text while the backend's single slot holds the LATEST,
+  so two same-text steers in one turn re-queued the wrong message id and the
+  earlier send's attachments; `findLastIndex` now. Slug comment corrected: the
+  pattern matches the repo convention, it is not `isValidSlug`, which is
+  stricter about a trailing hyphen.
 - `2026-09-12` — review 19b (Greptile P1): the `steer_undelivered` EVENT never
   reaches the session layer — the send loop returns on `complete` and abandons
   the generator, discarding its trailing yield — so every Claude turn that ended

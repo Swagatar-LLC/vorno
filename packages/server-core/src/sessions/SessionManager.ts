@@ -1112,9 +1112,11 @@ interface SendAdmission {
  * Existence stays `loadSkillBySlug`'s question, which it already answers and
  * tolerates a miss on.
  *
- * The shape is the repo's standing slug rule — lowercase alphanumeric with
- * hyphens, no leading hyphen — the same one `isValidSlug` and the source/status
- * schemas enforce. **Compatibility, stated rather than discovered later:** a
+ * The shape matches the repo's slug convention — lowercase alphanumeric with
+ * hyphens, no leading hyphen. Deliberately not a call to `isValidSlug`, and
+ * slightly looser than it: that predicate also forbids a TRAILING hyphen, which
+ * this does not, because the job here is to reject anything that is not a plain
+ * name rather than to police cosmetics on a directory the user owns. **Compatibility, stated rather than discovered later:** a
  * skill DIRECTORY may be named anything the filesystem allows, and one named
  * with an underscore or a capital (`My_Skill`) is mentionable today. Such a
  * skill still runs; what it loses is the source PRE-ENABLE, on the live path as
@@ -1602,7 +1604,12 @@ export class SessionManager implements ISessionManager {
    * @returns true when a message was promoted
    */
   private promoteUndeliveredSteer(managed: ManagedSession, steerText: string): boolean {
-    const pendingIndex = managed.pendingSteers?.findIndex(p => p.message === steerText) ?? -1
+    // findLAST, because the backend holds ONE steer slot and the newest write
+    // wins it (`redirect` assigns, it does not append). Two steers with the same
+    // text in one turn therefore mean the text we were handed belongs to the
+    // SECOND envelope — matching the first would re-queue the wrong message id,
+    // with the earlier send's attachments and options.
+    const pendingIndex = managed.pendingSteers?.findLastIndex(p => p.message === steerText) ?? -1
     const envelope = pendingIndex >= 0 ? managed.pendingSteers!.splice(pendingIndex, 1)[0] : undefined
     const original = envelope ? managed.messages.find(m => m.id === envelope.messageId) : undefined
     if (!envelope || !original) return false
