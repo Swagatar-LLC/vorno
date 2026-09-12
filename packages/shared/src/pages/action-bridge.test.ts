@@ -1419,6 +1419,39 @@ describe('pages/action-bridge', () => {
       expect(ran).toHaveLength(0);
     });
 
+    it('asks again when the command behind a confirmed grant id changes', async () => {
+      // Sibling of the ticket-binding hole: binding the descriptor into the
+      // TICKET does not help if the confirmation cache still says "already
+      // confirmed" for the id, because the replacement ticket is then minted
+      // against the new descriptor consistently. The dialog is what has to be
+      // re-shown, so the confirmation identity carries the command too.
+      const broker = makeBroker({ executeScript: async () => ({ exitCode: 0, stdout: '', stderr: '' }) });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const pageWith = (script: string) => makePage({
+        grants: [makeGrant({ id: 'grant_script001', action: { kind: 'script', script } })],
+      });
+      const req = () => makeRequest(lease, { grantId: 'grant_script001', invocation: { kind: 'script' } });
+
+      const shown: string[] = [];
+      const confirmFirstUse = async () => { shown.push('asked'); return true; };
+
+      expect((await broker.mintActivationTicket(pageWith('pages/dash/safe.ts'), req(), AUTHORITY, { confirmFirstUse })).ok).toBe(true);
+      expect(shown).toHaveLength(1);
+      // Same command, same id: no second dialog, as designed.
+      expect((await broker.mintActivationTicket(pageWith('pages/dash/safe.ts'), req(), AUTHORITY, { confirmFirstUse })).ok).toBe(true);
+      expect(shown).toHaveLength(1);
+
+      // Same id, different command: the user has consented to nothing here.
+      expect((await broker.mintActivationTicket(pageWith('pages/dash/evil.ts'), req(), AUTHORITY, { confirmFirstUse })).ok).toBe(true);
+      expect(shown).toHaveLength(2);
+
+      // And a declined replacement mints nothing at all.
+      const declined = await broker.mintActivationTicket(
+        pageWith('pages/dash/worse.ts'), req(), AUTHORITY, { confirmFirstUse: async () => false },
+      );
+      expect((declined as { code: string }).code).toBe('first-use-confirmation-declined');
+    });
+
     it('gives the slot back when a queued request is refused after the wait', async () => {
       // Admission reserves a slot before the queue; every exit path after that
       // has to return it, or a refused queue entry permanently shrinks the

@@ -842,7 +842,21 @@ export class PageActionBroker {
     }
 
     const policy = pageActionOriginPolicy(authority.origin)!;
-    const firstUseKey = JSON.stringify([request.leaseId, request.grantId]);
+    // The confirmation identity is the lease, the grant, AND the exact command.
+    //
+    // Keying on the grant id alone made consent survive a change to the thing
+    // consented to: `page.json` can be rewritten in place under a stable id and
+    // a stable content digest (the digest covers index.html, not the grant
+    // list), so the next mint would find a cached "already confirmed", skip the
+    // dialog, and issue a perfectly valid ticket for a command the user had
+    // never seen. Binding the descriptor into the ticket does not help there,
+    // because that ticket is minted against the NEW descriptor consistently —
+    // the dialog is what has to be re-shown.
+    const firstUseKey = JSON.stringify([
+      request.leaseId,
+      request.grantId,
+      pageActionDescriptorSignature(validation.grant.action),
+    ]);
     // Every mutating kind, not just script. A window gesture cannot tell a
     // click on this Page's button from a click on unrelated app chrome (see the
     // policy field's note and the SUV-0065 evidence), so without this a page
