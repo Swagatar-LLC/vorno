@@ -6532,6 +6532,9 @@ export class SessionManager implements ISessionManager {
       // is still deciding about would be destructive, silent, and attributable
       // to nobody they can see.
       await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+      // And any in-memory mirror, so a later persist cannot write back a plan
+      // the user has just dismissed.
+      managed.pendingPlanExecution = undefined
     }
 
     // Ensure messages are loaded before we try to add new ones. For the
@@ -6690,6 +6693,11 @@ export class SessionManager implements ISessionManager {
         // therefore not enough: this write would destroy it anyway. Read
         // synchronously (the storage accessor is sync) so nothing yields
         // between the guard and the commit.
+        // Held only across the persist below, never beyond it. A long-lived
+        // copy on the managed session would outlive the stored one: the user
+        // send and the explicit-clear paths delete the STORED value only, so a
+        // later persist of that managed session would write the stale plan back
+        // and resurrect recovery state the user had already dismissed.
         const pendingPlan = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
         if (pendingPlan) managed.pendingPlanExecution = pendingPlan
         // Marks the accepted-but-not-started window for any send that arrives
@@ -6708,6 +6716,11 @@ export class SessionManager implements ISessionManager {
       // genuinely on disk before we tell the renderer "accepted", and
       // `persistSession` is debounced (500ms). #616.
       this.persistSession(managed)
+      // `persistSession` snapshots the managed session synchronously via
+      // `pickSessionFields`, so the enqueued record already carries the plan and
+      // the mirror has done its whole job. Dropping it here is what keeps it
+      // from becoming a second, staler source of truth.
+      if (pageCallback) managed.pendingPlanExecution = undefined
       if (pageCallback) {
         // Checked flush, and `onDurable` only if it really succeeded. The
         // unchecked path resolves just as happily after a failed write, so

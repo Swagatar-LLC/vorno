@@ -249,6 +249,29 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     expect(reloaded).toContain(BODY)
   })
 
+  it('does not resurrect a plan the user has since dismissed', async () => {
+    const managed = seed() as unknown as Record<string, unknown>
+    await seedPendingPlan()
+
+    // A callback delivers, which mirrors the stored plan onto the managed
+    // session so its write preserves it.
+    await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+    expect(getPendingPlanExecution(root, SESSION_ID)).not.toBeNull()
+
+    // The mirror must not outlive that write. If it does, the user's own send
+    // clears the STORED value while the managed copy survives — and the next
+    // persist writes the dismissed plan back, offering to resume work the user
+    // already moved past.
+    expect(managed.pendingPlanExecution).toBeUndefined()
+
+    managed.isProcessing = false
+    managed.pageCallbackTurnPendingToken = undefined
+    await sm.sendMessage(SESSION_ID, 'user moves on').catch(() => {})
+    await new Promise((r) => setTimeout(r, 50))
+
+    expect(getPendingPlanExecution(root, SESSION_ID)).toBeNull()
+  })
+
   it('a NON-callback send still clears pending plan execution', () => {
     // The control for the test above. Without it, "the plan survived" would
     // pass just as happily if the clearing call had been deleted outright, and

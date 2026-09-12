@@ -492,6 +492,28 @@ mechanism.
   false at that moment, and asserts that *that* message is in the queue rather
   than merely that the queue is non-empty.
 
+## Round 14 — both fixes from round 13 had a hole
+
+`2026-09-12` — two P1s, one in each of the previous round's mechanisms.
+
+- **The checked receipt could succeed too early.** `write` removes its pending
+  entry *before* it touches the filesystem, so a checked flush arriving while a
+  write was mid-I/O found an empty queue and reported success — with the bytes
+  still in flight and the failure not yet known. It now awaits any in-progress
+  write first, and the debounced timer path registers its write the same way the
+  flush path already did, so "in progress" means it regardless of who started
+  it. The test had to fail at an **async** step to exercise this at all: an
+  ENOTDIR from `mkdir` is raised synchronously, so the whole write settles
+  before anything can observe it and the window does not exist.
+- **A cleared plan could reappear.** Mirroring the stored plan onto the managed
+  session solved the write, but the mirror outlived it: the user-send and
+  explicit-clear paths delete the STORED value only, so a later persist of that
+  managed session would write the dismissed plan back and offer to resume work
+  the user had moved past. The mirror is now dropped immediately after the
+  persist that needed it — `persistSession` snapshots synchronously, so the
+  enqueued record already has it — and clearing the stored value clears any
+  mirror too.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

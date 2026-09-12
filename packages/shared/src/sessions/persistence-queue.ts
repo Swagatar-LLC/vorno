@@ -89,7 +89,16 @@ class SessionPersistenceQueue {
     }
 
     const timer = setTimeout(() => {
-      void this.write(session.id)
+      // Tracked like the flush-driven writes are. Without this a checked flush
+      // arriving while a debounced write was mid-I/O saw no pending entry, found
+      // no in-progress write, and reported success before the bytes had landed.
+      const running = this.write(session.id).then(() => undefined)
+      this.writeInProgress.set(session.id, running)
+      void running.finally(() => {
+        if (this.writeInProgress.get(session.id) === running) {
+          this.writeInProgress.delete(session.id)
+        }
+      })
     }, this.debounceMs)
 
     this.pending.set(session.id, { data: session, timer })
@@ -226,9 +235,16 @@ class SessionPersistenceQueue {
   async flushChecked(sessionId: string): Promise<SessionWriteReceipt> {
     const entry = this.pending.get(sessionId)
     if (!entry) {
-      // Nothing queued. Either everything is already on disk, or the last
-      // attempt failed and nobody has succeeded since — which still means this
-      // session's state is not durable.
+      // Nothing QUEUED is not the same as nothing happening: `write` removes
+      // its pending entry before it touches the filesystem, so a write can be
+      // mid-I/O with the queue already empty. Reporting success here would tell
+      // the caller its bytes were on disk while they were still in flight — and
+      // if that write then fails, the claim was simply false.
+      const inProgress = this.writeInProgress.get(sessionId)
+      if (inProgress) await inProgress
+
+      // Either everything is on disk, or the last attempt failed and nobody has
+      // succeeded since — which still means this state is not durable.
       const prior = this.lastWriteFailure.get(sessionId)
       return prior ? { ok: false, error: prior } : { ok: true }
     }
