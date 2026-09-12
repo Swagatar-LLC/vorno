@@ -250,6 +250,31 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     expect(survived!.draftInputSnapshot).toBe('draft text')
   })
 
+  it('never puts the pending plan on the wire, while persistence keeps it', async () => {
+    seed()
+    await seedPendingPlan()
+    const managed = hydrateFromDisk()
+    // The mirror is genuinely there in memory — this is not passing because the
+    // hydration failed.
+    expect(managed.pendingPlanExecution).toBeDefined()
+
+    // `draftInputSnapshot` is whatever the user had typed and not sent. It
+    // belongs on disk for recovery and nowhere else — this projection feeds
+    // every session-list push, so shipping it would put unsent user text on the
+    // wire for every session, repeatedly, to every connected client.
+    const listed = sm.getSessions(WORKSPACE_ID).find((x) => x.id === SESSION_ID)!
+    expect(listed).toBeDefined()
+    expect((listed as unknown as Record<string, unknown>).pendingPlanExecution).toBeUndefined()
+    expect(JSON.stringify(listed)).not.toContain('draft text')
+
+    const single = await sm.getSession(SESSION_ID)
+    expect((single as unknown as Record<string, unknown>).pendingPlanExecution).toBeUndefined()
+    expect(JSON.stringify(single)).not.toContain('draft text')
+
+    // ...and persistence still has it, which is the whole point of the mirror.
+    expect(getPendingPlanExecution(root, SESSION_ID)?.draftInputSnapshot).toBe('draft text')
+  })
+
   it('keeps the mirror in step when compaction completes', async () => {
     seed()
     await seedPendingPlan()

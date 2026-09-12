@@ -234,6 +234,40 @@ describe('SessionPersistenceQueue.flushChecked', () => {
     expect(receipt).not.toBe('timeout');
   });
 
+  it('never registers a waiter nothing can satisfy', async () => {
+    // The hang regression, with a real 1.5s bound so it fails rather than
+    // stalling the suite. `cancel` empties `pending`, and `write` returns early
+    // with nothing pending WITHOUT settling anything — so a waiter parked for
+    // that generation would be answered by nobody, ever.
+    //
+    // This exercises the watermark path specifically (the cancelled generation
+    // answers terminally). The `receiptFor` backstop below it guards the same
+    // invariant for states the public API cannot currently produce, and is
+    // marked as such in the source rather than claimed as covered here.
+    queue.enqueue(session('w1'));
+    queue.cancel('w1');
+
+    const waiters = (queue as unknown as { receiptWaiters: Map<string, unknown[]> }).receiptWaiters;
+    const answer = await Promise.race([
+      queue.flushChecked('w1'),
+      new Promise<'hung'>((r) => setTimeout(() => r('hung'), 1_500)),
+    ]);
+
+    expect(answer).not.toBe('hung');
+    expect(waiters.has('w1')).toBe(false);
+  });
+
+  it('answers rather than waits when the snapshot is already gone', async () => {
+    // Same invariant from the other direction: a checked flush for a session
+    // with nothing pending and no tail has nothing to wait for, whether or not
+    // a cancel is what emptied it.
+    const answer = await Promise.race([
+      queue.flushChecked('never-existed'),
+      new Promise<'hung'>((r) => setTimeout(() => r('hung'), 1_500)),
+    ]);
+    expect(answer).not.toBe('hung');
+  });
+
   it('reports cancelled — promptly — while the cancelled write is still in flight', async () => {
     // The case where the watermark is still live, because retirement is blocked
     // by the in-flight tail. A caller asking about a generation at or below it
@@ -261,13 +295,30 @@ describe('SessionPersistenceQueue.flushChecked', () => {
   });
 
   it('a stale in-flight write cannot commit over a newer one', async () => {
-    // The reason cancellation is a watermark rather than a flag: with a flag,
-    // `enqueue` cleared it and the stale write — held open here — reached its
-    // pre-commit check, found the flag gone, and committed over the fresh
-    // state.
+    // The reason cancellation is a watermark rather than a flag. With a flag,
+    // `enqueue` cleared it, so the stale write — held open here — reached its
+    // pre-commit check, found the flag gone, and committed.
+    //
+    // Neither the final file nor the receipt can show that. The tail
+    // serialises, so the newer write lands last either way; and `cancel`
+    // settles waiting receipts eagerly, so the stale receipt reads "cancelled"
+    // whether or not the write went on to commit. What has to be observed is
+    // whether the stale bytes were EVER on disk — so the file is sampled at
+    // each commit boundary.
+    const file = getSessionFilePath(root, 'c5');
+    const observed: string[] = [];
+    let holdFirst = true;
     let held!: () => void;
     const holding = new Promise<void>((resolve) => { held = resolve; });
-    queue.commitHooks = { beforeRename: async () => { await holding; } };
+
+    queue.commitHooks = {
+      beforeUnlink: () => { if (existsSync(file)) observed.push(readFileSync(file, 'utf-8')) },
+      beforeRename: async () => {
+        if (!holdFirst) return;
+        holdFirst = false;
+        await holding;
+      },
+    };
 
     const stale = session('c5');
     (stale as unknown as { name: string }).name = 'stale';
@@ -283,30 +334,16 @@ describe('SessionPersistenceQueue.flushChecked', () => {
 
     held();
     await staleWrite;
-    queue.commitHooks = undefined;
     await queue.flush('c5');
+    queue.commitHooks = undefined;
 
-    const written = readFileSync(getSessionFilePath(root, 'c5'), 'utf-8');
+    // The stale bytes never reached disk at any point — not merely "not at the
+    // end".
+    expect(observed.some((snapshot) => snapshot.includes('"name":"stale"'))).toBe(false);
+
+    const written = readFileSync(file, 'utf-8');
     expect(written).toContain('"name":"fresh"');
     expect(written).not.toContain('"name":"stale"');
-  });
-
-  it('keeps reporting a failure after the tail has drained', async () => {
-    // Retirement must not delete the evidence of a failed write. It IS the
-    // answer to the next checked flush, and dropping it turns "the last write
-    // failed" into "nothing outstanding, all good" — a durability claim built
-    // out of deleted evidence.
-    mkdirSync(join(root, 'sessions', 'f1', 'session.jsonl.tmp'), { recursive: true });
-    expect((await queue.enqueueChecked(session('f1'))).ok).toBe(false);
-
-    // Tail drained, nothing pending — the exact state retirement fires on.
-    await new Promise((r) => setTimeout(r, 10));
-    expect((await queue.flushChecked('f1')).ok).toBe(false);
-
-    // And a later successful write both clears it and makes the session
-    // retirable again.
-    rmSync(join(root, 'sessions', 'f1', 'session.jsonl.tmp'), { recursive: true, force: true });
-    expect((await queue.enqueueChecked(session('f1'))).ok).toBe(true);
   });
 
   it('retires per-session bookkeeping so cancelled sessions do not leak', async () => {

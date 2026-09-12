@@ -667,6 +667,55 @@ Retiring state because nothing is in flight is right; retiring the record of
 what went wrong is not, because that record's whole purpose is to be read after
 the work has stopped.
 
+## Round 21 — the blast radius of touching whole-session persistence
+
+`2026-09-12` — three more, and the third is the one worth carrying forward.
+
+- **`flushChecked` never parks on work nothing will finish.** A cancelled
+  generation answers terminally; and `receiptFor` now refuses to register a
+  waiter at all when there is no pending entry and no tail, because `write`
+  returns early in exactly that state without settling anything. Regression is
+  timeout-bounded (1.5s) so it fails rather than stalling the suite.
+- **The slow-write fixture proves watermark-vs-flag properly.** Neither the
+  final file nor the receipt can show the difference — the tail serialises so
+  the newer write lands last either way, and `cancel` settles waiting receipts
+  eagerly so the stale receipt reads "cancelled" regardless. It now samples the
+  file at each commit boundary and asserts the stale bytes were **never** on
+  disk, which is the actual claim.
+- **The pending-plan mirror was leaking `draftInputSnapshot` onto the wire.**
+
+### Blast radius: this SUV changed whole-session persistence
+
+Worth recording plainly, because the feature is "a page can send one message"
+and the diff now reaches the session write path, the session DTO, and the
+metadata projection.
+
+Making `pendingPlanExecution` a real managed mirror was the right fix for a real
+defect — but the field is in `SESSION_PERSISTENT_FIELDS`, and `managedToSession`
+projects the DTO with `...pickSessionFields(m)`. So the moment the field started
+living on the managed session it began shipping to every client in every
+session-list push, carrying `draftInputSnapshot` — whatever the user had typed
+and not sent. Nothing in the change said "transport"; a spread said it.
+
+Three lessons, in order of how much they generalise:
+
+1. **A spread over a field registry is an implicit allowlist that nobody
+   re-reads.** Adding a field to the registry silently widens every projection
+   built by spreading it. The projection now destructures the field out with the
+   reason attached, so the next person reads "not transport state" at the place
+   that would otherwise re-export it.
+2. **Fixing a storage bug can widen a transport surface.** The persistence fix
+   and the leak are the same edit. Any change that moves state *onto* the
+   managed session should be checked against what projects from it.
+3. **Whole-session persistence has no small changes.** `sendMessage`,
+   `persistSession`, the queue, the DTO, and the metadata projection are one
+   coupled system; this SUV touched all five to ship one button. A future change
+   here should expect the same radius rather than discovering it.
+
+A private learning belongs in `vorno-internal:learnings/` per the repo rule, and
+cannot be written from this worktree — flagged to the orchestrator rather than
+left undone.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

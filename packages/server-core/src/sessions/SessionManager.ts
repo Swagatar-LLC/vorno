@@ -1191,8 +1191,22 @@ const DEFAULT_TOKEN_USAGE = {
  * Uses pickSessionFields() for persistent fields so new fields propagate automatically.
  */
 function managedToSession(m: ManagedSession, overrides?: Partial<Session>): Session {
+  // `pendingPlanExecution` is persisted state, not transport state, and it is
+  // omitted here on purpose.
+  //
+  // It carries `draftInputSnapshot` — whatever the user had typed and not sent
+  // when they accepted a plan. That belongs on disk for recovery and nowhere
+  // else: this projection feeds every session-list push, so including it would
+  // put unsent user text on the wire for every session, repeatedly, to every
+  // connected client. It became reachable the moment the field started living
+  // on the managed session (it is in `SESSION_PERSISTENT_FIELDS`, so
+  // `pickSessionFields` takes it automatically), which is exactly the kind of
+  // silent widening that a spread invites.
+  //
+  // Read it through `getPendingPlanExecution`, which is the deliberate door.
+  const { pendingPlanExecution: _persistedOnly, ...persistedFields } = pickSessionFields(m)
   return {
-    ...pickSessionFields(m),
+    ...persistedFields,
     // Pre-computed fields from header (not in SESSION_PERSISTENT_FIELDS)
     preview: m.preview,
     lastMessageRole: m.lastMessageRole,

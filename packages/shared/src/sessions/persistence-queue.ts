@@ -188,6 +188,28 @@ class SessionPersistenceQueue {
       const prior = this.lastWriteFailure.get(sessionId)
       return Promise.resolve(prior ? { ok: false, error: prior } : { ok: true })
     }
+
+    // A waiter is only ever registered for work that something will finish.
+    //
+    // With nothing pending and no tail running, this generation's snapshot is
+    // gone — `write` returns early when there is no pending entry, and does so
+    // without settling anything, so a waiter parked here would never be
+    // answered by anybody. That is not a slow reply; it is a caller stuck for
+    // the life of the process.
+    //
+    // A structural backstop rather than a live path: the public API cannot
+    // currently reach this state (a cancel is caught by the watermark check
+    // above, and every other route leaves either a pending entry or a tail).
+    // It is here because the cost of being wrong is a permanent hang, and the
+    // invariant — never park on work nothing will finish — should hold by
+    // construction rather than by audit of the callers.
+    if (!this.pending.has(sessionId) && !this.tails.has(sessionId)) {
+      const prior = this.lastWriteFailure.get(sessionId)
+      return Promise.resolve(
+        prior ? { ok: false, error: prior } : { ok: false, error: 'session write cancelled' },
+      )
+    }
+
     return new Promise<SessionWriteReceipt>((settle) => {
       const waiters = this.receiptWaiters.get(sessionId) ?? []
       waiters.push({ generation, settle })
