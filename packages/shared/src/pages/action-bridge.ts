@@ -595,38 +595,25 @@ export class PageActionBroker {
     this.pruneExpiredLeases();
 
     if (this.leases.size >= MAX_LIVE_LEASES) {
-      // Evict the least-recently-useful lease: busy last, otherwise the one
-      // whose last activity is oldest.
+      // Evict the coldest lease: never-used before used, oldest first within
+      // each group, and a busy lease only when every lease is busy.
       //
-      // Three tiers (never-used → idle → oldest) were tried and were bypassable.
-      // A non-mutating grant needs no activation, so a client holding an
-      // approved API GET could touch each lease once and lift every one of them
-      // out of the never-used tier; and the recorded timestamp was checked for
-      // existence but never used for ordering, so within a tier age alone still
-      // decided and a real mount still lost to a later flood.
+      // Both halves of that ordering are load-bearing, and each failed alone:
       //
-      // One key — last activity, falling back to issue time — subsumes both
-      // tiers and closes that. A lease that was minted and abandoned sorts by
-      // its issue time and goes first. A lease touched once long ago sorts by
-      // that touch and goes next. A window in active use keeps refreshing its
-      // key and is evicted last. Keeping many leases "recently used" costs an
-      // action each, and actions are already budgeted per page and per
-      // workspace, so the cost of defeating this is bounded by a limit that
-      // does not depend on who is calling.
-      // Rank: never-used before used, and within each group oldest first.
+      //  - **Never-used first, regardless of age.** Ordering purely by last
+      //    activity sorts an abandoned lease by its ISSUE time, which for a
+      //    flood is recent, while a window used once early sorts by that old
+      //    touch — so the genuine mount would be evicted first.
+      //  - **Oldest-use first within the used group.** A non-mutating grant
+      //    needs no activation, so a client holding an approved API GET can
+      //    touch each lease it mints and leave the never-used group entirely.
+      //    Escaping that group costs one action per lease; staying the most
+      //    recently used costs one per lease per round, against per-page and
+      //    per-workspace action budgets.
       //
-      // A single "last activity" key does not work, and the reason is worth
-      // keeping: a lease minted and never touched sorts by its ISSUE time,
-      // which for a flood is recent, while a window used once early sorts by
-      // that old touch — so the real mount would be evicted first, exactly
-      // backwards. Never-used therefore ranks ahead of used regardless of age.
-      //
-      // Ordering WITHIN the used group is what closes the bypass: a
-      // non-mutating grant needs no activation, so a flood holding an approved
-      // GET can touch each lease once and leave the never-used group entirely.
-      // It cannot cheaply stay the most recent, because each touch costs an
-      // action and actions are budgeted per page and per workspace — a limit
-      // that does not depend on who is calling.
+      // Nothing here reads caller identity. Lease activity is host state that
+      // no client can forge, unlike `clientId` — which is why the per-caller
+      // creation budget this replaced could not work.
       const rankOf = (lease: PageRenderLease): [number, number] => {
         const usedAt = this.leaseLastUsedAt.get(lease.leaseId);
         return usedAt === undefined ? [0, lease.issuedAt] : [1, usedAt];

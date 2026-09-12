@@ -176,6 +176,31 @@ future owner will meet.
   unspent window gesture but no second dialog, and the SUV-0065 experiment
   proved a window gesture cannot be attributed to the Page frame. Confirming
   every invocation is friction ADR-0033 explicitly did not ask for.
+- **A mounted-but-unacted lease can be churned out of the shared store.** The
+  lease store is shared per workspace and capped at `MAX_LIVE_LEASES`, and
+  `pages:createLease` is transport-reachable, so sustained creation evicts
+  something. Eviction ranks never-used before used and oldest-use first within
+  the used group, so a window is exposed only in the gap between mounting and
+  its first action; everything past first use is protected, and the cost of
+  staying "recently used" is bounded by the per-page and per-workspace action
+  budgets.
+
+  **Severity: availability only.** No grant, ticket, or confirmation is
+  bypassed — an evicted lease fails closed with `lease-not-found`, and recovery
+  is a re-mount.
+
+  **This is benign only while re-mounting stays cheap and unbudgeted, and that
+  coupling is easy to break by accident.** A per-caller lease creation budget
+  was written and removed during this SUV precisely because it keys on
+  `clientId`, a client-asserted handshake field: it bounded nothing a
+  reconnecting caller could not reset, while its bucket map grew with that same
+  churn. Reintroducing any creation budget — per caller, per workspace, or
+  global — converts this residual from "re-mount and carry on" into "cannot
+  re-mount", which is a genuine denial of service against the user. Anyone
+  proposing one must say what happens to recovery first. Real isolation needs
+  per-lease ownership on a trusted host path, which is an ADR-level change, not
+  an eviction-order or rate-limit tweak.
+
 - **Whether a real in-frame click is visible to `input-event` is unknown.**
   Measured only for synthesized input; see the evidence record. It fails as a
   refusal, never as a bypass.
