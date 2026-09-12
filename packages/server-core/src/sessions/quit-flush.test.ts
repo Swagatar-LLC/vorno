@@ -570,6 +570,52 @@ describe('quit flushes sessions that are mid-commit', () => {
     }, 20000)
   })
 
+  describe('a mid-finalisation session earns a checked final receipt', () => {
+    it('is selected for a final persist even though isProcessing is already false', async () => {
+      // The predicate has to include `turnFinalization`, not just the flag.
+      // `onProcessingStopped` clears `isProcessing` early and keeps going, so a
+      // session whose finaliser is running reads as idle — and the persist the
+      // finaliser does itself is fire-and-forget, with no receipt. Without this,
+      // the one session whose state was being assembled during shutdown is the
+      // one that never gets a checked write.
+      const sessionId = 'sess_mid_finalization'
+      const managed = seedManaged(sessionId, { messageQueue: [] })
+      ;(sm as unknown as { setProcessing(m: unknown, p: boolean): void }).setProcessing(managed, true)
+      ;(sm as unknown as { setProcessing(m: unknown, p: boolean): void }).setProcessing(managed, false)
+      // Put it back into the mid-finalisation shape: flag down, deferred up.
+      let resolveFinal!: () => void
+      managed.turnFinalization = {
+        token: Symbol(sessionId),
+        promise: new Promise<void>((r) => { resolveFinal = r }),
+        resolve: () => {},
+        finalizerRunning: true,
+      }
+      expect(managed.isProcessing).toBe(false)
+
+      const selected = (sm as unknown as {
+        collectSessionsNeedingFinalPersist(): Array<{ id: string }>
+      }).collectSessionsNeedingFinalPersist()
+      expect(selected.map((m) => m.id)).toContain(sessionId)
+
+      // And it really is written: release the finaliser so shutdown proceeds.
+      ;(managed.messages as unknown[]).push({
+        id: 'mid-final',
+        role: 'assistant',
+        content: 'assembled during shutdown',
+        timestamp: Date.now(),
+      })
+      setTimeout(() => {
+        managed.turnFinalization = undefined
+        resolveFinal()
+      }, 20)
+      await sm.flushAllSessions()
+
+      expect(readFileSync(getSessionFilePath(root, sessionId), 'utf-8')).toContain(
+        'assembled during shutdown',
+      )
+    }, 20000)
+  })
+
   describe('handoff interrupts release the finalisation deferred', () => {
     it('does not leave shutdown waiting when a turn pauses instead of finishing', async () => {
       // Plan submission and auth requests are HANDOFF interrupts: control moves

@@ -128,6 +128,10 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       shutdown — receipts distinguish `cancelled` from `failed`.
 - [x] An active turn's final state is persisted even when an intermediate
       write is already queued for it.
+- [x] A session mid-finalisation (flag already false, deferred still set) is
+      selected for a checked final persist, not read as idle.
+- [x] `markAllSessionsRead` saves the sessions it can, always emits the unread
+      summary, and reports a partial failure naming the sessions that failed.
 - [x] A handoff interrupt (plan submit, auth request, auth retry) releases the
       finalisation deferred, so shutdown resolves promptly instead of waiting
       out its bound on a turn that merely paused.
@@ -523,6 +527,11 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 12 (security P3s): the final-persist predicate read a
+  mid-finalisation session as idle, so the one session being assembled during
+  shutdown got no checked receipt; and `markAllSessionsRead` used `Promise.all`,
+  which abandoned the remaining writes and skipped the unread-summary event
+  after already clearing the flags in memory.
 - `2026-09-12` — review 11 (Greptile P1): creating a finalisation deferred on
   every turn start meant handoff interrupts (plan submit, auth request, auth
   retry) left one nothing would settle, hanging shutdown for its full bound;

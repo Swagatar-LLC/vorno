@@ -2793,7 +2793,14 @@ export class SessionManager implements ISessionManager {
     for (const managed of this.sessions.values()) {
       // Active work first. Its final state does not exist yet, so nothing
       // already queued can be standing in for it.
-      if (managed.isProcessing || managed.messageQueue.length > 0) {
+      //
+      // `turnFinalization` is part of "active": a session whose finaliser is
+      // still running has ALREADY had `isProcessing` cleared, so the flag alone
+      // would read it as idle. Shutdown awaits that finaliser, and the persist
+      // the finaliser does itself is fire-and-forget — no receipt — so without
+      // this the one session whose state was being assembled during shutdown is
+      // the one that never gets a checked write.
+      if (managed.isProcessing || managed.turnFinalization || managed.messageQueue.length > 0) {
         needed.push(managed)
         continue
       }
@@ -6395,20 +6402,43 @@ export class SessionManager implements ISessionManager {
    * Called from "Mark All Read" context menu on "All Sessions".
    */
   async markAllSessionsRead(workspaceId: string): Promise<void> {
-    const updates: Promise<void>[] = []
+    const updates: Array<{ id: string; write: Promise<void> }> = []
     for (const managed of this.sessions.values()) {
       if (managed.workspace.id !== workspaceId) continue
       if (managed.hidden || managed.isArchived) continue
       if (managed.isProcessing) continue
       if (!managed.hasUnread) continue
       managed.hasUnread = false
-      updates.push(
-        updateSessionMetadata(managed.workspace.rootPath, managed.id, { hasUnread: false })
-      )
+      updates.push({
+        id: managed.id,
+        write: updateSessionMetadata(managed.workspace.rootPath, managed.id, { hasUnread: false }),
+      })
     }
-    if (updates.length > 0) {
-      await Promise.all(updates)
-      this.emitUnreadSummaryChanged()
+    if (!updates.length) return
+
+    // `allSettled`, not `all`, and the difference matters now that
+    // `updateSessionMetadata` can reject. `all` rejected on the FIRST failure
+    // while every other write was still in flight, so the sessions that saved
+    // correctly were never reported and the caller learned about one failure
+    // out of however many there were.
+    const results = await Promise.allSettled(updates.map(u => u.write))
+    const failures = results.flatMap((result, i) =>
+      result.status === 'rejected'
+        ? [`${updates[i]!.id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`]
+        : [],
+    )
+
+    // Emitted UNCONDITIONALLY, and before the throw. The in-memory `hasUnread`
+    // flags were cleared at the top of this method, so the badge is already
+    // wrong by the time anything fails — skipping the event on the error path
+    // left the UI showing unread counts that memory disagreed with, which is a
+    // worse outcome than the failure itself.
+    this.emitUnreadSummaryChanged()
+
+    if (failures.length) {
+      throw new Error(
+        `Marked ${updates.length - failures.length} of ${updates.length} session(s) read; ${failures.length} failed — ${failures.join('; ')}`,
+      )
     }
   }
 
