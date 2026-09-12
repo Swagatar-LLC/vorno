@@ -247,10 +247,14 @@ had landed. The model is now PROVISIONAL and durable from the accept:
    it. Optimistic on purpose — most steers are delivered and the marker is then
    cleared — and one-directional: a replayed duplicate is recoverable, a lost
    message is not.
-2. **Overwritten steers are promoted immediately.** The slot holds one and the
-   newest write wins, so the previous envelope can never be delivered; it goes
-   back in the queue at that instant, including when a steer attempt FAILS,
-   because the backend's own abort fallback may have cleared the slot.
+2. **The previous steer is settled when the next one arrives — by ASKING.** The
+   first version promoted it unconditionally, and Greptile caught what that
+   misses: a delivered slot and an overwritten slot are both EMPTY, so a steer
+   the model had already answered was queued and run a second time. The settle is
+   the same shared routine, and it runs BEFORE `redirect` writes the slot.
+   Ordering is the fix in both directions: ask afterwards and the answer
+   describes the steer arriving now, and taking the slot then would rob that
+   steer of its delivery.
 3. **A null answer is the only thing that clears a marker**, and it speaks for
    the most recent steer alone. Clearing the whole list on it would silently
    discard an earlier steer nothing ever answered.
@@ -267,9 +271,10 @@ had landed. The model is now PROVISIONAL and durable from the accept:
    separators, dots, spaces and empties. Live and replay share the one
    normalizer.
 
-Five mutations killed: no marker at accept; overwritten steer not promoted; a
-null answer clearing every envelope; no reconcile before the user-stop abort;
-and the older first-match correlation. The clear-all mutation survived its first
+Mutations killed: no marker at accept; the previous steer not settled; a null
+answer clearing every envelope; no reconcile before the user-stop abort; the
+older first-match correlation; promoting without asking; and settling after
+`redirect` instead of before it. The clear-all mutation survived its first
 pass because the two-envelope state cannot be reached through the call graph —
 it is now pinned by a direct test that says so in its own comment rather than
 pretending the state is ordinary.
@@ -964,6 +969,11 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 21b (Greptile P1): settling the previous steer by
+  promoting it unconditionally re-queued a message the turn had already
+  DELIVERED — an empty slot means delivered just as often as it means
+  overwritten. The settle now asks, through the shared reconcile, and runs
+  before `redirect` writes the slot.
 - `2026-09-12` — review 21 (architecture P1s): a steer lived only in the
   backend's memory between its ACK and the turn end, so a crash there lost an
   acknowledged message. Steers are now marked durably provisional at accept,

@@ -473,6 +473,44 @@ describe('a queued send crossing a process boundary', () => {
     expect(replayed).toBe(1)
   }, 30000)
 
+  it('does not re-queue a steer the turn already delivered when another arrives', async () => {
+    // A delivered slot and an overwritten slot look IDENTICAL from the outside:
+    // both are empty. Promoting the previous envelope unconditionally when the
+    // next steer arrives therefore re-queued a message the model had already
+    // answered. The settle has to ask — and has to ask BEFORE `redirect` writes
+    // the slot, or the answer describes the steer arriving now.
+    const sessionId = 'sess_steer_delivered_then_another'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId)
+    const backend = steeringBackend()
+    managed.agent = backend.agent
+    ;(sm as unknown as { processNextQueuedMessage(id: string): void }).processNextQueuedMessage = () => {}
+    ;(sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void })
+      .setProcessing(managed, true)
+
+    await sm.sendMessage(sessionId, 'first steer, answered', undefined, undefined, { skillSlugs: [SKILL_SLUG] })
+    // A tool call fires: the first steer reaches the model and the slot empties.
+    backend.deliver()
+
+    await sm.sendMessage(sessionId, 'second steer')
+
+    const byContent = (content: string) => (managed.messages as Array<{ content?: string; isQueued?: boolean }>)
+      .find((m) => m.content === content)
+    // The answered one is settled, not re-queued.
+    expect(byContent('first steer, answered')?.isQueued).toBeFalsy()
+    expect((managed.messageQueue as unknown[])).toHaveLength(0)
+    // The live one is provisional, and still deliverable — the settle took the
+    // slot BEFORE `redirect` filled it, so this steer is still in there.
+    expect(byContent('second steer')?.isQueued).toBe(true)
+    expect(backend.slot.held).toBe('second steer')
+
+    // And when that one is never delivered, it comes back exactly once.
+    await (sm as unknown as {
+      onProcessingStopped(id: string, reason: string): Promise<void>
+    }).onProcessingStopped(sessionId, 'complete')
+    expect((managed.messageQueue as Array<{ message: string }>).map((q) => q.message)).toEqual(['second steer'])
+  }, 30000)
+
   it('keeps two same-text steers apart by id, attachments and options', async () => {
     // Identical text is the case where a correlation mistake is invisible: both
     // envelopes report the same words, and only the id, the attachments and the

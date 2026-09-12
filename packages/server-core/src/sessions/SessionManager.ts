@@ -1689,21 +1689,6 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * A new steer is about to take the slot, or a steer attempt just failed and
-   * the backend may have cleared it: either way nothing already outstanding can
-   * still be delivered.
-   *
-   * Promoted WITHOUT asking the backend, deliberately — the slot's current
-   * contents belong to the steer that is arriving, not to these.
-   */
-  private promoteOverwrittenSteers(managed: ManagedSession): void {
-    const envelopes = managed.pendingSteers
-    if (!envelopes?.length) return
-    managed.pendingSteers = undefined
-    for (const envelope of envelopes) this.promoteSteerEnvelope(managed, envelope)
-  }
-
-  /**
    * Start the turn and hand shutdown-visibility over from the admission to it,
    * with NO GAP.
    *
@@ -7523,6 +7508,15 @@ export class SessionManager implements ISessionManager {
       const behavior = connection ? resolveMidStreamBehavior(connection) : 'steer'
 
       const agent = managed.agent
+      // SETTLE THE PREVIOUS STEER FIRST — before `redirect` writes the slot, not
+      // after. The backend holds one slot, and asking it is the only way to tell
+      // an overwritten steer from a DELIVERED one: a tool call clears the slot
+      // exactly as an overwrite does, so promoting unconditionally here re-queued
+      // a message the model had already answered. Ordering is the whole fix: ask
+      // after `redirect` and the answer describes the steer arriving now, and
+      // taking it would rob that steer of its delivery.
+      this.reconcilePendingSteers(managed)
+
       let steered = false
       if (behavior === 'steer') {
         steered = agent?.redirect(message) ?? false
@@ -7553,12 +7547,6 @@ export class SessionManager implements ISessionManager {
       managed.messages.push(userMessage)
 
       const delivery = resolveMidStreamDeliveryOutcome(behavior, steered)
-
-      // The backend holds ONE steer slot. Whatever was in it is gone now —
-      // overwritten by this steer if it was accepted, and possibly cleared by
-      // the backend's own abort fallback if it was not — so anything still
-      // outstanding can never be delivered and goes back in the queue.
-      this.promoteOverwrittenSteers(managed)
 
       if (steered) {
         // Marked provisionally queued HERE, before the persist and the ack a few
