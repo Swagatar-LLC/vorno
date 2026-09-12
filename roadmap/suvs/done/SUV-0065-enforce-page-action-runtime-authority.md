@@ -72,6 +72,12 @@ is SUV-0064.
   residual — that a real in-frame click may be invisible to `input-event` — is
   made safe by shape, since it fails as a refusal and never as a bypass.
 
+## Learnings
+
+- `vorno-internal:learnings/LEARNING-085-consent-caches-key-on-the-command-not-the-grant-id.md`
+  — a grant id names a slot, not a command; consent caches and activation
+  tickets must both carry the descriptor, and fixing one does not fix the other.
+
 ## Residuals
 
 Named here rather than left in PR threads, because each is a real limit a
