@@ -592,6 +592,28 @@ started. Rather than leave a test implying coverage it does not have, it now
 states what it covers — cancel-before-start — and both the test and the code
 name the uncovered case explicitly.
 
+## Round 18 — a suppressed observation, chased down anyway
+
+`2026-09-12` — Greptile returned 5/5 with 0 unresolved, but its summary noted it
+had *observed* a persistence cancellation race and suppressed it as a duplicate
+of an already-resolved thread. The gate was met; the note was not nothing.
+
+It was real. Cancellation was a boolean flag, and `enqueue` cleared it so a
+cancel could not mute a session forever — which meant a re-enqueue **un-cancelled
+a write already in flight**: the stale write reached its pre-commit check, found
+the flag cleared by the newer enqueue, and committed over it.
+
+Cancellation is now a **generation watermark**. It attaches to the generations
+that existed when `cancel` ran, so a later enqueue is simply a higher generation
+and is unaffected — nothing to clear, and therefore no window in which clearing
+it is wrong. Generations stay monotonic for the process's life and are never
+reset, because the watermark is expressed in them.
+
+The lesson is the same one this SUV keeps teaching from a new angle: a mutable
+flag shared by a producer and an in-flight consumer is the wrong shape. Three
+times it wanted an owner token; here it wanted a watermark. Both are "say which
+one you mean" rather than "say whether".
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

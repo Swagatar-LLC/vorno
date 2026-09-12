@@ -158,16 +158,38 @@ describe('SessionPersistenceQueue.flushChecked', () => {
     expect(existsSync(getSessionFilePath(root, 's8') + '.tmp')).toBe(false);
   });
 
-  it('writes again normally after a cancelled session is re-enqueued', () => {
+  it('writes again normally after a cancelled session is re-enqueued', async () => {
     // A cancel must not suppress every future write for the life of the
-    // process — a fresh enqueue means the session is live again.
+    // process. It bounds itself to the generations that existed when it ran, so
+    // a later enqueue is simply a higher generation.
     queue.enqueue(session('s9'));
     queue.cancel('s9');
-    const cancelledState = (queue as unknown as { cancelled: Set<string> }).cancelled;
-    expect(cancelledState.has('s9')).toBe(true);
 
-    queue.enqueue(session('s9'));
-    expect(cancelledState.has('s9')).toBe(false);
+    const receipt = await queue.enqueueChecked(session('s9'));
+    expect(receipt).toEqual({ ok: true });
+    expect(existsSync(getSessionFilePath(root, 's9'))).toBe(true);
+  });
+
+  it('a re-enqueue does not un-cancel a write already in flight', async () => {
+    // The reason cancellation is a watermark rather than a flag. With a flag,
+    // `enqueue` cleared it — so a stale write already on the tail reached its
+    // pre-commit check, found the flag cleared by the newer enqueue, and
+    // committed over it. Bounding the cancel to the generations that existed
+    // when it ran leaves nothing to clear.
+    const stale = session('s10');
+    (stale as unknown as { name: string }).name = 'stale';
+    const staleGen = queue.enqueue(stale);
+    queue.cancel('s10');
+
+    const fresh = session('s10');
+    (fresh as unknown as { name: string }).name = 'fresh';
+    const freshGen = queue.enqueue(fresh);
+    expect(freshGen).toBeGreaterThan(staleGen);
+
+    await queue.flush('s10');
+    const written = readFileSync(getSessionFilePath(root, 's10'), 'utf-8');
+    expect(written).toContain('"name":"fresh"');
+    expect(written).not.toContain('"name":"stale"');
   });
 
   it('keeps reporting failure until a later write succeeds', async () => {

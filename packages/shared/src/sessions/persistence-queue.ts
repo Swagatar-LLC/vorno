@@ -87,15 +87,25 @@ class SessionPersistenceQueue {
   private writtenGeneration = new Map<string, number>()
   private receiptWaiters = new Map<string, ReceiptWaiter[]>()
   /**
-   * Sessions cancelled since their last enqueue.
+   * Highest generation cancelled per session — a watermark, not a flag.
    *
    * `cancel` drops the PENDING entry, but a write already on the tail is past
-   * that point — it can finish and rename its temp file over a session the
-   * caller has deleted or replaced, recreating state that was meant to be gone.
-   * The flag is checked when a write starts and again immediately before the
-   * rename, which is the step that actually commits.
+   * that point: it can finish and rename its temp file over a session the
+   * caller has deleted, recreating state that was meant to be gone.
+   *
+   * A boolean cannot express this correctly, and the first version of it was
+   * wrong in a way worth recording. `enqueue` cleared the flag so a cancel
+   * could not mute the session forever — but that let a re-enqueue UN-cancel a
+   * write already in flight: the stale write reached its pre-commit check, saw
+   * the flag cleared by the newer enqueue, and committed over it.
+   *
+   * A watermark is immune to that. Cancellation attaches to the generations
+   * that existed when it was called, so a later enqueue is simply a higher
+   * generation and is unaffected, with nothing to clear and no window in which
+   * clearing it is wrong. Generations therefore stay monotonic for the life of
+   * the process and are never reset.
    */
-  private cancelled = new Set<string>()
+  private cancelledThrough = new Map<string, number>()
   /**
    * Last write failure per session, cleared on the next success.
    *
@@ -121,10 +131,6 @@ class SessionPersistenceQueue {
     if (existing) {
       clearTimeout(existing.timer)
     }
-
-    // A fresh enqueue means the session is live again — otherwise a cancel
-    // would silently suppress every future write for the process's lifetime.
-    this.cancelled.delete(session.id)
 
     const generation = (this.generations.get(session.id) ?? 0) + 1
     this.generations.set(session.id, generation)
@@ -211,7 +217,7 @@ class SessionPersistenceQueue {
     const { generation } = entry
 
     // Cancelled between enqueue and execution: do not write at all.
-    if (this.cancelled.has(sessionId)) {
+    if ((this.cancelledThrough.get(sessionId) ?? 0) >= generation) {
       debug(`[PersistenceQueue] Skipped cancelled write for session ${sessionId}`)
       this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
       this.settleReceipts(sessionId, generation, { ok: false, error: 'session write cancelled' })
@@ -291,7 +297,7 @@ class SessionPersistenceQueue {
       // settle too fast to land a cancel inside them, and the unit test says so
       // rather than pretending otherwise. This guards the real filesystem case,
       // where `writeFile` takes measurable time.
-      if (this.cancelled.has(sessionId)) {
+      if ((this.cancelledThrough.get(sessionId) ?? 0) >= generation) {
         try { await unlink(tmpFile) } catch { /* best effort */ }
         debug(`[PersistenceQueue] Abandoned cancelled write for session ${sessionId}`)
         this.writtenGeneration.set(sessionId, Math.max(this.writtenGeneration.get(sessionId) ?? 0, generation))
@@ -379,13 +385,17 @@ class SessionPersistenceQueue {
     }
     // Set regardless of whether anything was pending: the write that matters
     // here is the one already on the tail, which `pending` no longer holds.
-    this.cancelled.add(sessionId)
+    // Everything enqueued up to now is cancelled; anything enqueued after is
+    // a higher generation and unaffected.
+    this.cancelledThrough.set(sessionId, this.generations.get(sessionId) ?? 0)
     this.lastWrittenHeaderSignature.delete(sessionId)
     this.lastWriteFailure.delete(sessionId)
     // A cancelled session will never write, so anything waiting on it must be
     // told rather than left hanging for the life of the process.
     this.settleReceipts(sessionId, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled' })
-    this.generations.delete(sessionId)
+    // Generations are NOT reset: the watermark above is expressed in them, and
+    // restarting the counter would make a future write's generation fall back
+    // under a past cancellation.
     this.writtenGeneration.delete(sessionId)
   }
 
