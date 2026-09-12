@@ -277,6 +277,44 @@ All three were **falsified before being trusted**: the plan test reddens when
 the clearing call is moved out of the branch, the placement test reddens on the
 same edit, and the surface test reddens when a lifecycle member is added.
 
+## Reopened a fourth time — two-phase acceptance
+
+`2026-09-12` — architecture re-review. Four defects, all real, all in the
+acceptance path rather than the authorization path.
+
+- **Two callbacks could both commit to one idle session.** `isProcessing` cannot
+  separate them: a turn does not start until well after the message is pushed,
+  so both pass the guard and both commit. The guard's verdict is only as good as
+  its exclusivity, and nothing in the existing session state provided any.
+  **Fixed:** a per-session reservation taken in the same synchronous frame that
+  clears the guard, released when the send settles. A second caller sees
+  `session-busy` — what it actually is from that side, and it leaks nothing
+  about the other page.
+- **Commit and durability were conflated.** The primitive resolved at the
+  in-memory push, so a crash before the flush lost a message the page had been
+  told landed. **Fixed:** `markCommitted` (phase one, irreversible) and
+  `onDurable` (phase two, on disk) are separate hooks, and the result carries
+  `durable` so the caller reports what actually happened instead of asserting
+  the stronger claim for both.
+- **The broker could relabel a committed delivery.** A deadline or cancel
+  landing after the message was in the transcript would audit it as a timeout —
+  an operator reading "not delivered" about a message the user can see.
+  **Fixed:** the executor signals commit to the broker, which drops the request
+  from the cancellable set; `cancelAction` then refuses with an audited
+  `already-committed`, and the catch path reports a committed delivery as the
+  delivery it was.
+- **Auth retry would re-deliver a callback with no authorization.** The retry
+  path resends `lastSentMessage` verbatim after a token refresh, and the entire
+  grant/activation/consent chain sits upstream of `sendMessage` and is not
+  re-run. **Fixed:** `lastSentWasPageCallback` records provenance and
+  `attemptAuthRetry` refuses. Stored rather than skipped, so the retry cannot
+  fall back to an older user message instead — the turn is simply not
+  retryable, and clicking the page again goes through the whole chain properly.
+
+Each is falsified: removing the reservation reddens the concurrency test,
+renaming the commit hook reddens the adjacency test, and the auth-retry refusal
+is asserted against the real method.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been
@@ -321,3 +359,12 @@ same edit, and the surface test reddens when a lifecycle member is added.
   Closing it properly means extending the digest to cover the grant descriptors
   themselves, which changes what "content changed" means for every existing
   grant kind and belongs in its own SUV rather than smuggled into this one.
+- **`pendingPlanExecution` does not survive any persist, and that is not this
+  SUV's doing.** `headerToMetadata` strips the field before
+  `createManagedSession`, and `persistSession` rebuilds the header from managed
+  state via `pickSessionFields` — so a value written by `setPendingPlanExecution`
+  is dropped by the next persist from any writer. Found while building the
+  callback plan-preservation test, which now seeds both sides so it measures
+  what it is about. Reported rather than folded in: it affects every session
+  writer, predates this work, and a fix belongs with whoever owns the
+  Accept-and-Compact recovery path.

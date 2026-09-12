@@ -464,8 +464,8 @@ export interface PageActionExecutors {
    */
   executeSession?: (
     invocation: { pageSlug: string; grantId: string; sessionId: string; message: string },
-    options: { signal: AbortSignal },
-  ) => Promise<{ ok: true } | { ok: false; code: PageSessionRefusalCode; reason: string }>;
+    options: { signal: AbortSignal; onCommitted: () => void },
+  ) => Promise<{ ok: true; durable: boolean } | { ok: false; code: PageSessionRefusalCode; reason: string }>;
 }
 
 /**
@@ -594,6 +594,11 @@ export class PageActionBroker {
   private readonly now: () => number;
 
   private readonly leases = new Map<string, PageRenderLease>();
+  /**
+   * leaseId → requestIds that have passed a point of no return. Cleared with
+   * the lease, like every other per-lease structure here.
+   */
+  private readonly committedRequests = new Map<string, Set<string>>();
   /**
    * leaseId → when this lease last did anything a user would recognize:
    * executed an action, or had a ticket minted for one.
@@ -838,6 +843,10 @@ export class PageActionBroker {
     this.leases.delete(leaseId);
     this.leaseLastUsedAt.delete(leaseId);
     this.seenRequestIds.delete(leaseId);
+    // Bounded by the lease, like every other per-lease map here: a render that
+    // ends takes its committed-request set with it, so the set cannot grow for
+    // the life of the process.
+    this.committedRequests.delete(leaseId);
     this.inFlightByLease.delete(leaseId);
     this.mutatingInFlightByLease.delete(leaseId);
     this.startTimesByLease.delete(leaseId);
@@ -1599,6 +1608,10 @@ export class PageActionBroker {
 
     let result: PageActionResult;
     let outcome: PageActionOutcomeCode = 'ok';
+    /** Set once a session delivery passes the point of no return. */
+    let sessionCommitted = false;
+    /** Whether that delivery also reached disk; undefined for other kinds. */
+    let sessionDurable: boolean | undefined;
     try {
       if (grant.action.kind === 'api' && request.invocation.kind === 'api') {
         if (!this.executors.executeApi) {
@@ -1678,6 +1691,12 @@ export class PageActionBroker {
           // Target and body come from the APPROVED grant. The invocation is a
           // bare trigger and is not read here at all — there is nothing on it
           // that could reach a session even if a caller put something there.
+          // A session delivery becomes irreversible partway through, which no
+          // other executor does: an API call can be abandoned, a script can be
+          // killed, but a message already in a session's transcript cannot be
+          // un-sent. Once the executor says so, this request leaves the
+          // cancellable set and the deadline below stops being able to rename
+          // the outcome.
           const sessionOutcome = await race(this.executors.executeSession(
             {
               pageSlug: page.slug,
@@ -1685,9 +1704,10 @@ export class PageActionBroker {
               sessionId: grant.action.sessionId,
               message: grant.action.message,
             },
-            { signal },
+            { signal, onCommitted: () => { sessionCommitted = true; this.markUncancellable(request.leaseId, request.requestId); } },
           ));
           outcome = sessionOutcome.ok ? 'ok' : sessionOutcome.code;
+          sessionDurable = sessionOutcome.ok ? sessionOutcome.durable : undefined;
           result = {
             requestId: request.requestId,
             ok: sessionOutcome.ok,
@@ -1708,18 +1728,30 @@ export class PageActionBroker {
       // to tell them apart: one is the host giving up on a slow action, the
       // other is a user or an unmount withdrawing it.
       const timedOut = error instanceof PageActionDeadlineError;
-      outcome = timedOut ? 'timeout' : controller.signal.aborted ? 'cancelled' : 'executor-error';
-      const message = timedOut
-        ? `timeout: action exceeded ${this.actionTimeoutMs}ms`
-        : controller.signal.aborted
-          ? 'cancelled: action was cancelled'
-          : error instanceof Error ? error.message : 'Unknown error';
-      result = {
-        requestId: request.requestId,
-        ok: false,
-        error: message,
-        durationMs: this.now() - startTime,
-      };
+      // A committed session delivery cannot fail after the fact. The message is
+      // in the transcript; a deadline or an abort arriving now describes
+      // something that already happened, and recording it as a timeout would
+      // put a false statement in the durable audit — an operator would read
+      // "not delivered" about a message the user can see. Reported as the
+      // delivery it was, with the race noted in the debug log.
+      if (sessionCommitted) {
+        log.warn(`[PageActionBroker] ${timedOut ? 'deadline' : 'abort'} raced a committed session delivery; reporting it as delivered`);
+        outcome = 'ok';
+        result = { requestId: request.requestId, ok: true, durationMs: this.now() - startTime };
+      } else {
+        outcome = timedOut ? 'timeout' : controller.signal.aborted ? 'cancelled' : 'executor-error';
+        const message = timedOut
+          ? `timeout: action exceeded ${this.actionTimeoutMs}ms`
+          : controller.signal.aborted
+            ? 'cancelled: action was cancelled'
+            : error instanceof Error ? error.message : 'Unknown error';
+        result = {
+          requestId: request.requestId,
+          ok: false,
+          error: message,
+          durationMs: this.now() - startTime,
+        };
+      }
     } finally {
       if (deadlineTimer) clearTimeout(deadlineTimer);
       this.noteActionEnd(request.leaseId);
@@ -1743,6 +1775,10 @@ export class PageActionBroker {
       // grant costs nothing and removes the question of whether a caller string
       // reached the file.
       ...this.describeApprovedAction(grant),
+      // Boolean, host-observed, no payload: lets an operator tell a delivery
+      // that reached disk from one that is live in memory with persistence
+      // degraded. Absent for every other action kind.
+      ...(sessionDurable !== undefined ? { durable: sessionDurable } : {}),
       policyDecision: policy.decision,
       ok: result.ok,
       ...(result.status !== undefined ? { status: result.status } : {}),
@@ -1770,9 +1806,39 @@ export class PageActionBroker {
    * between minting and executing would otherwise leave a live ticket that
    * still authorizes the call the user just took back.
    */
+  /**
+   * Take a request out of the cancellable set, permanently.
+   *
+   * Only a session delivery calls this, because only a session delivery has a
+   * point of no return inside it: an API call can be abandoned and a script can
+   * be killed, but a message already in a transcript cannot be un-sent. Keeping
+   * such a request cancellable would let `cancelAction` return true for work
+   * that has already happened — telling the page its message was withdrawn when
+   * the user can see it on screen.
+   */
+  private markUncancellable(leaseId: string, requestId: string): void {
+    const committed = this.committedRequests.get(leaseId) ?? new Set<string>();
+    committed.add(requestId);
+    this.committedRequests.set(leaseId, committed);
+  }
+
   cancelAction(leaseId: string, nonce: string, requestId: string): boolean {
     const lease = this.leases.get(leaseId);
     if (!lease || lease.nonce !== nonce) return false;
+
+    // Past the point of no return. Reported as "nothing to cancel" rather than
+    // as a successful cancellation, because the latter would be a lie the page
+    // then tells the user.
+    if (this.committedRequests.get(leaseId)?.has(requestId)) {
+      void this.appendAudit({
+        event: 'page_action_cancel_refused',
+        pageSlug: lease.pageSlug,
+        leaseId,
+        requestIdHash: pageAuditIdHash(requestId),
+        reason: 'already-committed',
+      });
+      return false;
+    }
 
     this.dropTicketsWhere((ticket) => ticket.leaseId === leaseId && ticket.requestId === requestId);
 

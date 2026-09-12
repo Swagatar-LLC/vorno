@@ -62,7 +62,8 @@ function createHost(
       if (live.isArchived) return { ok: false as const, code: 'session-closed' as const }
       if (live.isProcessing) return { ok: false as const, code: 'session-busy' as const }
       deliveries.push({ sessionId, message })
-      return { ok: true as const }
+      options.onCommitted?.()
+      return { ok: true as const, durable: true }
     },
     deliveries,
   }
@@ -90,7 +91,7 @@ describe('page session callback executor', () => {
     const host = createHost({ [WORKSPACE]: [{ id: 'sess_target', isProcessing: false }] })
     const execute = createExecutor(host)
 
-    await expect(execute(invocation, { signal: new AbortController().signal })).resolves.toEqual({ ok: true })
+    await expect(execute(invocation, { signal: new AbortController().signal })).resolves.toEqual({ ok: true, durable: true })
     expect(host.deliveries).toHaveLength(1)
 
     const delivered = host.deliveries[0]!.message
@@ -139,7 +140,7 @@ describe('page session callback executor', () => {
 
   test('delivers to a target in an open status', async () => {
     const host = createHost({ [WORKSPACE]: [{ id: 'sess_target', isProcessing: false, sessionStatus: 'in-progress' }] })
-    await expect(createExecutor(host)(invocation, { signal: new AbortController().signal })).resolves.toEqual({ ok: true })
+    await expect(createExecutor(host)(invocation, { signal: new AbortController().signal })).resolves.toEqual({ ok: true, durable: true })
     expect(host.deliveries).toHaveLength(1)
   })
 
@@ -237,7 +238,7 @@ describe('page session callback executor', () => {
       const outcome = await createExecutor(host)(invocation, { signal: controller.signal })
       controller.abort()
 
-      expect(outcome).toEqual({ ok: true })
+      expect(outcome).toEqual({ ok: true, durable: true })
       expect(host.deliveries).toHaveLength(1)
     })
   })

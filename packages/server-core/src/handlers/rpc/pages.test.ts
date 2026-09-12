@@ -191,7 +191,7 @@ function createHarness(
       async tryDeliverPageCallback(
         sessionId: string,
         message: string,
-        options: { workspaceId: string; signal?: AbortSignal },
+        options: { workspaceId: string; signal?: AbortSignal; onCommitted?: () => void },
       ) {
         const live = (sessionsByWorkspace.get(options.workspaceId) ?? []).find(s => s.id === sessionId)
         if (!live) return { ok: false as const, code: 'session-not-found' as const }
@@ -199,7 +199,8 @@ function createHarness(
         if (live.isArchived) return { ok: false as const, code: 'session-closed' as const }
         if (live.isProcessing) return { ok: false as const, code: 'session-busy' as const }
         deliveries.push({ sessionId, message })
-        return { ok: true as const }
+        options.onCommitted?.()
+        return { ok: true as const, durable: true }
       },
     },
     // A host answers about its own window's workspace. It receives the

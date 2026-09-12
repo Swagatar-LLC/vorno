@@ -46,7 +46,8 @@ import type { Logger } from '@craft-agent/server-core/runtime'
 export type { PageSessionRefusalCode }
 
 export type PageSessionOutcome =
-  | { ok: true }
+  /** `durable` distinguishes "on disk" from "committed, persistence degraded". */
+  | { ok: true; durable: boolean }
   | { ok: false; code: PageSessionRefusalCode; reason: string }
 
 /** One session's facts, as the callback gate reads them. */
@@ -83,8 +84,8 @@ export interface SessionCallbackHost extends WorkspaceSessionLookup {
   tryDeliverPageCallback(
     sessionId: string,
     message: string,
-    options: { workspaceId: string; signal?: AbortSignal },
-  ): Promise<{ ok: true } | { ok: false; code: PageSessionRefusalCode }>
+    options: { workspaceId: string; signal?: AbortSignal; onCommitted?: () => void },
+  ): Promise<{ ok: true; durable: boolean } | { ok: false; code: PageSessionRefusalCode }>
 }
 
 export interface PagesSessionExecutorDeps {
@@ -115,7 +116,7 @@ export function pageCallbackAttribution(pageSlug: string, grantId: string): stri
 export function createPagesSessionExecutor(deps: PagesSessionExecutorDeps) {
   return async (
     invocation: { pageSlug: string; grantId: string; sessionId: string; message: string },
-    options: { signal: AbortSignal },
+    options: { signal: AbortSignal; onCommitted?: () => void },
   ): Promise<PageSessionOutcome> => {
     const origin = pageOrigin(invocation.pageSlug, invocation.grantId)
 
@@ -201,13 +202,23 @@ export function createPagesSessionExecutor(deps: PagesSessionExecutorDeps) {
     const delivery = await deps.sessionManager.tryDeliverPageCallback(resolvedId, body, {
       workspaceId: deps.workspaceId,
       signal: options.signal,
+      // Phase one, relayed straight through to the broker. Everything after it
+      // — including this executor's own remaining awaits — happens under the
+      // rule that the delivery can no longer be cancelled or renamed.
+      onCommitted: options.onCommitted,
     })
     if (!delivery.ok) {
       deps.log.debug(`[pages] session callback refused (${delivery.code}) for ${describeOrigin(origin)}`)
       return { ok: false, code: delivery.code, reason: REFUSAL_REASONS[delivery.code] }
     }
+    if (!delivery.durable) {
+      // Committed but not flushed. The message exists and the turn is running,
+      // so this is a delivery — but persistence degraded, and a crash now would
+      // lose it. Surfaced rather than swallowed, and carried into the audit.
+      deps.log.warn(`[pages] session callback delivered but NOT durable for ${describeOrigin(origin)}`)
+    }
     deps.log.info(`[pages] session callback delivered by ${describeOrigin(origin)}`)
-    return { ok: true }
+    return { ok: true, durable: delivery.durable }
   }
 }
 

@@ -84,8 +84,11 @@ export interface ISessionManager {
   tryDeliverPageCallback(
     sessionId: string,
     message: string,
-    options: { workspaceId: string; signal?: AbortSignal },
-  ): Promise<{ ok: true } | { ok: false; code: 'session-not-found' | 'session-closed' | 'session-busy' | 'cancelled' }>
+    options: { workspaceId: string; signal?: AbortSignal; onCommitted?: () => void },
+  ): Promise<
+    | { ok: true; durable: boolean }
+    | { ok: false; code: 'session-not-found' | 'session-closed' | 'session-busy' | 'cancelled' }
+  >
   markSessionRead(sessionId: string): Promise<void>
   markSessionUnread(sessionId: string): Promise<void>
   markAllSessionsRead(workspaceId: string): Promise<void>

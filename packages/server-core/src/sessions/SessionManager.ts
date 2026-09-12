@@ -126,8 +126,26 @@ interface PageCallbackDeliverySeam {
    * would reintroduce the exact window this exists to close.
    */
   guard: () => PageCallbackRefusalCode | null
-  /** Fired synchronously the instant the message is pushed, before any await. */
-  onCommitted: () => void
+  /**
+   * Phase one: the message is in `managed.messages`. Fired synchronously the
+   * instant it is pushed, before any await.
+   *
+   * From here the delivery is **irreversible and unrelabelable** — a cancel, a
+   * lease release, or a broker deadline arriving after this point describes
+   * something that already happened. It is deliberately separate from durability
+   * below, because the two answer different questions: this one answers "may
+   * anything still stop or rename this?", and the answer becomes no here.
+   */
+  markCommitted: () => void
+  /**
+   * Phase two: the message is persisted and flushed to disk.
+   *
+   * Separate because a crash between the two loses a message the page was told
+   * had landed. Reporting durability lets the caller distinguish "delivered and
+   * on disk" from "delivered, persistence degraded" instead of asserting the
+   * stronger claim for both.
+   */
+  onDurable: () => void
 }
 
 /** What `sendMessage` actually accepts: the wire shape plus the internal seam. */
@@ -933,6 +951,12 @@ interface ManagedSession {
    * `toPersistableSendOptions`.
    */
   lastSentOptions?: SendMessageOptions
+  /**
+   * Whether the last send was a Page callback. Blocks auth retry: replaying it
+   * would re-deliver page-authored text with none of the grant, activation, or
+   * consent checks that authorized it the first time.
+   */
+  lastSentWasPageCallback?: boolean
   // Flag to prevent infinite retry loops (reset at start of each sendMessage)
   authRetryAttempted?: boolean
   // Flag indicating auth retry is in progress (to prevent complete handler from interfering)
@@ -6545,7 +6569,7 @@ export class SessionManager implements ISessionManager {
       // but the caller has not been told: a deadline or a cancel landing in that
       // window would audit delivered work as a timeout. Once this returns, the
       // action has succeeded and nothing downstream may relabel it.
-      pageCallback?.onCommitted()
+      pageCallback?.markCommitted()
 
       // Update lastMessageRole for badge display. Skip for hidden messages so the
       // session-list preview isn't briefly driven by an invisible system nudge.
@@ -6559,6 +6583,10 @@ export class SessionManager implements ISessionManager {
       this.persistSession(managed)
       await this.flushSession(managed.id)
       onAck?.(userMessage.id)
+      // Phase two for a Page callback: the message is on disk. Fired after the
+      // flush rather than alongside the push, because "delivered" and "durable"
+      // are different promises and the caller is entitled to know which it got.
+      pageCallback?.onDurable()
 
       // Emit user_message event so UI can confirm the optimistic message
       this.sendEvent({
@@ -6652,6 +6680,19 @@ export class SessionManager implements ISessionManager {
     managed.lastSentAttachments = attachments
     managed.lastSentStoredAttachments = storedAttachments
     managed.lastSentOptions = toPersistableSendOptions(options)
+    // Provenance, and it gates the auth-retry replay below (SUV-0064).
+    //
+    // The retry path resends `lastSentMessage` verbatim after refreshing the
+    // token. For a Page callback that would re-deliver a page's text into a
+    // live session with NO grant validation, NO activation ticket, and NO
+    // consent — the whole authorization chain is upstream of `sendMessage` and
+    // is not re-run by a retry. Recording where the message came from is what
+    // lets `attemptAuthRetry` refuse it.
+    //
+    // It is stored rather than skipped so the retry path cannot fall back to an
+    // OLDER user message instead: the flag makes the turn non-retryable, which
+    // is the honest outcome, rather than silently retrying the wrong thing.
+    managed.lastSentWasPageCallback = pageCallback !== undefined
 
     // Capture the generation to detect if a new request supersedes this one.
     // This prevents the finally block from clobbering state when a follow-up message arrives.
@@ -7104,6 +7145,16 @@ export class SessionManager implements ISessionManager {
     failureErrorCode?: string,
   ): boolean {
     if (managed.authRetryAttempted || !managed.lastSentMessage) return false
+    // A Page callback is authorized by a grant, an activation ticket, and a
+    // user's confirmation — all upstream of `sendMessage`, and none of them
+    // re-run here. Resending its message after a token refresh would deliver
+    // page-authored text into a live session on nobody's authority. The turn is
+    // simply not retryable; the page can be clicked again, which goes through
+    // the whole chain properly.
+    if (managed.lastSentWasPageCallback) {
+      sessionLog.info(`Auth error on a Page callback turn for ${sessionId}; not retrying (would bypass grant/activation)`)
+      return false
+    }
 
     sessionLog.info(`Auth error detected, attempting token refresh and retry for session ${sessionId}`)
     managed.authRetryAttempted = true
@@ -7870,6 +7921,22 @@ export class SessionManager implements ISessionManager {
    * Ordering is preserved because label resolution means "most recently active
    * session carrying this label", and that is a real part of the contract.
    */
+  /**
+   * Sessions with a Page callback currently between its guard and its commit.
+   *
+   * `isProcessing` cannot carry this. A turn does not start until well after
+   * the message is pushed, so two callbacks racing the same idle session both
+   * see it idle, both pass the guard, and both commit — two page-authored
+   * messages into one session, neither of which the other could see coming.
+   * The guard's verdict is only as good as its exclusivity, and nothing in the
+   * existing session state provides it.
+   *
+   * Held for the synchronous span between reserving and committing, so it is
+   * never awaited across and cannot deadlock: the reservation is taken inside
+   * the guard and released when the send settles, success or failure.
+   */
+  private readonly pageCallbackReservations = new Set<string>()
+
   private readonly sessionTargetLookup: WorkspaceSessionLookup = {
     getSessions: (workspaceId: string) =>
       Array.from(this.sessions.values())
@@ -7881,8 +7948,8 @@ export class SessionManager implements ISessionManager {
   async tryDeliverPageCallback(
     sessionId: string,
     message: string,
-    options: { workspaceId: string; signal?: AbortSignal },
-  ): Promise<{ ok: true } | { ok: false; code: PageCallbackRefusalCode }> {
+    options: { workspaceId: string; signal?: AbortSignal; onCommitted?: () => void },
+  ): Promise<{ ok: true; durable: boolean } | { ok: false; code: PageCallbackRefusalCode }> {
     const managed = this.sessions.get(sessionId)
     // Workspace containment is re-proven here, against live state, however the
     // caller resolved the target earlier.
@@ -7897,50 +7964,70 @@ export class SessionManager implements ISessionManager {
      * over `managed` is the point: the session may have been replaced or
      * removed since.
      */
-    const refusal = (): PageCallbackRefusalCode | null =>
-      pageCallbackRefusal(this.sessions.get(sessionId), options.workspaceId, options.signal?.aborted === true)
+    const refusal = (): PageCallbackRefusalCode | null => {
+      // Another callback holds this session between its own guard and commit.
+      // Reported as busy because that is what it is from the caller's side —
+      // a turn is about to start — and because distinguishing it would leak
+      // one page's activity to another.
+      if (this.pageCallbackReservations.has(sessionId)) return 'session-busy'
+      return pageCallbackRefusal(this.sessions.get(sessionId), options.workspaceId, options.signal?.aborted === true)
+    }
 
     const early = refusal()
     if (early) return { ok: false, code: early }
 
     let refused: PageCallbackRefusalCode | null = null
     let committed = false
-    await new Promise<void>((resolve) => {
-      void this.sendMessage(
-        sessionId,
-        message,
-        undefined,
-        undefined,
-        {
-          pageCallback: {
-            guard: () => {
-              refused = refusal()
-              return refused
+    let durable = false
+    let reserved = false
+    try {
+      await new Promise<void>((resolve) => {
+        void this.sendMessage(
+          sessionId,
+          message,
+          undefined,
+          undefined,
+          {
+            pageCallback: {
+              guard: () => {
+                refused = refusal()
+                // Reserve in the SAME synchronous frame that clears the
+                // session. A reservation taken any later is a reservation two
+                // callers can both pass.
+                if (!refused) {
+                  this.pageCallbackReservations.add(sessionId)
+                  reserved = true
+                }
+                return refused
+              },
+              markCommitted: () => {
+                committed = true
+                // Tell the broker before anything can await: from here the
+                // delivery cannot be cancelled, timed out, or relabelled.
+                options.onCommitted?.()
+              },
+              onDurable: () => { durable = true },
             },
-            // The message is in `managed.messages` as of this call, with no
-            // await since the guard ran. Resolving HERE rather than at `onAck`
-            // is what makes "cancel after commit cannot relabel a delivery"
-            // true: the ack fires after `flushSession`, and a deadline landing
-            // in that gap would otherwise audit delivered work as a timeout.
-            onCommitted: () => { committed = true; resolve() },
           },
-        },
-        undefined,
-        undefined,
-        undefined,
-      )
-        .catch((error) => {
-          sessionLog.warn(`tryDeliverPageCallback: send failed for ${sessionId}: ${error}`)
-        })
-        // Covers the guard-refused path, which returns without ever committing,
-        // and the failure path. Resolving twice is a no-op, so a send that
-        // commits and then throws while flushing still reports success — the
-        // message is real either way, and saying otherwise would be the same
-        // false audit in the other direction.
-        .finally(() => resolve())
-    })
+          undefined,
+          undefined,
+          undefined,
+        )
+          .catch((error) => {
+            sessionLog.warn(`tryDeliverPageCallback: send failed for ${sessionId}: ${error}`)
+          })
+          // Resolve on settle rather than at commit: the caller wants to know
+          // whether the message reached disk, and that answer only exists after
+          // the flush. A send that commits and then throws still reports
+          // success — the message is real either way — but reports it as
+          // non-durable rather than claiming more than happened.
+          .finally(() => resolve())
+      })
+    } finally {
+      if (reserved) this.pageCallbackReservations.delete(sessionId)
+    }
 
-    if (committed) return { ok: true }
+    if (committed) return { ok: true, durable }
     // Neither committed nor named a refusal: the send failed for some other
     // reason. Report the most conservative truthful thing available rather than
     // a delivery.

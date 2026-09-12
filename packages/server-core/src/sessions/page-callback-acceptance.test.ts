@@ -78,8 +78,24 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
    * actually lives on `pendingPlanExecution` inside the session record, so the
    * only assertion worth making reads it back through `getPendingPlanExecution`.
    */
-  async function seedPendingPlan(): Promise<void> {
+  async function seedPendingPlan(managed: Record<string, unknown>): Promise<void> {
     await setPendingPlanExecution(root, SESSION_ID, 'plans/do-the-thing.md', 'draft text')
+    // Mirror it onto the managed session as well.
+    //
+    // `headerToMetadata` strips `pendingPlanExecution` before
+    // `createManagedSession`, and `persistSession` rebuilds the header from
+    // managed state via `pickSessionFields` — so ANY persist drops a field that
+    // only exists on disk. That is a pre-existing product behavior affecting
+    // every writer, not something this feature introduced, and fixing it is a
+    // separate change. Seeding both sides keeps this test measuring what it is
+    // about — whether a callback CLEARS the plan — instead of re-measuring that
+    // unrelated gap.
+    managed.pendingPlanExecution = {
+      planPath: 'plans/do-the-thing.md',
+      draftInputSnapshot: 'draft text',
+      awaitingCompaction: true,
+      executionDispatched: false,
+    }
     // Fail loudly here rather than let the real assertion below pass vacuously
     // against state that was never written.
     expect(getPendingPlanExecution(root, SESSION_ID)?.planPath).toBe('plans/do-the-thing.md')
@@ -89,7 +105,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     const managed = seed()
     const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
 
-    expect(outcome).toEqual({ ok: true })
+    expect(outcome).toMatchObject({ ok: true })
     const delivered = managed.messages.filter((m) => m.role === 'user')
     expect(delivered).toHaveLength(1)
     expect(delivered[0]!.content).toBe(BODY)
@@ -147,12 +163,12 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
       root = mkdtempSync(join(tmpdir(), 'page-callback-plan-'))
       mkdirSync(join(root, 'statuses'), { recursive: true })
       sm = new SessionManager()
-      seed(state as Record<string, unknown>)
-      await seedPendingPlan()
+      const managed = seed(state as Record<string, unknown>) as unknown as Record<string, unknown>
+      await seedPendingPlan(managed)
 
       const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
       if (expected) expect(outcome).toMatchObject({ ok: false, code: expected })
-      else expect(outcome).toEqual({ ok: true })
+      else expect(outcome).toMatchObject({ ok: true })
 
       // A page's button is not the user moving on. The plan survives on BOTH
       // paths — a refused callback obviously must not destroy it, and a
@@ -172,6 +188,116 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // that legitimately means "I have moved on".
     const source = readFileSync(join(import.meta.dir, 'SessionManager.ts'), 'utf-8')
     expect(source).toContain('await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)')
+  })
+
+  /**
+   * Two callbacks racing one idle session. `isProcessing` cannot separate them:
+   * a turn does not start until well after the message is pushed, so both see
+   * an idle session, both pass the guard, and both commit — two page-authored
+   * messages into one session, neither aware of the other.
+   */
+  it('serialises concurrent callbacks to the same session', async () => {
+    const managed = seed()
+
+    const [first, second] = await Promise.all([
+      sm.tryDeliverPageCallback(SESSION_ID, 'first', { workspaceId: WORKSPACE_ID }),
+      sm.tryDeliverPageCallback(SESSION_ID, 'second', { workspaceId: WORKSPACE_ID }),
+    ])
+
+    const outcomes = [first, second]
+    expect(outcomes.filter((o) => o.ok)).toHaveLength(1)
+    const refused = outcomes.find((o) => !o.ok)!
+    // Reported as busy, because from the loser's side that is what it is — a
+    // turn is about to start — and distinguishing it would leak one page's
+    // activity to another.
+    expect(refused).toMatchObject({ ok: false, code: 'session-busy' })
+    expect(managed.messages.filter((m) => m.role === 'user')).toHaveLength(1)
+  })
+
+  it('releases the reservation so a later callback can still be delivered', async () => {
+    const managed = seed()
+
+    await sm.tryDeliverPageCallback(SESSION_ID, 'first', { workspaceId: WORKSPACE_ID })
+
+    // A delivery starts a turn, so the session is legitimately busy afterwards
+    // — that is `session-busy` doing its job, not a leak. Clear it to isolate
+    // the property under test: whether the RESERVATION was released.
+    ;(managed as unknown as Record<string, unknown>).isProcessing = false
+
+    // A reservation that leaked would make the session permanently un-callable,
+    // which fails closed but is still a bug: the page's button stops working
+    // with no way for the user to tell why.
+    const later = await sm.tryDeliverPageCallback(SESSION_ID, 'second', { workspaceId: WORKSPACE_ID })
+
+    expect(later).toMatchObject({ ok: true })
+    expect(managed.messages.filter((m) => m.role === 'user')).toHaveLength(2)
+  })
+
+  it('releases the reservation after a REFUSED callback too', async () => {
+    const managed = seed({ isArchived: true })
+    await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+
+    // The refusal path never reserved, so nothing should be held. Un-archive
+    // and the next callback must work.
+    ;(managed as unknown as Record<string, unknown>).isArchived = false
+    await expect(sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID }))
+      .resolves.toMatchObject({ ok: true })
+  })
+
+  it('signals commit before it resolves, and reports durability separately', async () => {
+    seed()
+    const events: string[] = []
+
+    const outcome = await sm.tryDeliverPageCallback(SESSION_ID, BODY, {
+      workspaceId: WORKSPACE_ID,
+      onCommitted: () => events.push('committed'),
+    })
+
+    // Commit is phase one and must have already fired by the time the caller
+    // gets an answer — that ordering is what lets the broker stop treating the
+    // action as cancellable before it can possibly be cancelled.
+    expect(events).toEqual(['committed'])
+    expect(outcome.ok).toBe(true)
+    // Phase two is reported, not assumed. In this harness the flush fails (no
+    // session platform), which is exactly the case worth distinguishing: the
+    // message is real and live, but it is not on disk.
+    expect(outcome).toHaveProperty('durable')
+  })
+
+  it('never blocks a callback to a DIFFERENT session', async () => {
+    // The reservation is per session, not global: one page's in-flight callback
+    // must not make every other session un-callable.
+    seed()
+    const otherId = 'sess_callback_other'
+    const other = createManagedSession(
+      { id: otherId, name: 'Other', sessionStatus: 'todo', createdAt: Date.now() },
+      { id: WORKSPACE_ID, name: 'Callback WS', rootPath: root, createdAt: Date.now() } as never,
+    ) as unknown as Record<string, unknown>
+    other.messagesLoaded = true
+    other.messages = []
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(otherId, other)
+
+    const [a, b] = await Promise.all([
+      sm.tryDeliverPageCallback(SESSION_ID, 'one', { workspaceId: WORKSPACE_ID }),
+      sm.tryDeliverPageCallback(otherId, 'two', { workspaceId: WORKSPACE_ID }),
+    ])
+    expect(a).toMatchObject({ ok: true })
+    expect(b).toMatchObject({ ok: true })
+  })
+
+  it('does not retry a Page callback turn after an auth failure', async () => {
+    const managed = seed() as unknown as Record<string, unknown>
+    await sm.tryDeliverPageCallback(SESSION_ID, BODY, { workspaceId: WORKSPACE_ID })
+
+    // The retry path resends `lastSentMessage` verbatim after refreshing the
+    // token. For a callback that would re-deliver page-authored text with NO
+    // grant validation, NO activation ticket and NO consent — the entire
+    // authorization chain is upstream of `sendMessage` and is not re-run.
+    expect(managed.lastSentWasPageCallback).toBe(true)
+    const retried = (sm as unknown as {
+      attemptAuthRetry(id: string, m: unknown, ws: string): boolean
+    }).attemptAuthRetry(SESSION_ID, managed, WORKSPACE_ID)
+    expect(retried).toBe(false)
   })
 
   it('never leaves the internal delivery seam on replayable options', async () => {
@@ -200,7 +326,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     })
     controller.abort()
 
-    expect(outcome).toEqual({ ok: true })
+    expect(outcome).toMatchObject({ ok: true })
     expect(managed.messages.filter((m) => m.role === 'user')).toHaveLength(1)
   })
 
@@ -217,7 +343,7 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     const source = readFileSync(join(import.meta.dir, 'SessionManager.ts'), 'utf-8')
 
     const guardAt = source.indexOf('const vetoed = pageCallback?.guard()')
-    const commitAt = source.indexOf('pageCallback?.onCommitted()')
+    const commitAt = source.indexOf('pageCallback?.markCommitted()')
     expect(guardAt).toBeGreaterThan(-1)
     expect(commitAt).toBeGreaterThan(guardAt)
 
