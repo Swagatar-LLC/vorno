@@ -73,9 +73,10 @@ export async function admitScheduledPageRefresh(
     permissionMode: workspace.permissionMode,
   };
 
-  // The durable row carries the code only. `reason` is returned to the caller
-  // and surfaced in the blocked-run message, where it can name the script or
-  // the mismatch; the log that lives forever stays a closed set.
+  // The durable row carries closed codes and bounded identifiers only.
+  // `reason` is returned to the caller and surfaced in the blocked-run message,
+  // where it can name the script or the mismatch; it is not persisted, because
+  // it interpolates content. See `summarizeInvocation` for the full contract.
   const audit = (code: string) =>
     appendPageActionAudit(
       {

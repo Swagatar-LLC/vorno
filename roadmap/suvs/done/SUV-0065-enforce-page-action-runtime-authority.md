@@ -52,7 +52,11 @@ is SUV-0064.
 - [x] Replay, lease-scoped in-flight keys/cancellation, page/workspace rate
       limits, and timeout have regression coverage.
 - [x] Rejection, execution, cancellation, timeout, and result are audited
-      without credentials or sensitive payloads.
+      without credentials or sensitive payloads: rows carry closed enums
+      (outcome and rejection codes) and bounded identifiers (`toolName`,
+      page/grant/request/lease/workspace ids) only — never paths, params, MCP
+      arguments, bodies, script output, the dynamic rejection reason, or remote
+      error text.
 
 ## Status log
 

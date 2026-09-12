@@ -127,6 +127,12 @@ export const DEFAULT_PAGE_ACTIVATION_TICKET_TTL_MS = 10_000;
  */
 export const MAX_OUTSTANDING_TICKETS_PER_LEASE = 4;
 /**
+ * Cap on an identifier the audit persists. Matches the parse-boundary bound on
+ * tool names; applied again at the writer so the durable file does not inherit
+ * its size guarantee from a caller.
+ */
+export const MAX_AUDITED_IDENTIFIER_CHARS = 256;
+/**
  * Concurrency for MUTATING actions on one render, and the queue behind it.
  *
  * Two, not five: a mutating action is a write to a real system, and a page that
@@ -152,8 +158,11 @@ export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_WORKSPACE = 120;
  * whatever the far end said — an API body, an MCP server's exception, a
  * script's stderr — so persisting it puts arbitrary third-party text, including
  * tokens and customer data, into a durable file. The detailed message still
- * goes to the caller and the debug log; only the log that lives forever is
- * restricted to a closed set.
+ * goes to the caller and the debug log.
+ *
+ * Outcomes and rejection codes are closed enums. That is narrower than the
+ * audit row as a whole, which also carries bounded identifiers — see
+ * `summarizeInvocation` for the full contract.
  */
 export type PageActionOutcomeCode =
   | 'ok'
@@ -1118,8 +1127,10 @@ export class PageActionBroker {
       });
       // `reason` goes to the caller only. It interpolates the request path
       // ("Path /patients/… does not match the granted pattern") and other
-      // caller-supplied values, so persisting it would put exactly the payload
-      // the audit summary strips back into the same file.
+      // caller-supplied content, so persisting it would put exactly the payload
+      // the audit summary strips back into the same file. The row keeps the
+      // closed `code` instead; see `summarizeInvocation` for what a row may
+      // and may not carry.
       return {
         requestId: request.requestId,
         ok: false,
@@ -1483,19 +1494,30 @@ export class PageActionBroker {
   }
 
   /**
-   * Audit-safe summary of an invocation: **metadata only, never payload.**
+   * Audit-safe summary of an invocation.
    *
-   * The earlier version recorded the request path and redacted the params by
-   * key name, which is the wrong guarantee in an audit log. Redaction can only
-   * catch keys it recognizes, so a token in `?access_token=`, an id in a path
-   * segment, a customer email in an MCP argument, or any field named something
-   * the redactor has never heard of went to disk verbatim — in a file that
-   * lives for the life of the install and is read by whoever debugs it.
+   * **The contract, stated precisely.** What may be persisted is:
+   *   - closed enums — action kind, HTTP method, outcome and rejection codes;
+   *   - bounded identifiers — `toolName`, plus the ids the caller's row already
+   *     carries (page slug, grant, request, lease, workspace).
    *
-   * So nothing the caller supplied is recorded at all. What remains answers the
-   * questions an audit log exists for — what kind of action, against which
-   * source, which tool or method, and how it came out — and answers them from
-   * values the host already knows, not from the request body.
+   * What may never be persisted is caller or remote *content*: request paths,
+   * query params, MCP arguments, response bodies, script stdout/stderr, and any
+   * error text originating outside this process.
+   *
+   * `toolName` is deliberately kept and is deliberately the exception that
+   * needs stating. It is caller-supplied on a rejection row (validation has not
+   * yet proven it equals the approved descriptor), so it is bounded here rather
+   * than trusted: an identifier is a name, and a name that runs to kilobytes is
+   * a payload wearing one. Its value is real — "which tool was attempted" is
+   * the question an MCP audit exists to answer, and the grant id alone does not
+   * answer it for a *rejected* call, where no grant matched.
+   *
+   * The earlier version recorded the request path and redacted params by key
+   * name, which is the wrong guarantee: redaction only catches keys it
+   * recognizes, so a token in `?access_token=`, an id in a path segment, or a
+   * field named something the redactor has never heard of went to disk verbatim
+   * — in a file that outlives the install and is read by whoever debugs it.
    */
   private summarizeInvocation(invocation: PageActionInvocation): Record<string, unknown> {
     if (invocation.kind === 'api') {
@@ -1505,9 +1527,13 @@ export class PageActionBroker {
       return { kind: 'api', method: invocation.method };
     }
     if (invocation.kind === 'mcp') {
-      // Tool name only. Arguments are entirely caller-supplied and are exactly
-      // where the sensitive values live.
-      return { kind: 'mcp', toolName: invocation.toolName };
+      // Tool name only, and bounded here rather than relying on the parse
+      // boundary. The RPC and bridge parsers both cap it, but this class is
+      // reachable in-process, and an audit writer that depends on someone
+      // else's validation is one refactor away from being the hole.
+      // JSON encoding of the row handles quotes, newlines, and control
+      // characters, so a crafted name cannot forge a second record.
+      return { kind: 'mcp', toolName: invocation.toolName.slice(0, MAX_AUDITED_IDENTIFIER_CHARS) };
     }
     // script is a bare trigger — the resolved grantId in the same audit row
     // carries the script path/runtime/args, so there is nothing to summarize.

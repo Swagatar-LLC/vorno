@@ -17,6 +17,7 @@ import type {
   PageRenderLease,
 } from '@craft-agent/core';
 import {
+  MAX_AUDITED_IDENTIFIER_CHARS,
   MAX_LIVE_LEASES,
   MAX_OUTSTANDING_TICKETS_PER_LEASE,
   PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE,
@@ -2029,6 +2030,53 @@ describe('pages/action-bridge', () => {
       const audit = await readAudit();
       expect(JSON.stringify(audit)).not.toContain('hunter2');
       expect(audit.find((e) => e.event === 'page_action_executed')?.outcome).toBe('non-zero-exit');
+    });
+
+    it('bounds and escapes the one caller-supplied identifier it keeps', async () => {
+      // The audit contract is closed enums plus BOUNDED IDENTIFIERS, not "no
+      // caller input at all" — `toolName` is kept because "which tool was
+      // attempted" is the question an MCP audit answers, and on a rejection row
+      // no grant matched, so the grant id cannot answer it.
+      //
+      // That makes it the one field an attacker can aim at, so it is bounded at
+      // the writer and the row is JSON-encoded.
+      const broker = makeBroker({ executeMcp: async () => ({ ok: true }) });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage({
+        grants: [makeGrant({ id: 'grant_mcp00001', action: { kind: 'mcp', sourceSlug: 'linear', toolName: 'create_issue' } })],
+      });
+      disk.page = page;
+
+      // Oversized, quote- and newline-laden, and carrying a payload that must
+      // not survive anywhere in the row.
+      const hostileToolName = `evil"${'\n'}{"event":"forged"}${'\n'}`
+        + 'x'.repeat(5_000)
+        + 'sk-live-4eC39HqLyjWDarjtT1zdp7dc';
+
+      await run(broker, page, makeRequest(lease, {
+        grantId: 'grant_mcp00001',
+        invocation: { kind: 'mcp', toolName: hostileToolName, args: { patient: 'SSN-078-05-1120' } },
+      }));
+
+      // Audit writes are fire-and-forget; readAudit waits for the flush.
+      const audit = await readAudit();
+      const raw = readFileSync(auditPath, 'utf-8').trim().split('\n').filter(Boolean);
+      // One line per record: an embedded newline cannot forge a second entry.
+      for (const line of raw) expect(() => JSON.parse(line)).not.toThrow();
+      expect(raw.some((line) => JSON.parse(line).event === 'forged')).toBe(false);
+      expect(raw.length).toBe(audit.length);
+      const rejected = audit.find((e) => e.event === 'page_action_rejected');
+      expect(rejected?.code).toBe('grant-mismatch');
+      const recorded = (rejected?.invocation as { toolName: string }).toolName;
+      expect(recorded.length).toBe(MAX_AUDITED_IDENTIFIER_CHARS);
+      expect(recorded).toBe(hostileToolName.slice(0, MAX_AUDITED_IDENTIFIER_CHARS));
+
+      // The forbidden payload is absent: args never recorded, and the secret
+      // sat past the bound.
+      const serialized = JSON.stringify(audit);
+      expect(serialized).not.toContain('sk-live-4eC39HqLyjWDarjtT1zdp7dc');
+      expect(serialized).not.toContain('SSN-078-05-1120');
+      expect(rejected?.invocation).not.toHaveProperty('args');
     });
 
     it('audits the mode the decision was actually made under, after a queue reload', async () => {
