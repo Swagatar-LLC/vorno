@@ -78,6 +78,38 @@ describe('host grant descriptor rendering', () => {
     expect(rendered).toContain('\\u2066isolate')
     expect(rendered).not.toContain('line\nbreak')
   })
+
+  test('escapes every invisible or reordering category, not a hand-picked list of them', () => {
+    // These are all Cc/Cf/Zl/Zp and every one of them renders as nothing in a
+    // native dialog, so an unescaped one lets a descriptor hide or reorder text
+    // the user is being asked to approve. The enumerated class this replaced
+    // covered the bidi overrides and missed the rest.
+    const invisible = {
+      '\u200e': '\\u200e', // LEFT-TO-RIGHT MARK
+      '\u200f': '\\u200f', // RIGHT-TO-LEFT MARK
+      '\u200b': '\\u200b', // ZERO WIDTH SPACE
+      '\u00ad': '\\u00ad', // SOFT HYPHEN
+      '\ufeff': '\\ufeff', // ZERO WIDTH NO-BREAK SPACE (BOM)
+      '\u2029': '\\u2029', // PARAGRAPH SEPARATOR
+      '\u061c': '\\u061c', // ARABIC LETTER MARK
+      '\u{1d173}': '\\u{1d173}', // MUSICAL SYMBOL BEGIN BEAM — astral, so a
+      //                              4-padded escape would corrupt it
+    }
+    for (const [raw, escaped] of Object.entries(invisible)) {
+      const rendered = formatPageGrantDescriptor({
+        kind: 'mcp', sourceSlug: 'source', toolName: `before${raw}after`,
+      })
+      expect(rendered).toContain(`"before${escaped}after"`)
+      expect(rendered).not.toContain(raw)
+    }
+  })
+
+  test('leaves ordinary printable text exactly as JSON wrote it', () => {
+    const rendered = formatPageGrantDescriptor({
+      kind: 'api', sourceSlug: 'linear', method: 'POST', pathPattern: '/issues/{id}?q=a b&r=\u00e9\u4e2d',
+    })
+    expect(rendered).toContain('"/issues/{id}?q=a b&r=\u00e9\u4e2d"')
+  })
 })
 
 describe('render generation tracking', () => {

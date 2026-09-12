@@ -153,6 +153,58 @@ interface WorkerPublicationResponse {
 
 const ERROR_BODY_MAX_CHARS = 300;
 
+/** Why a retained share pointer can no longer be revoked through the normal path. */
+export type LocalPublicationRecoveryReason = 'token-missing' | 'origin-unusable';
+
+export interface LocalPublicationRecovery {
+  /** The publication a human is about to be asked about, and the only one the approval covers. */
+  publicationId: string;
+  reason: LocalPublicationRecoveryReason;
+}
+
+// ============================================================================
+// Per-page serialization
+// ============================================================================
+
+/**
+ * Tails of the in-flight lifecycle operation for each page, so the four entry
+ * points below run one at a time per page.
+ *
+ * Module-scoped on purpose: every RPC call builds a fresh PagePublisher, so an
+ * instance field would serialize nothing. What must not interleave is the
+ * read-modify-write of two pieces of state that only mean anything together —
+ * the `page.json` share pointer and the vault token under
+ * `page_publish_token::{workspaceId}::{pageId}`. A forget that deletes the
+ * token a concurrent publish just minted leaves a live public copy nobody can
+ * revoke, and there is no local state left to notice it from.
+ *
+ * Only `publish`, `setPassword`, `unpublish`, and `forgetLocalPublication`
+ * acquire it, and none of them calls another — the shared work lives in private
+ * helpers — so there is no re-entrant path to deadlock on. Keep it that way: a
+ * public method calling a public method would wait for itself forever.
+ */
+const pageLifecycleTails = new Map<string, Promise<void>>();
+
+function withPageLifecycleLock<T>(
+  workspaceRootPath: string,
+  pageSlug: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const key = JSON.stringify([workspaceRootPath, pageSlug]);
+  const previous = pageLifecycleTails.get(key) ?? Promise.resolve();
+  // Both arms run `run`: a predecessor that rejected has still released the
+  // page, and inheriting its failure would wedge the page for the whole process.
+  const result = previous.then(run, run);
+  const tail = result.then(() => {}, () => {});
+  pageLifecycleTails.set(key, tail);
+  // Drop the entry once nothing is queued behind it, so a long-lived host does
+  // not retain one settled promise per page it ever published.
+  void tail.then(() => {
+    if (pageLifecycleTails.get(key) === tail) pageLifecycleTails.delete(key);
+  });
+  return result;
+}
+
 export class PagePublisher {
   private readonly tokenStore: PagePublishTokenStore;
   private readonly fetchFn: typeof fetch;
@@ -172,7 +224,17 @@ export class PagePublisher {
    * Publish a page: create a new publication, or upload a new revision when
    * one already exists. Returns the updated PageConfig (share pointer set).
    */
-  async publish(
+  publish(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+    options: PublishPageOptions,
+  ): Promise<PageConfig> {
+    return withPageLifecycleLock(workspaceRootPath, pageSlug, () =>
+      this.publishLocked(workspaceRootPath, workspaceId, pageSlug, options));
+  }
+
+  private async publishLocked(
     workspaceRootPath: string,
     workspaceId: string,
     pageSlug: string,
@@ -250,7 +312,17 @@ export class PagePublisher {
   }
 
   /** Change or remove the viewer password (metadata-only; content untouched). */
-  async setPassword(
+  setPassword(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+    password: string | null,
+  ): Promise<PageConfig> {
+    return withPageLifecycleLock(workspaceRootPath, pageSlug, () =>
+      this.setPasswordLocked(workspaceRootPath, workspaceId, pageSlug, password));
+  }
+
+  private async setPasswordLocked(
     workspaceRootPath: string,
     workspaceId: string,
     pageSlug: string,
@@ -287,7 +359,16 @@ export class PagePublisher {
    * 404. When the vault token is missing, local state is still cleared but
    * the result carries a warning that the remote copy may remain.
    */
-  async unpublish(
+  unpublish(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+  ): Promise<UnpublishResult> {
+    return withPageLifecycleLock(workspaceRootPath, pageSlug, () =>
+      this.unpublishLocked(workspaceRootPath, workspaceId, pageSlug));
+  }
+
+  private async unpublishLocked(
     workspaceRootPath: string,
     workspaceId: string,
     pageSlug: string,
@@ -334,14 +415,94 @@ export class PagePublisher {
   }
 
   /**
+   * Whether local-only recovery applies to this page right now, and which
+   * publication it would forget.
+   *
+   * Recovery exists for exactly one situation: a *retained* share pointer whose
+   * public copy can no longer be reached through the normal path, because the
+   * admin capability is gone from the vault or the stored origin is not one we
+   * will talk to. The two refusals are the point of the method. A page with no
+   * share pointer has nothing to forget, and a page that is still fully
+   * manageable must go through unpublish — offering the destructive local path
+   * there lets a user strand a live public copy that one ordinary request would
+   * have revoked, which is the opposite of what the escape hatch is for.
+   *
+   * Callers must snapshot the returned `publicationId` and pass it to
+   * `forgetLocalPublication`, so the publication a human approved forgetting is
+   * the only one that can be forgotten.
+   */
+  async describeLocalPublicationRecovery(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+  ): Promise<LocalPublicationRecovery> {
+    return this.evaluateLocalPublicationRecovery(this.requirePage(workspaceRootPath, pageSlug), workspaceId);
+  }
+
+  /**
+   * The eligibility question itself, asked against an already-loaded config so
+   * the locked path can re-ask it without a second read of `page.json`.
+   */
+  private async evaluateLocalPublicationRecovery(
+    config: PageConfig,
+    workspaceId: string,
+  ): Promise<LocalPublicationRecovery> {
+    const share = config.share;
+    if (!share) {
+      throw new PageShareError(
+        'PAGE_SHARE_NOT_PUBLISHED',
+        `Page has no publication state to forget: ${config.slug}`,
+      );
+    }
+    const token = await this.tokenStore.get(workspaceId, config.id);
+    if (!token) return { publicationId: share.publicationId, reason: 'token-missing' };
+    if (!resolveStoredPagesShareApiBaseUrl(share.url, this.publishApiBaseUrl)) {
+      return { publicationId: share.publicationId, reason: 'origin-unusable' };
+    }
+    throw new PageShareError(
+      'PAGE_SHARE_FORGET_NOT_ELIGIBLE',
+      'This page can still be unpublished normally. Unpublish it so the public copy is actually revoked.',
+    );
+  }
+
+  /**
    * Deliberately local-only escape hatch for a lost admin capability or stale
    * development origin. The caller must obtain explicit human confirmation:
    * this never contacts the remote service and the public copy may remain.
+   *
+   * `expectedPublicationId` is the publication that confirmation was about.
+   * Asking a human is slow and the page stays live underneath the question, so
+   * by the time approval arrives an ordinary unpublish and republish may have
+   * replaced the pointer and minted a NEW admin token under the same vault key.
+   * Deleting it then would strand a publication that was perfectly manageable a
+   * moment ago. So the pointer is re-read *inside* the lock and must still name
+   * the approved publication before either the token or the pointer is touched —
+   * one check covering both writes, which is only sound because the lock is what
+   * stops anything landing between them.
    */
-  async forgetLocalPublication(workspaceRootPath: string, workspaceId: string, pageSlug: string): Promise<PageConfig> {
-    const config = this.requirePage(workspaceRootPath, pageSlug);
-    await this.tokenStore.delete(workspaceId, config.id);
-    return setPageShareState(workspaceRootPath, pageSlug, undefined);
+  forgetLocalPublication(
+    workspaceRootPath: string,
+    workspaceId: string,
+    pageSlug: string,
+    expectedPublicationId: string,
+  ): Promise<PageConfig> {
+    return withPageLifecycleLock(workspaceRootPath, pageSlug, async () => {
+      const config = this.requirePage(workspaceRootPath, pageSlug);
+      if (config.share?.publicationId !== expectedPublicationId) {
+        throw new PageShareError(
+          'PAGE_SHARE_FORGET_STALE',
+          'This page\'s public copy changed while the confirmation was open, so that approval no longer applies. Review sharing again.',
+        );
+      }
+      // Re-ask eligibility, not just identity. The same publication can become
+      // revocable again while the confirmation is open — an unlocked keychain is
+      // enough — and destroying the local state then would strand a public copy
+      // that one ordinary request could have taken down. Refusing here sends the
+      // user to the path that actually revokes, which is never the worse outcome.
+      await this.evaluateLocalPublicationRecovery(config, workspaceId);
+      await this.tokenStore.delete(workspaceId, config.id);
+      return setPageShareState(workspaceRootPath, pageSlug, undefined);
+    });
   }
 
   // --------------------------------------------------------------------

@@ -86,11 +86,19 @@ export function formatPageGrantDescriptor(action: import('@craft-agent/core').Pa
     null,
     2,
   )
-  // JSON only guarantees escaping C0; native chrome must also make C1,
-  // format/bidi, and Unicode line/paragraph separators visibly non-printing.
-  return serialized.replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g, char =>
-    `\\u${char.codePointAt(0)!.toString(16).padStart(4, '0')}`,
-  )
+  // JSON only guarantees escaping C0, so the rest is on us. Ask Unicode for the
+  // categories rather than listing code points: the hand-written class this
+  // replaces covered C1 and the bidi controls but silently let LRM/RLM, ZWSP,
+  // BOM, and SOFT HYPHEN through, and any such list is a list someone has to
+  // keep right. Cc and Cf are the invisible-or-reordering characters, Zl and Zp
+  // the line/paragraph separators — all of them must read as non-printing in
+  // native chrome so a descriptor cannot forge a second dialog field.
+  return serialized.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, char => {
+    const code = char.codePointAt(0)!
+    // Astral format characters exist (the musical beam controls, for one), and a
+    // 5-digit `\uXXXXX` would read as a 4-digit escape plus a stray digit.
+    return code > 0xffff ? `\\u{${code.toString(16)}}` : `\\u${code.toString(16).padStart(4, '0')}`
+  })
 }
 
 export interface RenderGenerationTracker {

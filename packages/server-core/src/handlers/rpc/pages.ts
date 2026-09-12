@@ -256,6 +256,52 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   }
 
   /**
+   * One outstanding local-recovery operation per publication.
+   *
+   * Two clicks, or a click and an agent call, must not put two native sheets on
+   * the window asking the same question — and must not each run the destructive
+   * write, where the second would fail the staleness check the first created.
+   * The publication id is in the key because a different publication is a
+   * genuinely different question, and it is snapshotted before the prompt so the
+   * approval and the write that follows name the same thing.
+   */
+  const pendingForgetRecoveries = new Map<string, Promise<import('@craft-agent/core').PageConfig>>()
+
+  /**
+   * Trusted-host-confirmed local recovery for a publication that can no longer
+   * be revoked remotely.
+   *
+   * Eligibility is settled BEFORE any host chrome. That ordering is doing real
+   * work: an unpublished or still-manageable page is refused without asking a
+   * human anything, and a page that does not exist never reaches native display
+   * at all, so the prompt is only ever shown for the one state recovery is for.
+   */
+  async function forgetLocalPublicationWithConfirmation(
+    workspace: { id: string; name: string; rootPath: string },
+    pageSlug: string,
+  ): Promise<import('@craft-agent/core').PageConfig> {
+    const publisher = await buildPublisher()
+    const { publicationId } = await publisher.describeLocalPublicationRecovery(workspace.rootPath, workspace.id, pageSlug)
+    const key = JSON.stringify([workspace.id, pageSlug, publicationId])
+    const inFlight = pendingForgetRecoveries.get(key)
+    if (inFlight) return inFlight
+    const recovery = (async () => {
+      const confirmed = await confirmForgetPublication(
+        sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
+        sanitizePageGrantIdentity(pageSlug, 'Unnamed page'),
+      )
+      if (!confirmed) throw new Error('PAGE_FORGET_CONFIRMATION_CANCELLED')
+      return publisher.forgetLocalPublication(workspace.rootPath, workspace.id, pageSlug, publicationId)
+    })()
+    pendingForgetRecoveries.set(key, recovery)
+    try {
+      return await recovery
+    } finally {
+      if (pendingForgetRecoveries.get(key) === recovery) pendingForgetRecoveries.delete(key)
+    }
+  }
+
+  /**
    * API executor for the action bridge. Resolves the source + credential
    * lazily per call (same seams sessions use), so tokens refresh correctly
    * and never leave the host process.
@@ -850,17 +896,9 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
   server.handle(RPC_CHANNELS.pages.UNPUBLISH, async (_ctx, workspaceId: string, pageSlug: string, options?: { forgetLocal?: boolean }) => {
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
-    if (options?.forgetLocal) {
-      const confirmed = await confirmForgetPublication(
-        sanitizePageGrantIdentity(workspace.name, 'Unnamed workspace'),
-        sanitizePageGrantIdentity(pageSlug, 'Unnamed page'),
-      )
-      if (!confirmed) throw new Error('PAGE_FORGET_CONFIRMATION_CANCELLED')
-    }
-    const publisher = await buildPublisher()
     const result = options?.forgetLocal
-      ? { config: await publisher.forgetLocalPublication(workspace.rootPath, workspace.id, pageSlug), warning: undefined }
-      : await publisher.unpublish(workspace.rootPath, workspace.id, pageSlug)
+      ? { config: await forgetLocalPublicationWithConfirmation(workspace, pageSlug), warning: undefined }
+      : await (await buildPublisher()).unpublish(workspace.rootPath, workspace.id, pageSlug)
     deps.sessionManager.notifyConfigFileChange(workspace.rootPath, `pages/${pageSlug}/page.json`)
     await broadcastChanged(workspaceId, workspace.rootPath)
     return { config: result.config, warning: result.warning }
