@@ -29,6 +29,7 @@ import {
   PAGE_ACTIVATION_TICKET_TTL_CEILING_MS,
   PageActionBroker,
   appendPageActionAudit,
+  pageAuditIdHash,
   resetPageAuditThrottleForTests,
   canonicalPageActionHash,
   type PageActionExecutors,
@@ -206,8 +207,11 @@ describe('pages/action-bridge', () => {
       const executed = audit.find((e) => e.event === 'page_action_executed');
       expect(executed?.ok).toBe(true);
       expect(executed?.policyDecision).toBe('allow');
-      expect(executed?.invocation).toEqual({ kind: 'api', method: 'GET' });
+      // Descriptor details come off the APPROVED grant, not the request.
+      expect(executed?.actionKind).toBe('api');
+      expect(executed?.method).toBe('GET');
       expect(executed?.sourceSlug).toBe('github');
+      expect(executed?.invocation).toBeUndefined();
     });
   });
 
@@ -491,7 +495,7 @@ describe('pages/action-bridge', () => {
       const audit = await readAudit();
       const executed = audit.find((e) => e.event === 'page_action_executed');
       expect(executed?.ok).toBe(true);
-      expect((executed?.invocation as { kind: string }).kind).toBe('script');
+      expect(executed?.actionKind).toBe('script');
     });
 
     it('reports ok:false but still surfaces output on a non-zero exit', async () => {
@@ -543,10 +547,10 @@ describe('pages/action-bridge', () => {
       const audit = await readAudit();
       const rejected = audit.find((e) => e.event === 'page_action_rejected');
       expect(rejected?.code).toBe('nonce-mismatch');
-      // Metadata only. Not "redacted params" — no params at all, and no path:
-      // redaction only catches key names it recognizes, and an audit log is the
-      // wrong place to be guessing which caller-supplied keys are sensitive.
-      expect(rejected?.invocation).toEqual({ kind: 'api', method: 'GET' });
+      // Kind and the closed code only. Nothing matched, so there is no approved
+      // grant to describe and the caller's claims are exactly what must not be
+      // kept — not even the method.
+      expect(rejected?.invocation).toEqual({ kind: 'api' });
       const serialized = JSON.stringify(audit);
       expect(serialized).not.toContain('sk-super-secret');
       expect(serialized).not.toContain('/repos/x');
@@ -576,7 +580,7 @@ describe('pages/action-bridge', () => {
       // The rejection is part of the audit contract, same as validation rejections.
       const audit = await readAudit();
       const rejected = audit.find(
-        (e) => e.event === 'page_action_rejected' && e.requestId === overflowRequest.requestId,
+        (e) => e.event === 'page_action_rejected' && e.requestIdHash === pageAuditIdHash(overflowRequest.requestId),
       );
       expect(rejected?.code).toBe('rate-limited');
 
@@ -1959,7 +1963,8 @@ describe('pages/action-bridge', () => {
       }
       // What remains is still enough to investigate with.
       const executed = (await readAudit()).find((e) => e.event === 'page_action_executed');
-      expect(executed?.invocation).toEqual({ kind: 'api', method: 'GET' });
+      expect(executed?.actionKind).toBe('api');
+      expect(executed?.method).toBe('GET');
       expect(executed?.sourceSlug).toBe('github');
       expect(executed?.grantId).toBe('grant_test0001');
     });
@@ -1988,7 +1993,7 @@ describe('pages/action-bridge', () => {
       // …and the row is still useful.
       const rejected = audit.find((e) => e.event === 'page_action_rejected');
       expect(rejected?.code).toBe('grant-mismatch');
-      expect(rejected?.invocation).toEqual({ kind: 'api', method: 'GET' });
+      expect(rejected?.invocation).toEqual({ kind: 'api' });
       expect(rejected?.reason).toBeUndefined();
     });
 
@@ -2036,14 +2041,11 @@ describe('pages/action-bridge', () => {
       expect(audit.find((e) => e.event === 'page_action_executed')?.outcome).toBe('non-zero-exit');
     });
 
-    it('bounds and escapes the one caller-supplied identifier it keeps', async () => {
-      // The audit contract is closed enums plus BOUNDED IDENTIFIERS, not "no
-      // caller input at all" — `toolName` is kept because "which tool was
-      // attempted" is the question an MCP audit answers, and on a rejection row
-      // no grant matched, so the grant id cannot answer it.
-      //
-      // That makes it the one field an attacker can aim at, so it is bounded at
-      // the writer and the row is JSON-encoded.
+    it('keeps no caller-supplied tool name, id, or payload on a rejection row', async () => {
+      // The previous contract kept a bounded `toolName` on every row. It is now
+      // read off the APPROVED grant instead, which means a rejection — where
+      // nothing matched and there is no approved grant — carries none of the
+      // caller's claims at all. Hashes remain so a burst is still correlatable.
       const broker = makeBroker({ executeMcp: async () => ({ ok: true }) });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = makePage({
@@ -2051,36 +2053,66 @@ describe('pages/action-bridge', () => {
       });
       disk.page = page;
 
-      // Oversized, quote- and newline-laden, and carrying a payload that must
-      // not survive anywhere in the row.
-      const hostileToolName = `evil"${'\n'}{"event":"forged"}${'\n'}`
-        + 'x'.repeat(5_000)
-        + 'sk-live-4eC39HqLyjWDarjtT1zdp7dc';
-
-      await run(broker, page, makeRequest(lease, {
-        grantId: 'grant_mcp00001',
+      const hostileToolName = `sk-live-4eC39HqLyjWDarjtT1zdp7dc"${'\n'}{"event":"forged"}${'\n'}`
+        + 'x'.repeat(5_000);
+      const hostileRequest = makeRequest(lease, {
+        requestId: 'req_sk-live-REQUEST-4eC39HqLyjWDarjtT1',
+        grantId: 'grant_sk-live-GRANT-4eC39HqLyjWDarjt',
         invocation: { kind: 'mcp', toolName: hostileToolName, args: { patient: 'SSN-078-05-1120' } },
-      }));
+      });
 
-      // Audit writes are fire-and-forget; readAudit waits for the flush.
+      const result = await broker.executeAction(page, hostileRequest, AUTHORITY);
+      expect(result.ok).toBe(false);
+
       const audit = await readAudit();
       const raw = readFileSync(auditPath, 'utf-8').trim().split('\n').filter(Boolean);
-      // One line per record: an embedded newline cannot forge a second entry.
+      // One line per record: embedded newlines cannot forge a second entry.
       for (const line of raw) expect(() => JSON.parse(line)).not.toThrow();
       expect(raw.some((line) => JSON.parse(line).event === 'forged')).toBe(false);
-      expect(raw.length).toBe(audit.length);
-      const rejected = audit.find((e) => e.event === 'page_action_rejected');
-      expect(rejected?.code).toBe('grant-mismatch');
-      const recorded = (rejected?.invocation as { toolName: string }).toolName;
-      expect(recorded.length).toBe(MAX_AUDITED_IDENTIFIER_CHARS);
-      expect(recorded).toBe(hostileToolName.slice(0, MAX_AUDITED_IDENTIFIER_CHARS));
 
-      // The forbidden payload is absent: args never recorded, and the secret
-      // sat past the bound.
       const serialized = JSON.stringify(audit);
+      // Every caller-chosen string is absent — the tool name, and the ids the
+      // caller minted with secrets inside them.
       expect(serialized).not.toContain('sk-live-4eC39HqLyjWDarjtT1zdp7dc');
+      expect(serialized).not.toContain('sk-live-REQUEST');
+      expect(serialized).not.toContain('sk-live-GRANT');
       expect(serialized).not.toContain('SSN-078-05-1120');
-      expect(rejected?.invocation).not.toHaveProperty('args');
+      expect(serialized).not.toContain('x'.repeat(300));
+
+      const rejected = audit.find((e) => e.event === 'page_action_rejected');
+      expect(rejected?.invocation).toEqual({ kind: 'mcp' });
+      expect(rejected?.toolName).toBeUndefined();
+      expect(rejected?.sourceSlug).toBeUndefined();
+      expect(rejected?.requestId).toBeUndefined();
+      expect(rejected?.grantId).toBeUndefined();
+
+      // …and the hashes are present, fixed-width, and stable, so two rows
+      // naming the same id still agree.
+      expect(rejected?.requestIdHash).toBe(pageAuditIdHash(hostileRequest.requestId));
+      expect(rejected?.grantIdHash).toBe(pageAuditIdHash(hostileRequest.grantId));
+      expect(rejected?.leaseIdHash).toBe(pageAuditIdHash(lease.leaseId));
+      expect(String(rejected?.requestIdHash)).toHaveLength(16);
+      expect(pageAuditIdHash('a')).toBe(pageAuditIdHash('a'));
+      expect(pageAuditIdHash('a')).not.toBe(pageAuditIdHash('b'));
+    });
+
+    it('keeps no caller-supplied request id on a cancellation row', async () => {
+      const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = makePage();
+      disk.page = page;
+
+      // Nothing is in flight, so this takes the no-controller arm — which still
+      // writes a row, and still must not quote what the caller asked to cancel.
+      const hostileId = 'req_sk-live-CANCEL-4eC39HqLyjWDarjt';
+      expect(broker.cancelAction(lease.leaseId, lease.nonce, hostileId)).toBe(false);
+
+      const audit = await readAudit();
+      expect(JSON.stringify(audit)).not.toContain('sk-live-CANCEL');
+      const cancelled = audit.find((e) => e.event === 'page_action_cancelled');
+      expect(cancelled?.phase).toBe('pre-execution');
+      expect(cancelled?.requestId).toBeUndefined();
+      expect(cancelled?.requestIdHash).toBe(pageAuditIdHash(hostileId));
     });
 
     it('audits the mode the decision was actually made under, after a queue reload', async () => {
@@ -2114,7 +2146,7 @@ describe('pages/action-bridge', () => {
       await Promise.all(running);
 
       const refusal = (await readAudit()).find(
-        (e) => e.event === 'page_action_rejected' && e.requestId === queued.requestId,
+        (e) => e.event === 'page_action_rejected' && e.requestIdHash === pageAuditIdHash(queued.requestId),
       );
       expect(refusal?.code).toBe('permission-mode-forbidden');
       expect(refusal?.permissionMode).toBe('safe');
@@ -2151,7 +2183,7 @@ describe('pages/action-bridge', () => {
       await Promise.all(running);
 
       const executed = (await readAudit()).find(
-        (e) => e.event === 'page_action_executed' && e.requestId === queued.requestId,
+        (e) => e.event === 'page_action_executed' && e.requestIdHash === pageAuditIdHash(queued.requestId),
       );
       expect(executed?.permissionMode).toBe('allow-all');
     });
@@ -2172,7 +2204,10 @@ describe('pages/action-bridge', () => {
       expect(serialized).not.toContain('acquisition-project-halo');
       expect(serialized).not.toContain('jeff@example.com');
       const executed = (await readAudit()).find((e) => e.event === 'page_action_executed');
-      expect(executed?.invocation).toEqual({ kind: 'mcp', toolName: 'create_issue' });
+      // Read off the approved grant, so an attacker-chosen tool name can never
+      // appear here even when it matches.
+      expect(executed?.actionKind).toBe('mcp');
+      expect(executed?.toolName).toBe('create_issue');
       expect(executed?.sourceSlug).toBe('linear');
     });
   });

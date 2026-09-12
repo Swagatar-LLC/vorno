@@ -196,6 +196,24 @@ export const MAX_OUTSTANDING_TICKETS_PER_LEASE = 4;
  * its size guarantee from a caller.
  */
 export const MAX_AUDITED_IDENTIFIER_CHARS = 256;
+
+/**
+ * Correlatable stand-in for a caller-supplied identifier.
+ *
+ * A request id, and a *claimed* lease or grant id on a row that failed
+ * validation, are arbitrary caller strings. Nothing stops a page from minting
+ * `requestId: 'sk-live-…'` and provoking a refusal, which would write the
+ * secret into a file that outlives the install — the same leak as recording a
+ * path, wearing an id's name.
+ *
+ * Hashing keeps the only property the log actually needs from these fields:
+ * two rows that name the same id agree, so a burst is still correlatable and a
+ * retry is still recognizable. Truncated because 16 hex characters is ample to
+ * correlate within one file and there is no reason to store more.
+ */
+export function pageAuditIdHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
 /**
  * Concurrency for MUTATING actions on one render, and the queue behind it.
  *
@@ -915,9 +933,9 @@ export class PageActionBroker {
         workspaceId: authority?.workspaceId,
         origin: authority?.origin,
         pageSlug: request.pageSlug,
-        requestId: request.requestId,
-        leaseId: request.leaseId,
-        grantId: request.grantId,
+        requestIdHash: pageAuditIdHash(request.requestId),
+        leaseIdHash: pageAuditIdHash(request.leaseId),
+        grantIdHash: pageAuditIdHash(request.grantId),
         code,
       });
       // `reason` is returned to the caller and deliberately NOT persisted: it
@@ -1046,7 +1064,10 @@ export class PageActionBroker {
       workspaceId: authority.workspaceId,
       origin: authority.origin,
       pageSlug: request.pageSlug,
-      requestId: request.requestId,
+      // Validation passed, so the lease and grant are host state and may be
+      // named. The request id stays hashed — it is caller-minted whatever the
+      // outcome.
+      requestIdHash: pageAuditIdHash(request.requestId),
       leaseId: request.leaseId,
       grantId: request.grantId,
       actionKind: validation.grant.action.kind,
@@ -1163,7 +1184,6 @@ export class PageActionBroker {
 
 
     const startTime = this.now();
-    const invocationSummary = this.summarizeInvocation(request.invocation);
 
     /**
      * The authority the decision was actually made under.
@@ -1183,10 +1203,15 @@ export class PageActionBroker {
         origin: effectiveAuthority?.origin,
         permissionMode: effectiveAuthority?.permissionMode,
         pageSlug: request.pageSlug,
-        requestId: request.requestId,
-        leaseId: request.leaseId,
-        grantId: request.grantId,
-        invocation: invocationSummary,
+        // Hashed, not raw: validation has not run, so the lease and grant ids
+        // are things the caller CLAIMED, and the request id is caller-minted in
+        // every case. The action kind is the only invocation detail kept —
+        // source and tool are read off the approved grant, which by definition
+        // does not exist on a row that failed to match one.
+        requestIdHash: pageAuditIdHash(request.requestId),
+        leaseIdHash: pageAuditIdHash(request.leaseId),
+        grantIdHash: pageAuditIdHash(request.grantId),
+        invocation: { kind: request.invocation.kind },
         code,
       }, `rejected:${effectiveAuthority?.workspaceId ?? 'unknown'}`);
       // `reason` goes to the caller only. It interpolates the request path
@@ -1477,13 +1502,14 @@ export class PageActionBroker {
       permissionMode: effectiveAuthority.permissionMode,
       mutating,
       pageSlug: request.pageSlug,
-      requestId: request.requestId,
+      requestIdHash: pageAuditIdHash(request.requestId),
       leaseId: request.leaseId,
       grantId: grant.id,
-      actionKind: grant.action.kind,
-      // From the GRANT, which the host approved — not from the request.
-      ...(grant.action.kind !== 'script' ? { sourceSlug: grant.action.sourceSlug } : {}),
-      invocation: invocationSummary,
+      // Every descriptor detail is read off the APPROVED grant, never off the
+      // request. By here the two are proven equivalent, so taking them from the
+      // grant costs nothing and removes the question of whether a caller string
+      // reached the file.
+      ...this.describeApprovedAction(grant),
       policyDecision: policy.decision,
       ok: result.ok,
       ...(result.status !== undefined ? { status: result.status } : {}),
@@ -1526,7 +1552,9 @@ export class PageActionBroker {
         event: 'page_action_cancelled',
         pageSlug: lease.pageSlug,
         leaseId,
-        requestId,
+        // The lease proved itself via its nonce above; the request id did not
+        // and never can — it is whatever the caller asked to cancel.
+        requestIdHash: pageAuditIdHash(requestId),
         phase: 'pre-execution',
       });
       return false;
@@ -1536,7 +1564,7 @@ export class PageActionBroker {
       event: 'page_action_cancelled',
       pageSlug: lease.pageSlug,
       leaseId,
-      requestId,
+      requestIdHash: pageAuditIdHash(requestId),
       phase: 'in-flight',
     });
     return true;
@@ -1558,50 +1586,52 @@ export class PageActionBroker {
   }
 
   /**
-   * Audit-safe summary of an invocation.
+   * Audit-safe description of what an action actually was, read off the
+   * APPROVED grant.
    *
-   * **The contract, stated precisely.** What may be persisted is:
+   * **The contract, stated precisely.** A durable row may carry:
    *   - closed enums — action kind, HTTP method, outcome and rejection codes;
-   *   - bounded identifiers — `toolName`, plus the ids the caller's row already
-   *     carries (page slug, grant, request, lease, workspace).
+   *   - host-known identifiers — the page slug, and the lease and grant ids
+   *     once validation has proven them to be host state;
+   *   - bounded values from the approved grant — source slug, tool name;
+   *   - hashes of caller-supplied identifiers (`pageAuditIdHash`).
    *
-   * What may never be persisted is caller or remote *content*: request paths,
-   * query params, MCP arguments, response bodies, script stdout/stderr, and any
-   * error text originating outside this process.
+   * It may never carry caller or remote *content*: request paths, query
+   * params, MCP arguments, response bodies, script stdout/stderr, any error
+   * text from outside this process, or the dynamic rejection `reason`.
    *
-   * `toolName` is deliberately kept and is deliberately the exception that
-   * needs stating. It is caller-supplied on a rejection row (validation has not
-   * yet proven it equals the approved descriptor), so it is bounded here rather
-   * than trusted: an identifier is a name, and a name that runs to kilobytes is
-   * a payload wearing one. Its value is real — "which tool was attempted" is
-   * the question an MCP audit exists to answer, and the grant id alone does not
-   * answer it for a *rejected* call, where no grant matched.
+   * Descriptor details come from the grant rather than the invocation, even
+   * though validation has proven them equivalent by the time this runs. The
+   * point is not that the request is untrustworthy here — it is that a reader
+   * should not have to reconstruct *why* it became trustworthy to know the file
+   * is safe. A row that only ever quotes host-approved state is safe by
+   * inspection; one that quotes the request is safe by argument, and arguments
+   * rot when the call sites move.
    *
-   * The earlier version recorded the request path and redacted params by key
-   * name, which is the wrong guarantee: redaction only catches keys it
-   * recognizes, so a token in `?access_token=`, an id in a path segment, or a
-   * field named something the redactor has never heard of went to disk verbatim
-   * — in a file that outlives the install and is read by whoever debugs it.
+   * A rejection row gets none of this. Nothing matched, so there is no approved
+   * grant to describe, and the caller's claim about source or tool is exactly
+   * what must not be persisted — such rows carry the action kind and the closed
+   * code alone.
    */
-  private summarizeInvocation(invocation: PageActionInvocation): Record<string, unknown> {
-    if (invocation.kind === 'api') {
-      // The method is a closed set and the grant's path PATTERN is recorded
-      // alongside this row via grantId, so the concrete path adds nothing an
-      // investigator cannot recover — and everything an attacker could hide in.
-      return { kind: 'api', method: invocation.method };
+  private describeApprovedAction(grant: PageActionGrant): Record<string, unknown> {
+    const bounded = (value: string) => value.slice(0, MAX_AUDITED_IDENTIFIER_CHARS);
+    if (grant.action.kind === 'api') {
+      return {
+        actionKind: 'api',
+        sourceSlug: bounded(grant.action.sourceSlug),
+        method: grant.action.method,
+      };
     }
-    if (invocation.kind === 'mcp') {
-      // Tool name only, and bounded here rather than relying on the parse
-      // boundary. The RPC and bridge parsers both cap it, but this class is
-      // reachable in-process, and an audit writer that depends on someone
-      // else's validation is one refactor away from being the hole.
-      // JSON encoding of the row handles quotes, newlines, and control
-      // characters, so a crafted name cannot forge a second record.
-      return { kind: 'mcp', toolName: invocation.toolName.slice(0, MAX_AUDITED_IDENTIFIER_CHARS) };
+    if (grant.action.kind === 'mcp') {
+      return {
+        actionKind: 'mcp',
+        sourceSlug: bounded(grant.action.sourceSlug),
+        toolName: bounded(grant.action.toolName),
+      };
     }
-    // script is a bare trigger — the resolved grantId in the same audit row
-    // carries the script path/runtime/args, so there is nothing to summarize.
-    return { kind: 'script' };
+    // script: the grant id in the same row carries the pinned path, runtime,
+    // and args, and none of those belong in the log.
+    return { actionKind: 'script' };
   }
 
   /**

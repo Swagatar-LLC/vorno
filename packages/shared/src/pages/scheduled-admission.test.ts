@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { PageConfig, PageRefreshSpec } from '@craft-agent/core';
-import { admitScheduledPageRefresh } from './scheduled-admission.ts';
+import { admitScheduledPageRefresh, scheduledPolicyRefusal } from './scheduled-admission.ts';
 
 const DIGEST = 'a'.repeat(64);
 
@@ -89,6 +89,34 @@ describe('pages/scheduled-admission', () => {
     if (!existsSync(auditLogPath)) return [];
     return readFileSync(auditLogPath, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
   }
+
+  describe('policy cells are consumed, not displayed', () => {
+    // Called directly with rows the live table does not contain, so the refusal
+    // is demonstrated rather than asserted. `admitScheduledPageRefresh` routes
+    // through this exact function, so proving it here proves the behaviour.
+    it('refuses a row demanding an activation ticket a cron tick cannot produce', () => {
+      const refusal = scheduledPolicyRefusal({
+        requiresActivationTicket: true,
+        requiresFirstUseConfirmation: false,
+      });
+      expect(refusal?.code).toBe('activation-required');
+    });
+
+    it('refuses a row demanding a confirmation with no window to show it in', () => {
+      const refusal = scheduledPolicyRefusal({
+        requiresActivationTicket: false,
+        requiresFirstUseConfirmation: true,
+      });
+      expect(refusal?.code).toBe('first-use-confirmation-required');
+    });
+
+    it('admits the row the scheduled origin actually has today', () => {
+      expect(scheduledPolicyRefusal({
+        requiresActivationTicket: false,
+        requiresFirstUseConfirmation: false,
+      })).toBeNull();
+    });
+  });
 
   it('admits an approved, current refresh grant and audits it as render-free', async () => {
     expect((await admit(makePage())).ok).toBe(true);

@@ -32,6 +32,33 @@ import { appendPageActionAudit } from './action-bridge.ts';
 import { authorizePageAction } from './admission.ts';
 import { isPagesEnabled } from './capability.ts';
 import { refreshDescriptorMatches } from './storage.ts';
+import { pageActionOriginAllowsKind, pageActionOriginPolicy, type PageActionOriginPolicy } from './types.ts';
+
+/**
+ * Whether a policy row is one a cron tick can actually satisfy.
+ *
+ * Pure and exported so the refusal is *provable* rather than asserted: the
+ * scheduled path structurally cannot produce an activation ticket (no click) or
+ * a first-use confirmation (no window), and if a future edit flips either cell
+ * for this origin the honest response is to stop running — not to keep running
+ * while a table says otherwise.
+ *
+ * Split out because the live table makes both cells false, so the branch is not
+ * reachable through `admitScheduledPageRefresh` today. A guard nobody can
+ * execute is a guard nobody can trust, so the logic lives here where a test
+ * calls it with the rows that do not exist yet.
+ */
+export function scheduledPolicyRefusal(
+  policy: PageActionOriginPolicy,
+): { code: string; reason: string } | null {
+  if (policy.requiresActivationTicket) {
+    return { code: 'activation-required', reason: 'A scheduled refresh cannot produce an activation ticket' };
+  }
+  if (policy.requiresFirstUseConfirmation) {
+    return { code: 'first-use-confirmation-required', reason: 'A scheduled refresh has no window to confirm in' };
+  }
+  return null;
+}
 
 export type ScheduledAdmissionOutcome =
   | { ok: true }

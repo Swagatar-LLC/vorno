@@ -176,8 +176,12 @@ export interface PageActionOriginPolicy {
  * has no user present to click, so requiring interaction proof would mean no
  * scheduled refresh could ever run. What replaces the click is that the user
  * approved this exact pinned script descriptor when the refresh was persisted,
- * and `assertPageRefreshGrant` re-reads that approval from disk at spawn time,
- * so revocation, expiry, and a content change all stop it. It is confined to
+ * and that approval is re-read from disk before the run. Two callers do it, and
+ * they are not interchangeable: `assertPageRefreshGrant` guards persistence and
+ * matcher building (a refresh may not be stored or scheduled without a usable
+ * grant), while `admitScheduledPageRefresh` is what runs at spawn time and
+ * additionally checks the Pages capability, permission mode, and origin policy.
+ * Revocation, expiry, and a content change stop the run at both. It is confined to
  * `script` by `pageActionOriginAllowsKind` below — a refresh may never become a
  * route for api/mcp calls that skip activation.
  */
