@@ -64,6 +64,7 @@ import { proxyToolName } from '../mcp/proxy-tool-name.ts';
 import {
   hasPathTraversal,
   isMutatingPageAction,
+  pageActionDescriptorSignature,
   pageActionOriginAllowsKind,
   pageActionOriginPolicy,
 } from './types.ts';
@@ -204,6 +205,18 @@ interface PageActivationTicket {
   contentDigest: string;
   grantId: string;
   requestId: string;
+  /**
+   * Canonical signature of the descriptor as it stood when this ticket was
+   * minted — i.e. the command the user was actually shown and agreed to.
+   *
+   * A grant id is not the command. `page.json` can be rewritten in place while
+   * a confirmation dialog is open, keeping the same grant id and the same
+   * content digest (the digest covers index.html, not the grant list), so
+   * "the descriptor under this id" is mutable state and the ticket would
+   * otherwise authorize whatever it became. Recording the signature makes the
+   * ticket name the command rather than the slot it lives in.
+   */
+  descriptorSignature: string;
   origin: PageActionOrigin;
   issuedAt: number;
   expiresAt: number;
@@ -381,11 +394,17 @@ export class PageActionBroker {
   /** ticketId → the single-use activation record the broker holds */
   private readonly tickets = new Map<string, PageActivationTicket>();
   /**
-   * `leaseId grantId` for grants whose host-rendered first-use
-   * confirmation this render has already cleared. Scoped to the lease because
-   * ADR-0033 §3 says per render: new content, or a re-mount, asks again.
+   * Grants whose host-rendered first-use confirmation this render has already
+   * cleared, keyed by lease AND grant. Scoped to the lease because ADR-0033 §3
+   * says per render: new content, or a re-mount, asks again.
+   *
+   * The parts are kept as values rather than parsed back out of the key. A
+   * concatenated key has to be taken apart again by `startsWith`/`endsWith` to
+   * answer "which of these belong to this lease", and that is only correct
+   * while no id can contain the separator — a property nothing enforces and
+   * the next reader cannot see.
    */
-  private readonly firstUseConfirmed = new Set<string>();
+  private readonly firstUseConfirmed = new Map<string, { leaseId: string; grantId: string }>();
 
   constructor(options: PageActionBrokerOptions) {
     this.executors = options.executors;
@@ -484,8 +503,8 @@ export class PageActionBroker {
     this.mutatingInFlightByLease.delete(leaseId);
     this.startTimesByLease.delete(leaseId);
     this.dropTicketsWhere((ticket) => ticket.leaseId === leaseId);
-    for (const key of [...this.firstUseConfirmed]) {
-      if (key.startsWith(`${leaseId} `)) this.firstUseConfirmed.delete(key);
+    for (const [key, confirmed] of this.firstUseConfirmed) {
+      if (confirmed.leaseId === leaseId) this.firstUseConfirmed.delete(key);
     }
     // Release queued waiters instead of stranding them: each re-checks its own
     // authority when it wakes and will now find the lease gone.
@@ -575,42 +594,41 @@ export class PageActionBroker {
     return null;
   }
 
-  private noteActionStart(leaseId: string, pageSlug: string, mutating: boolean): void {
+  private noteActionStart(leaseId: string, pageSlug: string): void {
+    // The mutating slot is NOT counted here — `acquireMutatingSlot` already
+    // reserved it, before this request was allowed to proceed.
     this.inFlightByLease.set(leaseId, (this.inFlightByLease.get(leaseId) ?? 0) + 1);
-    if (mutating) {
-      this.mutatingInFlightByLease.set(leaseId, (this.mutatingInFlightByLease.get(leaseId) ?? 0) + 1);
-    }
     const now = this.now();
     this.startTimesByLease.set(leaseId, [...(this.startTimesByLease.get(leaseId) ?? []), now]);
     this.startTimesByPage.set(pageSlug, [...(this.startTimesByPage.get(pageSlug) ?? []), now]);
     this.startTimesByWorkspace = [...this.startTimesByWorkspace, now];
   }
 
-  private noteActionEnd(leaseId: string, mutating: boolean): void {
+  private noteActionEnd(leaseId: string): void {
     const current = this.inFlightByLease.get(leaseId) ?? 0;
     if (current <= 1) this.inFlightByLease.delete(leaseId);
     else this.inFlightByLease.set(leaseId, current - 1);
-    if (mutating) {
-      const currentMutating = this.mutatingInFlightByLease.get(leaseId) ?? 0;
-      if (currentMutating <= 1) this.mutatingInFlightByLease.delete(leaseId);
-      else this.mutatingInFlightByLease.set(leaseId, currentMutating - 1);
-      // Hand the freed slot to the longest waiter. This runs in the execution
-      // path's `finally`, so it happens on timeout and cancellation too — a
-      // stuck executor must not also strand everything queued behind it.
-      const queue = this.mutatingQueueByLease.get(leaseId);
-      const next = queue?.shift();
-      if (queue && queue.length === 0) this.mutatingQueueByLease.delete(leaseId);
-      next?.();
-    }
   }
 
   /**
-   * Wait for one of the render's mutating slots. Resolves immediately when a
-   * slot is free; otherwise joins the bounded queue whose depth
-   * `rateLimitRejection` already admitted this request against.
+   * Acquire one of the render's mutating slots, waiting in the bounded queue if
+   * both are busy.
+   *
+   * The reservation is made HERE, synchronously, rather than by the caller
+   * after it resumes. Checking the count and incrementing it in two steps
+   * separated by an `await` is a check-then-act race: three requests started in
+   * the same turn all run the check before any of them resumes to increment, so
+   * all three see a free slot and all three execute. Every caller of this
+   * method owns a slot the moment it returns, and must release it.
+   *
+   * A slot is handed directly from a finishing action to the next waiter rather
+   * than decremented and re-acquired, so the count never dips and a third
+   * request cannot slip into the gap.
    */
-  private async awaitMutatingSlot(leaseId: string): Promise<void> {
-    if ((this.mutatingInFlightByLease.get(leaseId) ?? 0) < PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE) {
+  private async acquireMutatingSlot(leaseId: string): Promise<void> {
+    const active = this.mutatingInFlightByLease.get(leaseId) ?? 0;
+    if (active < PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE) {
+      this.mutatingInFlightByLease.set(leaseId, active + 1);
       return;
     }
     await new Promise<void>((resolve) => {
@@ -618,6 +636,23 @@ export class PageActionBroker {
       queue.push(resolve);
       this.mutatingQueueByLease.set(leaseId, queue);
     });
+  }
+
+  /**
+   * Release a mutating slot, handing it to the longest waiter if there is one.
+   * Called from the execution path's `finally`, so it also runs on timeout and
+   * cancellation — a stuck action must not strand what is queued behind it.
+   */
+  private releaseMutatingSlot(leaseId: string): void {
+    const queue = this.mutatingQueueByLease.get(leaseId);
+    const next = queue?.shift();
+    if (queue && queue.length === 0) this.mutatingQueueByLease.delete(leaseId);
+    // Hand the slot over without decrementing: the waiter is resuming into the
+    // slot this action is vacating, so the occupancy count is unchanged.
+    if (next) { next(); return; }
+    const active = this.mutatingInFlightByLease.get(leaseId) ?? 0;
+    if (active <= 1) this.mutatingInFlightByLease.delete(leaseId);
+    else this.mutatingInFlightByLease.set(leaseId, active - 1);
   }
 
   private pruneExpiredLeases(): void {
@@ -807,12 +842,14 @@ export class PageActionBroker {
     }
 
     const policy = pageActionOriginPolicy(authority.origin)!;
-    const firstUseKey = `${request.leaseId} ${request.grantId}`;
-    if (
-      policy.requiresFirstUseConfirmation &&
-      validation.grant.action.kind === 'script' &&
-      !this.firstUseConfirmed.has(firstUseKey)
-    ) {
+    const firstUseKey = JSON.stringify([request.leaseId, request.grantId]);
+    // Every mutating kind, not just script. A window gesture cannot tell a
+    // click on this Page's button from a click on unrelated app chrome (see the
+    // policy field's note and the SUV-0065 evidence), so without this a page
+    // could fire an approved POST or MCP write from a timer on the back of any
+    // stray click. The host-rendered dialog is the one click that is
+    // unambiguously about THIS action.
+    if (policy.requiresFirstUseConfirmation && !this.firstUseConfirmed.has(firstUseKey)) {
       if (!options.confirmFirstUse) {
         return reject(
           'first-use-confirmation-required',
@@ -829,7 +866,7 @@ export class PageActionBroker {
       // question is not the same as approving the state that follows it.
       const revalidation = this.validate(page, request, authority);
       if (!revalidation.ok) return reject(revalidation.code, revalidation.reason);
-      this.firstUseConfirmed.add(firstUseKey);
+      this.firstUseConfirmed.set(firstUseKey, { leaseId: request.leaseId, grantId: request.grantId });
     }
 
     const now = this.now();
@@ -842,6 +879,7 @@ export class PageActionBroker {
       contentDigest: page.contentDigest!,
       grantId: request.grantId,
       requestId: request.requestId,
+      descriptorSignature: pageActionDescriptorSignature(validation.grant.action),
       origin: authority.origin,
       issuedAt: now,
       expiresAt: now + this.activationTicketTtlMs,
@@ -874,6 +912,7 @@ export class PageActionBroker {
     request: PageActionRequest,
     authority: PageActionAuthority,
     contentDigest: string,
+    grant: PageActionGrant,
   ): { ok: true } | { ok: false; code: PageActionValidationErrorCode; reason: string } {
     const ticketId = request.activationTicket;
     if (typeof ticketId !== 'string' || ticketId.length === 0) {
@@ -908,6 +947,17 @@ export class PageActionBroker {
     if (ticket.origin !== authority.origin) {
       return { ok: false, code: 'activation-invalid', reason: 'Activation belongs to a different origin' };
     }
+    // The grant here was re-read from disk for THIS invocation. If its
+    // descriptor no longer matches the one the ticket was minted against, the
+    // command changed after the user agreed to it, and the ticket authorizes
+    // the command they saw — not the id it was filed under.
+    if (ticket.descriptorSignature !== pageActionDescriptorSignature(grant.action)) {
+      return {
+        ok: false,
+        code: 'activation-invalid',
+        reason: 'The approved action changed since this activation was issued',
+      };
+    }
     if (ticket.requestHash !== canonicalPageActionHash(authority.workspaceId, contentDigest, request)) {
       return { ok: false, code: 'activation-invalid', reason: 'Activation does not match this request' };
     }
@@ -924,8 +974,10 @@ export class PageActionBroker {
     this.dropTicketsWhere(
       (ticket) => ticket.pageSlug === pageSlug && (grantId === undefined || ticket.grantId === grantId),
     );
-    for (const key of [...this.firstUseConfirmed]) {
-      if (grantId !== undefined && key.endsWith(` ${grantId}`)) this.firstUseConfirmed.delete(key);
+    if (grantId !== undefined) {
+      for (const [key, confirmed] of this.firstUseConfirmed) {
+        if (confirmed.grantId === grantId) this.firstUseConfirmed.delete(key);
+      }
     }
   }
 
@@ -1038,34 +1090,20 @@ export class PageActionBroker {
     // would recur has already run, so a burned ticket means the call really was
     // going to execute.
     if (mutating && pageActionOriginPolicy(authority.origin)!.requiresActivationTicket) {
-      const activation = this.consumeActivationTicket(request, authority, page.contentDigest!);
+      const activation = this.consumeActivationTicket(request, authority, page.contentDigest!, grant);
       if (!activation.ok) return rejected(activation.code, activation.reason);
     }
 
     this.seenRequestIds.get(request.leaseId)?.add(request.requestId);
 
-    // Queue for a mutating slot before counting the start, so a waiting request
-    // does not hold in-flight budget it is not using. The wait is bounded by
-    // the queue depth admitted above; the ticket is already spent, so queue
-    // time can never expire the proof out from under an authorized call.
-    if (mutating) {
-      await this.awaitMutatingSlot(request.leaseId);
-      // The world moves while a request waits: the lease can be released and
-      // the content can change. Re-validate rather than assume the admission
-      // decision survived the queue.
-      const afterQueue = this.validate(page, request, authority, { checkReplay: false });
-      if (!afterQueue.ok) return rejected(afterQueue.code, afterQueue.reason);
-    }
-
-    // Policy annotation: grants ARE the user approval, so a
-    // requires-approval verdict does not block a granted call — but the
-    // audit trail records how the same call would classify for an agent.
+    // Policy annotation: grants ARE the user approval, so a requires-approval
+    // verdict does not block a granted call — but the audit trail records how
+    // the same call would classify for an agent.
     //
-    // Computed BEFORE the slot is counted, because it is the last thing here
-    // that can throw outside the try/finally below. Counting first would leak
-    // an in-flight slot AND a mutating slot on that throw, and with only two
-    // mutating slots per render, two such throws wedge the render's privileged
-    // actions for the life of the lease.
+    // Computed before anything is reserved, because it is the last thing on
+    // this path that can throw outside a cleanup handler. Reserving first would
+    // leak an in-flight slot and a mutating slot on that throw, and with only
+    // two mutating slots per render, two such throws wedge the render.
     const policy: SourceActionPolicyDecision =
       grant.action.kind === 'api'
         ? evaluateApiEndpointPolicy(
@@ -1082,13 +1120,44 @@ export class PageActionBroker {
             // annotated here purely for the audit trail (the grant is the approval).
             { decision: 'requires-approval', description: `script: ${grant.action.script}` };
 
-    // From here to the `finally` that releases them, nothing may throw outside
-    // the try below.
-    this.noteActionStart(request.leaseId, request.pageSlug, mutating);
-
+    // Registered BEFORE any waiting, not after. A queued request has already
+    // spent its activation ticket, so if its controller only appeared once it
+    // reached the front of the queue, `cancelAction` would find neither ticket
+    // nor controller, report that there was nothing to cancel, and let the
+    // withdrawn write run anyway when a slot freed.
     const controller = new AbortController();
     const inFlightKey = this.inFlightKey(request.leaseId, request.requestId);
     this.inFlight.set(inFlightKey, controller);
+
+    /** Give back everything admission reserved. Safe to call exactly once. */
+    const releaseAdmission = () => {
+      this.inFlight.delete(inFlightKey);
+      if (mutating) this.releaseMutatingSlot(request.leaseId);
+    };
+
+    if (mutating) {
+      // Reserved inside `acquireMutatingSlot`, synchronously, so two requests
+      // cannot both observe the same free slot and both proceed.
+      await this.acquireMutatingSlot(request.leaseId);
+      // A cancel that arrived while this sat in the queue has to be honoured
+      // here: the abort has nothing to interrupt yet, so before the work starts
+      // is the only place it can take effect.
+      if (controller.signal.aborted) {
+        releaseAdmission();
+        return rejected('cancelled', 'Action was cancelled before it started');
+      }
+      // The world moves while a request waits: the lease can be released and
+      // the content can change. Re-validate rather than assume the admission
+      // decision survived the queue.
+      const afterQueue = this.validate(page, request, authority, { checkReplay: false });
+      if (!afterQueue.ok) {
+        releaseAdmission();
+        return rejected(afterQueue.code, afterQueue.reason);
+      }
+    }
+
+    this.noteActionStart(request.leaseId, request.pageSlug);
+
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(this.actionTimeoutMs)]);
 
     /**
@@ -1204,8 +1273,8 @@ export class PageActionBroker {
       };
     } finally {
       if (deadlineTimer) clearTimeout(deadlineTimer);
-      this.inFlight.delete(inFlightKey);
-      this.noteActionEnd(request.leaseId, mutating);
+      this.noteActionEnd(request.leaseId);
+      releaseAdmission();
     }
 
     void this.appendAudit({

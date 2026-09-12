@@ -750,7 +750,7 @@
   "overlay.zoomReset": "ズームをリセット (⌘0)",
   "overlay.zoomToFit": "フィットに合わせてズーム",
   "pages.actions.confirm.cancel": "キャンセル",
-  "pages.actions.confirm.detail": "ワークスペース: {{workspace}}\nページ: {{page}} ({{pageSlug}})\n\nこのページは、この表示で初めて、承認済みのアクションをあなたのコンピュータ上で実行しようとしています:\n\n{{action}}\n\nあなたのファイルと権限で実行されます。このページを開いている間、このアクションについて再度確認されることはありません。",
+  "pages.actions.confirm.detail": "ワークスペース: {{workspace}}\nページ: {{page}} ({{pageSlug}})\n\nこのページは、この表示で初めて、承認済みのアクションを実行しようとしています:\n\n{{action}}\n\nあなたのアクセス権と権限で実行されます。このページを開いている間、このアクションについて再度確認されることはありません。",
   "pages.actions.confirm.message": "{{workspace}} の「{{page}}」でこのアクションを実行しますか？",
   "pages.actions.confirm.run": "1 回実行",
   "pages.actions.confirm.title": "ページアクションを実行",

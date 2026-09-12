@@ -750,7 +750,7 @@
   "overlay.zoomReset": "Restablecer zoom (⌘0)",
   "overlay.zoomToFit": "Ajustar zoom",
   "pages.actions.confirm.cancel": "Cancelar",
-  "pages.actions.confirm.detail": "Workspace: {{workspace}}\nPágina: {{page}} ({{pageSlug}})\n\nEsta página pide ejecutar por primera vez en esta vista una acción aprobada en tu ordenador:\n\n{{action}}\n\nSe ejecuta con tus archivos y tus permisos. No se te volverá a preguntar por esta acción mientras la página siga abierta.",
+  "pages.actions.confirm.detail": "Workspace: {{workspace}}\nPágina: {{page}} ({{pageSlug}})\n\nEsta página pide ejecutar una acción aprobada por primera vez en esta vista:\n\n{{action}}\n\nSe ejecuta con tu acceso y tus permisos. No se te volverá a preguntar por esta acción mientras la página siga abierta.",
   "pages.actions.confirm.message": "¿Ejecutar esta acción para «{{page}}» en {{workspace}}?",
   "pages.actions.confirm.run": "Ejecutar una vez",
   "pages.actions.confirm.title": "Ejecutar acción de la página",

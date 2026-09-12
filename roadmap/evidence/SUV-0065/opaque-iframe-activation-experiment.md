@@ -88,10 +88,29 @@ to: it takes ADR-0033's trusted-host-click branch.
 - A gesture is **spent** when it mints a ticket, which is what makes "one
   privileged action per click" true rather than aspirational. Passive input
   (moves, wheel, hover, enter/leave) never counts as a gesture.
-- Script and session grants additionally require host-rendered first-use
-  confirmation per render, naming the exact descriptor. That dialog is host
-  chrome, so the user's answer is a click the main process both renders and
-  observes — the frame-independent trusted path the ADR asks for.
+- **Every mutating kind** requires host-rendered first-use confirmation per
+  render, naming the exact descriptor. That dialog is host chrome, so the
+  user's answer is a click the main process both renders and observes — the
+  frame-independent trusted path the ADR asks for.
+
+  ADR-0033 §3 names only script and session here, because it expected a frame
+  click to be establishable as proof for the others. Finding 1 removes that
+  expectation: a window gesture cannot distinguish "the user clicked this
+  Page's button" from "the user clicked anything at all", so an approved POST
+  or MCP write could otherwise be fired from a timer on the back of an
+  unrelated click. The ADR's own safe branch is then binding — *use a trusted
+  host-click path for the affected operation or reject it* — and the affected
+  operation is every mutating kind. This is a **narrowing** of what the ADR
+  permits, made necessary by the ADR's own experiment, so it needs no new
+  decision. It was raised in review of PR #204 and is recorded here rather
+  than only in that thread.
+
+  **Named residual:** after a grant's first confirmed use on a render,
+  subsequent invocations need a fresh unspent window gesture but no second
+  dialog. One stray click elsewhere in the app can therefore authorize one
+  further invocation of an already-confirmed, already-approved capability.
+  Confirming every invocation was rejected as friction the ADR explicitly did
+  not ask for; tightening this is a policy change, not an architecture one.
 
 Finding 3's unknown is deliberately made safe by shape rather than by assumption:
 if real in-frame clicks turn out to be invisible to `input-event`, a Page button

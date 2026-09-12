@@ -750,7 +750,7 @@
   "overlay.zoomReset": "Nagyítás visszaállítása (⌘0)",
   "overlay.zoomToFit": "Illesztés mérethez",
   "pages.actions.confirm.cancel": "Mégse",
-  "pages.actions.confirm.detail": "Workspace: {{workspace}}\nOldal: {{page}} ({{pageSlug}})\n\nEz az oldal először kéri ebben a nézetben egy jóváhagyott művelet futtatását a számítógépeden:\n\n{{action}}\n\nA saját fájljaiddal és jogosultságaiddal fut. Amíg az oldal nyitva marad, ezt a műveletet nem kérdezzük meg újra.",
+  "pages.actions.confirm.detail": "Workspace: {{workspace}}\nOldal: {{page}} ({{pageSlug}})\n\nEz az oldal először kéri ebben a nézetben egy jóváhagyott művelet futtatását:\n\n{{action}}\n\nA te hozzáféréseddel és jogosultságaiddal fut. Amíg az oldal nyitva marad, ezt a műveletet nem kérdezzük meg újra.",
   "pages.actions.confirm.message": "Futtatod ezt a műveletet a(z) „{{page}}” oldalhoz a(z) {{workspace}} workspace-ben?",
   "pages.actions.confirm.run": "Futtatás egyszer",
   "pages.actions.confirm.title": "Oldalművelet futtatása",

@@ -85,6 +85,13 @@ describe('pages/action-bridge', () => {
     };
   }
 
+  /**
+   * A host that can render first-use confirmation and whose user says yes.
+   * Every mutating kind needs one now, so a mint without this models a host
+   * with no confirmation surface — which is a distinct test, not the default.
+   */
+  const CONFIRMING = { confirmFirstUse: async () => true };
+
   /** What the host asserts. Never wire data — see PageActionAuthority. */
   const AUTHORITY: PageActionAuthority = {
     workspaceId: 'ws_test0001',
@@ -700,7 +707,7 @@ describe('pages/action-bridge', () => {
       expect(calls).toHaveLength(0);
 
       const request = writeRequest(lease);
-      const mint = await broker.mintActivationTicket(page, request, AUTHORITY);
+      const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
       expect(mint.ok).toBe(true);
       const ran = await broker.executeAction(page, { ...request, activationTicket: ticketOf(mint) }, AUTHORITY);
       expect(ran.ok).toBe(true);
@@ -723,7 +730,7 @@ describe('pages/action-bridge', () => {
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
       const request = writeRequest(lease);
-      const mint = await broker.mintActivationTicket(page, request, AUTHORITY);
+      const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
       const activated = { ...request, activationTicket: ticketOf(mint) };
 
       // Fired together: consumption is atomic, so exactly one can win. If the
@@ -751,7 +758,7 @@ describe('pages/action-bridge', () => {
         ],
       });
       const approved = writeRequest(lease);
-      const mint = await broker.mintActivationTicket(page, approved, AUTHORITY);
+      const mint = await broker.mintActivationTicket(page, approved, AUTHORITY, CONFIRMING);
       const ticketId = ticketOf(mint);
 
       // Same render, same lease, same nonce — a different call. The harmless
@@ -798,7 +805,7 @@ describe('pages/action-bridge', () => {
       // a failed attempt burns the ticket and a shared one would make the
       // second assertion pass for the wrong reason.
       const forRender = writeRequest(leaseA);
-      const renderMint = await broker.mintActivationTicket(page, forRender, AUTHORITY);
+      const renderMint = await broker.mintActivationTicket(page, forRender, AUTHORITY, CONFIRMING);
 
       // Another render of the same page cannot spend it.
       const otherRender = await broker.executeAction(
@@ -811,7 +818,7 @@ describe('pages/action-bridge', () => {
 
       // Another workspace cannot spend it, even naming the same request.
       const forWorkspace = writeRequest(leaseA);
-      const workspaceMint = await broker.mintActivationTicket(page, forWorkspace, AUTHORITY);
+      const workspaceMint = await broker.mintActivationTicket(page, forWorkspace, AUTHORITY, CONFIRMING);
       const otherWorkspace = await broker.executeAction(
         page,
         { ...forWorkspace, activationTicket: ticketOf(workspaceMint) },
@@ -827,7 +834,7 @@ describe('pages/action-bridge', () => {
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
       const request = writeRequest(lease);
-      const mint = await broker.mintActivationTicket(page, request, AUTHORITY);
+      const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
 
       const result = await broker.executeAction(
         page,
@@ -849,7 +856,7 @@ describe('pages/action-bridge', () => {
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
       const request = writeRequest(lease);
-      const mint = await broker.mintActivationTicket(page, request, AUTHORITY);
+      const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
       expect(mint.ok).toBe(true);
       expect((mint as { expiresAt: number }).expiresAt - clock.now).toBeLessThanOrEqual(PAGE_ACTIVATION_TICKET_TTL_CEILING_MS);
 
@@ -865,7 +872,7 @@ describe('pages/action-bridge', () => {
       const page = writePage();
 
       const released = writeRequest(lease);
-      const mintA = await broker.mintActivationTicket(page, released, AUTHORITY);
+      const mintA = await broker.mintActivationTicket(page, released, AUTHORITY, CONFIRMING);
       expect(broker.activationTicketCount).toBe(1);
       broker.releaseLease(lease.leaseId);
       expect(broker.activationTicketCount).toBe(0);
@@ -873,7 +880,7 @@ describe('pages/action-bridge', () => {
       expect(afterRelease.ok).toBe(false);
 
       const lease2 = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-      await broker.mintActivationTicket(page, writeRequest(lease2), AUTHORITY);
+      await broker.mintActivationTicket(page, writeRequest(lease2), AUTHORITY, CONFIRMING);
       expect(broker.activationTicketCount).toBe(1);
       // A content change or a revocation must reach tickets too: they are the
       // one authority that does not re-read page.json for itself.
@@ -886,9 +893,9 @@ describe('pages/action-bridge', () => {
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = writePage();
       for (let i = 0; i < MAX_OUTSTANDING_TICKETS_PER_LEASE; i++) {
-        expect((await broker.mintActivationTicket(page, writeRequest(lease), AUTHORITY)).ok).toBe(true);
+        expect((await broker.mintActivationTicket(page, writeRequest(lease), AUTHORITY, CONFIRMING)).ok).toBe(true);
       }
-      const overflow = await broker.mintActivationTicket(page, writeRequest(lease), AUTHORITY);
+      const overflow = await broker.mintActivationTicket(page, writeRequest(lease), AUTHORITY, CONFIRMING);
       expect(overflow.ok).toBe(false);
       expect((overflow as { code: string }).code).toBe('rate-limited');
     });
@@ -896,7 +903,7 @@ describe('pages/action-bridge', () => {
     it('does not mint for a non-mutating action', async () => {
       const { broker } = activationBroker();
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
-      const mint = await broker.mintActivationTicket(makePage(), makeRequest(lease), AUTHORITY);
+      const mint = await broker.mintActivationTicket(makePage(), makeRequest(lease), AUTHORITY, CONFIRMING);
       expect(mint.ok).toBe(false);
       expect(broker.activationTicketCount).toBe(0);
     });
@@ -909,8 +916,9 @@ describe('pages/action-bridge', () => {
         page,
         writeRequest(lease, { invocation: { kind: 'api', method: 'POST', path: '/repos/x', params: { apiToken: 'sk-super-secret' } } }),
         AUTHORITY,
+        CONFIRMING,
       );
-      await broker.mintActivationTicket(page, writeRequest(lease, { grantId: 'grant_missing' }), AUTHORITY);
+      await broker.mintActivationTicket(page, writeRequest(lease, { grantId: 'grant_missing' }), AUTHORITY, CONFIRMING);
 
       const audit = await readAudit();
       const issued = audit.find((e) => e.event === 'page_activation_issued');
@@ -995,18 +1003,39 @@ describe('pages/action-bridge', () => {
       expect((abandoned as { code: string }).code).toBe('lease-not-found');
     });
 
-    it('does not require confirmation for api and mcp grants', async () => {
-      const broker = makeBroker({ executeApi: async () => ({ status: 201, ok: true, body: null }) });
+    it('requires confirmation for api and mcp writes too, not only scripts', async () => {
+      // ADR-0033 §3 named script and session, on the assumption that a frame
+      // click could be established as proof for the rest. The SUV-0065
+      // experiment refuted that assumption, so a window gesture cannot tell an
+      // approved POST the user asked for from one a timer fired on the back of
+      // an unrelated click elsewhere in the app. Every mutating kind therefore
+      // gets the one click that is unambiguously about this action.
+      const calls: unknown[] = [];
+      const broker = makeBroker({
+        executeApi: async (invocation) => { calls.push(invocation); return { status: 201, ok: true, body: null }; },
+      });
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       const page = makePage({
         grants: [makeGrant({ id: 'grant_write0001', action: { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '/repos/.*' } })],
       });
-      const mint = await broker.mintActivationTicket(
-        page,
-        makeRequest(lease, { grantId: 'grant_write0001', invocation: { kind: 'api', method: 'POST', path: '/repos/x' } }),
-        AUTHORITY,
-      );
-      expect(mint.ok).toBe(true);
+      const write = () => makeRequest(lease, {
+        grantId: 'grant_write0001',
+        invocation: { kind: 'api', method: 'POST', path: '/repos/x' },
+      });
+
+      const unconfirmed = await broker.mintActivationTicket(page, write(), AUTHORITY);
+      expect((unconfirmed as { code: string }).code).toBe('first-use-confirmation-required');
+
+      const declined = await broker.mintActivationTicket(page, write(), AUTHORITY, { confirmFirstUse: async () => false });
+      expect((declined as { code: string }).code).toBe('first-use-confirmation-declined');
+      expect(calls).toHaveLength(0);
+
+      // Confirmed once, then not asked again for this grant on this render.
+      let asked = 0;
+      const confirmFirstUse = async () => { asked++; return true; };
+      expect((await broker.mintActivationTicket(page, write(), AUTHORITY, { confirmFirstUse })).ok).toBe(true);
+      expect((await broker.mintActivationTicket(page, write(), AUTHORITY, { confirmFirstUse })).ok).toBe(true);
+      expect(asked).toBe(1);
     });
   });
 
@@ -1028,13 +1057,13 @@ describe('pages/action-bridge', () => {
 
       // Refused at mint, so the user is never shown a confirmation for
       // something that cannot run…
-      const mint = await broker.mintActivationTicket(page, request, safe);
+      const mint = await broker.mintActivationTicket(page, request, safe, CONFIRMING);
       expect(mint.ok).toBe(false);
       expect((mint as { code: string }).code).toBe('permission-mode-forbidden');
 
       // …and refused again at execution, so a ticket minted before the mode
       // changed cannot outlive the change.
-      const permissive = await broker.mintActivationTicket(page, request, AUTHORITY);
+      const permissive = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
       const afterSwitch = await broker.executeAction(
         page,
         { ...request, activationTicket: (permissive as { ticketId: string }).ticketId },
@@ -1102,7 +1131,7 @@ describe('pages/action-bridge', () => {
         grants: [makeGrant({ id: 'grant_write0001', action: { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '/repos/.*' } })],
       });
       const request = makeRequest(lease, { grantId: 'grant_write0001', invocation: { kind: 'api', method: 'POST', path: '/repos/x' } });
-      const mint = await broker.mintActivationTicket(page, request, AUTHORITY);
+      const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
       expect(broker.activationTicketCount).toBe(1);
 
       broker.cancelAction(lease.leaseId, lease.nonce, request.requestId);
@@ -1159,7 +1188,7 @@ describe('pages/action-bridge', () => {
       });
       const write = async () => {
         const request = makeRequest(lease, { grantId: 'grant_write0001', invocation: { kind: 'api', method: 'POST', path: '/repos/x' } });
-        const mint = await broker.mintActivationTicket(page, request, AUTHORITY);
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
         return broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY);
       };
 
@@ -1190,7 +1219,7 @@ describe('pages/action-bridge', () => {
       });
       const start = async () => {
         const request = makeRequest(lease, { grantId: 'grant_write0001', invocation: { kind: 'api', method: 'POST', path: '/repos/x' } });
-        const mint = await broker.mintActivationTicket(page, request, AUTHORITY);
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
         return broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY);
       };
 
@@ -1253,6 +1282,191 @@ describe('pages/action-bridge', () => {
       clock.now += 61_000;
       const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
       expect((await broker.executeAction(page, makeRequest(lease), AUTHORITY)).ok).toBe(true);
+    });
+  });
+
+
+  /**
+   * Regressions for the three defects the PR #204 review found. Each one
+   * passed the original suite, so each gets a test that fails without its fix.
+   */
+  describe('review regressions (PR #204)', () => {
+    const writeGrant = () => makeGrant({
+      id: 'grant_write0001',
+      expiresAt: clock.now + 3_600_000,
+      action: { kind: 'api', sourceSlug: 'github', method: 'POST', pathPattern: '/repos/.*' },
+    });
+    const writePage = () => makePage({ grants: [writeGrant()] });
+
+    it('holds the mutating ceiling against requests started in the SAME turn', async () => {
+      // The original check-then-act read the count, awaited, and only then
+      // incremented, so requests that never yielded between those two steps all
+      // saw a free slot. The earlier concurrency test missed it by spacing the
+      // third request with a timer; this one starts them together.
+      let running = 0;
+      let peak = 0;
+      const gates: Array<() => void> = [];
+      const broker = makeBroker({
+        executeApi: () => new Promise((resolve) => {
+          running++;
+          peak = Math.max(peak, running);
+          gates.push(() => { running--; resolve({ status: 201, ok: true, body: null }); });
+        }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = writePage();
+
+      const start = async () => {
+        const request = makeRequest(lease, {
+          grantId: 'grant_write0001',
+          invocation: { kind: 'api', method: 'POST', path: '/repos/x' },
+        });
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+        return broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY);
+      };
+
+      // No awaits between them: all four race into admission together.
+      const all = [start(), start(), start(), start()];
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(peak).toBeLessThanOrEqual(PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE);
+
+      let settled = false;
+      void Promise.all(all).then(() => { settled = true; });
+      for (let round = 0; round < 10 && !settled; round++) {
+        while (gates.length) gates.shift()!();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await Promise.all(all);
+      expect(peak).toBeLessThanOrEqual(PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE);
+    });
+
+    it('cancels a request that is still waiting for a slot, and never runs it', async () => {
+      // The ticket is spent at admission but the controller used to be
+      // registered only after the wait, so a queued write was uncancellable:
+      // cancelAction found nothing, said so, and the write ran anyway.
+      const gates: Array<() => void> = [];
+      const executed: unknown[] = [];
+      const broker = makeBroker({
+        executeApi: (invocation) => new Promise((resolve) => {
+          executed.push(invocation);
+          gates.push(() => resolve({ status: 201, ok: true, body: null }));
+        }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = writePage();
+
+      const start = async (path: string) => {
+        const request = makeRequest(lease, {
+          grantId: 'grant_write0001',
+          invocation: { kind: 'api', method: 'POST', path },
+        });
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+        return {
+          requestId: request.requestId,
+          result: broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY),
+        };
+      };
+
+      const first = await start('/repos/a');
+      const second = await start('/repos/b');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = await start('/repos/c');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(executed).toHaveLength(PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE);
+
+      expect(broker.cancelAction(lease.leaseId, lease.nonce, queued.requestId)).toBe(true);
+
+      while (gates.length) gates.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      while (gates.length) gates.shift()!();
+
+      const settled = await Promise.all([first.result, second.result, queued.result]);
+      expect(settled[2]!.ok).toBe(false);
+      expect(settled[2]!.error).toContain('cancelled');
+      // The withdrawn write never reached the executor, even after a slot freed.
+      expect(executed).toHaveLength(PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE);
+    });
+
+    it('refuses a ticket whose approved command was swapped under the same grant id', async () => {
+      // page.json can be rewritten in place while the confirmation dialog is
+      // open: same grant id, same content digest (which covers index.html, not
+      // the grant list). The ticket must name the command the user was shown,
+      // not the slot it was filed under.
+      const ran: Array<{ script: string }> = [];
+      const broker = makeBroker({
+        executeScript: async (invocation) => { ran.push({ script: invocation.script }); return { exitCode: 0, stdout: '', stderr: '' }; },
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const approvedPage = makePage({
+        grants: [makeGrant({ id: 'grant_script001', action: { kind: 'script', script: 'pages/dash/safe.ts' } })],
+      });
+      const request = makeRequest(lease, { grantId: 'grant_script001', invocation: { kind: 'script' } });
+      const mint = await broker.mintActivationTicket(approvedPage, request, AUTHORITY, CONFIRMING);
+      expect(mint.ok).toBe(true);
+
+      // The same id now points at a different command — this is what execution
+      // re-reads from disk.
+      const swappedPage = makePage({
+        grants: [makeGrant({ id: 'grant_script001', action: { kind: 'script', script: 'pages/dash/evil.ts' } })],
+      });
+      const result = await broker.executeAction(
+        swappedPage,
+        { ...request, activationTicket: (mint as { ticketId: string }).ticketId },
+        AUTHORITY,
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain('activation-invalid');
+      expect(ran).toHaveLength(0);
+    });
+
+    it('gives the slot back when a queued request is refused after the wait', async () => {
+      // Admission reserves a slot before the queue; every exit path after that
+      // has to return it, or a refused queue entry permanently shrinks the
+      // render's concurrency.
+      const gates: Array<() => void> = [];
+      const broker = makeBroker({
+        executeApi: () => new Promise((resolve) => { gates.push(() => resolve({ status: 201, ok: true, body: null })); }),
+      });
+      const lease = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const page = writePage();
+      const start = async () => {
+        const request = makeRequest(lease, {
+          grantId: 'grant_write0001',
+          invocation: { kind: 'api', method: 'POST', path: '/repos/x' },
+        });
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+        return broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY);
+      };
+
+      // Not awaited: `start` returns the executeAction promise, so awaiting it
+      // would wait for an action the gate is deliberately holding open.
+      const running = [start(), start()];
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const queued = start();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Releasing the lease refuses the queued request after it wakes.
+      broker.releaseLease(lease.leaseId);
+      while (gates.length) gates.shift()!();
+      const refused = await queued;
+      expect(refused.ok).toBe(false);
+      await Promise.all(running);
+
+      // A fresh render still gets its full concurrency.
+      const lease2 = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      const after = async () => {
+        const request = makeRequest(lease2, {
+          grantId: 'grant_write0001',
+          invocation: { kind: 'api', method: 'POST', path: '/repos/x' },
+        });
+        const mint = await broker.mintActivationTicket(page, request, AUTHORITY, CONFIRMING);
+        return broker.executeAction(page, { ...request, activationTicket: (mint as { ticketId: string }).ticketId }, AUTHORITY);
+      };
+      const nextPair = [after(), after()];
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(gates.length).toBe(PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE);
+      while (gates.length) gates.shift()!();
+      await Promise.all(nextPair);
     });
   });
 

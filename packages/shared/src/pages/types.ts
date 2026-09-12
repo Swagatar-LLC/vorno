@@ -148,8 +148,18 @@ export interface PageActionOriginPolicy {
   /** Must a mutating action carry a host-minted, single-use activation ticket? */
   requiresActivationTicket: boolean;
   /**
-   * Must script/session kinds additionally clear host-rendered first-use
-   * confirmation on this render before their first execution?
+   * Must a mutating action additionally clear host-rendered first-use
+   * confirmation on this render before its first execution?
+   *
+   * ADR-0033 §3 names script and session as the kinds that require this, on the
+   * assumption that a click in the Page frame could be established as proof for
+   * the others. The experiment in `roadmap/evidence/SUV-0065` measured that
+   * assumption and it did not hold: no signal at any trust level attributes a
+   * gesture to the frame, so a window gesture cannot distinguish "the user
+   * clicked this Page's button" from "the user clicked anything at all". The
+   * ADR's own safe branch is then binding — use a trusted host-click path for
+   * the affected operation or reject it — and the affected operation is every
+   * mutating kind, not only the two it expected to need it.
    */
   requiresFirstUseConfirmation: boolean;
 }
