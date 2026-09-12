@@ -184,6 +184,27 @@ describe('quit flushes sessions that are mid-commit', () => {
     expect(fired).toBe(false)
   })
 
+  it('cancels the forced turn-cleanup timer, so a quit inside its window writes nothing', async () => {
+    // The other per-session producer, and the subtler one: the 5s safety timer
+    // that forces turn cleanup when a stopped generator does not drain calls
+    // `onProcessingStopped`, which persists. A quit landing inside that window
+    // would let it fire against a frozen queue — a refused write, and an exit
+    // without the finalised turn while the flush reported quiescence.
+    let fired = false
+    const managed = {
+      forceStopCleanupTimer: setTimeout(() => { fired = true }, 30),
+      stopRequested: true,
+      isProcessing: true,
+    }
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set('stuck-session', managed)
+
+    await sm.flushAllSessions()
+
+    expect(managed.forceStopCleanupTimer).toBeUndefined()
+    await new Promise((r) => setTimeout(r, 60))
+    expect(fired).toBe(false)
+  })
+
   it('stops the producers before it closes the queue', async () => {
     // Ordering belongs here rather than in each host, so the three quit paths
     // (electron, standalone server, headless server) cannot get it wrong

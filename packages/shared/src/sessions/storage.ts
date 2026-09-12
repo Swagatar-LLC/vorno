@@ -316,10 +316,28 @@ export async function getOrCreateSessionById(
  * Writes in JSONL format: line 1 = header, lines 2+ = messages
  */
 export async function saveSession(session: StoredSession): Promise<void> {
-  sessionPersistenceQueue.enqueue(session);
+  // Goes through the CHECKED path and throws on a bad receipt, because this is
+  // an awaited API whose whole contract is "it is saved".
+  //
+  // The fire-and-forget `enqueue` + `flush` pair could not keep that promise.
+  // `enqueue` is refused once the queue is closing, which leaves nothing queued
+  // — and `flush` returns immediately for a key with no queued work and no
+  // tail. So during a shutdown drain this resolved happily having written
+  // nothing, and every awaiting caller (pending-plan writes, status and label
+  // mutations, an in-flight RPC or tool call) was told it had succeeded.
+  // A silent success is the one answer an awaited save must never give.
+  //
+  // The receipt is generation-exact, so this reports on THIS snapshot's bytes
+  // rather than on whatever else happened to be in the queue.
+  const handle = sessionPersistenceQueue.enqueueChecked(session);
   // Keyed by workspace + id, not id alone: session ids are unique only within
-  // a workspace, and flushing the wrong workspace's entry would be silent.
-  await sessionPersistenceQueue.flush(sessionWriteKey(session.workspaceRootPath, session.id));
+  // a workspace, and flushing the wrong workspace's entry would be silent. The
+  // handle carries its own key, so this cannot drive a different one.
+  sessionPersistenceQueue.driveChecked(handle.key);
+  const receipt = await handle.receipt;
+  if (!receipt.ok) {
+    throw new Error(`Failed to save session ${session.id}: ${receipt.error}`);
+  }
 }
 
 /**

@@ -964,6 +964,18 @@ interface ManagedSession {
   // after a short delay. The pending slot lets `sendMessage` dedup a duplicate
   // RPC from a legacy renderer that still ships the client-side auto_retry.
   autoRetryTimer?: ReturnType<typeof setTimeout>
+  /**
+   * The 5s safety timer that forces turn cleanup when a stopped generator does
+   * not finish draining.
+   *
+   * Held rather than fired-and-forgotten because it is a PERSISTENCE PRODUCER:
+   * it calls `onProcessingStopped`, which persists. A quit landing inside its
+   * window would let it fire after the queue froze and have that write refused,
+   * so the app would exit without the finalised turn while the flush reported
+   * quiescence. Cleared by `stopPersistenceProducers` and by the cleanup it
+   * exists to back up.
+   */
+  forceStopCleanupTimer?: ReturnType<typeof setTimeout>
   autoRetryPending?: {
     content: string
     deadlineMs: number
@@ -2461,6 +2473,13 @@ export class SessionManager implements ISessionManager {
         managed.autoRetryTimer = undefined
       }
       managed.autoRetryPending = undefined
+      // The forced turn-cleanup safety timer is a producer for the same reason:
+      // it calls `onProcessingStopped`, which persists. A quit inside its 5s
+      // window would otherwise fire it against a frozen queue.
+      if (managed.forceStopCleanupTimer) {
+        clearTimeout(managed.forceStopCleanupTimer)
+        managed.forceStopCleanupTimer = undefined
+      }
     }
   }
 
@@ -7224,8 +7243,14 @@ export class SessionManager implements ISessionManager {
     }
 
     // Safety timeout: if event loop doesn't complete within 5 seconds, force cleanup
-    // This handles cases where the generator gets stuck
-    setTimeout(() => {
+    // This handles cases where the generator gets stuck.
+    //
+    // The handle is KEPT (see `forceStopCleanupTimer`): this callback persists,
+    // so a shutdown starting inside the window must be able to cancel it rather
+    // than let it write into a frozen queue.
+    if (managed.forceStopCleanupTimer) clearTimeout(managed.forceStopCleanupTimer)
+    managed.forceStopCleanupTimer = setTimeout(() => {
+      managed.forceStopCleanupTimer = undefined
       if (managed.stopRequested && managed.isProcessing) {
         sessionLog.warn('Generator did not complete after stop request, forcing cleanup')
         this.onProcessingStopped(sessionId, 'timeout')
@@ -7376,6 +7401,13 @@ export class SessionManager implements ISessionManager {
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) return
+
+    // The safety timer has done its job (or was beaten to it). Clearing here
+    // keeps it from outliving the turn it was watching.
+    if (managed.forceStopCleanupTimer) {
+      clearTimeout(managed.forceStopCleanupTimer)
+      managed.forceStopCleanupTimer = undefined
+    }
 
     sessionLog.info(`Processing stopped for session ${sessionId}: ${reason}`)
 

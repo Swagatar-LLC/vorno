@@ -114,8 +114,13 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       refused; an endless reconciliation cycle fails the shutdown rather than
       extending it; and `flushAllSessions` stops the producers before closing,
       including each session's pending auto-retry timer.
-- [x] A stale hook disposer cannot clear a newer owner's hooks, and the seam
-      refuses outside a test runner.
+- [x] A stale hook disposer cannot clear a newer owner's hooks; the seam admits
+      only `NODE_ENV === 'test'` (probed: `Bun.jest` exists under plain bun) and
+      a refused install leaves hooks unchanged.
+- [x] `saveSession` resolves only when the bytes are on disk, and rejects both
+      during a shutdown drain and on a genuine write failure.
+- [x] A quit inside the 5s forced-turn-cleanup window cancels that timer, so it
+      never persists after the freeze.
 - [x] Ids that name one file share one key and tail (`nested/same` == `same`),
       while the same canonical id under different roots stays separate.
 - [x] A failed rename does not advance the committed baseline; an abandoned
@@ -127,6 +132,35 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       3 rounds on the round-1 fixes, and 6 on the round-2 fixes — all caught.
 
 ## Review findings
+
+### Review 6 — security final on the freeze
+
+Three more, all consequences of the shutdown freeze rather than of the original
+unit, and two of them cases where my own guard did not do what its comment said.
+
+1. **`saveSession` reported successes it had not made.** It is the one awaited
+   save API, and it used the fire-and-forget `enqueue` + `flush` pair — but a
+   refused enqueue leaves nothing queued, and `flush` returns immediately for a
+   key with no queued work and no tail. During a drain it therefore resolved
+   having written nothing, telling pending-plan writes, status and label
+   mutations, and any in-flight RPC or tool call that they had succeeded. Now
+   routed through `enqueueChecked` and throws on a bad receipt.
+2. **The test-runner guard admitted production.** It accepted
+   `typeof Bun.jest !== 'undefined'`, and a probe shows that is `'function'`
+   under plain `bun run` as well as `bun test` — so it admitted every plain-bun
+   process, which is exactly how the headless server and `pi-agent-server` run.
+   `BUN_TEST` was unset in both and contributed nothing. Now `NODE_ENV === 'test'`
+   alone, which `bun test` sets and plain `bun` does not; a refused install
+   leaves hooks unchanged.
+3. **A second per-session producer.** The 5s forced turn-cleanup timer calls
+   `onProcessingStopped`, which persists, and its handle was not stored. A quit
+   inside that window fired it against a frozen queue. Stored on the managed
+   session, cleared when the cleanup it backs up runs, and cancelled with the
+   rest before the freeze.
+
+The pattern worth naming: both missed producers hang off each managed session
+rather than sitting in a workspace-keyed map, which is where the first sweep
+looked. Anything on `ManagedSession` that schedules work is a producer.
 
 ### Review 5 — Greptile P1 on the shutdown freeze
 
@@ -355,6 +389,11 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 6 (security final): `saveSession` could resolve success
+  during a drain having written nothing; the test-runner guard admitted plain
+  bun (and so the headless server) because `Bun.jest` exists there too; and the
+  5s forced turn-cleanup timer was a second unstored per-session producer. All
+  three mutation-verified.
 - `2026-09-12` — review 5 (Greptile P1): the review-4 shutdown freeze refused
   the replacement half of a watcher reconciliation, so absorbing an external
   edit during quit destroyed it. Fixed with a narrow reconciliation exemption

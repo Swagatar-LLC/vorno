@@ -1508,16 +1508,23 @@ export function currentSingletonCommitHooksForTesting(): SessionCommitHooks | un
   return singletonHookOwner?.hooks
 }
 
-/** Whether the process is running under a test runner. */
+/**
+ * Whether the process is running under a test runner.
+ *
+ * `NODE_ENV === 'test'` and nothing else, verified by probe rather than assumed:
+ *
+ * - `bun test` sets `NODE_ENV=test`; plain `bun run` leaves it undefined.
+ * - `typeof Bun.jest` is `'function'` under plain `bun run` TOO, so an earlier
+ *   version of this guard admitted every plain-bun process — which is exactly
+ *   the production case for the headless server and `pi-agent-server`. A guard
+ *   that permits production is not a guard.
+ * - `BUN_TEST` is unset in both, so it never contributed anything.
+ *
+ * A positive check for a test environment, never a negative check for
+ * production: an unset or unrecognised environment must refuse, not permit.
+ */
 function isTestRunner(): boolean {
-  // Bun sets this for `bun test`; NODE_ENV covers other runners. Deliberately a
-  // positive check for a test environment rather than a negative check for
-  // production, so an unset environment refuses instead of permitting.
-  return (
-    process.env.NODE_ENV === 'test' ||
-    typeof (globalThis as { Bun?: { jest?: unknown } }).Bun?.jest !== 'undefined' ||
-    process.env.BUN_TEST === '1'
-  )
+  return process.env.NODE_ENV === 'test'
 }
 
 // Singleton instance. Constructed with hooks that delegate to the holder above,
