@@ -2391,6 +2391,38 @@ describe('pages/action-bridge', () => {
       expect(settled.every((r) => r.ok)).toBe(true);
     });
 
+    it('protects an actively-used window from a flood that touches its own leases', async () => {
+      // A non-mutating grant needs no activation, so a flood holding an
+      // approved GET can touch every lease it mints and leave the never-used
+      // group entirely. What it cannot cheaply do is stay the MOST recently
+      // used: each touch costs an action, and actions are budgeted per page and
+      // per workspace — which is why the used group is ordered rather than just
+      // ranked behind the unused one.
+      const broker = makeBroker({ executeApi: async () => ({ status: 200, ok: true, body: null }) });
+      const page = makePage({ grants: [makeGrant({ expiresAt: clock.now + 24 * 3_600_000 })] });
+      disk.page = page;
+
+      const mounted = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+      expect((await broker.executeAction(page, makeRequest(mounted), AUTHORITY)).ok).toBe(true);
+
+      // Spaced in simulated time so the flood's own actions are not throttled —
+      // it gets to actually touch each lease, which is the hard case.
+      for (let i = 0; i < MAX_LIVE_LEASES + 50; i++) {
+        clock.now += 2_000;
+        const junk = broker.createLease({ pageSlug: 'dash', contentDigest: DIGEST_V1 });
+        expect((await broker.executeAction(page, makeRequest(junk), AUTHORITY)).ok).toBe(true);
+        // The real window acts occasionally, as a user would.
+        if (i % 25 === 0) {
+          clock.now += 1_000;
+          expect((await broker.executeAction(page, makeRequest(mounted), AUTHORITY)).ok).toBe(true);
+        }
+      }
+
+      // It survived the churn and can still act.
+      expect(broker.hasActiveLease(mounted.leaseId, 'dash', DIGEST_V1)).toBe(true);
+      expect((await broker.executeAction(page, makeRequest(mounted), AUTHORITY)).ok).toBe(true);
+    });
+
     it('falls back to the oldest when every lease is busy', async () => {
       // With nothing idle to choose, age decides — the store cap still has to
       // hold, and refusing to evict would be the worse failure.

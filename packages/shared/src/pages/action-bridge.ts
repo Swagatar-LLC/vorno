@@ -507,9 +507,12 @@ export class PageActionBroker {
    * leaseId → when this lease last did anything a user would recognize:
    * executed an action, or had a ticket minted for one.
    *
-   * Eviction reads it to tell a mounted window that is simply between clicks
-   * from a lease a flood minted and never used. Without it, "idle" conflates
-   * the two and the flood wins on age.
+   * Eviction orders on it (falling back to issue time), so a window in active
+   * use is evicted last and a lease minted and abandoned goes first. Ordering
+   * rather than merely checking presence is what makes it useful: a
+   * non-mutating grant needs no activation, so "has been touched at all" is
+   * cheap for a flood to satisfy, while "touched most recently" costs an action
+   * per lease per round — and actions are budgeted per page and per workspace.
    */
   private readonly leaseLastUsedAt = new Map<string, number>();
   private readonly seenRequestIds = new Map<string, Set<string>>();
@@ -592,39 +595,61 @@ export class PageActionBroker {
     this.pruneExpiredLeases();
 
     if (this.leases.size >= MAX_LIVE_LEASES) {
-      // Prefer an IDLE lease — one with nothing in flight — over a busy one.
+      // Evict the least-recently-useful lease: busy last, otherwise the one
+      // whose last activity is oldest.
       //
-      // Eviction is the only place a flood reaches a stranger: the store is
-      // shared and bounded, any client may mint into it, and dropping a lease
-      // now aborts whatever it was running. Choosing purely by age lets a loop
-      // that started later displace a window in the middle of a write. Age
-      // still decides among idle leases, so an abandoned render is what goes.
+      // Three tiers (never-used → idle → oldest) were tried and were bypassable.
+      // A non-mutating grant needs no activation, so a client holding an
+      // approved API GET could touch each lease once and lift every one of them
+      // out of the never-used tier; and the recorded timestamp was checked for
+      // existence but never used for ordering, so within a tier age alone still
+      // decided and a real mount still lost to a later flood.
       //
-      // Deliberately independent of caller identity: a rotating client would
-      // defeat any per-caller reservation, and "is this lease doing work right
-      // now" is a property of the host's own state that nothing can forge.
-      let oldest: PageRenderLease | undefined;
-      let oldestIdle: PageRenderLease | undefined;
-      let oldestUnused: PageRenderLease | undefined;
+      // One key — last activity, falling back to issue time — subsumes both
+      // tiers and closes that. A lease that was minted and abandoned sorts by
+      // its issue time and goes first. A lease touched once long ago sorts by
+      // that touch and goes next. A window in active use keeps refreshing its
+      // key and is evicted last. Keeping many leases "recently used" costs an
+      // action each, and actions are already budgeted per page and per
+      // workspace, so the cost of defeating this is bounded by a limit that
+      // does not depend on who is calling.
+      // Rank: never-used before used, and within each group oldest first.
+      //
+      // A single "last activity" key does not work, and the reason is worth
+      // keeping: a lease minted and never touched sorts by its ISSUE time,
+      // which for a flood is recent, while a window used once early sorts by
+      // that old touch — so the real mount would be evicted first, exactly
+      // backwards. Never-used therefore ranks ahead of used regardless of age.
+      //
+      // Ordering WITHIN the used group is what closes the bypass: a
+      // non-mutating grant needs no activation, so a flood holding an approved
+      // GET can touch each lease once and leave the never-used group entirely.
+      // It cannot cheaply stay the most recent, because each touch costs an
+      // action and actions are budgeted per page and per workspace — a limit
+      // that does not depend on who is calling.
+      const rankOf = (lease: PageRenderLease): [number, number] => {
+        const usedAt = this.leaseLastUsedAt.get(lease.leaseId);
+        return usedAt === undefined ? [0, lease.issuedAt] : [1, usedAt];
+      };
+      const colder = (a: PageRenderLease, b: PageRenderLease) => {
+        const [aTier, aAt] = rankOf(a);
+        const [bTier, bAt] = rankOf(b);
+        return aTier !== bTier ? aTier < bTier : aAt < bAt;
+      };
+
+      let coldest: PageRenderLease | undefined;
+      let coldestBusy: PageRenderLease | undefined;
       for (const lease of this.leases.values()) {
-        if (!oldest || lease.issuedAt < oldest.issuedAt) oldest = lease;
-        // Busy means anything ADMITTED, not merely executing. A mutating
-        // request registers its controller before it waits for a slot, so
-        // reading `inFlight` counts queued writes too — `inFlightByLease` is
-        // incremented only after the wait, and using it here classified a
-        // queued mutation as idle and let a flood abort it.
-        if ((this.inFlight.get(lease.leaseId)?.size ?? 0) > 0) continue;
-        if (!oldestIdle || lease.issuedAt < oldestIdle.issuedAt) oldestIdle = lease;
-        // Never used at all: minted and abandoned, which is what a flood
-        // produces and what a mounted window does not.
-        if (this.leaseLastUsedAt.has(lease.leaseId)) continue;
-        if (!oldestUnused || lease.issuedAt < oldestUnused.issuedAt) oldestUnused = lease;
+        // Busy means anything ADMITTED, not merely executing: a mutating
+        // request registers its controller before it waits for a slot.
+        if ((this.inFlight.get(lease.leaseId)?.size ?? 0) > 0) {
+          if (!coldestBusy || colder(lease, coldestBusy)) coldestBusy = lease;
+          continue;
+        }
+        if (!coldest || colder(lease, coldest)) coldest = lease;
       }
-      // Preference order: never-used, then idle, then oldest regardless. A
-      // window that is merely between clicks outranks a lease that has done
-      // nothing since it was minted, which is the distinction that protects a
-      // real mount from churn without appealing to caller identity.
-      const evicted = oldestUnused ?? oldestIdle ?? oldest;
+      // Only when every live lease has work outstanding does one of those lose.
+      const evicted = coldest ?? coldestBusy;
       if (evicted) {
         this.dropLease(evicted.leaseId);
         void this.appendAudit({
@@ -632,7 +657,7 @@ export class PageActionBroker {
           pageSlug: evicted.pageSlug,
           leaseId: evicted.leaseId,
           reason: 'lease-store-full',
-          selected: oldestUnused ? 'never-used' : oldestIdle ? 'idle' : 'oldest-busy',
+          selected: coldest ? 'coldest-idle' : 'busy-fallback',
         }, 'lease-lifecycle');
       }
     }
