@@ -1275,7 +1275,11 @@ class SessionPersistenceQueue {
       this.settleReceipts(key, generation, { ok: true })
       return true
     } catch (error) {
-      console.error(`[PersistenceQueue] Failed to write session ${entry.data.id}:`, error)
+      // CLASSIFIED BEFORE IT IS LOGGED. A delete or a supersede landing mid-write
+      // makes this throw the EXPECTED end of an intentional operation, and
+      // announcing it as a failed write sends whoever reads the log looking for
+      // a disk problem that is not there.
+      //
       // CANCELLATION OUTRANKS FAILURE, and it has to be re-read here because
       // the attempt spanned awaits: `cancelForDeletion` or
       // `supersedePendingWrites` may have landed while it ran, and the check at
@@ -1304,6 +1308,8 @@ class SessionPersistenceQueue {
         this.settleReceipts(key, generation, { ok: false, error: `session write ${reason}`, reason })
         return false
       }
+      // A genuine failure, and only now announced as one.
+      console.error(`[PersistenceQueue] Failed to write session ${entry.data.id}:`, error)
       // Recorded, not thrown. Existing callers are fire-and-forget and must not
       // start failing; a receipt is the opt-in way to learn about this.
       const message = error instanceof Error ? error.message : String(error)

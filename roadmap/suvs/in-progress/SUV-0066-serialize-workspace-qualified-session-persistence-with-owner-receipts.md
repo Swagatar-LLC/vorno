@@ -235,6 +235,106 @@ orphaning instead of superseding at turn start. The auth-retry site is the one
 stop site with no test of its own — its tail is two synchronous statements and
 the supersede backstop bounds a leak there — recorded rather than implied away.
 
+### Review 19 — the last places the two paths disagreed
+
+1. **An undelivered steer came back as a different message, and not durably.** A
+   steer is a user message that was accepted, ACKed and persisted, then pushed
+   into the running turn instead of queued. `steer_undelivered` carries only the
+   TEXT, so the re-queue built a bare entry: a NEW message with a new id (a
+   duplicate in the transcript), no attachments, no skill slugs, and nothing on
+   disk — `messageQueue` is runtime state. A quit right there lost a message the
+   user had been told was accepted. `pendingSteers` now remembers the envelope at
+   steer time and the event consumes it: the ORIGINAL message gets `isQueued` +
+   `queuedSkillSlugs` and a full runtime entry. Envelopes are per-turn and
+   cleared in `onProcessingStopped`, because a delivered steer is not coming back
+   and a stale one re-queues a message that was already answered.
+
+2. **Live and replayed sends could disagree about the slugs.** Normalizing at
+   each persist site left the LIVE pre-enable — the one that reaches
+   `loadSkillBySlug` FIRST — reading whatever the caller sent. There is one
+   normalization now, at send ingress, and the raw value is never read again, so
+   the pre-enable, every runtime queue entry and the persisted field take the
+   same list. The shape moved to the repo's standing slug rule: lowercase
+   alphanumeric with hyphens, no leading hyphen, the same rule `isValidSlug` and
+   the source/status schemas use.
+
+   **Compatibility, stated:** a skill DIRECTORY may be named anything the
+   filesystem allows, and one with an underscore or a capital is mentionable
+   today. Such a skill still RUNS; what it loses is the source pre-enable, on the
+   live path as well as the replayed one, so the agent enables its sources at
+   runtime — the two-turn penalty, not a failure. Widening to `[a-z0-9_-]` is a
+   one-character change if that trade is the wrong way round.
+
+3. **Fixture waits are events, not timers.** `setTimeout(50)` asserted that 50ms
+   had passed. The fake turn boundary now resolves a deferred the test awaits,
+   and settling polls the real condition — an empty admission map, bounded — so a
+   send that never settles fails an assertion instead of hanging. Every fixture
+   ends by asserting nothing it started is still outstanding, and the mid-stream
+   fake now ADOPTS and settles the pre-claimed admission: a mock that ignored
+   that argument leaked one per replay, and the leak is invisible until a
+   shutdown waits out its bound on it.
+
+4. **Two comments claimed `messageQueue` is persisted. It is not** — `isQueued`
+   on the message is what survives — and a cancelled write announced itself as a
+   failed one, sending a log reader after a disk problem that was not there. The
+   classification now runs before the error log.
+
+Mutations: the steer re-queued as text only; no ingress normalization; stale
+envelopes kept. The last two SURVIVED at first — not because the code was safe
+but because no test asserted those claims, which is the same aim problem this SUV
+has now hit three times. A live-vs-replay test and a two-turn steer test kill
+them.
+
+### Review 19 — the last places the two paths disagreed
+
+1. **An undelivered steer came back as a different message, and not durably.** A
+   steer is a user message that was accepted, ACKed and persisted, then pushed
+   into the running turn instead of queued. `steer_undelivered` carries only the
+   TEXT, so the re-queue built a bare entry: a NEW message with a new id (a
+   duplicate in the transcript), no attachments, no skill slugs, and nothing on
+   disk, since `messageQueue` is runtime state. A quit right there lost a message
+   the user had been told was accepted. `pendingSteers` now remembers the
+   envelope at steer time and the event consumes it: the ORIGINAL message gets
+   `isQueued` + `queuedSkillSlugs` and a full runtime entry. Envelopes are
+   per-turn and cleared in `onProcessingStopped`, because a delivered steer is
+   not coming back and a stale one re-queues a message already answered.
+
+2. **Live and replayed sends could disagree about the slugs.** Normalizing at
+   each persist site left the LIVE pre-enable — the one that reaches
+   `loadSkillBySlug` FIRST — reading whatever the caller sent. There is one
+   normalization now, at send ingress, and the raw value is never read again, so
+   the pre-enable, every runtime queue entry and the persisted field take the
+   same list. The shape moved to the repo's standing slug rule: lowercase
+   alphanumeric with hyphens, no leading hyphen — the same rule `isValidSlug` and
+   the source/status schemas use.
+
+   **Compatibility, stated:** a skill DIRECTORY may be named anything the
+   filesystem allows, and one with an underscore or a capital is mentionable
+   today. Such a skill still RUNS; what it loses is the source pre-enable, on the
+   live path as well as the replayed one, so the agent enables its sources at
+   runtime — the two-turn penalty, not a failure. Widening to `[a-z0-9_-]` is a
+   one-character change if that trade is the wrong way round.
+
+3. **Fixture waits are events, not timers.** `setTimeout(50)` asserted that 50ms
+   had passed. The fake turn boundary now resolves a deferred the test awaits,
+   and settling polls the real condition — an empty admission map, bounded — so a
+   send that never settles fails an assertion instead of hanging the suite. Every
+   fixture ends by asserting nothing it started is still outstanding, and the
+   mid-stream fake ADOPTS and settles the pre-claimed admission: a mock that
+   ignored that argument leaked one per replay, and that leak is invisible until
+   a shutdown waits out its bound on it.
+
+4. **Two comments claimed `messageQueue` is persisted. It is not** — `isQueued`
+   on the message is what survives — and a cancelled write announced itself as a
+   failed one, sending a log reader after a disk problem that was not there. The
+   classification now runs before the error log.
+
+Mutations: the steer re-queued as text only; no ingress normalization; stale
+envelopes kept. The last two SURVIVED at first — not because the code was safe
+but because no test asserted those claims, which is the same aim problem this SUV
+has now hit three times. A live-vs-replay test and a two-turn steer test kill
+them.
+
 ### Review 17 — the edges of the fixes from review 16
 
 1. **A delete racing a failing write left evidence, and the retry resurrected the
@@ -795,6 +895,20 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 19 (architecture P1/P2/P3): an undelivered steer was
+  re-queued as a NEW, non-durable message, losing id, attachments and slugs — it
+  now promotes the original through a per-turn envelope; skill slugs are
+  normalized once at send ingress against the repo's lowercase-hyphen slug rule,
+  so a live turn and its replay cannot disagree; fixture waits became events with
+  leak assertions; and the `messageQueue`-is-persisted comments and the
+  cancelled-write error log were corrected.
+- `2026-09-12` — review 19 (architecture P1/P2/P3): an undelivered steer was
+  re-queued as a NEW, non-durable message, losing its id, attachments and slugs
+  — it now promotes the original through a per-turn envelope; skill slugs are
+  normalized once at send ingress against the repo's lowercase-hyphen rule, so a
+  live turn and its replay cannot disagree; fixture waits became events with
+  leak assertions; and the `messageQueue`-is-persisted comments and the
+  cancelled-write error log were corrected.
 - `2026-09-12` — review 18 (security P3): `normalizeQueuedSkillSlugs` trusted a
   `.length` check on an untrusted field, so a corrupted `queuedSkillSlugs`
   string produced one slug per character and an object with a `length` threw

@@ -87,7 +87,14 @@ describe('mid-stream queue runtime invariants', () => {
     sm.setEventSink((_channel, _target, event) => events.push(event))
     ;(sm as unknown as { lastTimestamp: number }).lastTimestamp = priorFinalTimestamp
     ;(sm as unknown as { persistSession: () => void }).persistSession = () => {}
-    const sendMessage = mock(async () => {})
+    // The fake stands in for the real send, so it inherits the real send's
+    // obligation: `processNextQueuedMessage` claims the admission before it
+    // hands the message over, and whatever receives it settles that claim. A
+    // mock that ignores the last argument leaks one per replay — and the leak
+    // is invisible until a shutdown waits out its bound on it.
+    const sendMessage = mock(async (...args: unknown[]) => {
+      ;(args[9] as { settle(): void } | undefined)?.settle()
+    })
     ;(sm as unknown as { sendMessage: typeof sendMessage }).sendMessage = sendMessage
 
     ;(sm as unknown as { processNextQueuedMessage: (id: string) => void })
@@ -112,5 +119,7 @@ describe('mid-stream queue runtime invariants', () => {
     expect(processingEvent?.message.timestamp).toBe(replayed?.timestamp)
     expect(processingEvent?.optimisticMessageId).toBe('optimistic-user')
     expect(sendMessage).toHaveBeenCalledTimes(1)
+    // And nothing is left outstanding once the replay has been handed over.
+    expect((sm as unknown as { sendAdmissions: Map<symbol, unknown> }).sendAdmissions.size).toBe(0)
   })
 })

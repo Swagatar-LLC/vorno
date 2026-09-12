@@ -32,10 +32,22 @@ const SOURCE_SLUG = 'linear-fixture'
 
 describe('normalizeQueuedSkillSlugs', () => {
   it('keeps well-formed slugs, once each', () => {
-    expect(normalizeQueuedSkillSlugs(['commit', 'commit', 'roadmap-plan_advance'])).toEqual([
-      'commit', 'roadmap-plan_advance',
+    expect(normalizeQueuedSkillSlugs(['commit', 'commit', 'roadmap-plan-advance'])).toEqual([
+      'commit', 'roadmap-plan-advance',
     ])
     expect(normalizeQueuedSkillSlugs(['  spaced  '])).toEqual(['spaced'])
+    expect(normalizeQueuedSkillSlugs(['a1'])).toEqual(['a1'])
+  })
+
+  it('holds the repo slug shape: lowercase alphanumeric and hyphens', () => {
+    // Stated compatibility rather than a discovered surprise: a skill DIRECTORY
+    // may be named anything the filesystem allows, and one with a capital or an
+    // underscore is mentionable today. Such a skill still runs — what it loses
+    // is the source pre-enable, on the live path and the replayed one alike.
+    expect(normalizeQueuedSkillSlugs(['My_Skill'])).toBeUndefined()
+    expect(normalizeQueuedSkillSlugs(['Commit'])).toBeUndefined()
+    expect(normalizeQueuedSkillSlugs(['under_score'])).toBeUndefined()
+    expect(normalizeQueuedSkillSlugs(['-leading'])).toBeUndefined()
   })
 
   it('drops anything that is not a bare slug', () => {
@@ -113,6 +125,48 @@ describe('a queued send crossing a process boundary', () => {
     id: 'ws_replay', name: 'Replay WS', rootPath: root, createdAt: Date.now(),
   } as never)
 
+  /**
+   * Stop the send at the turn boundary and hand back a promise that resolves
+   * when it gets there.
+   *
+   * A timer would only assert that 50ms passed. This waits for the event the
+   * test is actually about, and `settled()` then drains the rejection that
+   * follows so nothing is left running when the test ends.
+   */
+  function fakeTurnBoundary(sm: SessionManager) {
+    let reached!: () => void
+    const at = new Promise<void>((r) => { reached = r })
+    ;(sm as unknown as {
+      getOrCreateAgent(m: unknown): Promise<unknown>
+    }).getOrCreateAgent = async () => {
+      reached()
+      throw new Error('fake turn boundary')
+    }
+    return {
+      at,
+      /**
+       * Let the rejection unwind and the admission's `finally` run.
+       *
+       * Polls the real condition — an empty admission map — rather than
+       * sleeping: the unwind takes an unknown number of microtask hops, and a
+       * fixed wait would either be flaky or be slower than it needs to be.
+       * Bounded, so a send that never settles fails the assertion rather than
+       * hanging the suite.
+       */
+      settled: async () => {
+        const admissions = (sm as unknown as { sendAdmissions: Map<symbol, unknown> }).sendAdmissions
+        for (let i = 0; i < 200 && admissions.size > 0; i++) {
+          await new Promise((r) => setImmediate(r))
+        }
+      },
+    }
+  }
+
+  /** Nothing this manager started is still outstanding. */
+  function expectNoLeakedWork(sm: SessionManager) {
+    expect((sm as unknown as { sendAdmissions: Map<symbol, unknown> }).sendAdmissions.size).toBe(0)
+  }
+
   function seed(sm: SessionManager, id: string, extra: Record<string, unknown> = {}) {
     const filePath = getSessionFilePath(root, id)
     mkdirSync(dirname(filePath), { recursive: true })
@@ -178,9 +232,7 @@ describe('a queued send crossing a process boundary', () => {
     // The turn itself is faked: this asserts what happens BEFORE one, and a real
     // backend would be the only thing in the test that is not the thing under
     // test. Throwing is what stops the send at the boundary of that fake.
-    ;(second as unknown as {
-      getOrCreateAgent(m: unknown): Promise<unknown>
-    }).getOrCreateAgent = async () => { throw new Error('fake turn boundary') }
+    const turn = fakeTurnBoundary(second)
 
     await (second as unknown as {
       ensureMessagesLoaded(m: unknown): Promise<void>
@@ -191,11 +243,11 @@ describe('a queued send crossing a process boundary', () => {
     expect(queue).toHaveLength(1)
     expect(queue[0]!.options?.skillSlugs).toEqual([SKILL_SLUG])
 
-    // Hydration scheduled the replay itself; let it run and settle. Waiting is
-    // the point — a test that schedules work it does not wait for reports on a
-    // state it never observed — and the replay ends in the fake turn boundary,
-    // which `processNextQueuedMessage` catches.
-    await new Promise((r) => setTimeout(r, 50))
+    // Hydration scheduled the replay itself. Waited for by the EVENT it is about
+    // — reaching the turn — rather than by a timer, which would only assert that
+    // 50ms had passed.
+    await turn.at
+    await turn.settled()
 
     // THE POINT: the skill's required source was enabled before the turn.
     expect(revived.enabledSourceSlugs as string[]).toContain(SOURCE_SLUG)
@@ -204,6 +256,143 @@ describe('a queued send crossing a process boundary', () => {
       .find((m) => m.content === 'run the commit helper')
     expect(replayed?.isQueued).toBeFalsy()
     expect(replayed?.queuedSkillSlugs).toBeUndefined()
+    expectNoLeakedWork(second)
+  }, 30000)
+
+  it('promotes an undelivered steer to durable queued state, as the same message', async () => {
+    // A steer is a user message that was ACCEPTED, ACKed and persisted, and then
+    // pushed into the running turn instead of queued. When the turn ends without
+    // delivering it, `steer_undelivered` brings it back — and it used to come
+    // back as a bare string: a NEW message with a new id (a duplicate in the
+    // transcript), no attachments, no skill slugs, and nothing durable, since
+    // `messageQueue` dies with the process. So a quit right there lost a message
+    // the user had been told was accepted.
+    const sessionId = 'sess_steer_undelivered'
+    const first = new SessionManager()
+    const managed = seed(first, sessionId)
+    const turns = first as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void }
+    turns.setProcessing(managed, true)
+    // A backend that accepts the steer.
+    managed.agent = { redirect: () => true }
+    managed.llmConnection = 'claude-max'
+
+    await first.sendMessage(sessionId, 'steered mid-turn', undefined, undefined, {
+      skillSlugs: [SKILL_SLUG],
+    })
+    // Accepted into the turn, so NOT queued.
+    expect((managed.messageQueue as unknown[]).length).toBe(0)
+    const sent = (managed.messages as Array<{ id: string; content?: string }>)
+      .find((m) => m.content === 'steered mid-turn')!
+    expect(sent).toBeDefined()
+
+    // The turn ends without ever delivering it.
+    await (first as unknown as {
+      processEvent(m: unknown, e: unknown): Promise<void>
+    }).processEvent(managed, { type: 'steer_undelivered', message: 'steered mid-turn' })
+
+    // Durable, and the SAME message: same id, its slugs, one copy.
+    const queue = managed.messageQueue as Array<{ messageId?: string; options?: { skillSlugs?: string[] } }>
+    expect(queue).toHaveLength(1)
+    expect(queue[0]!.messageId).toBe(sent.id)
+    expect(queue[0]!.options?.skillSlugs).toEqual([SKILL_SLUG])
+    expect((managed.messages as Array<{ content?: string }>)
+      .filter((m) => m.content === 'steered mid-turn')).toHaveLength(1)
+
+    // And the quit right there keeps it: the flag and the slugs are on disk.
+    turns.setProcessing(managed, false, 'no-tail')
+    await first.flushAllSessions()
+    sessionPersistenceQueue.reopenAfterFlushAll()
+
+    const line = readFileSync(getSessionFilePath(root, sessionId), 'utf-8')
+      .trim().split('\n').slice(1).find((l) => l.includes('steered mid-turn'))!
+    const stored = JSON.parse(line) as Record<string, unknown>
+    expect(stored.id).toBe(sent.id)
+    expect(stored.isQueued).toBe(true)
+    expect(stored.queuedSkillSlugs).toEqual([SKILL_SLUG])
+
+    // A new process recovers exactly that message, once.
+    const second = new SessionManager()
+    const revived = createManagedSession(
+      { id: sessionId, name: 'Replay session', sessionStatus: 'todo', createdAt: Date.now() },
+      workspace(),
+    ) as unknown as Record<string, unknown>
+    revived.messageQueue = []
+    ;(second as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, revived)
+    const turn = fakeTurnBoundary(second)
+    await (second as unknown as {
+      ensureMessagesLoaded(m: unknown): Promise<void>
+    }).ensureMessagesLoaded(revived)
+
+    const recovered = revived.messageQueue as Array<{ messageId?: string; options?: { skillSlugs?: string[] } }>
+    expect(recovered).toHaveLength(1)
+    expect(recovered[0]!.messageId).toBe(sent.id)
+    expect(recovered[0]!.options?.skillSlugs).toEqual([SKILL_SLUG])
+
+    await turn.at
+    await turn.settled()
+    expectNoLeakedWork(second)
+  }, 30000)
+
+  it('enables the same source on a LIVE send as on a replayed one, and drops a path-like slug', async () => {
+    // Live and restart have to agree, and they did not: the slugs were
+    // normalized where they were persisted, so the replay was validated while
+    // the LIVE pre-enable — the one that reaches `loadSkillBySlug` first — took
+    // whatever the caller sent. Normalizing once at ingress is what makes the
+    // two paths the same list.
+    const sessionId = 'sess_live_send'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId)
+    const turn = fakeTurnBoundary(sm)
+
+    // No turn running: this is the ordinary path, straight to a turn.
+    await sm.sendMessage(sessionId, 'run it now', undefined, undefined, {
+      skillSlugs: ['../../../etc/passwd', SKILL_SLUG],
+    }).catch(() => {})
+    await turn.settled()
+
+    // Same answer the replayed send gets: the source is on.
+    expect(managed.enabledSourceSlugs as string[]).toContain(SOURCE_SLUG)
+    // And the path-like slug never became a lookup.
+    expect(managed.lastSentOptions as { skillSlugs?: string[] })
+      .toMatchObject({ skillSlugs: [SKILL_SLUG] })
+    expectNoLeakedWork(sm)
+  }, 30000)
+
+  it('does not re-queue a steer from an earlier turn', async () => {
+    // The envelopes are per-TURN. A steer that was delivered is not coming back,
+    // and leaving its envelope behind meant the next undelivered steer with the
+    // same text matched the OLD one — re-queueing a message that had already
+    // been answered.
+    const sessionId = 'sess_steer_stale'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId)
+    const turns = sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void }
+    managed.agent = { redirect: () => true }
+
+    // Turn 1: the steer IS delivered, and the turn finalises.
+    turns.setProcessing(managed, true)
+    await sm.sendMessage(sessionId, 'same words', undefined, undefined, undefined)
+    const firstId = (managed.messages as Array<{ id: string; content?: string }>)
+      .find((m) => m.content === 'same words')!.id
+    await (sm as unknown as {
+      onProcessingStopped(id: string, reason: string): Promise<void>
+    }).onProcessingStopped(sessionId, 'complete')
+
+    // Turn 2: the same words again, this time undelivered.
+    turns.setProcessing(managed, true)
+    await sm.sendMessage(sessionId, 'same words', undefined, undefined, undefined)
+    const secondId = (managed.messages as Array<{ id: string; content?: string }>)
+      .filter((m) => m.content === 'same words').at(-1)!.id
+    expect(secondId).not.toBe(firstId)
+
+    await (sm as unknown as {
+      processEvent(m: unknown, e: unknown): Promise<void>
+    }).processEvent(managed, { type: 'steer_undelivered', message: 'same words' })
+
+    // The message that comes back is THIS turn's, not the one already answered.
+    const queue = managed.messageQueue as Array<{ messageId?: string }>
+    expect(queue.map((q) => q.messageId)).toEqual([secondId])
+    turns.setProcessing(managed, false, 'no-tail')
   }, 30000)
 
   it('opens a session whose queued message has a corrupted slug field', async () => {
@@ -234,9 +423,7 @@ describe('a queued send crossing a process boundary', () => {
     ) as unknown as Record<string, unknown>
     managed.messageQueue = []
     ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, managed)
-    ;(sm as unknown as {
-      getOrCreateAgent(m: unknown): Promise<unknown>
-    }).getOrCreateAgent = async () => { throw new Error('fake turn boundary') }
+    const turn = fakeTurnBoundary(sm)
 
     // Opens. Before the fix the object form threw out of here.
     await (sm as unknown as {
@@ -249,8 +436,11 @@ describe('a queued send crossing a process boundary', () => {
     // not become five of them.
     expect(queue.every((q) => q.options === undefined)).toBe(true)
 
-    // Let hydration's scheduled replay settle rather than leaving it running.
-    await new Promise((r) => setTimeout(r, 30))
+    // Let hydration's scheduled replay reach its boundary and unwind, rather
+    // than leaving it running.
+    await turn.at
+    await turn.settled()
+    expectNoLeakedWork(sm)
   }, 20000)
 
   it('keeps the durable marker when the replay is refused by a shutdown', async () => {
@@ -275,7 +465,10 @@ describe('a queued send crossing a process boundary', () => {
     // the gap safe, and it is observable right here.
     expect((sm as unknown as { sendAdmissions: Map<symbol, unknown> }).sendAdmissions.size).toBe(1)
     await sm.flushAllSessions()
-    await new Promise((r) => setTimeout(r, 20))
+    // The deferred send refuses; let that rejection unwind so the admission's
+    // `finally` has run before anything is asserted.
+    await new Promise((r) => setImmediate(r))
+    expectNoLeakedWork(sm)
 
     const onDisk = readFileSync(getSessionFilePath(root, sessionId), 'utf-8')
     const line = onDisk.trim().split('\n').slice(1).find(l => l.includes('queued then refused'))!

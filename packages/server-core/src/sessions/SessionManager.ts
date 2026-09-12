@@ -1035,6 +1035,26 @@ interface ManagedSession {
     /** True after the first matching sendMessage consumes the slot; later matches drop. */
     committed: boolean
   }
+  /**
+   * Steers handed to a live turn that may still come back undelivered.
+   *
+   * A steer is a user message that was accepted, ACKed and persisted, and then
+   * pushed into the running turn instead of queued. If no tool call fires before
+   * the turn ends, the backend returns it as `steer_undelivered` and it has to
+   * become a queued message after all — as the SAME message, with the same id,
+   * attachments and canonical options. The event carries only the text, so the
+   * rest is remembered here at steer time.
+   *
+   * Cleared when the turn finalises: a steer that was delivered is not coming
+   * back, and a stale envelope would re-queue a message that already ran.
+   */
+  pendingSteers?: Array<{
+    message: string
+    messageId: string
+    attachments?: FileAttachment[]
+    storedAttachments?: StoredAttachment[]
+    options?: SendMessageOptions
+  }>
 }
 
 /**
@@ -1088,11 +1108,21 @@ interface SendAdmission {
  * Validation is not a formality even on this path. The value round-trips
  * through a JSONL file a user can edit, and on the way back in it reaches
  * `loadSkillBySlug`, which builds a filesystem path out of it — so the shape
- * check runs on write AND on read, and `[\w-]+` cannot express a separator or
- * a `..`. Existence stays `loadSkillBySlug`'s question, which it already
- * answers and tolerates a miss on.
+ * check runs on write AND on read, and cannot express a separator or a `..`.
+ * Existence stays `loadSkillBySlug`'s question, which it already answers and
+ * tolerates a miss on.
+ *
+ * The shape is the repo's standing slug rule — lowercase alphanumeric with
+ * hyphens, no leading hyphen — the same one `isValidSlug` and the source/status
+ * schemas enforce. **Compatibility, stated rather than discovered later:** a
+ * skill DIRECTORY may be named anything the filesystem allows, and one named
+ * with an underscore or a capital (`My_Skill`) is mentionable today. Such a
+ * skill still runs; what it loses is the source PRE-ENABLE, on the live path as
+ * well as the replayed one, so the agent enables its sources at runtime instead
+ * — the two-turn penalty, not a failure. Widening to `[a-z0-9_-]` is a
+ * one-character change if that trade turns out to be the wrong way round.
  */
-const SKILL_SLUG_PATTERN = /^[\w-]+$/
+const SKILL_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/
 
 export function normalizeQueuedSkillSlugs(slugs: unknown): string[] | undefined {
   // `Array.isArray` FIRST, and the parameter is `unknown` for the same reason:
@@ -3037,9 +3067,11 @@ export class SessionManager implements ISessionManager {
    *
    * - **Processing.** Its turn is about to be aborted and finalised, so there
    *   is a final response and a completed state to record.
-   * - **Queued messages.** `messageQueue` is persisted state, and shutdown
-   *   deliberately does not replay it, so it has to survive to be replayed
-   *   after a restart.
+   * - **Queued messages.** Shutdown deliberately does not replay them, so they
+   *   have to reach disk to be replayed after a restart — and what reaches disk
+   *   is `isQueued` (plus `queuedSkillSlugs`) on the persisted MESSAGE, not
+   *   `messageQueue`, which is runtime state. A session holding runtime queue
+   *   entries is therefore one whose messages need that flag written.
    *
    * **Activity is checked FIRST, and an outstanding write does not override
    * it.** Getting that precedence backwards was a real bug: an active turn
@@ -7312,6 +7344,15 @@ export class SessionManager implements ISessionManager {
     // Clear any pending plan execution state when a new user message is sent.
     // This acts as a safety valve - if the user moves on, we don't want to
     // auto-execute an old plan later.
+    // CANONICAL FROM HERE DOWN. Normalized once, at ingress, and the raw value
+    // is never read again: the immediate source pre-enable, every runtime queue
+    // entry, and the persisted `queuedSkillSlugs` all take the same list, so a
+    // live turn and the same turn replayed after a restart cannot disagree about
+    // which skills were invoked. Normalizing at each persist site left the LIVE
+    // pre-enable — the one that actually reaches `loadSkillBySlug` first —
+    // reading whatever the caller sent.
+    options = options ? { ...options, skillSlugs: normalizeQueuedSkillSlugs(options.skillSlugs) } : undefined
+
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
 
@@ -7385,6 +7426,21 @@ export class SessionManager implements ISessionManager {
 
       const delivery = resolveMidStreamDeliveryOutcome(behavior, steered)
 
+      if (steered) {
+        // Remembered because `steer_undelivered` carries only the text. Without
+        // the envelope that event re-queued a bare string: a NEW message with a
+        // new id (so the transcript grew a duplicate), no attachments, and no
+        // skill slugs — and nothing durable, since `messageQueue` dies with the
+        // process. Recorded here, consumed there.
+        ;(managed.pendingSteers ??= []).push({
+          message,
+          messageId: userMessage.id,
+          attachments,
+          storedAttachments,
+          options,
+        })
+      }
+
       // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
       // (covers both queue-direct and queue-after-abort paths).
       this.sendEvent({
@@ -7407,7 +7463,7 @@ export class SessionManager implements ISessionManager {
         // for, and the slugs its replay needs. Written together, cleared
         // together, and only once a replay owns the turn.
         userMessage.isQueued = true
-        userMessage.queuedSkillSlugs = normalizeQueuedSkillSlugs(options?.skillSlugs)
+        userMessage.queuedSkillSlugs = options?.skillSlugs
         // Only claim interruption when a steer attempt actually aborted the
         // in-flight turn. In 'queue' mode the current turn runs to natural
         // completion, so the replayed turn must NOT inject the "previous response
@@ -7546,7 +7602,7 @@ export class SessionManager implements ISessionManager {
     if (this.shuttingDown) {
       sessionLog.info(`Not starting a turn for ${sessionId}: shutting down; queued for replay`)
       userMessage.isQueued = true
-      userMessage.queuedSkillSlugs = normalizeQueuedSkillSlugs(options?.skillSlugs)
+      userMessage.queuedSkillSlugs = options?.skillSlugs
       managed.messageQueue.push({
         message, attachments, storedAttachments, options,
         messageId: userMessage.id,
@@ -8296,6 +8352,9 @@ export class SessionManager implements ISessionManager {
         // 1. Cleanup state
         this.setProcessing(managed, false, finalization)
         managed.stopRequested = false  // Reset for next turn
+        // A steer that was delivered is not coming back; a stale envelope would
+        // re-queue a message that already ran.
+        managed.pendingSteers = undefined
 
         // 1b. Orphan backstop: with the default per-turn subprocess model, any
         // background sub-agent still marked `running` dies when this turn's
@@ -8449,7 +8508,9 @@ export class SessionManager implements ISessionManager {
     // persists the turn that was in flight — that is what shutdown waits for —
     // but it must not start the next one, or draining becomes a treadmill and
     // the new turn's writes arrive after the queue closes. The queued messages
-    // stay in `messageQueue`, which is persisted, so a restart replays them.
+    // survive through `isQueued` on the PERSISTED message — `messageQueue`
+    // itself is runtime state that dies with the process — so the cold-load
+    // re-queue scan replays them on the next launch.
     if (this.shuttingDown) {
       sessionLog.info(`Not replaying queued message for ${sessionId}: shutting down`)
       return
@@ -10249,13 +10310,45 @@ export class SessionManager implements ISessionManager {
         }
         break
 
-      case 'steer_undelivered':
+      case 'steer_undelivered': {
         // Steer message was not delivered (no PreToolUse fired before turn ended).
-        // Re-queue it so it's sent as a normal message on the next turn.
+        // Re-queue it so it's sent as a normal message on the next turn — as the
+        // SAME message it already is, not as a new one.
         sessionLog.info(`Steer message undelivered, re-queuing for session ${sessionId}`)
-        managed.messageQueue.push({ message: event.message })
+        const pendingIndex = managed.pendingSteers?.findIndex(p => p.message === event.message) ?? -1
+        const envelope = pendingIndex >= 0 ? managed.pendingSteers!.splice(pendingIndex, 1)[0] : undefined
+        const original = envelope
+          ? managed.messages.find(m => m.id === envelope.messageId)
+          : undefined
+
+        if (envelope && original) {
+          // Durable BEFORE anything else can end the turn: the message was
+          // accepted and ACKed, so losing it here would be losing a message the
+          // user was told had landed. `messageQueue` cannot carry that promise —
+          // it is runtime state — so the flag and the slugs go onto the message,
+          // which is what the cold-load scan replays from. The persist is picked
+          // up by shutdown's candidate scan either way: this session is
+          // processing, and it now holds a queued entry as well.
+          original.isQueued = true
+          original.queuedSkillSlugs = envelope.options?.skillSlugs
+          managed.messageQueue.push({
+            message: envelope.message,
+            attachments: envelope.attachments,
+            storedAttachments: envelope.storedAttachments,
+            options: envelope.options,
+            messageId: envelope.messageId,
+          })
+          this.persistSession(managed)
+        } else {
+          // No envelope: a steer this manager did not record (a path that does
+          // not go through `sendMessage`). Falls back to the old shape — the
+          // text alone, replayed as a new message — rather than dropping it.
+          sessionLog.warn(`Undelivered steer for ${sessionId} has no recorded envelope; re-queuing text only`)
+          managed.messageQueue.push({ message: event.message })
+        }
         managed.wasInterrupted = true
         break
+      }
 
       // Note: working_directory_changed is user-initiated only (via updateWorkingDirectory),
       // the agent no longer has a change_working_directory tool
