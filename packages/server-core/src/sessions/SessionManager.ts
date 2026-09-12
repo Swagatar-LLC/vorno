@@ -2439,6 +2439,29 @@ export class SessionManager implements ISessionManager {
       clearInterval(this.idleSweepTimer)
       this.idleSweepTimer = null
     }
+
+    // Cancel every session's pending source-activation auto-retry.
+    //
+    // This one is per-SESSION rather than per-workspace, which is why it was
+    // missed: the watchers and schedulers are in two maps that read like "the
+    // background things", and this timer lives on each managed session. It is
+    // just as much a producer — it fires `sendMessage`, which mutates the
+    // session and persists — so a shutdown starting inside its window would
+    // have it commit state after the freeze and have that write refused, and
+    // the app would exit without the retried message while the flush reported
+    // quiescence.
+    //
+    // Dropping the pending record too: the retry is a best-effort dedup window
+    // for a message the client may also resend, so abandoning it at shutdown
+    // loses nothing a restart cannot recover, whereas letting it fire mid-drain
+    // starts a turn nobody can finish.
+    for (const managed of this.sessions.values()) {
+      if (managed.autoRetryTimer) {
+        clearTimeout(managed.autoRetryTimer)
+        managed.autoRetryTimer = undefined
+      }
+      managed.autoRetryPending = undefined
+    }
   }
 
   /**

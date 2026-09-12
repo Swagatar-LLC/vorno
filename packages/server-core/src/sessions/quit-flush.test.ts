@@ -164,6 +164,26 @@ describe('quit flushes sessions that are mid-commit', () => {
     expect(sessionPersistenceQueue.isClosing).toBe(true)
   })
 
+  it('cancels a pending auto-retry timer before it closes the queue', async () => {
+    // The producer that is per-SESSION rather than per-workspace, and so the
+    // easy one to miss: the source-activation auto-retry fires `sendMessage`,
+    // which mutates the session and persists. A shutdown starting inside its
+    // window would let it commit state after the freeze and have that write
+    // refused, so the app would exit without the retried message while the
+    // flush reported quiescence.
+    let fired = false
+    const managed = { autoRetryTimer: setTimeout(() => { fired = true }, 30), autoRetryPending: { committed: false } }
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set('retry-session', managed)
+
+    await sm.flushAllSessions()
+
+    expect(managed.autoRetryTimer).toBeUndefined()
+    expect(managed.autoRetryPending).toBeUndefined()
+    // And it genuinely does not fire afterwards.
+    await new Promise((r) => setTimeout(r, 60))
+    expect(fired).toBe(false)
+  })
+
   it('stops the producers before it closes the queue', async () => {
     // Ordering belongs here rather than in each host, so the three quit paths
     // (electron, standalone server, headless server) cannot get it wrong

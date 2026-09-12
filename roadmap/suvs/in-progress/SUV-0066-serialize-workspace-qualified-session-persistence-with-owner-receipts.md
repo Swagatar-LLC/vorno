@@ -112,7 +112,8 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
 - [x] A watcher reconciliation arriving DURING the drain still lands — the
       shutdown waits for it — while an ordinary write at the same instant is
       refused; an endless reconciliation cycle fails the shutdown rather than
-      extending it; and `flushAllSessions` stops the producers before closing.
+      extending it; and `flushAllSessions` stops the producers before closing,
+      including each session's pending auto-retry timer.
 - [x] A stale hook disposer cannot clear a newer owner's hooks, and the seam
       refuses outside a test runner.
 - [x] Ids that name one file share one key and tail (`nested/same` == `same`),
@@ -149,6 +150,14 @@ Fixed on both levels, because either alone leaves a gap:
 
 The exemption is what covers a watcher event already dispatched when the freeze
 lands; the ordering is what stops the race from being routine.
+
+A follow-up pass then found a producer the first sweep had missed: each managed
+session's source-activation `autoRetryTimer`. The watchers and schedulers live in
+two workspace-keyed maps that read like "the background things"; this one hangs
+off each session, and it fires `sendMessage` — so a shutdown starting inside its
+100 ms window let it commit state after the freeze and have that write refused,
+exiting without the retried message while the flush reported quiescence. Now
+cancelled with the rest, pending record dropped.
 
 ### Review 4 — architecture final + security final
 
