@@ -139,6 +139,29 @@ deliberate narrowing a future owner will meet.
   automation in the operator's history. The Page audit log already records every
   decision under the right redaction rules.
 
+## Reopened again
+
+`2026-09-12` — Greptile round 2 (4/5) found one more P1 that the round-1 fix
+walked past. The re-resolution added before `addPageGrant` proved *existence and
+containment* only, so a session archived or moved to a closed status while the
+consent sheet was open still resolved, and the grant persisted against it. The
+executor refuses every finished target, so the user had approved a capability
+that could never fire — worse than a refusal, because it looks like it works.
+
+`2026-09-12` — closed again:
+
+- **`isSessionFinished` is now one predicate, shared by grant issuance and
+  delivery.** Both paths ask the same question, so they cannot drift about what
+  "finished" means, and the executor's own inline copy of the closed-status
+  check is gone.
+- **`isProcessing` is deliberately excluded from it**, and that asymmetry is the
+  decision rather than an oversight. Finished (archived / `closed`-category) is
+  durable — nothing re-opens a session on its own — so it refuses at BOTH grant
+  time and delivery. Busy is a moment: a session mid-turn now is an ordinary
+  target a minute later, so refusing to *grant* on it would make approval depend
+  on timing the user can neither see nor choose. Busy therefore refuses at
+  delivery only, where the remedy is clicking again.
+
 ## Residuals
 
 - **The webhook containment fix is behavioral.** A desktop webhook that had been

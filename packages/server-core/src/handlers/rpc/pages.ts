@@ -488,6 +488,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
    * using it, and a name shown days ago proves nothing about now.
    */
   async function describeSessionTarget(
+    workspaceRootPath: string,
     workspaceId: string,
     action: import('@craft-agent/core').PageActionDescriptor,
   ): Promise<{ id: string; name: string } | undefined> {
@@ -497,6 +498,20 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     if (!resolved) throw new Error(PAGE_GRANT_SESSION_TARGET_ERROR)
     const session = deps.sessionManager.getSessions(workspaceId).find((candidate) => candidate.id === resolved)
     if (!session) throw new Error(PAGE_GRANT_SESSION_TARGET_ERROR)
+    // Existence and containment are not enough to make a target GRANTABLE. A
+    // session archived or moved to a closed status while the consent sheet was
+    // open would still resolve here, and the grant persisted against it could
+    // never fire — the executor refuses every finished target — so the user
+    // would have approved a capability that only looks like it works. The same
+    // `isSessionFinished` predicate delivery uses answers it, so the two cannot
+    // drift about what "finished" means.
+    //
+    // `isProcessing` is deliberately NOT consulted here. Busy is a moment, not
+    // a state: refusing to grant on a session that happens to be mid-turn would
+    // make approval depend on timing the user cannot see. It refuses at
+    // delivery instead, where it is recoverable by clicking again.
+    const { isSessionFinished } = await import('../../sessions/page-callback-guards')
+    if (isSessionFinished(workspaceRootPath, session)) throw new Error(PAGE_GRANT_SESSION_TARGET_ERROR)
     return {
       id: resolved,
       // A session name is user- or model-authored text going into native
@@ -598,7 +613,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     // user to run something aimed at nothing.
     let targetSession: { id: string; name: string } | undefined
     try {
-      targetSession = await describeSessionTarget(workspace.id, grant.action)
+      targetSession = await describeSessionTarget(workspace.rootPath, workspace.id, grant.action)
     } catch {
       return false
     }
@@ -929,7 +944,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
     // This resolution decides whether to PROCEED. It is deliberately not the
     // one the sheet renders — see the re-resolve inside the queued callback.
     try {
-      await describeSessionTarget(canonicalWorkspaceId, request.action)
+      await describeSessionTarget(workspace.rootPath, canonicalWorkspaceId, request.action)
     } catch {
       await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
       throw new Error(PAGE_GRANT_SESSION_TARGET_ERROR)
@@ -1003,7 +1018,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         // asking for consent to the wrong thing.
         let targetSession: { id: string; name: string } | undefined
         try {
-          targetSession = await describeSessionTarget(canonicalWorkspaceId, request.action)
+          targetSession = await describeSessionTarget(workspace.rootPath, canonicalWorkspaceId, request.action)
         } catch {
           await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
           throw new Error(PAGE_GRANT_SESSION_TARGET_ERROR)
@@ -1085,7 +1100,7 @@ export function registerPagesHandlers(server: RpcServer, deps: HandlerDeps): voi
         // at a session that was archived or deleted while they were reading —
         // persisting that grant would mint a capability that can never fire.
         try {
-          await describeSessionTarget(canonicalWorkspaceId, request.action)
+          await describeSessionTarget(workspace.rootPath, canonicalWorkspaceId, request.action)
         } catch {
           await auditGrantDecision('page_grant_rejected', canonicalWorkspaceId, pageSlug, request.action.kind)
           resolveIssue(null)

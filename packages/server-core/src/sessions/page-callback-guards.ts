@@ -31,6 +31,43 @@ export interface PageCallbackTargetState {
   sessionStatus?: string;
 }
 
+/** The lifecycle half of the state, which grant-time also has to read. */
+export interface SessionLifecycleState {
+  isArchived?: boolean;
+  sessionStatus?: string;
+}
+
+/**
+ * Whether this session is finished work — archived, or in a `closed`-category
+ * status.
+ *
+ * Split out because **two** decisions need it and they are not the same
+ * decision. Delivery asks it (below) to refuse a callback aimed at a session
+ * that has since finished. Grant issuance asks it to refuse *approving* such a
+ * callback at all: a user who approves while a dialog is open on a session that
+ * got archived behind it has been handed a capability that can never fire, and
+ * a capability that can never fire is worse than a refusal, because it looks
+ * like it works.
+ *
+ * **`isProcessing` is deliberately NOT part of this.** Busy is a moment, not a
+ * state: a session mid-turn now is an ordinary target in a minute, so refusing
+ * to *grant* on it would make approval depend on timing the user cannot see and
+ * did not choose. Finished is durable — nothing in the product un-archives or
+ * re-opens a session on its own. So busy refuses at *delivery* only, which is
+ * exactly where it is recoverable ("try again in a moment"), and finished
+ * refuses at *both*.
+ */
+export function isSessionFinished(
+  workspaceRootPath: string,
+  state: SessionLifecycleState,
+): boolean {
+  if (state.isArchived === true) return true;
+  return (
+    state.sessionStatus !== undefined &&
+    getStatusCategory(workspaceRootPath, state.sessionStatus) === 'closed'
+  );
+}
+
 /**
  * Decide whether this callback may be delivered right now.
  *
@@ -61,14 +98,9 @@ export function pageCallbackRefusal(
 
   // Finished work. Delivering into it would re-open a session in the user's
   // inbox on a page's schedule — ADR-0021's rule that closure is the human's
-  // decision cuts both ways.
-  if (target.isArchived === true) return 'session-closed';
-  if (
-    target.sessionStatus !== undefined &&
-    getStatusCategory(target.workspace.rootPath, target.sessionStatus) === 'closed'
-  ) {
-    return 'session-closed';
-  }
+  // decision cuts both ways. Same predicate grant issuance uses, so the two
+  // cannot disagree about what "finished" means.
+  if (isSessionFinished(target.workspace.rootPath, target)) return 'session-closed';
 
   // Refuse rather than inherit `sendMessage`'s mid-stream behavior, which would
   // either interrupt the running turn or queue behind it. Both put a page's

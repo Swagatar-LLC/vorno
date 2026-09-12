@@ -1629,6 +1629,72 @@ describe('Page session callbacks', () => {
     expect(invoke.deliveries).toHaveLength(0)
   })
 
+  test('refuses to GRANT against a session that is already finished', async () => {
+    for (const finished of [{ sessionStatus: 'done' }, { isArchived: true }] as const) {
+      const invoke = createHarness('approve')
+      invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name, ...finished }] })
+      const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+        name: 'Finished target', content: '<p>x</p>',
+      }) as { slug: string }
+      const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+        lease: { leaseId: string; nonce: string }
+      }
+
+      // Existence and containment are not enough to make a target grantable.
+      // A grant against finished work can never fire — the executor refuses
+      // every finished target — so approving one hands the user a capability
+      // that only looks like it works.
+      await expect(invoke(
+        RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug,
+        { action: { kind: 'session', sessionId: TARGET.id, message: PINNED } },
+        lease.lease.leaseId,
+      )).rejects.toThrow('PAGE_GRANT_SESSION_TARGET_UNAVAILABLE')
+      expect(invoke.confirmations).toHaveLength(0)
+    }
+  })
+
+  test('persists no grant when the target finishes while the sheet is open', async () => {
+    for (const finished of [{ sessionStatus: 'done' }, { isArchived: true }] as const) {
+      // `duringConfirmation` fires while the native sheet is on screen, which
+      // is the only way to reach the post-answer re-check: the user approves a
+      // callback aimed at a session that got archived behind the dialog.
+      let invoke!: GrantHarness
+      invoke = createHarness('approve', () => {
+        invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name, ...finished }] })
+      })
+      invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+
+      const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+        name: 'Races the sheet', content: '<p>x</p>',
+      }) as { slug: string }
+      const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+        lease: { leaseId: string; nonce: string }
+      }
+
+      const outcome = await invoke(
+        RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug,
+        { action: { kind: 'session', sessionId: TARGET.id, message: PINNED } },
+        lease.lease.leaseId,
+      ).catch(() => null)
+
+      expect(outcome).toBeNull()
+      const { loadPageConfig } = await import('@craft-agent/shared/pages')
+      expect(loadPageConfig(ROOT_A, page.slug)?.grants ?? []).toHaveLength(0)
+    }
+  })
+
+  test('still GRANTS against a session that is merely busy', async () => {
+    // Busy is a moment, not a state. Refusing to grant on a mid-turn session
+    // would make approval depend on timing the user cannot see; it refuses at
+    // delivery instead, where clicking again fixes it.
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name, isProcessing: true }] })
+
+    const { grant } = await seedSessionGrant(invoke)
+    expect(grant).not.toBeNull()
+    expect(invoke.confirmations.at(-1)!.targetSession).toEqual({ id: TARGET.id, name: TARGET.name })
+  })
+
   test('refuses a descriptor that smuggles an action or a target selector', async () => {
     const invoke = createHarness('approve')
     invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })

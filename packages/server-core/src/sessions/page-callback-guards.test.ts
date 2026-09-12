@@ -12,7 +12,7 @@ import { describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { pageCallbackRefusal, type PageCallbackTargetState } from './page-callback-guards.ts';
+import { isSessionFinished, pageCallbackRefusal, type PageCallbackTargetState } from './page-callback-guards.ts';
 
 const WS = 'ws-home';
 
@@ -76,6 +76,40 @@ describe('pageCallbackRefusal', () => {
     expect(pageCallbackRefusal(foreign, WS, true)).toBe('session-not-found');
   });
 
+});
+
+describe('isSessionFinished', () => {
+  it('treats archived and closed-category statuses as finished', () => {
+    expect(isSessionFinished(ROOT, { isArchived: true })).toBe(true);
+    expect(isSessionFinished(ROOT, { sessionStatus: 'done' })).toBe(true);
+    expect(isSessionFinished(ROOT, { sessionStatus: 'cancelled' })).toBe(true);
+  });
+
+  it('treats open statuses and an absent status as live', () => {
+    expect(isSessionFinished(ROOT, {})).toBe(false);
+    expect(isSessionFinished(ROOT, { sessionStatus: 'todo' })).toBe(false);
+    expect(isSessionFinished(ROOT, { sessionStatus: 'in-progress' })).toBe(false);
+  });
+
+  it('does not consider a busy session finished', () => {
+    // The distinction the whole grant/delivery split rests on. Busy is a
+    // moment — a session mid-turn now is an ordinary target in a minute — so it
+    // refuses at delivery only. Finished is durable, so it refuses at both. If
+    // this ever returned true for a processing session, approving a callback
+    // would start depending on timing the user cannot see.
+    expect(isSessionFinished(ROOT, { sessionStatus: 'in-progress' })).toBe(false);
+    expect(pageCallbackRefusal(target({ isProcessing: true }), WS, false)).toBe('session-busy');
+  });
+
+  it('is the same predicate delivery uses, so the two cannot disagree', () => {
+    for (const state of [{ isArchived: true }, { sessionStatus: 'done' }]) {
+      expect(isSessionFinished(ROOT, state)).toBe(true);
+      expect(pageCallbackRefusal(target(state), WS, false)).toBe('session-closed');
+    }
+  });
+});
+
+describe('pageCallbackRefusal contract', () => {
   it('is synchronous, which is the property the whole design rests on', () => {
     // An async guard would reintroduce the await window it exists to close, so
     // the contract is asserted rather than left to a comment.

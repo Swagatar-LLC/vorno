@@ -30,8 +30,9 @@
  * quoting anything the far end said.
  */
 
-import { describeOrigin, getStatusCategory, pageOrigin } from '@craft-agent/shared/statuses'
+import { describeOrigin, pageOrigin } from '@craft-agent/shared/statuses'
 import { resolveWorkspaceSessionTarget, type WorkspaceSessionLookup } from '@craft-agent/shared/automations'
+import { isSessionFinished } from '../sessions/page-callback-guards'
 import type { Logger } from '@craft-agent/server-core/runtime'
 
 /**
@@ -171,9 +172,7 @@ export function createPagesSessionExecutor(deps: PagesSessionExecutorDeps) {
     // by itself it would be a race. The same questions are re-asked inside
     // `tryDeliverPageCallback`, in the same JS turn as the commit, and that is
     // where the answer binds.
-    const closedByStatus = target.sessionStatus !== undefined &&
-      getStatusCategory(deps.workspaceRootPath, target.sessionStatus) === 'closed'
-    if (target.isArchived === true || closedByStatus) {
+    if (isSessionFinished(deps.workspaceRootPath, target)) {
       deps.log.debug(`[pages] session callback refused (closed) for ${describeOrigin(origin)}`)
       return {
         ok: false,
