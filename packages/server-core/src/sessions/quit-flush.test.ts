@@ -54,6 +54,39 @@ describe('quit flushes sessions that are mid-commit', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
+  /**
+   * A real managed session, seeded on disk.
+   *
+   * Shutdown now touches EVERY loaded session — it aborts running turns and
+   * persists each final state with a checked receipt — so a hand-rolled
+   * `{ someTimer }` object no longer survives the sequence. That is the
+   * sequence working: a fake thin enough to skip the persist is a fake that
+   * cannot show the persist happened.
+   */
+  function seedManaged(id: string, extra: Record<string, unknown> = {}) {
+    const filePath = getSessionFilePath(root, id)
+    mkdirSync(dirname(filePath), { recursive: true })
+    writeSessionJsonl(filePath, {
+      id,
+      workspaceRootPath: root,
+      name: 'Quit session',
+      sessionStatus: 'todo',
+      createdAt: Date.now(),
+      lastUsedAt: Date.now(),
+      messages: [{ role: 'user', content: 'transcript' }],
+    } as unknown as StoredSession)
+
+    const managed = createManagedSession(
+      { id, name: 'Quit session', sessionStatus: 'todo', createdAt: Date.now() },
+      { id: WORKSPACE_ID, name: 'Quit WS', rootPath: root, createdAt: Date.now() } as never,
+    ) as unknown as Record<string, unknown>
+    managed.messagesLoaded = true
+    managed.messages = [{ role: 'user', content: 'transcript' }]
+    Object.assign(managed, extra)
+    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(id, managed)
+    return managed
+  }
+
   it('flushAllSessions waits for a write already past the queue', async () => {
     const filePath = getSessionFilePath(root, SESSION_ID)
     mkdirSync(dirname(filePath), { recursive: true })
@@ -172,15 +205,16 @@ describe('quit flushes sessions that are mid-commit', () => {
     // refused, so the app would exit without the retried message while the
     // flush reported quiescence.
     let fired = false
-    const managed = { autoRetryTimer: setTimeout(() => { fired = true }, 30), autoRetryPending: { committed: false } }
-    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set('retry-session', managed)
+    const managed = seedManaged(SESSION_ID, {
+      autoRetryTimer: setTimeout(() => { fired = true }, 40),
+      autoRetryPending: { content: 'x', deadlineMs: Date.now() + 2000, committed: false },
+    })
 
     await sm.flushAllSessions()
 
     expect(managed.autoRetryTimer).toBeUndefined()
     expect(managed.autoRetryPending).toBeUndefined()
-    // And it genuinely does not fire afterwards.
-    await new Promise((r) => setTimeout(r, 60))
+    await new Promise((r) => setTimeout(r, 70))
     expect(fired).toBe(false)
   })
 
@@ -188,20 +222,17 @@ describe('quit flushes sessions that are mid-commit', () => {
     // The other per-session producer, and the subtler one: the 5s safety timer
     // that forces turn cleanup when a stopped generator does not drain calls
     // `onProcessingStopped`, which persists. A quit landing inside that window
-    // would let it fire against a frozen queue — a refused write, and an exit
-    // without the finalised turn while the flush reported quiescence.
+    // would let it fire against a frozen queue.
     let fired = false
-    const managed = {
-      forceStopCleanupTimer: setTimeout(() => { fired = true }, 30),
+    const managed = seedManaged(SESSION_ID, {
+      forceStopCleanupTimer: setTimeout(() => { fired = true }, 40),
       stopRequested: true,
-      isProcessing: true,
-    }
-    ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set('stuck-session', managed)
+    })
 
     await sm.flushAllSessions()
 
     expect(managed.forceStopCleanupTimer).toBeUndefined()
-    await new Promise((r) => setTimeout(r, 60))
+    await new Promise((r) => setTimeout(r, 70))
     expect(fired).toBe(false)
   })
 
@@ -218,5 +249,89 @@ describe('quit flushes sessions that are mid-commit', () => {
 
     expect(stopped).toBe(true)
     expect(watchers.size).toBe(0)
+  })
+
+  describe('the ordered shutdown', () => {
+    it('waits for an active turn to finish, lands its final state, and starts no replay', async () => {
+      // The sequence's whole reason for existing, end to end.
+      //
+      // `onProcessingStopped` finalises a turn and persists it ASYNCHRONOUSLY
+      // after the abort. A shutdown that aborted and moved on would close the
+      // queue underneath that write, so the assistant's final response would be
+      // lost — and if it then replayed the queued message, it would start a turn
+      // whose writes land after the close.
+      const sessionId = 'sess_active_turn'
+      let aborted = false
+
+      const managed = seedManaged(sessionId, {
+        isProcessing: true,
+        messageQueue: [{ message: 'queued follow-up', messageId: 'q1' }],
+      })
+
+      // A fake agent that behaves like the real one: the abort makes the turn
+      // finish, which is what `onProcessingStopped` is reached by.
+      managed.agent = {
+        forceAbort: () => {
+          aborted = true
+          // The generator drains a tick later, exactly as in production.
+          setTimeout(() => {
+            const live = (sm as unknown as { sessions: Map<string, Record<string, unknown>> })
+              .sessions.get(sessionId)!
+            // The final assistant response arrives before the turn closes.
+            ;(live.messages as unknown[]).push({
+              id: 'final-1',
+              role: 'assistant',
+              content: 'final response',
+              timestamp: Date.now(),
+            })
+            // Through the REAL finalisation path, not by setting the flag: that
+            // is what persists the turn and what would otherwise replay the
+            // queued message, so both halves are exercised for real.
+            void (sm as unknown as {
+              onProcessingStopped(id: string, reason: string): Promise<void>
+            }).onProcessingStopped(sessionId, 'interrupted')
+          }, 20)
+        },
+      }
+
+      await sm.flushAllSessions()
+
+      expect(aborted).toBe(true)
+      // Waited: the turn is finished before the queue closed.
+      expect(managed.isProcessing).toBe(false)
+      // The final response is ON DISK, which is the thing the wait buys.
+      const contents = readFileSync(getSessionFilePath(root, sessionId), 'utf-8')
+      expect(contents).toContain('final response')
+      // No replay started: the queued message is still queued, and persisted,
+      // so a restart picks it up instead of a turn beginning during shutdown.
+      expect((managed.messageQueue as unknown[]).length).toBe(1)
+      // And the queue really is closed afterwards.
+      expect(sessionPersistenceQueue.isClosing).toBe(true)
+    })
+
+    it('refuses a new send once shutdown has begun', async () => {
+      const sessionId = 'sess_refuse_send'
+      seedManaged(sessionId)
+
+      await sm.flushAllSessions()
+
+      expect(sm.isShuttingDown).toBe(true)
+      // Refused BEFORE anything is mutated, so nothing half-happened.
+      await expect(sm.sendMessage(sessionId, 'too late')).rejects.toThrow(/shutting down/)
+    })
+
+    it('fails the shutdown when a turn will not finish, rather than closing over it', async () => {
+      // Bounded, and exceeding the bound is a FAILURE: the wait exists so the
+      // final state gets persisted, so giving up quietly would discard exactly
+      // what it was waiting for.
+      const sessionId = 'sess_stuck_turn'
+      seedManaged(sessionId, {
+        isProcessing: true,
+        // An agent whose abort does nothing — the turn never drains.
+        agent: { forceAbort: () => {} },
+      })
+
+      await expect(sm.flushAllSessions()).rejects.toThrow(/did not finish within/)
+    }, 15000)
   })
 })

@@ -202,7 +202,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       // The first session landed; the late one was refused rather than queued.
       expect(existsSync(getSessionFilePath(root, 'quit2'))).toBe(true);
       await new Promise((r) => setTimeout(r, 10));
-      expect(refused).toEqual({ ok: false, error: 'session write refused: queue is closing' });
+      expect(refused).toEqual({ ok: false, error: 'session write refused: queue is closing', reason: 'refused' });
       expect(existsSync(getSessionFilePath(root, 'late1'))).toBe(false);
       // And nothing is left outstanding, which is what quit is entitled to know.
       expect(queue.pendingCount).toBe(0);
@@ -251,6 +251,7 @@ describe('SessionPersistenceQueue checked writes', () => {
       expect(ordinaryRefused).toEqual({
         ok: false,
         error: 'session write refused: queue is closing',
+        reason: 'refused',
       });
     });
 

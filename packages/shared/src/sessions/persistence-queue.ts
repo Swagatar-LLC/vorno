@@ -399,7 +399,21 @@ const FLUSH_ALL_MAX_ROUNDS = 50
  * next person reads a stated limit instead of inferring a guarantee from the
  * word "durable".
  */
-export type SessionWriteReceipt = { ok: true } | { ok: false; error: string }
+export type SessionWriteReceipt =
+  | { ok: true }
+  /**
+   * `reason` exists because not every `ok: false` means the same thing to a
+   * caller, and shutdown is where the difference bites.
+   *
+   * - `cancelled` — something newer superseded this snapshot, or the session
+   *   was deleted. The write did not land AND did not need to: whatever
+   *   replaced it is what should be on disk. A shutdown that treated this as a
+   *   failure would abort over a supersede doing its job.
+   * - `refused` — the queue is closing and would not accept the work at all.
+   * - `failed` — the write was attempted and the filesystem said no. This is
+   *   the only one that means data may have been lost.
+   */
+  | { ok: false; error: string; reason: 'cancelled' | 'refused' | 'failed' }
 
 /**
  * A claim on one specific enqueued snapshot.
@@ -662,7 +676,7 @@ class SessionPersistenceQueue {
       // "a receipt may be answered by somebody else's write" is exactly the
       // assumption that produced false positives, and it should be untrue by
       // construction rather than by that pairing holding.
-      this.settleReceipts(key, replaced, { ok: false, error: 'session write superseded' })
+      this.settleReceipts(key, replaced, { ok: false, error: 'session write superseded', reason: 'cancelled' as const })
     } else {
       list.push({ data: session, timer, generation, checked })
     }
@@ -701,7 +715,7 @@ class SessionPersistenceQueue {
       return {
         key,
         generation: this.generations.get(key) ?? 0,
-        receipt: Promise.resolve({ ok: false, error: 'session write refused: queue is closing' }),
+        receipt: Promise.resolve({ ok: false, error: 'session write refused: queue is closing', reason: 'refused' as const }),
       }
     }
     const generation = this.enqueueEntry(session, { checked: true, reconciliation: false })
@@ -724,12 +738,12 @@ class SessionPersistenceQueue {
     // it is here because the invariant — never report success for a cancelled
     // generation — should survive someone changing that arithmetic.
     if (cancelledThroughGeneration(this.cancelledThrough.get(key)) >= generation) {
-      return Promise.resolve({ ok: false, error: 'session write cancelled' })
+      return Promise.resolve({ ok: false, error: 'session write cancelled', reason: 'cancelled' as const })
     }
     const written = this.writtenGeneration.get(key) ?? 0
     if (written >= generation) {
       const prior = this.lastWriteFailure.get(key)
-      return Promise.resolve(prior ? { ok: false, error: prior } : { ok: true })
+      return Promise.resolve(prior ? { ok: false, error: prior, reason: 'failed' as const } : { ok: true })
     }
 
     // A waiter is only ever registered for work that something will finish.
@@ -748,8 +762,10 @@ class SessionPersistenceQueue {
     // construction rather than by audit of the callers.
     if (!this.queued.has(key) && !this.tails.has(key)) {
       const prior = this.lastWriteFailure.get(key)
-      return Promise.resolve(
-        prior ? { ok: false, error: prior } : { ok: false, error: 'session write cancelled' },
+      return Promise.resolve<SessionWriteReceipt>(
+        prior
+          ? { ok: false, error: prior, reason: 'failed' }
+          : { ok: false, error: 'session write cancelled', reason: 'cancelled' },
       )
     }
 
@@ -950,7 +966,7 @@ class SessionPersistenceQueue {
     if (cancelledThroughGeneration(this.cancelledThrough.get(key)) >= generation) {
       debug(`[PersistenceQueue] Skipped cancelled write for ${entry.data.id}`)
       this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
-      this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled' })
+      this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled', reason: 'cancelled' as const })
       return false
     }
 
@@ -1124,7 +1140,7 @@ class SessionPersistenceQueue {
         // continuing to hold.
         if (stage === 'committed' && discardCommitted) this.committedMetadata.delete(key)
         this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
-        this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled' })
+        this.settleReceipts(key, generation, { ok: false, error: 'session write cancelled', reason: 'cancelled' as const })
         return true
       }
 
@@ -1175,7 +1191,7 @@ class SessionPersistenceQueue {
       // instead of hanging until some later write happens to supersede it.
       // Failure is an answer; silence is not.
       this.writtenGeneration.set(key, Math.max(this.writtenGeneration.get(key) ?? 0, generation))
-      this.settleReceipts(key, generation, { ok: false, error: message })
+      this.settleReceipts(key, generation, { ok: false, error: message, reason: 'failed' })
       return false
     }
   }
@@ -1327,7 +1343,7 @@ class SessionPersistenceQueue {
     // Anything holding a receipt for a cancelled generation must be told rather
     // than left hanging, and telling them is also what makes the session
     // eligible for retirement — the order is load-bearing, not cosmetic.
-    this.settleReceipts(key, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled' }, 'through')
+    this.settleReceipts(key, Number.MAX_SAFE_INTEGER, { ok: false, error: 'session write cancelled', reason: 'cancelled' as const }, 'through')
   }
 
   /**

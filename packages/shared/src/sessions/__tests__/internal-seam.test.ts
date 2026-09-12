@@ -180,6 +180,7 @@ describe('internal session seams', () => {
       await expect(handle.receipt).resolves.toEqual({
         ok: false,
         error: 'session write refused: queue is closing',
+        reason: 'refused',
       });
     });
   });

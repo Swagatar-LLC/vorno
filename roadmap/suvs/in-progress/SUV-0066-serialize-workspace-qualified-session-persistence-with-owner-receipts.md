@@ -121,6 +121,11 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       during a shutdown drain and on a genuine write failure.
 - [x] A quit inside the 5s forced-turn-cleanup window cancels that timer, so it
       never persists after the freeze.
+- [x] Shutdown aborts an active turn, waits for it, and its final assistant
+      response reaches disk; no queued replay starts; a new send is refused; a
+      turn that will not finish fails the shutdown instead of being closed over.
+- [x] A final write superseded by a watcher reconciliation does not fail the
+      shutdown — receipts distinguish `cancelled` from `failed`.
 - [x] Ids that name one file share one key and tail (`nested/same` == `same`),
       while the same canonical id under different roots stays separate.
 - [x] A failed rename does not advance the committed baseline; an abandoned
@@ -132,6 +137,38 @@ stays owned by the mode-change path. Recorded here rather than smuggled in.
       3 rounds on the round-1 fixes, and 6 on the round-2 fixes — all caught.
 
 ## Review findings
+
+### Review 7 — architecture: shutdown producer completeness
+
+The freeze and the producer sweep were still treating "stop the timers" as the
+whole job. They are not: the thing most likely to write during shutdown is a
+TURN — it has an agent streaming into it and an async finalisation that
+persists. Shutdown is now an ordered sequence rather than a flush.
+
+`flushAllSessions` does, in order: set `shuttingDown` (refusing new sends and
+blocking queued replay) → stop the timers and watchers, **queue still open** →
+abort every running turn and WAIT for each to finish tearing down → persist every
+session's final state and await the EXACT receipts → only then close and drain.
+Any step that cannot complete throws; host cleanup and exit belong strictly
+after it resolves.
+
+Two things fell out of building it that are worth recording:
+
+- **A cancelled final write is not a shutdown failure.** A watcher
+  reconciliation landing during the drain supersedes the final persist, and the
+  first version of this aborted the shutdown over it. `SessionWriteReceipt`
+  failures now carry a `reason` (`cancelled` / `refused` / `failed`), and only
+  `failed` means data may be lost. Comparing error strings would have been the
+  fragile version of this.
+- **`onProcessingStopped` still runs and still persists during shutdown; it just
+  does not start the next turn.** Blocking the replay rather than the
+  finalisation is the distinction — blocking both would discard the response the
+  wait exists to save, and blocking neither makes draining a treadmill.
+
+The test uses a real `SessionManager` with a fake agent whose abort drives the
+REAL `onProcessingStopped`, so the final response landing on disk and the queued
+replay not starting are both observed through the production path. Thin fakes no
+longer survive the sequence, which is the sequence working.
 
 ### Review 6 — security final on the freeze
 
@@ -268,8 +305,6 @@ re-implemented. Of the rest, one was a real defect I had introduced and missed.
 
 ### Review 2 — independent (5f9d2319)
 
-### Round 2 — independent review
-
 Four more findings, three of them correctness. Each was reproduced with a
 failing test before being fixed, and each fix is mutation-verified.
 
@@ -389,6 +424,13 @@ activity.
 - `2026-09-12` — review round 1 (Greptile 3/5): two P1 data-loss findings and
   one P2 traceability finding, all valid, all fixed with mutation-verified
   tests; plus a per-generation intent leak found while fixing the first.
+- `2026-09-12` — review 7 (architecture, shutdown producer completeness): the
+  freeze stopped timers but not TURNS, so an agent's async finalisation could
+  write after the close. `flushAllSessions` is now an ordered sequence — refuse
+  new work, stop producers, abort and await turns with the queue still open,
+  persist final states against exact receipts, then close and drain — and
+  receipts carry a `reason` so a superseded final write is not mistaken for a
+  lost one. Five steps mutation-verified.
 - `2026-09-12` — review 6 (security final): `saveSession` could resolve success
   during a drain having written nothing; the test-runner guard admitted plain
   bun (and so the headless server) because `Bun.jest` exists there too; and the

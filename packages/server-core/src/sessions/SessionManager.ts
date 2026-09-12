@@ -65,6 +65,7 @@ import {
   generateSessionId,
   sessionPersistenceQueue,
   type SessionWriteKey,
+  type SessionWriteHandle,
   sessionWriteKey,
   getHeaderMetadataSignature,
   writeSessionJsonl,
@@ -202,6 +203,17 @@ const MAX_ANNOTATION_JSON_BYTES = 32 * 1024
 // are ignored, so the watcher does not roll back the in-memory mutation we
 // just persisted. See onSessionMetadataChange.
 const METADATA_WRITE_GUARD_MS = 5000
+
+/**
+ * How long shutdown waits for aborted turns to finish tearing down.
+ *
+ * Generous against the 100ms `deleteSession` already waits for the same
+ * teardown. Exceeding it FAILS the shutdown rather than proceeding: the point
+ * of waiting is that the turn's final state gets persisted, so giving up
+ * quietly would defeat the wait.
+ */
+const SHUTDOWN_TURN_DRAIN_TIMEOUT_MS = 5000
+const SHUTDOWN_TURN_DRAIN_POLL_MS = 25
 
 /**
  * Text sent to the session when a plan is approved from outside the desktop
@@ -1195,6 +1207,19 @@ export class SessionManager implements ISessionManager {
   private pendingDeltas: Map<string, PendingDelta> = new Map()
   private deltaFlushTimers: Map<string, NodeJS.Timeout> = new Map()
   // Config watchers for live updates (sources, etc.) - one per workspace
+  /**
+   * Set the moment shutdown begins, BEFORE the persistence queue closes.
+   *
+   * The queue's own `closing` state is the last line of defence: by the time a
+   * write is refused there, the work that produced it has already happened and
+   * the only honest thing left is to report a failure. This flag is the first
+   * line — it stops that work from starting, so there is nothing to refuse.
+   *
+   * What it blocks: new external sends, and the replay of queued messages. What
+   * it deliberately does NOT block: the final persist of a turn that was
+   * already running, which is the whole reason shutdown waits at all.
+   */
+  private shuttingDown = false
   private configWatchers: Map<string, ConfigWatcher> = new Map()
   // Automation systems for workspace event automations - one per workspace (includes scheduler, diffing, and handlers)
   private automationSystems: Map<string, AutomationSystem> = new Map()
@@ -2483,21 +2508,171 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  /** True once shutdown has begun. New work is refused from this point. */
+  get isShuttingDown(): boolean {
+    return this.shuttingDown
+  }
+
   /**
-   * Flush all pending sessions (call on app quit).
+   * Refuse an operation that must not start once shutdown has begun.
    *
-   * Producers first, then the queue. Closing the queue while watchers and
-   * schedulers are live turns their writes into refusals rather than into work
-   * the drain picks up — see `stopPersistenceProducers`. Doing it here rather
-   * than in each host means the three quit paths (electron, standalone server,
-   * headless server) cannot get the order wrong independently.
+   * Throws rather than returning a soft failure, because every caller is on an
+   * awaited RPC or tool path: an exception becomes a visible error, while a
+   * quiet no-op becomes a user who thinks their message was accepted.
+   */
+  private assertNotShuttingDown(operation: string): void {
+    if (this.shuttingDown) {
+      throw new Error(`Cannot ${operation}: the session manager is shutting down`)
+    }
+  }
+
+  /**
+   * Abort every running turn and wait for each to finish tearing down.
    *
-   * Propagates the queue's failure: if it cannot reach quiescence it throws,
-   * and a caller must not report a flush it did not get.
+   * The wait is the point. `onProcessingStopped` is what finalises a turn and
+   * persists it, and it runs asynchronously after the abort — so a shutdown
+   * that aborted and moved on would close the queue underneath that final
+   * write. The persistence queue is deliberately still OPEN here.
+   *
+   * `forceAbort(UserStop)` is the canonical primitive, the same one
+   * `deleteSession` uses; this is not a second teardown path. Bounded, and
+   * exceeding the bound FAILS the shutdown — giving up quietly would discard
+   * exactly the state the wait exists to save.
+   */
+  private async stopActiveTurnsForShutdown(): Promise<void> {
+    const active = [...this.sessions.values()].filter(m => m.isProcessing)
+    if (!active.length) return
+
+    sessionLog.info(`Shutdown: aborting ${active.length} active turn(s)`)
+    for (const managed of active) {
+      try {
+        managed.agent?.forceAbort(AbortReason.UserStop)
+      } catch (error) {
+        sessionLog.error(`Shutdown: failed to abort turn for ${managed.id}:`, error)
+      }
+    }
+
+    // Poll rather than hook an event: `onProcessingStopped` is reached from
+    // several paths (complete, interrupted, error, the forced-cleanup timer),
+    // and `isProcessing` is the one flag all of them clear. Polling it asks the
+    // question every path answers.
+    const deadline = Date.now() + SHUTDOWN_TURN_DRAIN_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      const stillRunning = [...this.sessions.values()].filter(m => m.isProcessing)
+      if (!stillRunning.length) return
+      await new Promise(resolve => setTimeout(resolve, SHUTDOWN_TURN_DRAIN_POLL_MS))
+    }
+
+    const stuck = [...this.sessions.values()].filter(m => m.isProcessing).map(m => m.id)
+    throw new Error(
+      `Shutdown: ${stuck.length} turn(s) did not finish within ${SHUTDOWN_TURN_DRAIN_TIMEOUT_MS}ms: ${stuck.join(', ')}`,
+    )
+  }
+
+  /**
+   * Shut the session layer down, in the one order that does not lose writes.
+   *
+   * Named `flushAllSessions` because that is what all three hosts already call
+   * before their own cleanup; the ordering lives here so none of them can get
+   * it wrong independently. It is a SEQUENCE, and every step exists because
+   * skipping it loses something:
+   *
+   * 1. **Refuse new work** (`shuttingDown`). Not the queue's closing state —
+   *    that one catches a write after the work is done, when a failure is all
+   *    that is left to report. This stops the work starting.
+   * 2. **Stop the timers and watchers**, with the queue still OPEN. They are
+   *    producers; the queue must stay open because the steps below still write.
+   * 3. **Abort running turns and WAIT for them.** `onProcessingStopped`
+   *    finalises and persists a turn asynchronously, so closing the queue
+   *    before that lands is exactly how a final assistant response is lost.
+   *    Queued replay is already blocked, so draining cannot become a treadmill.
+   * 4. **Persist each session's final state and await the EXACT receipts.** Not
+   *    fire-and-forget: this is the last chance to know, and an unchecked
+   *    persist here would make the whole sequence decorative.
+   * 5. **Close and drain.** Only now — `flushAll` freezes intake and throws if
+   *    it cannot reach quiescence.
+   *
+   * Throws if any step cannot complete. A caller must not report a flush it did
+   * not get; host cleanup and exit belong strictly after this resolves.
    */
   async flushAllSessions(): Promise<void> {
+    this.shuttingDown = true
     this.stopPersistenceProducers()
+    await this.stopActiveTurnsForShutdown()
+    await this.persistFinalSessionStates()
     await sessionPersistenceQueue.flushAll()
+  }
+
+  /**
+   * Persist every loaded session's final state, and wait to be told it landed.
+   *
+   * Checked receipts rather than `persistSession`, because this is the last
+   * write of the process: a fire-and-forget persist here would make the
+   * preceding wait pointless, since nothing would establish that the state it
+   * waited for actually reached disk.
+   *
+   * Sessions are written concurrently — they have independent tails (I1), so
+   * there is nothing to serialise between them — and every failure is collected
+   * rather than the first one thrown, so the log names all of them.
+   */
+  private async persistFinalSessionStates(): Promise<void> {
+    const handles: Array<{ id: string; handle: SessionWriteHandle }> = []
+    for (const managed of this.sessions.values()) {
+      try {
+        handles.push({ id: managed.id, handle: this.persistSessionChecked(managed) })
+      } catch (error) {
+        sessionLog.error(`Shutdown: failed to queue final state for ${managed.id}:`, error)
+        throw error
+      }
+    }
+    if (!handles.length) return
+
+    const failures: string[] = []
+    await Promise.all(
+      handles.map(async ({ id, handle }) => {
+        const receipt = await handle.receipt
+        if (receipt.ok) return
+        // A CANCELLED final write is not a failure, and treating it as one
+        // aborted shutdown over a supersede doing its job. Cancelled means
+        // something newer replaced this snapshot — a watcher reconciliation
+        // landing during the drain, or the session being deleted — so the state
+        // that should be on disk is the replacement's, and `flushAll` below is
+        // what guarantees the replacement actually gets there.
+        //
+        // Only `failed` means the filesystem refused and data may be lost.
+        if (receipt.reason === 'cancelled') {
+          sessionLog.info(`Shutdown: final write for ${id} was superseded; its replacement carries the state`)
+          return
+        }
+        failures.push(`${id}: ${receipt.error}`)
+      }),
+    )
+    if (failures.length) {
+      throw new Error(`Shutdown: ${failures.length} session(s) failed their final write — ${failures.join('; ')}`)
+    }
+  }
+
+  /**
+   * Persist and hand back a claim on THIS write.
+   *
+   * `flushSession` cannot report a failure: the queue catches its own write
+   * errors so its many fire-and-forget callers keep working, which leaves a
+   * failed write indistinguishable from a successful one to anyone awaiting it.
+   * Shutdown needs the difference.
+   *
+   * Takes the handle rather than asking "is the latest write done", because
+   * that question has no truthful answer once bookkeeping retires — the handle
+   * is a claim on the generation this call created.
+   */
+  private persistSessionChecked(managed: ManagedSession): SessionWriteHandle {
+    if (!managed.messagesLoaded) {
+      this.hydrateMessagesForColdPersist(managed)
+    }
+    const handle = sessionPersistenceQueue.enqueueChecked(this.buildStoredSessionForPersist(managed))
+    // Drive the tail so the handle settles without waiting out the debounce.
+    // The handle carries its own key, so this cannot drive a different one.
+    sessionPersistenceQueue.driveChecked(handle.key)
+    return handle
   }
 
   // ============================================
@@ -6577,6 +6752,11 @@ export class SessionManager implements ISessionManager {
      */
     rpcContext?: { callerClientId?: string },
   ): Promise<void> {
+    // Refused BEFORE anything is mutated. The queue's own closing state would
+    // catch the write at the end, but by then the message is in
+    // `managed.messages`, a turn may have started, and the only honest report
+    // left is a failure. Refusing here means nothing happened.
+    this.assertNotShuttingDown(`send a message to ${sessionId}`)
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
@@ -7552,6 +7732,15 @@ export class SessionManager implements ISessionManager {
   private processNextQueuedMessage(sessionId: string): void {
     const managed = this.sessions.get(sessionId)
     if (!managed || managed.messageQueue.length === 0) return
+    // Shutdown stops the CHAIN. `onProcessingStopped` still runs and still
+    // persists the turn that was in flight — that is what shutdown waits for —
+    // but it must not start the next one, or draining becomes a treadmill and
+    // the new turn's writes arrive after the queue closes. The queued messages
+    // stay in `messageQueue`, which is persisted, so a restart replays them.
+    if (this.shuttingDown) {
+      sessionLog.info(`Not replaying queued message for ${sessionId}: shutting down`)
+      return
+    }
 
     const next = managed.messageQueue.shift()!
     sessionLog.info('replay queued', {
