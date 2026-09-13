@@ -136,6 +136,32 @@ branding, prompt, and release-note checks that catch imported Craft defaults.
   owned and unmerged. Claiming it now would be the overclaim this SUV removes
   everywhere else.
 
+  **Review round (PR #209, Greptile 4/5 → 5/5).** Five findings, all verified
+  against the code before anything changed; none were rebutted. One was a P1 my
+  own design created: the base tool descriptions deferred to the system prompt's
+  documentation table, and `packages/session-mcp-server` ships **no system
+  prompt** — so removing the dead `~/.craft-agent` path left a Codex or external
+  MCP agent pointed at something it can never read. Fixed at the root rather
+  than per-consumer: the base text names the guide without pointing anywhere,
+  and one exported renderer (`pagesGuideReference`) appends the resolved path on
+  all three paths — Claude and Pi via `DOC_REFS`, the standalone server via the
+  config dir it already resolves for its feedback writer — so the three cannot
+  drift. The other four: the inherited "1 mutating action at a time" was wrong
+  (`PAGE_ACTION_MAX_CONCURRENT_MUTATING_PER_LEASE` is **2**, with a bounded
+  queue of 4 and per-page/per-workspace start ceilings the old text omitted
+  entirely); the refactor had started utf8-decoding every file under the scan
+  roots before `scanFile` discarded it by extension, including an 11 MB `.tiff`
+  (extension filtering moved back ahead of the read; the gate runs in 0.15s);
+  markdown handling skipped only the line opening an HTML comment, so a legacy
+  endpoint commented out across several lines would have failed CI for invisible
+  text (replaced with a comment-span strip, which is also right in the other
+  direction — visible text sharing a line with a comment is still scanned); and
+  the new empty state flashed "Pages is off" on every workspace where it is on,
+  because `pagesEnabled` starts `false` and the capability lookup is async
+  (`usePages` now reports `pagesCapabilityResolved`, and a *failed* lookup counts
+  as resolved-and-unavailable — the host is the authority and it did not say
+  yes). CI 12/12 green on `305cc36f`.
+
   **Residual for the policy owner, not folded in:** `ADR-0033` §7, PLAN-052's
   Owner gate, and `workers/pages/README.md` item 5 still record retention as
   *pending Jeff* under the older proposal (retain until unpublish, logs ≤30
