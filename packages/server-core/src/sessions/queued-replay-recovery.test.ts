@@ -731,6 +731,7 @@ describe('a queued send crossing a process boundary', () => {
     expect((managed.messages as Array<{ content?: string }>)
       .filter((m) => m.content === 'queued then refused')).toHaveLength(1)
   }, 30000)
+
 })
 
 describe('a title generated across a shutdown', () => {

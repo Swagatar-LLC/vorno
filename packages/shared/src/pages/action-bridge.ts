@@ -62,7 +62,7 @@ import { evaluateApiEndpointPolicy, evaluateMcpToolPolicy, type SourceActionPoli
 import type { PermissionsContext } from '../agent/permissions-config.ts';
 import { proxyToolName } from '../mcp/proxy-tool-name.ts';
 import { authorizePageAction } from './admission.ts';
-import { pageActionDescriptorSignature, pageActionOriginPolicy } from './types.ts';
+import { pageActionDescriptorSignature, pageActionOriginPolicy, type PageSessionRefusalCode } from './types.ts';
 
 const log = createLogger('page-action-broker');
 
@@ -241,6 +241,16 @@ export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_PAGE = 60;
 export const PAGE_ACTION_MAX_STARTS_PER_MINUTE_PER_WORKSPACE = 120;
 
 /**
+ * How long the broker will wait for a committed delivery's durability answer
+ * after a deadline or cancel has already won the race.
+ *
+ * Short on purpose. The delivery resolves at durability, so the answer is
+ * normally already there; this exists so that a stuck flush cannot hold a
+ * mutating queue slot open indefinitely and defeat the deadline that got here.
+ */
+export const POST_COMMIT_DURABILITY_GRACE_MS = 2_000;
+
+/**
  * Stable outcome of an execution attempt, for the audit log.
  *
  * The audit records THIS and never `result.error`. An executor's message is
@@ -261,7 +271,14 @@ export type PageActionOutcomeCode =
   | 'executor-unavailable'
   | 'timeout'
   | 'cancelled'
-  | 'kind-mismatch';
+  | 'kind-mismatch'
+  // Session-callback refusals (SUV-0064). Closed values describing host-observed
+  // session state, so the row stays metadata: an operator can see that a page
+  // aimed at a session that was gone, finished, or mid-turn without the file
+  // learning anything the caller or the session said.
+  | 'session-not-found'
+  | 'session-closed'
+  | 'session-busy';
 
 /**
  * Resolve the live-lease ceiling for a broker.
@@ -438,7 +455,40 @@ export interface PageActionExecutors {
     invocation: { pageSlug: string; script: string; runtime?: PageScriptRuntime; args?: string[] },
     options: { signal: AbortSignal },
   ) => Promise<{ exitCode: number | null; stdout: string; stderr: string }>;
+  /**
+   * Deliver a session-kind grant's pinned message to its pinned session.
+   *
+   * Everything privileged is read off the matched grant and passed in here; the
+   * invocation the page sent carries neither the target nor the body. Resolves
+   * with a structured refusal when the target is gone, finished, or mid-turn —
+   * those are host-observed states the audit trail must be able to name, not
+   * executor failures. It throws only when delivery itself failed.
+   *
+   * Takes `signal` for the same reason its siblings do, and the reason is
+   * sharper here: `race` does not stop a losing promise. Without the signal a
+   * cancellation, a lease release, or the deadline would win the race, release
+   * the slot, and audit the action as cancelled or timed out while the
+   * underlying delivery ran to completion anyway — a message the user withdrew,
+   * recorded as not sent. The implementation must therefore re-read `signal`
+   * immediately before it commits, not merely on entry.
+   */
+  executeSession?: (
+    invocation: { pageSlug: string; grantId: string; sessionId: string; message: string },
+    options: { signal: AbortSignal; onCommitted: () => void },
+  ) => Promise<{ ok: true; durable: boolean } | { ok: false; code: PageSessionRefusalCode; reason: string }>;
 }
+
+/**
+ * The session-callback subset of {@link PageActionOutcomeCode}, plus
+ * `cancelled`, which the executor reports itself when it refuses at the commit
+ * point rather than letting the race decide.
+ *
+ * An alias, not a second union: `PageSessionRefusalCode` in `./types.ts` is the
+ * one definition, and every layer that names these values imports it. Three
+ * identical unions is how a code added in one place quietly stops matching what
+ * the other two produce.
+ */
+export type { PageSessionRefusalCode } from './types.ts';
 
 export interface PageActionBrokerOptions {
   executors: PageActionExecutors;
@@ -554,6 +604,11 @@ export class PageActionBroker {
   private readonly now: () => number;
 
   private readonly leases = new Map<string, PageRenderLease>();
+  /**
+   * leaseId → requestIds that have passed a point of no return. Cleared with
+   * the lease, like every other per-lease structure here.
+   */
+  private readonly committedRequests = new Map<string, Set<string>>();
   /**
    * leaseId → when this lease last did anything a user would recognize:
    * executed an action, or had a ticket minted for one.
@@ -798,6 +853,10 @@ export class PageActionBroker {
     this.leases.delete(leaseId);
     this.leaseLastUsedAt.delete(leaseId);
     this.seenRequestIds.delete(leaseId);
+    // Bounded by the lease, like every other per-lease map here: a render that
+    // ends takes its committed-request set with it, so the set cannot grow for
+    // the life of the process.
+    this.committedRequests.delete(leaseId);
     this.inFlightByLease.delete(leaseId);
     this.mutatingInFlightByLease.delete(leaseId);
     this.startTimesByLease.delete(leaseId);
@@ -1432,9 +1491,16 @@ export class PageActionBroker {
               proxyToolName(grant.action.sourceSlug, grant.action.toolName),
               (request.invocation.kind === 'mcp' ? request.invocation.args : undefined) ?? {},
             )
-          : // script: host command execution — always approval-worthy for an agent,
-            // annotated here purely for the audit trail (the grant is the approval).
-            { decision: 'requires-approval', description: `script: ${grant.action.script}` };
+          : grant.action.kind === 'script'
+            ? // script: host command execution — always approval-worthy for an agent,
+              // annotated here purely for the audit trail (the grant is the approval).
+              { decision: 'requires-approval', description: `script: ${grant.action.script}` }
+            : // session: writing into a live session is approval-worthy for the
+              // same reason. The description names the target, not the pinned
+              // body — `policyDecision` is the only part of this that reaches
+              // the audit row, but a description that carried the message would
+              // be one refactor away from doing so.
+              { decision: 'requires-approval', description: `session: ${grant.action.sessionId}` };
 
     // Registered BEFORE any waiting, not after. A queued request has already
     // spent its activation ticket, so if its controller only appeared once it
@@ -1552,6 +1618,12 @@ export class PageActionBroker {
 
     let result: PageActionResult;
     let outcome: PageActionOutcomeCode = 'ok';
+    /** Set once a session delivery passes the point of no return. */
+    let sessionCommitted = false;
+    /** Whether that delivery also reached disk; undefined for other kinds. */
+    let sessionDurable: boolean | undefined;
+    /** The in-flight session delivery, so a lost race can still be asked. */
+    let sessionWork: Promise<{ ok: true; durable: boolean } | { ok: false; code: PageSessionRefusalCode; reason: string }> | undefined;
     try {
       if (grant.action.kind === 'api' && request.invocation.kind === 'api') {
         if (!this.executors.executeApi) {
@@ -1623,6 +1695,46 @@ export class PageActionBroker {
           };
           outcome = ok ? 'ok' : 'non-zero-exit';
         }
+      } else if (grant.action.kind === 'session' && request.invocation.kind === 'session') {
+        if (!this.executors.executeSession) {
+          outcome = 'executor-unavailable';
+          result = this.unavailableResult(request, startTime, 'Session executor not wired in this host');
+        } else {
+          // Target and body come from the APPROVED grant. The invocation is a
+          // bare trigger and is not read here at all — there is nothing on it
+          // that could reach a session even if a caller put something there.
+          // A session delivery becomes irreversible partway through, which no
+          // other executor does: an API call can be abandoned, a script can be
+          // killed, but a message already in a session's transcript cannot be
+          // un-sent. Once the executor says so, this request leaves the
+          // cancellable set and the deadline below stops being able to rename
+          // the outcome.
+          // Held so the committed branch below can still learn durability. The
+          // race only decides who answers FIRST; a delivery that committed has
+          // a real durability answer coming, and dropping it would leave the
+          // audit unable to tell a flushed message from one a crash could lose.
+          sessionWork = this.executors.executeSession(
+            {
+              pageSlug: page.slug,
+              grantId: grant.id,
+              sessionId: grant.action.sessionId,
+              message: grant.action.message,
+            },
+            { signal, onCommitted: () => { sessionCommitted = true; this.markUncancellable(request.leaseId, request.requestId); } },
+          );
+          const sessionOutcome = await race(sessionWork);
+          outcome = sessionOutcome.ok ? 'ok' : sessionOutcome.code;
+          sessionDurable = sessionOutcome.ok ? sessionOutcome.durable : undefined;
+          result = {
+            requestId: request.requestId,
+            ok: sessionOutcome.ok,
+            // No body. A page learns whether its message was delivered and, on
+            // a refusal, why in the closed vocabulary above — never anything
+            // about the session's contents, status, or activity beyond that.
+            ...(sessionOutcome.ok ? {} : { error: `${sessionOutcome.code}: ${sessionOutcome.reason}` }),
+            durationMs: this.now() - startTime,
+          };
+        }
       } else {
         // The admission primitive makes this unreachable; keep a safe fallback.
         outcome = 'kind-mismatch';
@@ -1633,18 +1745,50 @@ export class PageActionBroker {
       // to tell them apart: one is the host giving up on a slow action, the
       // other is a user or an unmount withdrawing it.
       const timedOut = error instanceof PageActionDeadlineError;
-      outcome = timedOut ? 'timeout' : controller.signal.aborted ? 'cancelled' : 'executor-error';
-      const message = timedOut
-        ? `timeout: action exceeded ${this.actionTimeoutMs}ms`
-        : controller.signal.aborted
-          ? 'cancelled: action was cancelled'
-          : error instanceof Error ? error.message : 'Unknown error';
-      result = {
-        requestId: request.requestId,
-        ok: false,
-        error: message,
-        durationMs: this.now() - startTime,
-      };
+      // A committed session delivery cannot fail after the fact. The message is
+      // in the transcript; a deadline or an abort arriving now describes
+      // something that already happened, and recording it as a timeout would
+      // put a false statement in the durable audit — an operator would read
+      // "not delivered" about a message the user can see. Reported as the
+      // delivery it was, with the race noted in the debug log.
+      if (sessionCommitted) {
+        log.warn(`[PageActionBroker] ${timedOut ? 'deadline' : 'abort'} raced a committed session delivery; reporting it as delivered`);
+        outcome = 'ok';
+        // Wait for the durability answer the delivery is already producing,
+        // rather than recording a row that silently omits it. It settles
+        // promptly — the commit has happened, only the flush is outstanding —
+        // and a failure here means the flush failed, which is exactly
+        // `durable: false` rather than a missing field.
+        // Bounded. The delivery resolves at durability, so this normally
+        // settles at once — but "normally" is not a guarantee to hold a
+        // mutating queue slot on, and an unbounded await here would let a stuck
+        // flush defeat the very deadline that reached this branch. Unknown
+        // durability is recorded as not-durable: the conservative reading, and
+        // the one that does not claim a flush nobody observed.
+        try {
+          const settled = await Promise.race([
+            sessionWork,
+            new Promise<null>((resolveUnknown) => setTimeout(() => resolveUnknown(null), POST_COMMIT_DURABILITY_GRACE_MS)),
+          ]);
+          sessionDurable = settled?.ok === true ? settled.durable : false;
+        } catch {
+          sessionDurable = false;
+        }
+        result = { requestId: request.requestId, ok: true, durationMs: this.now() - startTime };
+      } else {
+        outcome = timedOut ? 'timeout' : controller.signal.aborted ? 'cancelled' : 'executor-error';
+        const message = timedOut
+          ? `timeout: action exceeded ${this.actionTimeoutMs}ms`
+          : controller.signal.aborted
+            ? 'cancelled: action was cancelled'
+            : error instanceof Error ? error.message : 'Unknown error';
+        result = {
+          requestId: request.requestId,
+          ok: false,
+          error: message,
+          durationMs: this.now() - startTime,
+        };
+      }
     } finally {
       if (deadlineTimer) clearTimeout(deadlineTimer);
       this.noteActionEnd(request.leaseId);
@@ -1668,6 +1812,10 @@ export class PageActionBroker {
       // grant costs nothing and removes the question of whether a caller string
       // reached the file.
       ...this.describeApprovedAction(grant),
+      // Boolean, host-observed, no payload: lets an operator tell a delivery
+      // that reached disk from one that is live in memory with persistence
+      // degraded. Absent for every other action kind.
+      ...(sessionDurable !== undefined ? { durable: sessionDurable } : {}),
       policyDecision: policy.decision,
       ok: result.ok,
       ...(result.status !== undefined ? { status: result.status } : {}),
@@ -1695,9 +1843,39 @@ export class PageActionBroker {
    * between minting and executing would otherwise leave a live ticket that
    * still authorizes the call the user just took back.
    */
+  /**
+   * Take a request out of the cancellable set, permanently.
+   *
+   * Only a session delivery calls this, because only a session delivery has a
+   * point of no return inside it: an API call can be abandoned and a script can
+   * be killed, but a message already in a transcript cannot be un-sent. Keeping
+   * such a request cancellable would let `cancelAction` return true for work
+   * that has already happened — telling the page its message was withdrawn when
+   * the user can see it on screen.
+   */
+  private markUncancellable(leaseId: string, requestId: string): void {
+    const committed = this.committedRequests.get(leaseId) ?? new Set<string>();
+    committed.add(requestId);
+    this.committedRequests.set(leaseId, committed);
+  }
+
   cancelAction(leaseId: string, nonce: string, requestId: string): boolean {
     const lease = this.leases.get(leaseId);
     if (!lease || lease.nonce !== nonce) return false;
+
+    // Past the point of no return. Reported as "nothing to cancel" rather than
+    // as a successful cancellation, because the latter would be a lie the page
+    // then tells the user.
+    if (this.committedRequests.get(leaseId)?.has(requestId)) {
+      void this.appendAudit({
+        event: 'page_action_cancel_refused',
+        pageSlug: lease.pageSlug,
+        leaseId,
+        requestIdHash: pageAuditIdHash(requestId),
+        reason: 'already-committed',
+      });
+      return false;
+    }
 
     this.dropTicketsWhere((ticket) => ticket.leaseId === leaseId && ticket.requestId === requestId);
 
@@ -1786,6 +1964,16 @@ export class PageActionBroker {
         sourceSlug: bounded(grant.action.sourceSlug),
         toolName: bounded(grant.action.toolName),
       };
+    }
+    if (grant.action.kind === 'session') {
+      // The target is recorded; the body never is. They are different kinds of
+      // fact. `targetSessionId` is a host-generated identifier for a session
+      // this workspace owns, and it is the single thing that makes a callback
+      // row checkable — "which session did this page reach" is the containment
+      // question the log exists to answer. The pinned `message` is payload, and
+      // payload is what every other rule here strips; it is also the one field
+      // most likely to carry whatever an agent wrote into the page.
+      return { actionKind: 'session', targetSessionId: bounded(grant.action.sessionId) };
     }
     // script: the grant id in the same row carries the pinned path, runtime,
     // and args, and none of those belong in the log.

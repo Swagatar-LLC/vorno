@@ -179,5 +179,14 @@ function invocationMismatch(
     return null;
   }
 
+  if (grant.action.kind === 'session' && invocation.kind === 'session') {
+    // Same as script: the trigger carries no target and no body. Whether the
+    // pinned target is still a live, open, contained session is NOT asked here
+    // — this primitive is pure and has no session state to consult, and the
+    // answer can change between admission and execution anyway. The executor
+    // re-resolves it immediately before sending.
+    return null;
+  }
+
   return { ok: false, code: 'grant-mismatch', reason: 'Unsupported action kind' };
 }

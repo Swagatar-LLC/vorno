@@ -105,8 +105,8 @@ describe('automation refusals reach history through the live wiring', () => {
    * asserting two outcomes a race: two entries are appended by separate awaits,
    * so a poll that caught the file between them read one and the assertion
    * failed on whichever entry lost. It passed only because the timing happened
-   * to favour it — SUV-0066's persistence changes shifted dispatch timing by a
-   * few microseconds and it began failing.
+   * to favour it — a SUV-0064 change elsewhere in dispatch shifted that timing
+   * by a few microseconds and it began failing on CI's faster runner.
    *
    * Waiting for a count makes the wait mean what the assertions need. The
    * timeout still returns whatever it has, so a genuine failure to write

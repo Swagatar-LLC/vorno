@@ -31,10 +31,11 @@
  *                                                             ask the user to approve source
  *                                                             actions (host shows a dialog)
  *
- * Descriptors come in three kinds (see PageActionDescriptor): `api`, `mcp`, and
- * `script`. A `script` descriptor runs a workspace-relative script on the HOST
- * — its invocation is a bare trigger (script/runtime/args live in the grant,
- * never in the page message) and it always counts as mutating.
+ * Descriptors come in four kinds (see PageActionDescriptor): `api`, `mcp`,
+ * `script`, and `session`. `script` runs a workspace-relative script on the
+ * HOST; `session` delivers one pinned message to one pinned session. Both are
+ * bare triggers — everything privileged lives in the grant the user approved,
+ * never in the page message — and both always count as mutating.
  *
  * This module is deliberately pure (no React/DOM) so validation is unit-testable.
  */
@@ -58,6 +59,14 @@ const MAX_ID_CHARS = 128
 const MAX_PATH_CHARS = 2048
 const MAX_URL_CHARS = 2048
 const MAX_TOOL_NAME_CHARS = 256
+/**
+ * Must match `SESSION_CALLBACK_MESSAGE_MAX_CHARS` in `pages/validation.ts`,
+ * which is the authority. The renderer bound exists so an oversized body is
+ * dropped at the frame rather than travelling to the host to be rejected there;
+ * a mismatch fails safe in one direction only — a smaller value here just
+ * refuses earlier, and a larger one is caught by the schema.
+ */
+const MAX_SESSION_MESSAGE_CHARS = 1000
 const MAX_OBJECT_DEPTH = 8
 const MAX_GRANT_REQUESTS = 8
 const MAX_GRANT_DESCRIPTION_CHARS = 500
@@ -208,6 +217,26 @@ function parseDescriptor(value: unknown): PageActionDescriptor | null {
       ...(runtime !== undefined ? { runtime } : {}),
       ...(args !== undefined ? { args } : {}),
     }
+  }
+  if (value.kind === 'session') {
+    if (!isBoundedString(value.sessionId, MAX_ID_CHARS)) return null
+    if (!isBoundedString(value.message, MAX_SESSION_MESSAGE_CHARS)) return null
+    // REJECT an unknown key; do not reconstruct-and-strip. Every other arm here
+    // rebuilds field by field, which silently discards extras — fine when the
+    // extra is noise, wrong here. A page that sends `action: 'set-status'` or
+    // `allowClosed: true` is asking for something this descriptor cannot
+    // express, and stripping would hand it back an approved send-message grant
+    // for a request that wanted something else, with no way to tell the
+    // difference. The host's schema arm is `.strict()` for the same reason;
+    // this is the renderer-side half of that decision, so the two gates agree
+    // rather than one dropping what the other refuses.
+    for (const key of Object.keys(value)) {
+      if (key !== 'kind' && key !== 'sessionId' && key !== 'message') return null
+    }
+    // Whether this session EXISTS is deliberately not asked here — the renderer
+    // has no session state, and guessing would be worse than not answering. The
+    // host resolves it inside the owning workspace before it shows a dialog.
+    return { kind: 'session', sessionId: value.sessionId, message: value.message }
   }
   return null
 }

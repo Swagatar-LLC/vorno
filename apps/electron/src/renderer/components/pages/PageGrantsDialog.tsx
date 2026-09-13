@@ -10,7 +10,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@craft-agent/ui'
 import type { LoadedPage } from '@craft-agent/shared/pages/types'
-import { describeGrantAction, describeGrantStatus, grantKindIcon, useGrantRemoval } from './grant-visuals'
+import { describeGrantAction, describeGrantStatus, grantKindIcon, isPrivilegedPageGrantKind, useGrantRemoval } from './grant-visuals'
 
 /**
  * "Approved actions" — everything the page is allowed to do, with removal.
@@ -46,7 +46,10 @@ export function PageGrantsDialog({ workspaceId, page, open, onOpenChange }: Page
         ) : (
           <ul className="flex flex-col gap-2">
             {grants.map(grant => {
-              const isScript = grant.action.kind === 'script'
+              // Session callbacks earn the same red treatment script grants do:
+              // both reach outside the page, and this list is where a user goes
+              // to find the one they want to take back.
+              const isHighRisk = isPrivilegedPageGrantKind(grant.action.kind)
               const Icon = grantKindIcon(grant.action.kind)
               const status = describeGrantStatus(grant, config.contentDigest, t)
               return (
@@ -56,7 +59,7 @@ export function PageGrantsDialog({ workspaceId, page, open, onOpenChange }: Page
                 >
                   <Icon
                     className={
-                      isScript
+                      isHighRisk
                         ? 'mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-500'
                         : 'mt-0.5 h-4 w-4 shrink-0 text-foreground/50'
                     }

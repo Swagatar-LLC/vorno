@@ -17,7 +17,7 @@ import { Spinner } from '@craft-agent/ui'
 import { Info_Alert } from '@/components/info'
 import type { LoadedPage, PageActionGrant } from '@craft-agent/shared/pages/types'
 import { isPageGrantUsable } from '@craft-agent/shared/pages/types'
-import { describeGrantAction, useGrantRemoval } from './grant-visuals'
+import { describeGrantAction, isPrivilegedPageGrantKind, useGrantRemoval } from './grant-visuals'
 
 /**
  * Share dialog: publish / republish / password management / unpublish.
@@ -91,14 +91,16 @@ export function SharePageDialog({
   const { config } = page
   const share = config.share
   const allGrants = config.grants ?? []
-  // Script grants block publishing outright (server refuses even stale ones);
-  // surfacing them with inline removal beats failing after the form is filled.
-  const scriptGrants = allGrants.filter(g => g.action.kind === 'script')
+  // Script AND session grants block publishing outright (server refuses even
+  // stale ones); surfacing them with inline removal beats failing after the
+  // form is filled. Reading the same predicate the server's refusal reads is
+  // what keeps this dialog from promising a publish the host will reject.
+  const blockingGrants = allGrants.filter(g => isPrivilegedPageGrantKind(g.action.kind))
   // The view-only ack covers a real behavior difference — action buttons work
   // locally but not on the public copy. Stale/expired grants don't work
   // locally either, so they don't require it (mirrors buildPageShareBundle).
   const hasUsableActionGrants = allGrants.some(
-    g => g.action.kind !== 'script' && isPageGrantUsable(g, config.contentDigest, Date.now()),
+    g => !isPrivilegedPageGrantKind(g.action.kind) && isPageGrantUsable(g, config.contentDigest, Date.now()),
   )
   const { busyGrantId, removeGrant } = useGrantRemoval(workspaceId, config.slug)
 
@@ -225,7 +227,7 @@ export function SharePageDialog({
 
   const cleanupPending = share?.cleanupPending === true
   const contentDrifted = Boolean(share && !cleanupPending && config.contentDigest && share.publishedContentDigest !== config.contentDigest)
-  const publishBlocked = scriptGrants.length > 0 || (hasUsableActionGrants && !ackViewOnly)
+  const publishBlocked = blockingGrants.length > 0 || (hasUsableActionGrants && !ackViewOnly)
 
   return (
     <Dialog open={open} onOpenChange={next => { if (!busy) onOpenChange(next) }}>
@@ -274,8 +276,8 @@ export function SharePageDialog({
               </span>
             </div>
 
-            {scriptGrants.length > 0 ? (
-              <ScriptGrantsBlock grants={scriptGrants} busyGrantId={busyGrantId} onRemove={removeGrant} />
+            {blockingGrants.length > 0 ? (
+              <PrivilegedGrantsBlock grants={blockingGrants} busyGrantId={busyGrantId} onRemove={removeGrant} />
             ) : hasUsableActionGrants ? (
               <label className="flex items-start justify-between gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
                 <span className="flex flex-col gap-0.5">
@@ -322,8 +324,8 @@ export function SharePageDialog({
             {sharingEnabled && !cleanupPending ? (
               <>
                 {/* A script approval added after publishing blocks republish too */}
-                {scriptGrants.length > 0 && (
-                  <ScriptGrantsBlock grants={scriptGrants} busyGrantId={busyGrantId} onRemove={removeGrant} />
+                {blockingGrants.length > 0 && (
+                  <PrivilegedGrantsBlock grants={blockingGrants} busyGrantId={busyGrantId} onRemove={removeGrant} />
                 )}
 
                 {/* Republish carries the previous includeData choice — same heads-up applies */}
@@ -342,7 +344,7 @@ export function SharePageDialog({
                     variant={contentDrifted ? 'default' : 'outline'}
                     size="sm"
                     onClick={runPublish}
-                    disabled={busy !== null || scriptGrants.length > 0}
+                    disabled={busy !== null || blockingGrants.length > 0}
                     className="shrink-0"
                   >
                     {busy === 'publish' && <Spinner className="text-xs" />}
@@ -436,11 +438,12 @@ export function SharePageDialog({
 }
 
 /**
- * Publish-blocking notice for script approvals, with inline removal — the
- * server refuses to publish a page holding ANY script grant (even a stale
- * one), so the dialog explains that up front instead of failing on submit.
+ * Publish-blocking notice for approvals that reach beyond the page, with
+ * inline removal — the server refuses to publish a page holding ANY script or
+ * session grant (even a stale one), so the dialog explains that up front
+ * instead of failing on submit.
  */
-function ScriptGrantsBlock({
+function PrivilegedGrantsBlock({
   grants,
   busyGrantId,
   onRemove,
@@ -456,7 +459,7 @@ function ScriptGrantsBlock({
         <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-500" />
         <div className="min-w-0 text-sm">
           <div className="font-medium">{t('pages.share.scriptBlockedTitle')}</div>
-          <div className="mt-0.5 text-xs text-foreground/60">{t('pages.share.scriptBlocked')}</div>
+          <div className="mt-0.5 text-xs text-foreground/60">{t('pages.share.privilegedBlocked')}</div>
         </div>
       </div>
       <ul className="flex flex-col gap-1.5">

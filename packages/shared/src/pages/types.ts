@@ -88,6 +88,14 @@ export function pageActionDescriptorSignature(descriptor: PageActionDescriptor):
       descriptor.args ?? [],
     ]);
   }
+  if (descriptor.kind === 'session') {
+    // Both fields are identity: the same sentence to a different session, and a
+    // different sentence to the same session, are different capabilities. The
+    // body is included in full rather than hashed because this signature is
+    // compared, never logged — the audit path reads `describeApprovedAction`,
+    // which deliberately never sees it.
+    return JSON.stringify(['session', descriptor.sessionId, descriptor.message]);
+  }
   return JSON.stringify([
     'api',
     descriptor.sourceSlug,
@@ -109,14 +117,16 @@ export function pageActionDescriptorSignature(descriptor: PageActionDescriptor):
  *
  * `'conditional'` belongs to `api` alone, and the condition is the method:
  * ADR-0033 fixes GET as the ONLY non-mutating action. `mcp` tools are opaque
- * (a granted "create issue" tool has no method to read) and `script` is host
- * command execution, so neither can ever be proven read-only.
+ * (a granted "create issue" tool has no method to read), `script` is host
+ * command execution, and `session` puts text into a live session running under
+ * the user's permission mode, so none can ever be proven read-only.
  */
 type PageActionMutationClass = 'always-mutating' | 'conditional-on-method';
 const PAGE_ACTION_MUTATION: { [K in PageActionDescriptor['kind']]: PageActionMutationClass } = {
   api: 'conditional-on-method',
   mcp: 'always-mutating',
   script: 'always-mutating',
+  session: 'always-mutating',
 };
 
 /** Every classified kind, for tests that must enumerate the whole union. */
@@ -141,6 +151,74 @@ export function isMutatingPageAction(action: PageActionDescriptor | PageActionIn
   if (mutation !== 'conditional-on-method') return true;
   return (action as { method?: unknown }).method !== 'GET';
 }
+
+/**
+ * Whether a descriptor reaches past the page's own data, and therefore takes
+ * the short TTL clamp, the publish refusal, and the loud treatment in every
+ * surface that lists grants.
+ *
+ * A mapped type over the union, for the same reason the mutation table above is
+ * one: a new descriptor kind must state which side of this line it sits on
+ * before it compiles, rather than defaulting into the permissive side because
+ * nobody edited a boolean expression.
+ *
+ * It lives HERE, not in `storage.ts` where its first caller is, because the
+ * renderer needs the same answer and cannot import a module that pulls in Node
+ * `fs`. A second copy on the renderer side is how the Share dialog starts
+ * offering a publish the host will refuse.
+ */
+const PAGE_GRANT_PRIVILEGED: { [K in PageActionDescriptor['kind']]: boolean } = {
+  // Bounded by an anchored path pattern and a pinned source.
+  api: false,
+  // Bounded by one named tool on one named source.
+  mcp: false,
+  // Host command execution.
+  script: true,
+  // Writes into a live session running under the user's permission mode.
+  session: true,
+};
+
+/**
+ * Whether this action kind is privileged. Unknown kinds are privileged, so a
+ * descriptor from a future wire version cannot buy the long TTL or slip past
+ * the publish refusal. Pure and browser-safe.
+ */
+export function isPrivilegedPageGrantKind(kind: PageActionDescriptor['kind']): boolean {
+  return PAGE_GRANT_PRIVILEGED[kind] ?? true;
+}
+
+/**
+ * Why a Page session callback was not delivered — the ONE definition.
+ *
+ * Four modules answer this question at different depths: the pure guard in
+ * `SessionManager`, the executor that calls it, the broker that audits the
+ * result, and the tests that pin all three. They were three separate unions
+ * with identical members, which is a drift waiting to happen — adding a code in
+ * one place and not the others compiles fine and simply stops matching what
+ * operators grep for. It lives here, with the other browser-safe Page policy,
+ * so every layer can import it without pulling in Node.
+ *
+ * Closed and host-observed: each value describes something the host learned
+ * about its own state, so an audit row carrying one leaks nothing a caller
+ * supplied.
+ */
+export type PageSessionRefusalCode =
+  /** No such session in THIS workspace — missing, deleted, or another tenant's. */
+  | 'session-not-found'
+  /** Archived, or sitting in a `closed`-category status. Finished work. */
+  | 'session-closed'
+  /** Mid-turn. A callback must not land inside a running turn. */
+  | 'session-busy'
+  /** Withdrawn — cancelled, lease released, or the broker deadline — before commit. */
+  | 'cancelled';
+
+/** Every refusal code, for tests that must enumerate the whole union. */
+export const PAGE_SESSION_REFUSAL_CODES: readonly PageSessionRefusalCode[] = [
+  'session-not-found',
+  'session-closed',
+  'session-busy',
+  'cancelled',
+];
 
 /** What one origin is permitted to do, before any grant is even consulted. */
 export interface PageActionOriginPolicy {
@@ -210,6 +288,13 @@ export function pageActionOriginPolicy(origin: unknown): PageActionOriginPolicy 
  * Whether an origin may run this action kind at all. Only the scheduled path is
  * narrowed, and narrowing it here rather than at its one call site means a
  * second scheduled caller inherits the confinement instead of re-deriving it.
+ *
+ * `session` is the kind this confinement matters most for. A cron tick has no
+ * user watching and no interaction proof, so a scheduled callback would be an
+ * unattended writer into a live session — recurring prompt injection on a
+ * timer. It is excluded by the same clause that excludes api/mcp, and the
+ * scheduled admission path additionally refuses anything whose origin policy
+ * demands proof a tick cannot produce.
  */
 export function pageActionOriginAllowsKind(
   origin: PageActionOrigin,
@@ -319,6 +404,16 @@ export function parsePageActionInvocation(value: unknown): PageActionInvocation 
     // A bare trigger: script, runtime, and args all come from the matched grant
     // and never from the caller, so there is deliberately nothing to validate.
     return { kind: 'script' };
+  }
+
+  if (value.kind === 'session') {
+    // Bare trigger, same as `script`. Note what this DISCARDS: a caller that
+    // sends `{kind:'session', sessionId:'…', message:'…'}` gets a well-formed
+    // trigger with both fields dropped on the floor, so a smuggled target or
+    // body cannot reach the executor even by accident. Rejecting the extra
+    // fields instead would turn a harmless caller mistake into a refusal
+    // without making anything safer.
+    return { kind: 'session' };
   }
 
   return null;

@@ -194,6 +194,14 @@ export {
 // fork(PLAN-030) Phase 2a: the single producer of session-action history outcome strings
 export { sessionActionOutcome } from './session-action-outcome.ts';
 
+// fork(ADR-0033 §4): workspace-contained target resolution, shared by the desktop
+// webhook executor and Page session callbacks
+export {
+  resolveWorkspaceSessionTarget,
+  type WorkspaceSessionLookup,
+  type WorkspaceSessionSummary,
+} from './session-target.ts';
+
 // fork(PLAN-030) / ADR-0021 §3: automation provenance + loop-safety guards
 export {
   evaluateChainGuards,

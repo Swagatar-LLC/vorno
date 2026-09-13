@@ -395,6 +395,17 @@ export interface SessionHeader {
 export interface SessionMetadata {
   id: string;
   workspaceRootPath: string;
+  /**
+   * Pending "Accept & Compact" state, carried through from the header.
+   *
+   * Deliberately NOT stripped on the way to metadata. `createManagedSession`
+   * builds the in-memory session from this shape, and `persistSession` rebuilds
+   * the header from that in-memory state — so a field dropped here exists only
+   * on disk until the next persist from any writer silently deletes it. Letting
+   * it through is what makes the managed copy a real mirror for the session's
+   * whole lifetime rather than something a write has to remember to rescue.
+   */
+  pendingPlanExecution?: SessionHeader['pendingPlanExecution'];
   name?: string;
   createdAt: number;
   lastUsedAt: number;
