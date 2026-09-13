@@ -62,3 +62,34 @@ qualification and publish an updater-safe, signed/notarized prerelease.
   and Electron matrix; feature failures return to their owning SUV.
 - `2026-09-13` — moved from `planned` to `in-progress`: implementation is
   underway on branch `release/0.22.0-beta.1`.
+- `2026-09-13` — release mechanics landed on `release/0.22.0-beta.1`
+  (`3696a20a`): prerelease-aware release-note filenames and SemVer 2.0.0
+  ordering, `release.yml` prerelease create *and* reconcile with an explicit
+  `--latest=false`, `0.22.0-beta.1.md` consolidated from `next.md`, and the
+  workspace version cluster bumped with `bun.lock` refreshed. `latest-mac.yml`
+  and stable-tag behavior are unchanged and no electron-builder channel was
+  introduced. Gates green locally: `typecheck:packages`,
+  `typecheck:pages-worker`, shared tests 4357/0, webui+electron 609/0, i18n
+  parity/sorted/coverage, branding.
+- `2026-09-13` — **Jeff waived the manual desktop click-through (node K) for
+  this beta.** The automated desktop/WebUI matrix items above still stand; what
+  is waived is the human-performed real-desktop Page-action walkthrough
+  (native confirmation, successful action, reload/unmount during the prompt).
+  Rationale of record: this is a prerelease, Pages is off by default in every
+  workspace, and publishing additionally requires sharing to be configured.
+  The waiver is scoped to `0.22.0-beta.1` and does not carry to the stable
+  `0.22.0` release, which should re-instate the manual pass.
+- `2026-09-13` — PBKDF2 runtime-cost benchmark (node D): **retain 100,000
+  iterations**; no source change. Measured ~6.4 ms median / ~6.7 ms p95 per
+  verification at 100k (50k ≈ 3.3 ms, 250k ≈ 15.8 ms, linear as expected).
+  **Fidelity caveat: this is a Bun/V8 proxy measurement of the same
+  `crypto.subtle.deriveBits` call, NOT a workerd measurement** — running
+  `wrangler dev` was declined because it fetches the workerd binary and
+  performs Cloudflare account/update checks, which the read-only constraint
+  on this node forbids. Expect ±30–50% against real workerd. The decision is
+  robust to that error bar: `submitPassword` enforces the
+  `PAGE_PASSWORD_LIMIT` rate limit (10/60s per page) *before* hashing, so the
+  online-guessing threat is gated by the limiter rather than by iteration
+  count, and this protects a published page rather than an account
+  credential. `wrangler.jsonc` already exposes `PBKDF2_ITERATIONS` as a var,
+  so the value can be retuned at deploy time without a code change.
