@@ -245,6 +245,28 @@ export interface SessionConfig {
 }
 
 /**
+ * Session metadata plus the pending-plan state, for the host's own startup
+ * hydration. **Internal: do not put this on a wire payload.**
+ *
+ * The field has to survive header → memory, because `createManagedSession`
+ * builds the in-memory session from a metadata shape and `persistSession`
+ * rebuilds the header from that in-memory state — so a field the projection
+ * drops lives only on disk until the next persist from any writer silently
+ * deletes it, which is how an accepted plan disappeared across a restart.
+ *
+ * It is a SEPARATE shape rather than a field on {@link SessionMetadata}
+ * because `pendingPlanExecution` carries `draftInputSnapshot` — text the user
+ * typed and did not send. `SessionMetadata` is consumed broadly (artifact
+ * scans, label and status queries, list projections), and widening it would
+ * put unsent user text within reach of every one of those call sites and of
+ * anything that later decides to serialize one. Narrow the type and the data
+ * only reaches the caller that asks for it by name.
+ */
+export interface SessionMetadataWithPendingPlan extends SessionMetadata {
+  pendingPlanExecution?: SessionHeader['pendingPlanExecution'];
+}
+
+/**
  * Stored session with conversation data
  */
 export interface StoredSession extends SessionConfig {
@@ -366,6 +388,9 @@ export interface SessionHeader {
 
 /**
  * Session metadata (lightweight, for lists)
+ *
+ * Deliberately carries NO pending-plan state. See
+ * {@link SessionMetadataWithPendingPlan} for why that is a separate shape.
  */
 export interface SessionMetadata {
   id: string;

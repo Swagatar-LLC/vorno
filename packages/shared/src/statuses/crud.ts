@@ -166,7 +166,16 @@ export function resetToDefaults(workspaceRootPath: string): void {
 
   for (const session of sessions) {
     if (session.sessionStatus && !validIds.has(session.sessionStatus)) {
-      updateSessionMetadata(workspaceRootPath, session.id, { sessionStatus: 'todo' });
+      // Deliberately not awaited (this function is sync), so the rejection has
+      // to be caught HERE or it becomes an unhandled rejection — which it can
+      // be now that `saveSession` reports write failures truthfully. One
+      // session failing to migrate must not take the process down or stop the
+      // others; it is logged so the partial outcome is visible.
+      void updateSessionMetadata(workspaceRootPath, session.id, { sessionStatus: 'todo' }).catch(
+        (error: unknown) => {
+          console.error(`[statuses] Failed to migrate session ${session.id} to 'todo':`, error);
+        },
+      );
     }
   }
 }
@@ -187,7 +196,14 @@ function migrateSessionsFromDeletedStatus(
 
   for (const session of sessions) {
     if (session.sessionStatus === deletedStatusId) {
-      updateSessionMetadata(workspaceRootPath, session.id, { sessionStatus: 'todo' });
+      // Not awaited (sync function), so catch here — see the note above. The
+      // count is "sessions we asked to migrate", and a failure is logged rather
+      // than silently folded into it.
+      void updateSessionMetadata(workspaceRootPath, session.id, { sessionStatus: 'todo' }).catch(
+        (error: unknown) => {
+          console.error(`[statuses] Failed to migrate session ${session.id} off ${deletedStatusId}:`, error);
+        },
+      );
       migratedCount++;
     }
   }

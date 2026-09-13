@@ -1629,7 +1629,10 @@ async function performQuitCleanup(): Promise<void> {
       await sessionManager.flushAllSessions()
       mainLog.info('Flushed all pending session writes')
     } catch (error) {
-      mainLog.error('Failed to flush sessions:', error)
+      // Only reachable when the queue could not reach quiescence, which means
+      // session writes may be LOST by the exit below. Said plainly so the log
+      // does not read like an ordinary cleanup hiccup.
+      mainLog.error('Session writes did NOT all reach disk before quit; some may be lost:', error)
     }
     // Clean up SessionManager resources (file watchers, timers, etc.)
     sessionManager.cleanup()

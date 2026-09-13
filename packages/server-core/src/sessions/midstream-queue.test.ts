@@ -87,7 +87,14 @@ describe('mid-stream queue runtime invariants', () => {
     sm.setEventSink((_channel, _target, event) => events.push(event))
     ;(sm as unknown as { lastTimestamp: number }).lastTimestamp = priorFinalTimestamp
     ;(sm as unknown as { persistSession: () => void }).persistSession = () => {}
-    const sendMessage = mock(async () => {})
+    // The fake stands in for the real send, so it inherits the real send's
+    // obligation: `processNextQueuedMessage` claims the admission before it
+    // hands the message over, and whatever receives it settles that claim. A
+    // mock that ignores the last argument leaks one per replay — and the leak
+    // is invisible until a shutdown waits out its bound on it.
+    const sendMessage = mock(async (...args: unknown[]) => {
+      ;(args[9] as { settle(): void } | undefined)?.settle()
+    })
     ;(sm as unknown as { sendMessage: typeof sendMessage }).sendMessage = sendMessage
 
     ;(sm as unknown as { processNextQueuedMessage: (id: string) => void })
@@ -95,13 +102,24 @@ describe('mid-stream queue runtime invariants', () => {
     await new Promise<void>(resolve => setImmediate(resolve))
 
     const replayed = managed.messages.find(message => message.id === 'queued-user')
-    expect(replayed?.isQueued).toBe(false)
     expect(replayed?.timestamp).toBeGreaterThan(priorFinalTimestamp)
+    // The PERSISTED message stays queued through the handoff (SUV-0066): the
+    // send is deferred to the next tick, and clearing the durable marker here
+    // left a gap where the runtime queue had dropped the message, disk said it
+    // was not queued, and nothing was running it yet. It is released only once a
+    // replay owns the turn — which never happens here, because the send is
+    // mocked.
+    expect(replayed?.isQueued).toBe(true)
 
     const processingEvent = events.find(event => event.type === 'user_message')
     expect(processingEvent?.status).toBe('processing')
+    // The copy the renderer gets says `processing` and is not marked queued.
+    // Display and durability are allowed to differ for exactly this tick.
+    expect(processingEvent?.message.isQueued).toBe(false)
     expect(processingEvent?.message.timestamp).toBe(replayed?.timestamp)
     expect(processingEvent?.optimisticMessageId).toBe('optimistic-user')
     expect(sendMessage).toHaveBeenCalledTimes(1)
+    // And nothing is left outstanding once the replay has been handed over.
+    expect((sm as unknown as { sendAdmissions: Map<symbol, unknown> }).sendAdmissions.size).toBe(0)
   })
 })

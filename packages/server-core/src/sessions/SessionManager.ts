@@ -47,7 +47,6 @@ import { loadWorkspaceConfig, loadEffectiveHeadroomConfig } from '@craft-agent/s
 import { createSessionHeadroomAdapter, buildHeadroomStatsReport } from '@craft-agent/shared/headroom'
 import {
   // Session persistence functions
-  listSessions as listStoredSessions,
   loadSession as loadStoredSession,
   saveSession as saveStoredSession,
   createSession as createStoredSession,
@@ -65,8 +64,9 @@ import {
   getSessionFilePath,
   generateSessionId,
   sessionPersistenceQueue,
-  type SessionWriteHandle,
   type SessionWriteKey,
+  type SessionWriteHandle,
+  type SessionWriteReceipt,
   sessionWriteKey,
   getHeaderMetadataSignature,
   writeSessionJsonl,
@@ -96,7 +96,7 @@ import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
-import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type AnnotationMutationResult, type TokenUsage, type HeadroomRetrieveResult } from '@craft-agent/core/types'
+import { messageToStored, storedToMessage, type ContentBadge, type Message, type StoredAttachment, type ToolDisplayMeta, type AnnotationMutationResult, type TokenUsage, type HeadroomRetrieveResult } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
@@ -106,6 +106,11 @@ import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
 import { listLabels, loadLabelConfig, isValidLabelId } from '@craft-agent/shared/labels/storage'
+// The pending-plan-bearing reader is deliberately off the sessions barrel: it
+// carries `draftInputSnapshot` (unsent user text), and the host's startup
+// hydration is the only caller that may hold it. See sessions/internal.ts.
+import { readSessionHeader } from '@craft-agent/shared/sessions'
+import { listSessionsWithPendingPlan as listStoredSessions } from '@craft-agent/shared/sessions/internal'
 import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
@@ -276,6 +281,28 @@ const MAX_ANNOTATION_JSON_BYTES = 32 * 1024
 // are ignored, so the watcher does not roll back the in-memory mutation we
 // just persisted. See onSessionMetadataChange.
 const METADATA_WRITE_GUARD_MS = 5000
+
+/**
+ * How long shutdown waits for aborted turns to finish tearing down.
+ *
+ * Generous against the 100ms `deleteSession` already waits for the same
+ * teardown. Exceeding it FAILS the shutdown rather than proceeding: the point
+ * of waiting is that the turn's final state gets persisted, so giving up
+ * quietly would defeat the wait.
+ */
+const SHUTDOWN_TURN_DRAIN_TIMEOUT_MS = 5000
+const SHUTDOWN_TURN_DRAIN_POLL_MS = 25
+
+/**
+ * How many times shutdown re-snapshots a session whose final write was
+ * superseded.
+ *
+ * A supersession means a watcher reconciliation replaced the snapshot; retrying
+ * from current managed state picks up its merge and commits both changes. Past
+ * this, external edits are arriving faster than writes complete — which is a
+ * condition to report, not to keep looping through.
+ */
+const SHUTDOWN_FINAL_PERSIST_ATTEMPTS = 5
 
 /**
  * Text sent to the session when a plan is approved from outside the desktop
@@ -996,9 +1023,17 @@ interface ManagedSession {
    */
   pageCallbackTurnPendingToken?: symbol
   /**
-   * Mirror of the stored record's pending-plan state, hydrated at a Page
-   * callback's commit so the write that follows preserves it rather than
-   * dropping a field the metadata projection strips.
+   * Mirror of the stored record's pending-plan state.
+   *
+   * `persistSession` rebuilds the header from managed state, so a value that
+   * exists only on disk is dropped by the next persist from any writer. The
+   * mirror is what makes the field survive an ordinary session lifetime. Every
+   * owner of this state updates both — see `setPendingPlanExecution` and its
+   * three siblings.
+   *
+   * Hydrated at a Page callback's commit too, so the write that follows a
+   * callback preserves the field rather than dropping one the metadata
+   * projection strips.
    */
   pendingPlanExecution?: StoredSession['pendingPlanExecution']
   // Flag to prevent infinite retry loops (reset at start of each sendMessage)
@@ -1062,12 +1097,163 @@ interface ManagedSession {
   // after a short delay. The pending slot lets `sendMessage` dedup a duplicate
   // RPC from a legacy renderer that still ships the client-side auto_retry.
   autoRetryTimer?: ReturnType<typeof setTimeout>
+  /**
+   * The 5s safety timer that forces turn cleanup when a stopped generator does
+   * not finish draining.
+   *
+   * Held rather than fired-and-forgotten because it is a PERSISTENCE PRODUCER:
+   * it calls `onProcessingStopped`, which persists. A quit landing inside its
+   * window would let it fire after the queue froze and have that write refused,
+   * so the app would exit without the finalised turn while the flush reported
+   * quiescence. Cleared by `stopPersistenceProducers` and by the cleanup it
+   * exists to back up.
+   */
+  forceStopCleanupTimer?: ReturnType<typeof setTimeout>
+  /**
+   * Resolves when this turn is FINALISED — not when it stops running.
+   *
+   * `isProcessing = false` is not the end of a turn. `onProcessingStopped`
+   * clears it and then keeps going: browser visuals, read state, status,
+   * runtime teardown, the session-complete event, and finally the persist that
+   * records all of it. A shutdown that waited on the flag resumed while that
+   * tail was still running, so the queue closed underneath the final write.
+   *
+   * Created when processing STARTS and resolved by the ONE owner that claimed
+   * it — never as a side effect of the flag going false. Every stop site says
+   * which it is: `setProcessing(…, false)` takes a REQUIRED disposition, so a
+   * site with an async tail holds the deferred across that tail and its persist
+   * and releases in its own `finally`, while a site with nothing left to finish
+   * passes `'no-tail'` and the deferred is released there and then. Releasing
+   * generically from the flag write was the earlier shape, and it resolved a
+   * handoff's deferred at the START of its tail — the exact early-resolve this
+   * exists to prevent, reached through a different door.
+   *
+   * The token is the identity guard: turns are serial per session but their
+   * tails are async, so a slow owner must not resolve — or clear — the deferred
+   * belonging to the turn that started after it.
+   */
+  turnFinalization?: {
+    token: symbol
+    promise: Promise<void>
+    resolve: () => void
+  }
   autoRetryPending?: {
     content: string
     deadlineMs: number
     /** True after the first matching sendMessage consumes the slot; later matches drop. */
     committed: boolean
   }
+  /**
+   * Steers handed to a live turn that may still come back undelivered.
+   *
+   * A steer is a user message that was accepted, ACKed and persisted, and then
+   * pushed into the running turn instead of queued. If no tool call fires before
+   * the turn ends, the backend returns it as `steer_undelivered` and it has to
+   * become a queued message after all — as the SAME message, with the same id,
+   * attachments and canonical options. The event carries only the text, so the
+   * rest is remembered here at steer time.
+   *
+   * Cleared when the turn finalises: a steer that was delivered is not coming
+   * back, and a stale envelope would re-queue a message that already ran.
+   */
+  pendingSteers?: Array<{
+    message: string
+    messageId: string
+    attachments?: FileAttachment[]
+    storedAttachments?: StoredAttachment[]
+    options?: SendMessageOptions
+  }>
+}
+
+/**
+ * The single claim on a turn's finalisation deferred.
+ *
+ * Handed out by `claimTurnFinalization`, bound to the turn that was live when
+ * it was taken: a stale owner — one whose turn has since been replaced —
+ * releases nothing. Holding one is a promise to call `release()` in a
+ * `finally`, after the tail and the persist the deferred exists to cover.
+ */
+interface TurnFinalizationOwner {
+  /** The turn this owner may release. Inert once a later turn owns the slot. */
+  readonly token: symbol
+  /** Resolve the claimed turn's deferred. Idempotent; a repeat call no-ops. */
+  release(): void
+}
+
+/**
+ * What a stop site does about finalisation. REQUIRED at every
+ * `setProcessing(…, false)`, so a future stop site cannot silently inherit
+ * someone else's answer: either an owner it holds and will release after its
+ * tail, or `'no-tail'` — nothing follows this stop, so release now.
+ */
+type TurnStopFinalization = TurnFinalizationOwner | 'no-tail'
+
+/**
+ * A send that has been admitted but does not yet own a turn.
+ *
+ * `sendMessage` refuses at entry while shutting down, which covers a send that
+ * had not started — and covers nothing at all for one already inside its
+ * pre-mutation awaits (the stored-plan clear, the message hydration). Such a
+ * send resumed into a closing queue, pushed a user message that could no longer
+ * be written, and ACKed it. The admission is what shutdown waits for in that
+ * window; ownership transfers to `turnFinalization` the moment a turn starts.
+ */
+interface SendAdmission {
+  readonly token: symbol
+  /** Release the admission. Idempotent — the transfer point and the outer `finally` both call it. */
+  settle(): void
+}
+
+/**
+ * The skill slugs a queued message may carry across a restart.
+ *
+ * Normalized from the ORIGINAL `SendMessageOptions.skillSlugs` — never from
+ * badges. Badges are display metadata: they exist to render a chip, they are
+ * absent entirely on automation and CLI sends, and treating them as a contract
+ * made a presentation detail load-bearing for whether a replayed turn
+ * pre-enabled its sources.
+ *
+ * Validation is not a formality even on this path. The value round-trips
+ * through a JSONL file a user can edit, and on the way back in it reaches
+ * `loadSkillBySlug`, which builds a filesystem path out of it — so the shape
+ * check runs on write AND on read, and cannot express a separator or a `..`.
+ * Existence stays `loadSkillBySlug`'s question, which it already answers and
+ * tolerates a miss on.
+ *
+ * The shape is a PATH-SAFE DIRECTORY NAME — letters, digits, underscore,
+ * hyphen — not the repo's lowercase slug convention, and the difference is
+ * deliberate. A skill is a directory the user created, and `My_Skill` or
+ * `Commit` are names the mention parser already accepts and `loadSkillBySlug`
+ * already finds. Enforcing the cosmetic half of the slug rule here would have
+ * silently stopped pre-enabling their sources, on the live path as well as the
+ * replayed one. What the check is FOR is the other half: no separator, no dot,
+ * no space, nothing empty — so the value stays a name and cannot become a
+ * route. **Compatibility, stated rather than discovered later:** a
+ * skill DIRECTORY may be named anything the filesystem allows, and one named
+ * with an underscore or a capital (`My_Skill`) is mentionable today. Such a
+ * skill still runs; what it loses is the source PRE-ENABLE, on the live path as
+ * well as the replayed one, so the agent enables its sources at runtime instead
+ * — the two-turn penalty, not a failure. Widening to `[a-z0-9_-]` is a
+ * one-character change if that trade turns out to be the wrong way round.
+ */
+const SAFE_SKILL_DIRECTORY_NAME = /^[A-Za-z0-9_-]+$/
+
+export function normalizeQueuedSkillSlugs(slugs: unknown): string[] | undefined {
+  // `Array.isArray` FIRST, and the parameter is `unknown` for the same reason:
+  // this value comes back off a JSONL file anyone can edit, so "an array of
+  // strings" is a hope rather than a type. A bare string passes a `.length`
+  // check and then iterates as CHARACTERS — every one of which is a valid slug
+  // shape — and an object with a `length` property passes it and throws on
+  // iteration, inside session hydration, which is a session that will not open.
+  if (!Array.isArray(slugs) || slugs.length === 0) return undefined
+  const normalized: string[] = []
+  for (const raw of slugs) {
+    if (typeof raw !== 'string') continue
+    const slug = raw.trim()
+    if (!SAFE_SKILL_DIRECTORY_NAME.test(slug)) continue
+    if (!normalized.includes(slug)) normalized.push(slug)
+  }
+  return normalized.length ? normalized : undefined
 }
 
 const PI_SDK_MESSAGE_ID_CACHE_LIMIT = 256
@@ -1281,6 +1467,19 @@ export class SessionManager implements ISessionManager {
   private pendingDeltas: Map<string, PendingDelta> = new Map()
   private deltaFlushTimers: Map<string, NodeJS.Timeout> = new Map()
   // Config watchers for live updates (sources, etc.) - one per workspace
+  /**
+   * Set the moment shutdown begins, BEFORE the persistence queue closes.
+   *
+   * The queue's own `closing` state is the last line of defence: by the time a
+   * write is refused there, the work that produced it has already happened and
+   * the only honest thing left is to report a failure. This flag is the first
+   * line — it stops that work from starting, so there is nothing to refuse.
+   *
+   * What it blocks: new external sends, and the replay of queued messages. What
+   * it deliberately does NOT block: the final persist of a turn that was
+   * already running, which is the whole reason shutdown waits at all.
+   */
+  private shuttingDown = false
   private configWatchers: Map<string, ConfigWatcher> = new Map()
   // Automation systems for workspace event automations - one per workspace (includes scheduler, diffing, and handlers)
   private automationSystems: Map<string, AutomationSystem> = new Map()
@@ -1378,16 +1577,350 @@ export class SessionManager implements ISessionManager {
   }) => Promise<void>
 
   /**
+   * Sends admitted but not yet owning a turn, by token.
+   *
+   * The shutdown-visible record of the window between "this send was allowed
+   * in" and "this send owns a turn deferred, or has refused and mutated
+   * nothing". Empty almost always; a send is only in here while it is between
+   * awaits.
+   */
+  private sendAdmissions = new Map<symbol, { sessionId: string; promise: Promise<void> }>()
+
+  /**
+   * Admit a send, synchronously, before it can await anything.
+   *
+   * Registration has to happen in the same tick as the entry refusal, or the
+   * window this exists to close simply moves: a shutdown landing between the
+   * check and the registration would see nothing to wait for.
+   */
+  private admitSend(sessionId: string): SendAdmission {
+    const token = Symbol(`${sessionId}:send`)
+    let resolve!: () => void
+    const promise = new Promise<void>((r) => { resolve = r })
+    this.sendAdmissions.set(token, { sessionId, promise })
+    return {
+      token,
+      settle: () => {
+        // Delete-first, so a second call cannot re-resolve or re-log. The
+        // transfer point settles, and so does the caller's `finally`.
+        if (!this.sendAdmissions.delete(token)) return
+        resolve()
+      },
+    }
+  }
+
+  /**
+   * Wait for every send admitted before the freeze to either take a turn or
+   * refuse.
+   *
+   * Called BEFORE the final-persist candidate set is computed, because a send
+   * that is about to start a turn must be visible to that scan — otherwise
+   * shutdown decides what needs writing, and only then does a new turn appear
+   * with nothing watching it. Bounded like the turn drain, and it REPORTS
+   * rather than throws, for the same reason: one stuck send must cost its own
+   * session's completeness, not the whole salvage.
+   *
+   * @returns ids of sessions whose admitted send had not settled when the bound ran out
+   */
+  private async awaitPendingSendAdmissions(): Promise<string[]> {
+    if (!this.sendAdmissions.size) return []
+    const admitted = [...this.sendAdmissions.values()]
+    sessionLog.info(`Shutdown: awaiting ${admitted.length} in-flight send(s) admitted before the freeze`)
+    // Cleared on every exit — the losing side of a `race` is ignored, not
+    // cancelled, and a live 5s timer keeps a Bun host's event loop open long
+    // after the wait it was bounding is over. Same reasoning as the turn drain.
+    let boundTimer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        Promise.all(admitted.map(a => a.promise)),
+        new Promise<void>(resolve => { boundTimer = setTimeout(resolve, SHUTDOWN_TURN_DRAIN_TIMEOUT_MS) }),
+      ])
+    } finally {
+      clearTimeout(boundTimer)
+    }
+    // Whatever is still registered never settled; the map is the live answer.
+    return [...this.sendAdmissions.values()].map(a => a.sessionId)
+  }
+
+  /**
+   * Re-queue the messages a previous process accepted but never ran.
+   *
+   * Both hydration paths — cold load and lazy load — reached this the same way
+   * and were separately maintained, which is how they came to be separately
+   * WRONG in the same way: each rebuilt the queue entry without `options`, so a
+   * message sent with `[skill:…]` replayed after a restart without its skill
+   * slugs and skipped the source pre-enabling the original send performed. One
+   * copy now, so the next fix lands once.
+   *
+   * `isQueued` on a persisted user message is the durable half of the queue —
+   * `messageQueue` itself is runtime state that dies with the process — so this
+   * scan is what actually makes a queued message survive a quit or a crash.
+   */
+  private recoverOrphanedQueuedMessages(managed: ManagedSession): void {
+    const orphanedQueued = managed.messages.filter(m => m.role === 'user' && m.isQueued === true)
+    if (orphanedQueued.length === 0) return
+
+    sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
+    for (const msg of orphanedQueued) {
+      // Re-normalized on the way in: this came off disk, and the file is one a
+      // user can edit.
+      const skillSlugs = normalizeQueuedSkillSlugs(msg.queuedSkillSlugs)
+      managed.messageQueue.push({
+        message: msg.content,
+        messageId: msg.id,
+        attachments: undefined,  // Attachments already stored on disk
+        storedAttachments: msg.attachments,
+        // Rebuilt from the canonical `queuedSkillSlugs`, not from badges:
+        // `options` is not persisted, and only this member has an effect the
+        // replay would otherwise silently drop.
+        options: skillSlugs ? { skillSlugs } : undefined,
+      })
+    }
+
+    // Process queue when session becomes active (will be triggered by first message or interaction)
+    // Use setImmediate to avoid blocking the load and allow session state to settle
+    if (!managed.isProcessing && managed.messageQueue.length > 0) {
+      setImmediate(() => {
+        this.processNextQueuedMessage(managed.id)
+      })
+    }
+  }
+
+  /**
+   * The disk half of the send's plan dismissal.
+   *
+   * A one-line indirection with one caller, and it earns its place as a seam: a
+   * quit that begins DURING this await is the window where refusing would
+   * destroy an accepted plan on behalf of a message that never went through,
+   * and a module-level import cannot be held open by a test. The rule it pins
+   * is that a send which has reached this line finishes.
+   */
+  private clearStoredPendingPlan(managed: ManagedSession): Promise<void> {
+    return clearStoredPendingPlanExecution(managed.workspace.rootPath, managed.id)
+  }
+
+  /**
+   * Record a steer the backend ACCEPTED, and mark its message provisionally
+   * queued — before the caller is told the send landed.
+   *
+   * A steer is a user message pushed into a RUNNING turn rather than queued, so
+   * for the length of that turn its only home is the backend's memory. If the
+   * process dies there, the message is gone: ACKed to the user, never answered,
+   * nowhere on disk. So it is marked queued IMMEDIATELY and optimistically —
+   * provisional, because the steer will probably be delivered and the marker
+   * will then be cleared. The trade is deliberate and one-directional: a crash
+   * replays a message that may already have been seen (at-least-once), where the
+   * alternative loses one that was not.
+   *
+   * ONLY for a backend that can answer `takeUndeliveredSteer`. The marker is
+   * provisional, and the only thing that may retire it is the backend saying
+   * "that one went out" — so a backend which cannot be asked can never settle
+   * one. Marking anyway would be strictly worse than not marking: the
+   * reconciler reads its silence as delivery and clears the marker, leaving an
+   * ACKed steer neither on disk nor in the runtime queue, which is exactly the
+   * loss this method exists to prevent. `takeUndeliveredSteer` is optional on
+   * `AgentBackend` and `PiAgent` does not implement it — its `redirect()` is a
+   * fire-and-forget IPC `send` that returns `true` unconditionally — and Pi is
+   * not a corner: `defaultMidStreamBehavior` makes 'steer' the default for
+   * every provider except 'anthropic'.
+   *
+   * Those backends keep their pre-existing behaviour: no marker, no false
+   * clear, and no replay. The guarantee narrows to where it can be verified
+   * rather than being claimed everywhere and honoured in one place. Implement
+   * `takeUndeliveredSteer` on a backend and it earns the guarantee.
+   */
+  private recordAcceptedSteer(
+    managed: ManagedSession,
+    userMessage: Message,
+    envelope: { message: string; attachments?: FileAttachment[]; storedAttachments?: StoredAttachment[]; options?: SendMessageOptions },
+  ): void {
+    if (typeof managed.agent?.takeUndeliveredSteer !== 'function') return
+    userMessage.isQueued = true
+    userMessage.queuedSkillSlugs = envelope.options?.skillSlugs
+    ;(managed.pendingSteers ??= []).push({ ...envelope, messageId: userMessage.id })
+  }
+
+  /**
+   * Put an undelivered steer's message back in the runtime queue.
+   *
+   * The durable marker is already on it — that happened when the steer was
+   * accepted — so this adds the runtime half and nothing else. Same message, same
+   * id, same attachments and options, so the transcript does not grow a
+   * duplicate and the replay pre-enables the same sources.
+   */
+  private promoteSteerEnvelope(managed: ManagedSession, envelope: NonNullable<ManagedSession['pendingSteers']>[number]): void {
+    const original = managed.messages.find(m => m.id === envelope.messageId)
+    if (!original) return
+    if (managed.messageQueue.some(q => q.messageId === envelope.messageId)) return
+    original.isQueued = true
+    original.queuedSkillSlugs = envelope.options?.skillSlugs
+    managed.messageQueue.push({
+      message: envelope.message,
+      attachments: envelope.attachments,
+      storedAttachments: envelope.storedAttachments,
+      options: envelope.options,
+      messageId: envelope.messageId,
+    })
+    this.persistSession(managed)
+  }
+
+  /** Drop the provisional marker from a steer we have evidence WAS delivered. */
+  private clearProvisionalSteer(managed: ManagedSession, envelope: NonNullable<ManagedSession['pendingSteers']>[number]): void {
+    const original = managed.messages.find(m => m.id === envelope.messageId)
+    if (!original?.isQueued) return
+    original.isQueued = false
+    original.queuedSkillSlugs = undefined
+    this.persistSession(managed)
+  }
+
+  /**
+   * Settle every outstanding steer against the backend's ONE pending slot.
+   *
+   * Called wherever that slot is about to be lost — turn end, user stop,
+   * shutdown, a handoff interrupt — because the backend will never volunteer the
+   * answer: `chat()` yields its notice from a `finally`, and the send loop
+   * returns on `complete`, which abandons the generator and discards it. The
+   * question has to be ASKED while it can still be answered.
+   *
+   * The slot holds at most one steer and the newest write wins it, so:
+   *
+   * - a non-null answer means that steer was never delivered — promote it, and
+   *   promote anything else still outstanding, because a steer the slot no
+   *   longer holds was overwritten and can never be delivered either;
+   * - a null answer is AFFIRMATIVE EVIDENCE that the most recent steer was
+   *   delivered, and is the only thing that may clear a provisional marker. It
+   *   clears THAT ONE, not every envelope: a blanket clear would silently drop
+   *   an earlier steer that nothing ever answered.
+   *
+   * Asking also takes: the backend forgets, so two callers cannot both act on
+   * one answer.
+   *
+   * The null branch is only sound because `recordAcceptedSteer` refuses to
+   * enrol a backend that cannot be asked. Without that gate, a backend with no
+   * `takeUndeliveredSteer` answers null to every question and its silence reads
+   * as delivery — so do not relax one of these two without the other.
+   */
+  private reconcilePendingSteers(managed: ManagedSession): void {
+    const undelivered = managed.agent?.takeUndeliveredSteer?.() ?? null
+    const envelopes = managed.pendingSteers
+    if (!envelopes?.length) return
+    managed.pendingSteers = undefined
+
+    if (undelivered !== null) {
+      // Nothing here was delivered: one is still sitting in the slot, and
+      // anything older than it was overwritten to put it there.
+      for (const envelope of envelopes) this.promoteSteerEnvelope(managed, envelope)
+      sessionLog.info(`Re-queued ${envelopes.length} undelivered steer(s) for session ${managed.id}`)
+      return
+    }
+
+    const delivered = envelopes[envelopes.length - 1]!
+    for (const envelope of envelopes.slice(0, -1)) this.promoteSteerEnvelope(managed, envelope)
+    this.clearProvisionalSteer(managed, delivered)
+  }
+
+  /**
+   * Start the turn and hand shutdown-visibility over from the admission to it,
+   * with NO GAP.
+   *
+   * Two statements, kept in one place so they cannot drift apart. What makes
+   * the handover atomic is the ABSENCE OF AN AWAIT between them, not their
+   * order: nothing else runs inside a synchronous block, so shutdown cannot
+   * observe the instant in between whichever way round they go. The pairing is
+   * named so an edit that inserts an await here has to argue with this comment
+   * first — that await is what would open the gap, and a shutdown scan landing
+   * in it would read an idle session and decide nothing needed writing.
+   *
+   * The admission has to end HERE rather than when `sendMessage` returns: that
+   * promise does not resolve until the whole turn has run, and a shutdown
+   * waiting on it would be waiting for a turn it has not aborted yet.
+   */
+  private beginTurnFromAdmittedSend(managed: ManagedSession, admission: SendAdmission): void {
+    this.setProcessing(managed, true)
+    admission.settle()
+  }
+
+  /**
+   * Claim a turn's finalisation deferred.
+   *
+   * Taken BEFORE the stop it covers, so the owner is bound to the turn that is
+   * ending rather than to whatever is live when its tail finally finishes: a
+   * follow-up turn mints a new deferred with a new token, and this owner then
+   * releases nothing. Claiming where there is no live turn hands back an inert
+   * owner rather than failing — every site that claims sits on a path where the
+   * deferred may legitimately already be gone.
+   */
+  private claimTurnFinalization(sessionId: string): TurnFinalizationOwner {
+    const token = this.sessions.get(sessionId)?.turnFinalization?.token ?? Symbol(`${sessionId}:no-turn`)
+    return {
+      token,
+      release: () => {
+        // Re-read the session rather than trusting one captured before the
+        // tail ran: it may have been deleted, or deleted and re-registered
+        // under the same id, while this owner was working.
+        const live = this.sessions.get(sessionId)
+        if (!live?.turnFinalization || live.turnFinalization.token !== token) return
+        live.turnFinalization.resolve()
+        live.turnFinalization = undefined
+      },
+    }
+  }
+
+  /**
    * Centralized setter for session processing state.
    * Automatically notifies the power manager on transitions (true→false, false→true)
    * so callers don't need to remember to call onSessionStarted/onSessionStopped.
+   *
+   * Stopping additionally requires naming who finalises the turn — see
+   * `TurnStopFinalization`. This setter moves UI and admission state; it does
+   * NOT resolve the finalisation deferred on its own.
    */
-  private setProcessing(managed: ManagedSession, processing: boolean): void {
+  private setProcessing(managed: ManagedSession, processing: true): void
+  private setProcessing(managed: ManagedSession, processing: false, finalization: TurnStopFinalization): void
+  private setProcessing(
+    managed: ManagedSession,
+    processing: boolean,
+    finalization?: TurnStopFinalization,
+  ): void {
     const was = managed.isProcessing
     managed.isProcessing = processing
     if (!was && processing) {
+      // A fresh finalisation deferred per turn. Shutdown awaits these rather
+      // than the flag below, because the flag goes false well before the turn's
+      // state has been written — see `turnFinalization`.
+      //
+      // A deferred still sitting here belongs to a turn whose owner has not
+      // released it. Resolve it rather than orphan it: the slot is about to be
+      // overwritten, and a shutdown holding that promise would otherwise wait
+      // out its entire bound on a turn that is already over. Logged, because
+      // the only innocent cause is the next message arriving inside a handoff's
+      // tail — anything else is an owner that forgot its `finally`.
+      if (managed.turnFinalization) {
+        sessionLog.warn(`Superseding an unreleased finalisation deferred for session ${managed.id}`)
+        managed.turnFinalization.resolve()
+      }
+      let resolve!: () => void
+      const promise = new Promise<void>((r) => { resolve = r })
+      managed.turnFinalization = { token: Symbol(managed.id), promise, resolve }
       sessionRuntimeHooks.onSessionStarted()
     } else if (was && !processing) {
+      // The deferred belongs to whoever CLAIMED it, and this flag write is not
+      // a claim. A turn can stop without being finalised — plan submission and
+      // auth requests are handoff interrupts where control moves to the UI and
+      // `onProcessingStopped` is never reached, as is the auth-retry resend —
+      // and each of those owns a tail that has to finish before shutdown may
+      // proceed. Releasing from here released it at the START of that tail.
+      if (finalization === 'no-tail') {
+        this.claimTurnFinalization(managed.id).release()
+      } else if (managed.turnFinalization && finalization?.token !== managed.turnFinalization.token) {
+        // Unreachable by construction: every stop site claims immediately
+        // before it stops. Loud rather than silent, because what it describes
+        // is a deferred no live owner can resolve, and the only symptom of that
+        // is a shutdown burning its whole bound and reporting a stuck turn.
+        sessionLog.error(
+          `Turn stop for session ${managed.id} carries an owner for a different turn; its deferred has no releaser`,
+        )
+      }
       // Turn completion is the activity signal for idle-TTL eviction:
       // lastMessageAt is stamped at turn START, so without this a long turn
       // would count as idle time and could be evicted right after finishing.
@@ -1697,10 +2230,18 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
-    // Read state. Plain display fields with no event contract of their own —
-    // like projectId and kanbanColumn above, they ride the metaChanged
-    // broadcast — so mirroring them here is safe and keeps the badge honest
-    // when another window marks the session read.
+    // Read state. Mirrored for the same reason projectId and kanbanColumn above
+    // are: these have no dedicated event on THIS path, so what the mirroring
+    // buys is that the in-memory value stops being wrong — the next list read
+    // is right, and the badge stops claiming unread work the user has already
+    // seen in another window. It emits nothing itself; `session_metadata_changed`
+    // is raised by the mutator methods, and both callers of this one discard the
+    // boolean. Said plainly because the neighbouring comments read as though a
+    // broadcast happens here, and it does not.
+    //
+    // Disk is already safe without this: the queue's per-field merge lets disk
+    // win a field it changed since our last write. This is about the copy in
+    // memory, which nothing else was correcting.
     if (managed.lastReadMessageId !== header.lastReadMessageId) {
       managed.lastReadMessageId = header.lastReadMessageId
       changed = true
@@ -1727,6 +2268,14 @@ export class SessionManager implements ISessionManager {
     // committed straight over it with nothing held to recover from. The question
     // that matters is "did an external writer diverge from what we last wrote",
     // and only the full signature answers it.
+    // With no baseline — a session this process has loaded but never written —
+    // this reads as diverged, and that is the right answer: an external writer
+    // has touched a header we have no claim on, so we absorb it and write once.
+    // It cannot ping-pong between two running copies. Our write adopts the
+    // external values for all seven merged fields, so our next baseline equals
+    // the other instance's, and its echo of our write compares equal and stops.
+    // Only those seven fields are in the signature, so message counts and
+    // timestamps drifting apart do not restart it.
     const observedSignature = getHeaderMetadataSignature(header)
     const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(this.writeKeyFor(managed))
     const divergedFromOurLastWrite = observedSignature !== lastWrittenSignature
@@ -1748,7 +2297,15 @@ export class SessionManager implements ISessionManager {
       // (correctly) keeps that file — so disk no longer holds the edit, and the
       // baseline matches the stale file so nothing detects the divergence.
       sessionPersistenceQueue.supersedePendingWrites(this.writeKeyFor(managed), header)
-      this.persistSession(managed)
+      // The RECONCILIATION path, not the ordinary one. These two lines are one
+      // operation: the supersede above cancels the in-flight write so it cannot
+      // commit pre-edit state, and this write carries the merged result. During
+      // a shutdown drain an ordinary enqueue is refused — so using it here would
+      // mean the supersede destroyed the very edit it was absorbing, and the
+      // stale file would stand. Producers are stopped before the queue closes
+      // (`stopPersistenceProducers`), but a watcher event already dispatched can
+      // still arrive after the freeze, and this is what keeps it whole.
+      this.persistSessionForReconciliation(managed)
     }
 
     // Feed the automation differ from the just-applied in-memory state (not the raw
@@ -2362,27 +2919,7 @@ export class SessionManager implements ISessionManager {
       if (managed.transferredSessionSummary === undefined) managed.transferredSessionSummary = stored.transferredSessionSummary
       if (managed.transferredSessionSummaryApplied === undefined) managed.transferredSessionSummaryApplied = stored.transferredSessionSummaryApplied
 
-      // Queue recovery: find orphaned queued messages from crash/restart and re-queue them.
-      const orphanedQueued = managed.messages.filter(m =>
-        m.role === 'user' && m.isQueued === true
-      )
-      if (orphanedQueued.length > 0) {
-        sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
-        for (const msg of orphanedQueued) {
-          managed.messageQueue.push({
-            message: msg.content,
-            messageId: msg.id,
-            attachments: undefined,
-            storedAttachments: msg.attachments,
-            options: undefined,
-          })
-        }
-        if (!managed.isProcessing && managed.messageQueue.length > 0) {
-          setImmediate(() => {
-            this.processNextQueuedMessage(managed.id)
-          })
-        }
-      }
+      this.recoverOrphanedQueuedMessages(managed)
       sessionLog.debug(`Cold-hydrated ${managed.messages.length} messages for session ${managed.id}`)
     }
     managed.messagesLoaded = true
@@ -2391,14 +2928,44 @@ export class SessionManager implements ISessionManager {
   // Build the StoredSession snapshot and hand it to the persistence queue.
   // Caller must ensure `managed.messagesLoaded` is true.
   /**
+   * The persistence-queue identity for a session.
+   *
+   * Session ids are unique per WORKSPACE, so the queue keys its state on both.
+   * Everything here goes through this helper rather than building a key inline,
+   * so there is one place to be wrong instead of a dozen.
+   */
+  private writeKeyFor(managed: Pick<ManagedSession, 'id' | 'workspace'>): SessionWriteKey {
+    return sessionWriteKey(managed.workspace.rootPath, managed.id)
+  }
+
+  /**
+   * Persist the merged result of absorbing an external metadata edit.
+   *
+   * Separate from `persistSession` only so it can take the queue's
+   * reconciliation path, which survives a shutdown freeze. Behaviourally
+   * identical otherwise. Do NOT reach for this to get an ordinary write past a
+   * closing queue — the exemption is justified by the supersede that precedes
+   * it, and nothing else.
+   */
+  private persistSessionForReconciliation(managed: ManagedSession): void {
+    if (!managed.messagesLoaded) {
+      this.hydrateMessagesForColdPersist(managed)
+    }
+    try {
+      sessionPersistenceQueue.enqueueReconciliation(this.buildStoredSessionForPersist(managed))
+    } catch (error) {
+      sessionLog.error(`Failed to queue reconciliation write for ${managed.id}:`, error)
+    }
+  }
+
+  /**
    * Build the record this session would persist right now.
    *
-   * Split out so the checked path enqueues the SAME snapshot as the ordinary
-   * one. Two constructions would be two chances to diverge, and the divergence
-   * would only show up as a callback reporting durability for a record that did
-   * not match what an ordinary persist writes.
+   * Shared by the ordinary and reconciliation paths so the two cannot diverge
+   * — a difference here would only ever show up as one of them writing a
+   * subtly different record than the other.
    */
-  private buildStoredSession(managed: ManagedSession): StoredSession {
+  private buildStoredSessionForPersist(managed: ManagedSession): StoredSession {
     // Filter out transient status messages (progress indicators like "Compacting...")
     // Error messages are now persisted with rich fields for diagnostics
     const persistableMessages = managed.messages.filter(m => m.role !== 'status')
@@ -2412,28 +2979,15 @@ export class SessionManager implements ISessionManager {
     } as StoredSession
   }
 
-  /**
-   * The persistence-queue identity for a session.
-   *
-   * Session ids are unique per WORKSPACE, so the queue keys its state on both.
-   * Everything here goes through this helper rather than building a key inline,
-   * so there is one place to be wrong instead of a dozen.
-   */
-  private writeKeyFor(managed: Pick<ManagedSession, 'id' | 'workspace'>): SessionWriteKey {
-    return sessionWriteKey(managed.workspace.rootPath, managed.id)
-  }
-
   /** Enqueue and return a claim on that exact snapshot. */
   private enqueuePersistChecked(managed: ManagedSession): SessionWriteHandle {
-    return sessionPersistenceQueue.enqueueChecked(this.buildStoredSession(managed))
+    return sessionPersistenceQueue.enqueueChecked(this.buildStoredSessionForPersist(managed))
   }
 
   private enqueuePersist(managed: ManagedSession): void {
     try {
-      // Filter out transient status messages (progress indicators like "Compacting...")
-      // Error messages are now persisted with rich fields for diagnostics
       // Queue for async persistence with debouncing
-      sessionPersistenceQueue.enqueue(this.buildStoredSession(managed))
+      sessionPersistenceQueue.enqueue(this.buildStoredSessionForPersist(managed))
     } catch (error) {
       sessionLog.error(`Failed to queue session ${managed.id} for persistence:`, error)
     }
@@ -2444,12 +2998,436 @@ export class SessionManager implements ISessionManager {
   // queue already has an entry whenever persistSession was just called.
   async flushSession(sessionId: string): Promise<void> {
     const managed = this.sessions.get(sessionId)
-    // No managed session means no workspace, and therefore no key to flush
-    // under. Nothing is lost: an unloaded session's pending write was keyed by a
-    // root this call cannot reconstruct, and the unload path flushes before
-    // dropping it.
+    // No managed session means no workspace root, and therefore no key to flush
+    // under — the key is a function of both, and a bare id cannot name one.
+    //
+    // Reachable only for an id this process does not hold. Every in-product
+    // caller passes `managed.id`, having just looked the session up; and
+    // `this.sessions` is emptied in exactly two places, neither of which leaves
+    // a write that needs flushing — `deleteSession` cancels its writes outright,
+    // and the branch-creation failure path is unwinding a session that was never
+    // established. A pending write for a session dropped some other way would
+    // still land on its own debounce timer rather than being lost; it simply
+    // would not be awaited here. "Cold" in `cold-session-metadata.test.ts` means
+    // messages-not-loaded, not absent from the map, so that path is unaffected.
     if (!managed) return
     await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
+  }
+
+  /**
+   * Stop everything that can still ENQUEUE a session write.
+   *
+   * Must run before the persistence queue closes, and that ordering is the
+   * whole point of it being a separate method. The queue refuses writes once
+   * closing — deliberately, so shutdown can reach quiescence — which means a
+   * producer still running during the drain does not merely arrive late, it is
+   * REFUSED. The case that bites is the watcher: an fs event during the drain
+   * reaches `applyExternalSessionMetadata`, which supersedes the in-flight
+   * write (cancelling it) and then persists the merged replacement — and if
+   * that replacement is refused, the supersede has cancelled a write and
+   * nothing has taken its place, so an external metadata edit is lost and the
+   * stale file stands.
+   *
+   * Idempotent: every collection is cleared, so a second call finds nothing.
+   * `cleanup` calls it too, for callers that never flush.
+   */
+  private stopPersistenceProducers(): void {
+    // Stop all ConfigWatchers (file system watchers)
+    for (const [path, watcher] of this.configWatchers) {
+      watcher.stop()
+      sessionLog.info(`Stopped config watcher for ${path}`)
+    }
+    this.configWatchers.clear()
+
+    // Dispose all AutomationSystems (includes scheduler, handlers, and event loggers)
+    for (const [workspacePath, automationSystem] of this.automationSystems) {
+      try {
+        automationSystem.dispose()
+        sessionLog.info(`Disposed AutomationSystem for ${workspacePath}`)
+      } catch (error) {
+        sessionLog.error(`Failed to dispose AutomationSystem for ${workspacePath}:`, error)
+      }
+    }
+    this.automationSystems.clear()
+
+    // Stop the idle agent-runtime TTL sweep
+    if (this.idleSweepTimer) {
+      clearInterval(this.idleSweepTimer)
+      this.idleSweepTimer = null
+    }
+
+    // Cancel every session's pending source-activation auto-retry.
+    //
+    // This one is per-SESSION rather than per-workspace, which is why it was
+    // missed: the watchers and schedulers are in two maps that read like "the
+    // background things", and this timer lives on each managed session. It is
+    // just as much a producer — it fires `sendMessage`, which mutates the
+    // session and persists — so a shutdown starting inside its window would
+    // have it commit state after the freeze and have that write refused, and
+    // the app would exit without the retried message while the flush reported
+    // quiescence.
+    //
+    // Dropping the pending record too: the retry is a best-effort dedup window
+    // for a message the client may also resend, so abandoning it at shutdown
+    // loses nothing a restart cannot recover, whereas letting it fire mid-drain
+    // starts a turn nobody can finish.
+    for (const managed of this.sessions.values()) {
+      if (managed.autoRetryTimer) {
+        clearTimeout(managed.autoRetryTimer)
+        managed.autoRetryTimer = undefined
+      }
+      managed.autoRetryPending = undefined
+      // The forced turn-cleanup safety timer is a producer for the same reason:
+      // it calls `onProcessingStopped`, which persists. A quit inside its 5s
+      // window would otherwise fire it against a frozen queue.
+      if (managed.forceStopCleanupTimer) {
+        clearTimeout(managed.forceStopCleanupTimer)
+        managed.forceStopCleanupTimer = undefined
+      }
+    }
+  }
+
+  /** True once shutdown has begun. New work is refused from this point. */
+  get isShuttingDown(): boolean {
+    return this.shuttingDown
+  }
+
+  /**
+   * Refuse an operation that must not start once shutdown has begun.
+   *
+   * Throws rather than returning a soft failure, because every caller is on an
+   * awaited RPC or tool path: an exception becomes a visible error, while a
+   * quiet no-op becomes a user who thinks their message was accepted.
+   */
+  private assertNotShuttingDown(operation: string): void {
+    if (this.shuttingDown) {
+      throw new Error(`Cannot ${operation}: the session manager is shutting down`)
+    }
+  }
+
+  /**
+   * Abort every running turn and wait for each to finish tearing down.
+   *
+   * The wait is the point. `onProcessingStopped` is what finalises a turn and
+   * persists it, and it runs asynchronously after the abort — so a shutdown
+   * that aborted and moved on would close the queue underneath that final
+   * write. The persistence queue is deliberately still OPEN here.
+   *
+   * `forceAbort(UserStop)` is the canonical primitive, the same one
+   * `deleteSession` uses; this is not a second teardown path.
+   *
+   * Bounded — and it REPORTS the sessions that did not finish rather than
+   * throwing. That distinction matters: throwing here aborted the whole
+   * sequence, so one stuck turn skipped the final persist and the drain for
+   * every OTHER session too, while the hosts caught the error and exited
+   * anyway. A stuck turn must cost its own session's completeness, not the
+   * process's. The caller records the names, finishes the salvage, and fails at
+   * the end.
+   *
+   * @returns ids of sessions whose turns were still running when the bound ran out
+   */
+  private async stopActiveTurnsForShutdown(): Promise<string[]> {
+    // Everything still finalising, which is NOT the same as everything still
+    // processing. A turn whose `isProcessing` has already gone false may be
+    // midway through its finaliser — visuals, read state, status, runtime
+    // teardown, then the persist that records them — so it is captured by its
+    // deferred rather than by the flag.
+    const finalizing = [...this.sessions.values()].filter(m => m.turnFinalization)
+    const active = [...this.sessions.values()].filter(m => m.isProcessing)
+    if (!active.length && !finalizing.length) return []
+
+    // Captured BEFORE aborting: the abort is what causes them to resolve, and a
+    // finaliser that completes between the abort and the read would otherwise
+    // clear its deferred and be missed entirely.
+    const pendingFinalizations = finalizing.map(m => ({ id: m.id, promise: m.turnFinalization!.promise }))
+
+    sessionLog.info(
+      `Shutdown: aborting ${active.length} active turn(s), awaiting ${pendingFinalizations.length} finalisation(s)`,
+    )
+    for (const managed of active) {
+      try {
+        // Same reason as every other abort site: the abort clears the steer
+        // slot, so the question is asked while it can still be answered. On this
+        // path the promoted message also reaches disk, because the session is a
+        // final-persist candidate.
+        this.reconcilePendingSteers(managed)
+        managed.agent?.forceAbort(AbortReason.UserStop)
+      } catch (error) {
+        sessionLog.error(`Shutdown: failed to abort turn for ${managed.id}:`, error)
+      }
+    }
+
+    // Wait on the deferreds first — they are the real "finalisation complete"
+    // signal. Bounded as a whole, not per session, because the bound is on the
+    // shutdown and not on any one turn.
+    const deadline = Date.now() + SHUTDOWN_TURN_DRAIN_TIMEOUT_MS
+    if (pendingFinalizations.length) {
+      // The losing side of a `race` is not cancelled — it is merely ignored —
+      // and an uncleared 5s timer holds the event loop open for its full delay.
+      // Electron hides that (`app.quit` tears the process down regardless); a
+      // Bun headless or standalone host does not, so a clean shutdown sat there
+      // for five seconds with nothing left to do. Created only when there is
+      // something to race, and cleared on every exit from it.
+      let drainTimer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          Promise.all(pendingFinalizations.map(f => f.promise)),
+          new Promise<'timeout'>(resolve => {
+            drainTimer = setTimeout(() => resolve('timeout'), SHUTDOWN_TURN_DRAIN_TIMEOUT_MS)
+          }),
+        ])
+      } finally {
+        clearTimeout(drainTimer)
+      }
+    }
+
+    // Then poll the flag for anything that had no deferred. A turn started
+    // before this mechanism existed, or a session whose flag was set directly,
+    // still has to be waited for — the deferred is the precise answer, this is
+    // the one that is always available.
+    while (Date.now() < deadline) {
+      const stillRunning = [...this.sessions.values()].filter(m => m.isProcessing || m.turnFinalization)
+      if (!stillRunning.length) return []
+      await new Promise(resolve => setTimeout(resolve, SHUTDOWN_TURN_DRAIN_POLL_MS))
+    }
+
+    const stuck = [...this.sessions.values()]
+      .filter(m => m.isProcessing || m.turnFinalization)
+      .map(m => m.id)
+    sessionLog.error(
+      `Shutdown: ${stuck.length} turn(s) did not finish within ${SHUTDOWN_TURN_DRAIN_TIMEOUT_MS}ms: ${stuck.join(', ')}`,
+    )
+    return stuck
+  }
+
+  /**
+   * Shut the session layer down, in the one order that does not lose writes.
+   *
+   * Named `flushAllSessions` because that is what all three hosts already call
+   * before their own cleanup; the ordering lives here so none of them can get
+   * it wrong independently. It is a SEQUENCE, and every step exists because
+   * skipping it loses something:
+   *
+   * 1. **Refuse new work** (`shuttingDown`). Not the queue's closing state —
+   *    that one catches a write after the work is done, when a failure is all
+   *    that is left to report. This stops the work starting.
+   * 2. **Stop the timers and watchers**, with the queue still OPEN. They are
+   *    producers; the queue must stay open because the steps below still write.
+   * 3. **Abort running turns and WAIT for them.** `onProcessingStopped`
+   *    finalises and persists a turn asynchronously, so closing the queue
+   *    before that lands is exactly how a final assistant response is lost.
+   *    Queued replay is already blocked, so draining cannot become a treadmill.
+   * 4. **Persist each session's final state and await the EXACT receipts.** Not
+   *    fire-and-forget: this is the last chance to know, and an unchecked
+   *    persist here would make the whole sequence decorative.
+   * 5. **Close and drain.** Only now — `flushAll` freezes intake and throws if
+   *    it cannot reach quiescence.
+   *
+   * Throws if any step cannot complete. A caller must not report a flush it did
+   * not get; host cleanup and exit belong strictly after this resolves.
+   */
+  async flushAllSessions(): Promise<void> {
+    this.shuttingDown = true
+    this.stopPersistenceProducers()
+
+    // Failures are COLLECTED, not thrown as they happen. An earlier version
+    // threw the moment a turn refused to finish, which skipped the final
+    // persist and the drain entirely — so one stuck turn cost every other
+    // session its last write, and the hosts caught the error and exited
+    // anyway. Salvage everything salvageable first; report at the end.
+    const failures: string[] = []
+
+    // A send admitted before the freeze is a producer the freeze does not stop:
+    // it is already past the entry refusal and inside its pre-mutation awaits.
+    // Waited for HERE, before the candidate scan, so a send that is about to
+    // start a turn is visible to that scan, and one that refuses has finished
+    // refusing before anything else looks at the session.
+    const unsettledSends = await this.awaitPendingSendAdmissions()
+    if (unsettledSends.length) {
+      failures.push(
+        `${unsettledSends.length} in-flight send(s) did not settle within ${SHUTDOWN_TURN_DRAIN_TIMEOUT_MS}ms: ${unsettledSends.join(', ')}`,
+      )
+    }
+
+    // Decided BEFORE quiescing, because quiescing destroys the evidence: once
+    // turns are aborted, `isProcessing` is false everywhere and every session
+    // looks idle. See `collectSessionsNeedingFinalPersist`.
+    const needsFinalPersist = this.collectSessionsNeedingFinalPersist()
+
+    const stuck = await this.stopActiveTurnsForShutdown()
+    if (stuck.length) {
+      failures.push(
+        `${stuck.length} turn(s) did not finish within ${SHUTDOWN_TURN_DRAIN_TIMEOUT_MS}ms: ${stuck.join(', ')}`,
+      )
+    }
+
+    // Still persist every session, INCLUDING a stuck one — a partial transcript
+    // on disk beats none, and the other sessions are simply innocent.
+    try {
+      await this.persistFinalSessionStates(needsFinalPersist)
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error))
+    }
+
+    // And still drain, so whatever did get queued reaches disk.
+    try {
+      await sessionPersistenceQueue.flushAll()
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error))
+    }
+
+    if (failures.length) {
+      throw new Error(`Session shutdown was not clean — ${failures.join(' | ')}`)
+    }
+  }
+
+  /**
+   * Persist every loaded session's final state, and wait to be told it landed.
+   *
+   * Checked receipts rather than `persistSession`, because this is the last
+   * write of the process: a fire-and-forget persist here would make the
+   * preceding wait pointless, since nothing would establish that the state it
+   * waited for actually reached disk.
+   *
+   * Sessions are written concurrently — they have independent tails (I1), so
+   * there is nothing to serialise between them — and every failure is collected
+   * rather than the first one thrown, so the log names all of them.
+   */
+  /**
+   * Which sessions actually have a final state worth writing.
+   *
+   * Called BEFORE turns are aborted, because aborting them is what makes every
+   * session look idle — read afterwards, this would return nothing.
+   *
+   * The default is SKIP, and that is the correction. Persisting every loaded
+   * session meant a quit rewrote the whole workspace: a few hundred cold
+   * sessions, each hydrated from disk by `hydrateMessagesForColdPersist` purely
+   * to be written back, each restamped with a fresh `lastUsedAt` — so idle
+   * sessions drifted to the top of a recency-sorted list just because the app
+   * closed. Expensive and wrong, for records that had not changed.
+   *
+   * A session earns a final write only if it has state the drain would not
+   * otherwise carry:
+   *
+   * - **Processing.** Its turn is about to be aborted and finalised, so there
+   *   is a final response and a completed state to record.
+   * - **Queued messages.** Shutdown deliberately does not replay them, so they
+   *   have to reach disk to be replayed after a restart — and what reaches disk
+   *   is `isQueued` (plus `queuedSkillSlugs`) on the persisted MESSAGE, not
+   *   `messageQueue`, which is runtime state. A session holding runtime queue
+   *   entries is therefore one whose messages need that flag written.
+   *
+   * **Activity is checked FIRST, and an outstanding write does not override
+   * it.** Getting that precedence backwards was a real bug: an active turn
+   * enqueues intermediate snapshots as it streams, so `hasPendingOrTail` is
+   * routinely true for exactly the sessions that most need a final write — and
+   * skipping them meant shutdown drained a mid-turn snapshot while the
+   * completed state, assembled moments later by the stop handler, was never
+   * written. A queued write proves that SOME state is on its way, not that it
+   * is the state shutdown is waiting for.
+   *
+   * For an IDLE session the two answers coincide, and both mean skip: a queued
+   * write is the latest state (nothing is changing it any more) and `flushAll`
+   * drains it, while nothing queued means there is nothing to write. The
+   * distinction is kept in the log because those are different reasons and a
+   * reader debugging a missing write needs to know which one applied.
+   */
+  private collectSessionsNeedingFinalPersist(): ManagedSession[] {
+    const needed: ManagedSession[] = []
+    for (const managed of this.sessions.values()) {
+      // Active work first. Its final state does not exist yet, so nothing
+      // already queued can be standing in for it.
+      //
+      // `turnFinalization` is part of "active": a session whose finaliser is
+      // still running has ALREADY had `isProcessing` cleared, so the flag alone
+      // would read it as idle. Shutdown awaits that finaliser, and the persist
+      // the finaliser does itself is fire-and-forget — no receipt — so without
+      // this the one session whose state was being assembled during shutdown is
+      // the one that never gets a checked write.
+      if (managed.isProcessing || managed.turnFinalization || managed.messageQueue.length > 0) {
+        needed.push(managed)
+        continue
+      }
+      // Idle from here. Skipped either way; the reason differs.
+      if (sessionPersistenceQueue.hasPendingOrTail(this.writeKeyFor(managed))) {
+        sessionLog.debug(`Shutdown: ${managed.id} is idle with a write outstanding; the drain carries it`)
+      }
+    }
+    return needed
+  }
+
+  /**
+   * Persist each session's final state and wait for an EXACT committed receipt.
+   *
+   * A cancelled receipt is not an answer, and treating it as one was a real
+   * hole. `superseded` means a watcher reconciliation replaced this snapshot
+   * mid-flight — and the previous version accepted that on the assumption the
+   * replacement would land. It might not: the reconciliation's own write can
+   * fail (a disk error, a directory where the file should be), and then nothing
+   * carries the state, the receipt says "superseded", and shutdown reported
+   * success over a session that was never written.
+   *
+   * So a supersession is a RETRY, not an acceptance, and the retry re-snapshots
+   * from CURRENT managed state rather than replaying the old bytes — by then
+   * the reconciliation has merged the external edit into memory, so the fresh
+   * snapshot carries both its change and ours. Bounded: past the limit, edits
+   * are arriving faster than writes complete and looping would hide that.
+   *
+   * `deleted` is the one terminal non-success: there is no session left to
+   * persist, and retrying would resurrect it.
+   *
+   * Sessions run concurrently — independent tails (I1) — and failures are
+   * collected so the caller can name all of them rather than the first.
+   */
+  private async persistFinalSessionStates(sessions: ManagedSession[]): Promise<void> {
+    if (!sessions.length) return
+
+    const failures: string[] = []
+    await Promise.all(
+      sessions.map(async (managed) => {
+        for (let attempt = 1; attempt <= SHUTDOWN_FINAL_PERSIST_ATTEMPTS; attempt++) {
+          let receipt: SessionWriteReceipt
+          try {
+            receipt = await this.persistSessionChecked(managed).receipt
+          } catch (error) {
+            failures.push(`${managed.id}: ${error instanceof Error ? error.message : String(error)}`)
+            return
+          }
+
+          if (receipt.ok) return
+
+          if (receipt.reason === 'deleted') {
+            // Nothing left to write, and writing would undo the deletion.
+            sessionLog.info(`Shutdown: ${managed.id} was deleted; no final state to persist`)
+            return
+          }
+
+          if (receipt.reason === 'superseded') {
+            // Re-snapshot and try again: the replacement has merged the
+            // external edit into managed state, so the next attempt carries
+            // both. This is the loop's whole purpose.
+            sessionLog.info(
+              `Shutdown: final write for ${managed.id} was superseded (attempt ${attempt}); re-snapshotting`,
+            )
+            continue
+          }
+
+          // `failed` (the filesystem said no) or `refused` (which cannot happen
+          // here — the queue closes only after this step). Either way there is
+          // nothing to merge with.
+          failures.push(`${managed.id}: ${receipt.error}`)
+          return
+        }
+
+        failures.push(
+          `${managed.id}: final state never committed — superseded ${SHUTDOWN_FINAL_PERSIST_ATTEMPTS} times`,
+        )
+      }),
+    )
+
+    if (failures.length) {
+      throw new Error(`Shutdown: ${failures.length} session(s) failed their final write — ${failures.join('; ')}`)
+    }
   }
 
   /**
@@ -2458,29 +3436,21 @@ export class SessionManager implements ISessionManager {
    * `flushSession` cannot report a failure: the queue catches its own write
    * errors so its many fire-and-forget callers keep working, which leaves a
    * failed write indistinguishable from a successful one to anyone awaiting it.
-   * A Page callback tells its page the message was delivered AND saved, so it
-   * needs the difference.
+   * Shutdown needs the difference.
    *
-   * It takes a HANDLE rather than asking "is the latest write done", because
-   * that question has no truthful answer once bookkeeping has been retired —
-   * there is nothing left to reconstruct which generation the caller meant, and
-   * the honest-looking default is optimistic. Holding the handle means the
-   * caller waits on the write it actually made.
+   * Takes the handle rather than asking "is the latest write done", because
+   * that question has no truthful answer once bookkeeping retires — the handle
+   * is a claim on the generation this call created.
    */
   private persistSessionChecked(managed: ManagedSession): SessionWriteHandle {
     if (!managed.messagesLoaded) {
       this.hydrateMessagesForColdPersist(managed)
     }
-    const handle = this.enqueuePersistChecked(managed)
+    const handle = sessionPersistenceQueue.enqueueChecked(this.buildStoredSessionForPersist(managed))
     // Drive the tail so the handle settles without waiting out the debounce.
     // The handle carries its own key, so this cannot drive a different one.
     sessionPersistenceQueue.driveChecked(handle.key)
     return handle
-  }
-
-  // Flush all pending sessions (call on app quit).
-  async flushAllSessions(): Promise<void> {
-    await sessionPersistenceQueue.flushAll()
   }
 
   // ============================================
@@ -2951,29 +3921,7 @@ export class SessionManager implements ISessionManager {
       managed.transferredSessionSummaryApplied = storedSession.transferredSessionSummaryApplied
       sessionLog.debug(`Lazy-loaded ${managed.messages.length} messages for session ${managed.id}`)
 
-      // Queue recovery: find orphaned queued messages from crash/restart and re-queue them
-      const orphanedQueued = managed.messages.filter(m =>
-        m.role === 'user' && m.isQueued === true
-      )
-      if (orphanedQueued.length > 0) {
-        sessionLog.info(`Recovering ${orphanedQueued.length} queued message(s) for session ${managed.id}`)
-        for (const msg of orphanedQueued) {
-          managed.messageQueue.push({
-            message: msg.content,
-            messageId: msg.id,
-            attachments: undefined,  // Attachments already stored on disk
-            storedAttachments: msg.attachments,
-            options: undefined,
-          })
-        }
-        // Process queue when session becomes active (will be triggered by first message or interaction)
-        // Use setImmediate to avoid blocking the load and allow session state to settle
-        if (!managed.isProcessing && managed.messageQueue.length > 0) {
-          setImmediate(() => {
-            this.processNextQueuedMessage(managed.id)
-          })
-        }
-      }
+      this.recoverOrphanedQueuedMessages(managed)
     }
     managed.messagesLoaded = true
   }
@@ -4749,24 +5697,7 @@ export class SessionManager implements ISessionManager {
 
           // Interrupt execution - plan presentation is a stopping point
           // The user needs to review and respond before continuing
-          if (managed.isProcessing && managed.agent) {
-            sessionLog.info(`Interrupting for plan submission in session ${managed.id}`)
-            managed.agent.interruptForHandoff(AbortReason.PlanSubmitted)
-            this.setProcessing(managed, false)
-
-            // Release browser overlay + session binding because the agent is no longer running.
-            // Plan submission pauses execution until user review, so browser ownership should not remain locked.
-            await releaseBrowserOwnershipOnForcedStop(
-              (sid) => this.getBrowserPaneManagerForSession(sid),
-              managed.id,
-            )
-
-            // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
-            this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage, backgroundTasksAlive: this.keepBackgroundTasksAlive }, managed.workspace.id)
-
-            // Persist session state
-            this.persistSession(managed)
-          }
+          await this.completePlanSubmissionHandoff(managed)
         } catch (error) {
           sessionLog.error(`Failed to read plan file:`, error)
         }
@@ -4807,35 +5738,10 @@ export class SessionManager implements ISessionManager {
         managed.pendingAuthRequestId = request.requestId
         managed.pendingAuthRequest = request
 
-        // Interrupt execution (like SubmitPlan)
-        if (managed.isProcessing && managed.agent) {
-          sessionLog.info(`Interrupting for auth request in session ${managed.id}`)
-          managed.agent.interruptForHandoff(AbortReason.AuthRequest)
-          this.setProcessing(managed, false)
-
-          // Release browser overlay + session binding because the agent is paused awaiting user auth.
-          void releaseBrowserOwnershipOnForcedStop(
-            (sid) => this.getBrowserPaneManagerForSession(sid),
-            managed.id,
-          )
-
-          // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
-          this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage, backgroundTasksAlive: this.keepBackgroundTasksAlive }, managed.workspace.id)
-        }
-
-        // Emit auth_request event to renderer
-        this.sendEvent({
-          type: 'auth_request',
-          sessionId: managed.id,
-          message: authMessage,
-          request: request,
-        }, managed.workspace.id)
-
-        // Persist session state
-        this.persistSession(managed)
-
+        // Interrupt execution (like SubmitPlan), tell the renderer, and persist.
         // OAuth flow is client-driven via performOAuth() (preload).
         // The UI calls window.electronAPI.performOAuth() when user clicks "Sign in".
+        this.completeAuthRequestHandoff(managed, request, authMessage)
       }
 
       // Wire up onSpawnSession to create independent sessions from agent tool calls
@@ -5976,20 +6882,66 @@ export class SessionManager implements ISessionManager {
    * Called from "Mark All Read" context menu on "All Sessions".
    */
   async markAllSessionsRead(workspaceId: string): Promise<void> {
-    const updates: Promise<void>[] = []
+    const updates: Array<{ id: string; managed: ManagedSession; write: Promise<void> }> = []
     for (const managed of this.sessions.values()) {
       if (managed.workspace.id !== workspaceId) continue
       if (managed.hidden || managed.isArchived) continue
       if (managed.isProcessing) continue
       if (!managed.hasUnread) continue
       managed.hasUnread = false
-      updates.push(
-        updateSessionMetadata(managed.workspace.rootPath, managed.id, { hasUnread: false })
-      )
+      updates.push({
+        id: managed.id,
+        managed,
+        write: updateSessionMetadata(managed.workspace.rootPath, managed.id, { hasUnread: false }),
+      })
     }
-    if (updates.length > 0) {
-      await Promise.all(updates)
-      this.emitUnreadSummaryChanged()
+    if (!updates.length) return
+
+    // `allSettled`, not `all`, and the difference matters now that
+    // `updateSessionMetadata` can reject. `all` rejected on the FIRST failure
+    // while every other write was still in flight, so the sessions that saved
+    // correctly were never reported and the caller learned about one failure
+    // out of however many there were.
+    const results = await Promise.allSettled(updates.map(u => u.write))
+    const failures: string[] = []
+    results.forEach((result, i) => {
+      if (result.status !== 'rejected') return
+      const { id, managed } = updates[i]!
+      // Re-read the flag from DISK rather than assuming it back to `true`.
+      //
+      // The clear at the top was optimistic and this write is why; memory has
+      // to track disk, including when disk refuses. But a blind
+      // `hasUnread = true` after an await is a clobber: the user may have
+      // opened this session while the batch was running, and that read may have
+      // saved successfully — reverting would resurrect a badge for something
+      // they just read.
+      //
+      // Asking the file avoids needing every one of the nine `hasUnread`
+      // writers to cooperate with an epoch, which is the version of this that
+      // silently rots the first time somebody adds a tenth. One header line per
+      // FAILED session, and failures are rare by construction.
+      try {
+        const onDisk = readSessionHeader(getSessionFilePath(managed.workspace.rootPath, id))
+        managed.hasUnread = onDisk?.hasUnread ?? false
+      } catch (readError) {
+        // Cannot establish the truth, so do not invent one: leave memory as it
+        // is and let the failure below say so.
+        sessionLog.warn(`Could not re-read unread state for ${id} after a failed write:`, readError)
+      }
+      failures.push(`${id}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`)
+    })
+
+    // Emitted UNCONDITIONALLY, and AFTER the reverts above so it describes what
+    // actually happened: the sessions that saved read as read, the ones that
+    // failed read as unread. Skipping it on the error path was the first
+    // version of this and left the UI disagreeing with memory; emitting it
+    // before the reverts would have left it disagreeing with disk.
+    this.emitUnreadSummaryChanged()
+
+    if (failures.length) {
+      throw new Error(
+        `Marked ${updates.length - failures.length} of ${updates.length} session(s) read; ${failures.length} failed — ${failures.join('; ')}`,
+      )
     }
   }
 
@@ -6440,6 +7392,11 @@ export class SessionManager implements ISessionManager {
 
     // If processing is in progress, force-abort via Query.close() and wait for cleanup
     if (managed.isProcessing && managed.agent) {
+      // The ONE abort site that does not reconcile the steer slot first, and the
+      // omission is deliberate: this session and its file are being deleted, so
+      // re-queueing a message into it would be queueing work for a transcript
+      // that is about to stop existing. Named here so the enumeration is
+      // complete rather than silently short by one.
       managed.agent.forceAbort(AbortReason.UserStop)
       // Brief wait for the query to finish tearing down before we delete session files.
       // Prevents file corruption from overlapping writes during rapid delete operations.
@@ -6556,13 +7513,20 @@ export class SessionManager implements ISessionManager {
     _isAuthRetry?: boolean,
     onAck?: (messageId: string) => void,
     rpcContext?: { callerClientId?: string },
+    /**
+     * Forwarded verbatim to {@link sendMessageInner} — see its parameter doc.
+     * The wrapper must carry it: `processNextQueuedMessage` claims an admission
+     * synchronously and then calls THIS method, so dropping the parameter here
+     * would silently make the replay claim a second admission inside.
+     */
+    admission?: SendAdmission,
   ): Promise<void> {
     const announces = options?.pageCallback === undefined
     if (announces) this.announceOrdinarySend(sessionId)
     try {
       return await this.sendMessageInner(
         sessionId, message, attachments, storedAttachments, options,
-        existingMessageId, _isAuthRetry, onAck, rpcContext,
+        existingMessageId, _isAuthRetry, onAck, rpcContext, admission,
       )
     } finally {
       if (announces) this.withdrawOrdinarySend(sessionId)
@@ -6614,6 +7578,70 @@ export class SessionManager implements ISessionManager {
      * directly (tests, intra-server flows) to leave the existing pin in place.
      */
     rpcContext?: { callerClientId?: string },
+    /**
+     * An admission the caller already claimed, synchronously, before it gave up
+     * control. `processNextQueuedMessage` uses this: it has to own the send
+     * BEFORE it hands the message to a deferred call, or the gap between the
+     * two is a window where nothing holds the work. Omitted by every ordinary
+     * caller, which claims here instead — and never claimed twice.
+     */
+    admission?: SendAdmission,
+  ): Promise<void> {
+    // Claimed BEFORE the refusal check, and released by the `finally` below
+    // whichever way that check goes — see `admitSend`. A caller-supplied
+    // admission is adopted rather than duplicated, and is settled here too,
+    // because this is where its work actually ends.
+    const claim = admission ?? this.admitSend(sessionId)
+    try {
+      // Refused BEFORE anything is mutated. The queue's own closing state would
+      // catch the write at the end, but by then the message is in
+      // `managed.messages`, a turn may have started, and the only honest report
+      // left is a failure. Refusing here means nothing happened.
+      this.assertNotShuttingDown(`send a message to ${sessionId}`)
+      await this.runAdmittedSend(
+        claim,
+        sessionId,
+        message,
+        attachments,
+        storedAttachments,
+        options,
+        existingMessageId,
+        _isAuthRetry,
+        onAck,
+        rpcContext,
+      )
+    } finally {
+      claim.settle()
+    }
+  }
+
+  /**
+   * The body of an admitted send.
+   *
+   * Split from `sendMessage` only so the admission's `finally` cannot be
+   * skipped by an early `return` or a throw from deep inside this body. Every
+   * pre-mutation await below is followed by a fresh shutting-down check: the
+   * entry refusal answers "may this send start", and these answer "may it still
+   * continue", which is a different question once a quit has begun.
+   */
+  private async runAdmittedSend(
+    admission: SendAdmission,
+    sessionId: string,
+    message: string,
+    attachments?: FileAttachment[],
+    storedAttachments?: StoredAttachment[],
+    /**
+     * INTERNAL, not the wire shape: the body below runs the Page-callback
+     * delivery seam, so the pinned `pageCallback` has to survive the hop from
+     * `sendMessageInner` into here. Narrowing this to `SendMessageOptions`
+     * compiles right up until the seam is read, and then silently makes every
+     * callback look like an ordinary send.
+     */
+    options?: SendMessageInternalOptions,
+    existingMessageId?: string,
+    _isAuthRetry?: boolean,
+    onAck?: (messageId: string) => void,
+    rpcContext?: { callerClientId?: string },
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
@@ -6646,26 +7674,44 @@ export class SessionManager implements ISessionManager {
         sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
         return
       }
-
-      // Clear any pending plan execution state when a new user message is sent.
-      // This acts as a safety valve - if the user moves on, we don't want to
-      // auto-execute an old plan later.
-      //
-      // A Page callback deliberately does NOT do this, refused or delivered. It
-      // is a page's button, not the user moving on: discarding a plan the user
-      // is still deciding about would be destructive, silent, and attributable
-      // to nobody they can see.
-      await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
-      // And any in-memory mirror, so a later persist cannot write back a plan
-      // the user has just dismissed.
-      managed.pendingPlanExecution = undefined
     }
+
+    // CANONICAL FROM HERE DOWN. Normalized once, at ingress, and the raw value
+    // is never read again: the immediate source pre-enable, every runtime queue
+    // entry, and the persisted `queuedSkillSlugs` all take the same list, so a
+    // live turn and the same turn replayed after a restart cannot disagree about
+    // which skills were invoked. Normalizing at each persist site left the LIVE
+    // pre-enable — the one that actually reaches `loadSkillBySlug` first —
+    // reading whatever the caller sent.
+    options = options ? { ...options, skillSlugs: normalizeQueuedSkillSlugs(options.skillSlugs) } : undefined
 
     // Ensure messages are loaded before we try to add new ones. For the
     // callback path this is the ONLY await preceding the guard, and it mutates
     // nothing observable — which is what makes "no await or mutation before the
     // guard" true of that path rather than merely intended.
     await this.ensureMessagesLoaded(managed)
+
+    // THE REFUSAL POINT. A quit may have begun while hydration ran — the entry
+    // check only answered "may this send start" — and this is the last instant
+    // at which refusing costs nothing, because nothing below is reversible.
+    // Everything after it is COMMITTED: shutdown is waiting on this send's
+    // admission, so the queue is still open and the writes below still land.
+    this.assertNotShuttingDown(`send a message to ${sessionId}`)
+
+    // Clearing is deliberately BELOW the refusal point: it unlinks an accepted
+    // plan from DISK, so refusing after it would dismiss a plan on behalf of a
+    // message that never went through. And it stays inside the callback
+    // exemption — a page's button is not the user moving on.
+    if (!pageCallback) {
+      // Through the method, not the free function it wraps: the clear is the
+      // first irreversible step, so `quit-flush.test.ts` holds it open to prove
+      // a quit landing inside it still finishes. It can only do that if there
+      // is a seam to hold.
+      await this.clearStoredPendingPlan(managed)
+      // And any in-memory mirror, so a later persist cannot write back a plan
+      // the user has just dismissed.
+      managed.pendingPlanExecution = undefined
+    }
 
     // Last-moment veto, and the LAST statement before the branch below for a
     // reason: this is the only point in the process where session state has
@@ -6706,6 +7752,15 @@ export class SessionManager implements ISessionManager {
       const behavior = connection ? resolveMidStreamBehavior(connection) : 'steer'
 
       const agent = managed.agent
+      // SETTLE THE PREVIOUS STEER FIRST — before `redirect` writes the slot, not
+      // after. The backend holds one slot, and asking it is the only way to tell
+      // an overwritten steer from a DELIVERED one: a tool call clears the slot
+      // exactly as an overwrite does, so promoting unconditionally here re-queued
+      // a message the model had already answered. Ordering is the whole fix: ask
+      // after `redirect` and the answer describes the steer arriving now, and
+      // taking it would rob that steer of its delivery.
+      this.reconcilePendingSteers(managed)
+
       let steered = false
       // A send that got here via the accepted-turn marker has NO running turn
       // to steer: the callback committed, but `setProcessing` has not run. A
@@ -6749,6 +7804,14 @@ export class SessionManager implements ISessionManager {
 
       const delivery = resolveMidStreamDeliveryOutcome(behavior, steered)
 
+      if (steered) {
+        // Marked provisionally queued HERE, before the persist and the ack a few
+        // lines down. For the length of this turn the steer's only other home is
+        // the backend's memory, so a crash in between would lose a message the
+        // user was told had landed.
+        this.recordAcceptedSteer(managed, userMessage, { message, attachments, storedAttachments, options })
+      }
+
       // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
       // (covers both queue-direct and queue-after-abort paths).
       this.sendEvent({
@@ -6769,6 +7832,13 @@ export class SessionManager implements ISessionManager {
         // (A callback never reaches here — its guard refuses a processing
         // session — but the strip is structural rather than reliant on that.)
         managed.messageQueue.push({ message, attachments, storedAttachments, options: toPersistableSendOptions(options), messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId })
+        // `messageQueue` is RUNTIME state that dies with the process, so these
+        // two fields on the persisted message are what actually carry a queued
+        // send across a crash or a quit: the marker the cold-load scan looks
+        // for, and the slugs its replay needs. Written together, cleared
+        // together, and only once a replay owns the turn.
+        userMessage.isQueued = true
+        userMessage.queuedSkillSlugs = options?.skillSlugs
         // Only claim interruption when a steer attempt actually aborted the
         // in-flight turn. In 'queue' mode the current turn runs to natural
         // completion, so the replayed turn must NOT inject the "previous response
@@ -6934,6 +8004,30 @@ export class SessionManager implements ISessionManager {
       sessionLog.warn(`Auto-label evaluation failed for session ${sessionId}:`, e)
     }
 
+    // The message is saved and acknowledged. What must NOT happen now is a new
+    // turn: shutdown has already captured the set of turns it will abort and
+    // wait for, so this one would run with nothing watching it, be cut off
+    // mid-stream, and write into a closing queue.
+    //
+    // So it is queued instead of started — the same answer
+    // `processNextQueuedMessage` gives when it declines to replay during a
+    // shutdown. `isQueued` is the DURABLE half (`messageQueue` is runtime-only
+    // state that dies with the process): the cold-load path re-queues every
+    // user message still carrying it, so the send the user made while quitting
+    // runs on the next launch instead of vanishing.
+    if (this.shuttingDown) {
+      sessionLog.info(`Not starting a turn for ${sessionId}: shutting down; queued for replay`)
+      userMessage.isQueued = true
+      userMessage.queuedSkillSlugs = options?.skillSlugs
+      managed.messageQueue.push({
+        message, attachments, storedAttachments, options,
+        messageId: userMessage.id,
+        optimisticMessageId: options?.optimisticMessageId,
+      })
+      this.persistSession(managed)
+      return
+    }
+
     managed.lastMessageAt = Date.now()
     // The ORDINARY announcement is deliberately not released here — the wrapper
     // owns exactly one decrement, and a second would under-count a sibling send
@@ -6949,7 +8043,18 @@ export class SessionManager implements ISessionManager {
     if (pageCallback && managed.pageCallbackTurnPendingToken === pageCallback.token) {
       managed.pageCallbackTurnPendingToken = undefined
     }
-    this.setProcessing(managed, true)
+    this.beginTurnFromAdmittedSend(managed, admission)
+    // The durable replay marker is released HERE and nowhere earlier: a turn now
+    // owns this message, so it can no longer be lost by a refusal or a crash in
+    // the gap before one. `processNextQueuedMessage` used to clear it as it
+    // handed the message to a deferred send, which is the gap — the runtime
+    // queue had dropped it, disk said it was not queued, and nothing was running
+    // it yet. Cleared as a pair with the slugs it was written with.
+    if (userMessage.isQueued) {
+      userMessage.isQueued = false
+      userMessage.queuedSkillSlugs = undefined
+      this.persistSession(managed)
+    }
     managed.streamingText = ''
     managed.streamingTurnId = undefined
     managed.processingGeneration++
@@ -7380,6 +8485,10 @@ export class SessionManager implements ISessionManager {
 
     // Force-abort via Query.close() - sends soft interrupt to the backend
     if (managed.agent) {
+      // BEFORE the abort: `forceAbort` clears the backend's steer slot, and a
+      // steer accepted into this turn has not been delivered — stopping is not
+      // the same as answering it. Asked here or it is never asked.
+      this.reconcilePendingSteers(managed)
       managed.agent.forceAbort(AbortReason.UserStop)
     }
 
@@ -7411,8 +8520,14 @@ export class SessionManager implements ISessionManager {
     }
 
     // Safety timeout: if event loop doesn't complete within 5 seconds, force cleanup
-    // This handles cases where the generator gets stuck
-    setTimeout(() => {
+    // This handles cases where the generator gets stuck.
+    //
+    // The handle is KEPT (see `forceStopCleanupTimer`): this callback persists,
+    // so a shutdown starting inside the window must be able to cancel it rather
+    // than let it write into a frozen queue.
+    if (managed.forceStopCleanupTimer) clearTimeout(managed.forceStopCleanupTimer)
+    managed.forceStopCleanupTimer = setTimeout(() => {
+      managed.forceStopCleanupTimer = undefined
       if (managed.stopRequested && managed.isProcessing) {
         sessionLog.warn('Generator did not complete after stop request, forcing cleanup')
         this.onProcessingStopped(sessionId, 'timeout')
@@ -7476,16 +8591,26 @@ export class SessionManager implements ISessionManager {
 
         if (retryMessage) {
           sessionLog.info(`[auth-retry] Retrying message for session ${sessionId}`)
-          this.setProcessing(managed, false)
+          // The failed attempt's turn ends here, and its tail is the tidy-up
+          // below — NOT the resend. The resend starts a turn of its own with
+          // its own deferred, so this one is released BEFORE it: holding it
+          // across `sendMessage` would leave the old promise stranded the
+          // moment the new turn replaced it.
+          const finalization = this.claimTurnFinalization(sessionId)
+          try {
+            this.setProcessing(managed, false, finalization)
 
-          // Remove the user message that was added for this failed attempt
-          // so we don't get duplicate messages when retrying
-          const lastUserMsgIndex = managed.messages.findLastIndex(m => m.role === 'user')
-          if (lastUserMsgIndex !== -1) {
-            managed.messages.splice(lastUserMsgIndex, 1)
+            // Remove the user message that was added for this failed attempt
+            // so we don't get duplicate messages when retrying
+            const lastUserMsgIndex = managed.messages.findLastIndex(m => m.role === 'user')
+            if (lastUserMsgIndex !== -1) {
+              managed.messages.splice(lastUserMsgIndex, 1)
+            }
+
+            managed.authRetryInProgress = false
+          } finally {
+            finalization.release()
           }
-
-          managed.authRetryInProgress = false
 
           await this.sendMessage(
             sessionId,
@@ -7561,6 +8686,103 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
+   * Pause a turn for plan review, and hold its finalisation open until the
+   * pause is recorded.
+   *
+   * A handoff interrupt is a turn that stops WITHOUT being finalised: control
+   * moves to the UI and `onProcessingStopped` is never reached. The flag going
+   * false is therefore the START of this site's tail — browser release, the
+   * complete event, then the persist that records the plan — so this method
+   * owns the deferred across all of it and releases in a `finally`. Resolving
+   * at the flag write let shutdown close the queue while the plan was still on
+   * its way to disk, and report success.
+   *
+   * Extracted from the `onPlanSubmitted` callback so that ordering is reachable
+   * from a test; the callback assigns the message and hands over.
+   */
+  private async completePlanSubmissionHandoff(managed: ManagedSession): Promise<void> {
+    if (!managed.isProcessing || !managed.agent) return
+    sessionLog.info(`Interrupting for plan submission in session ${managed.id}`)
+    const finalization = this.claimTurnFinalization(managed.id)
+    try {
+      // A handoff interrupt clears the steer slot too, and a plan pause is not a
+      // delivery: whatever was steered into this turn goes back in the queue.
+      this.reconcilePendingSteers(managed)
+      managed.agent.interruptForHandoff(AbortReason.PlanSubmitted)
+      this.setProcessing(managed, false, finalization)
+
+      // Release browser overlay + session binding because the agent is no longer running.
+      // Plan submission pauses execution until user review, so browser ownership should not remain locked.
+      await releaseBrowserOwnershipOnForcedStop(
+        (sid) => this.getBrowserPaneManagerForSession(sid),
+        managed.id,
+      )
+
+      // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
+      this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage, backgroundTasksAlive: this.keepBackgroundTasksAlive }, managed.workspace.id)
+
+      // Persist session state
+      this.persistSession(managed)
+    } finally {
+      finalization.release()
+    }
+  }
+
+  /**
+   * Pause a turn for an auth request, and hold its finalisation open until the
+   * pending request is recorded.
+   *
+   * Same ownership as the plan handoff, over a tail that is entirely
+   * synchronous — the browser release stays fire-and-forget, because awaiting
+   * it would delay the `auth_request` event behind browser teardown and lose it
+   * entirely if that teardown hung. What the deferred has to cover is the
+   * persist: `pendingAuthRequest` and the auth message are the state a restart
+   * needs, and they are enqueued at the end of this method.
+   *
+   * The emit and the persist run whether or not a turn was interrupted, which
+   * is why they sit inside the same `try` rather than behind the guard.
+   */
+  private completeAuthRequestHandoff(
+    managed: ManagedSession,
+    request: AuthRequest,
+    authMessage: Message,
+  ): void {
+    let finalization: TurnFinalizationOwner | undefined
+    try {
+      if (managed.isProcessing && managed.agent) {
+        sessionLog.info(`Interrupting for auth request in session ${managed.id}`)
+        finalization = this.claimTurnFinalization(managed.id)
+        // Same as the plan handoff: pausing for auth does not deliver a steer.
+        this.reconcilePendingSteers(managed)
+        managed.agent.interruptForHandoff(AbortReason.AuthRequest)
+        this.setProcessing(managed, false, finalization)
+
+        // Release browser overlay + session binding because the agent is paused awaiting user auth.
+        void releaseBrowserOwnershipOnForcedStop(
+          (sid) => this.getBrowserPaneManagerForSession(sid),
+          managed.id,
+        )
+
+        // Send complete event so renderer knows processing stopped (include tokenUsage for real-time updates)
+        this.sendEvent({ type: 'complete', sessionId: managed.id, tokenUsage: managed.tokenUsage, backgroundTasksAlive: this.keepBackgroundTasksAlive }, managed.workspace.id)
+      }
+
+      // Emit auth_request event to renderer
+      this.sendEvent({
+        type: 'auth_request',
+        sessionId: managed.id,
+        message: authMessage,
+        request: request,
+      }, managed.workspace.id)
+
+      // Persist session state
+      this.persistSession(managed)
+    } finally {
+      finalization?.release()
+    }
+  }
+
+  /**
    * Central handler for when processing stops (any reason).
    * Single source of truth for cleanup and queue processing.
    *
@@ -7571,143 +8793,175 @@ export class SessionManager implements ISessionManager {
     sessionId: string,
     reason: 'complete' | 'interrupted' | 'error' | 'timeout'
   ): Promise<void> {
-    const managed = this.sessions.get(sessionId)
-    if (!managed) return
+    // The deferred this invocation owns, claimed at ENTRY: before anything
+    // below clears `isProcessing`, and before the first `return`, so the
+    // `finally` always has something to release and a slow finaliser cannot
+    // resolve the deferred belonging to a turn that started after it.
+    const finalization = this.claimTurnFinalization(sessionId)
+    try {
+        const managed = this.sessions.get(sessionId)
+        if (!managed) return
 
-    sessionLog.info(`Processing stopped for session ${sessionId}: ${reason}`)
-
-    // 1. Cleanup state
-    this.setProcessing(managed, false)
-    managed.stopRequested = false  // Reset for next turn
-
-    // 1b. Orphan backstop: with the default per-turn subprocess model, any
-    // background sub-agent still marked `running` dies when this turn's
-    // subprocess is torn down. Flip those registry entries to `orphaned` so a
-    // later "status?" query never reports a dead task as running. Suppressed
-    // when WS2 keep-alive keeps the query alive across turns.
-    this.markOrphanedBackgroundTasks(sessionId)
-
-    const turnStartFinalMessageId = managed.turnStartFinalMessageId
-    managed.turnStartFinalMessageId = undefined
-
-    // Clear agent control overlay between turns. The session keeps browser
-    // ownership (boundSessionId) — only the visual overlay is removed.
-    // Full unbind happens below when the queue is empty (session truly done).
-    const turnBpm = this.getBrowserPaneManagerForSession(sessionId)
-    if (turnBpm) {
-      // Same guard as the queue-empty teardown below: a remote BPM throw on a
-      // headless server must not abort processing-stop handling.
-      try {
-        await turnBpm.clearVisualsForSession(sessionId)
-      } catch (err) {
-        sessionLog.warn(`Browser-pane visual clear failed for ${sessionId} (continuing):`, err)
-      }
-    }
-
-    // 2. Handle unread state based on whether user is viewing this session
-    //    This is the explicit state machine for NEW badge:
-    //    - If user is viewing: mark as read (they saw it complete)
-    //    - If user is NOT viewing: mark as unread (they have new content)
-    //    IMPORTANT: only apply this when the turn produced a NEW final assistant message.
-    const isViewing = this.isSessionBeingViewed(sessionId, managed.workspace.id)
-    const currentFinalMessageId = this.getLastFinalAssistantMessageId(managed.messages)
-    const didReceiveNewFinalMessage = !!currentFinalMessageId && currentFinalMessageId !== turnStartFinalMessageId
-
-    if (reason === 'complete' && didReceiveNewFinalMessage) {
-      if (isViewing) {
-        // User is watching - mark as read immediately
-        await this.markSessionRead(sessionId)
-      } else {
-        // User is not watching - mark as unread for NEW badge
-        if (!managed.hasUnread) {
-          managed.hasUnread = true
-          await updateSessionMetadata(managed.workspace.rootPath, sessionId, { hasUnread: true })
-          this.emitUnreadSummaryChanged()
+        // The safety timer has done its job (or was beaten to it). Clearing here
+        // keeps it from outliving the turn it was watching.
+        if (managed.forceStopCleanupTimer) {
+          clearTimeout(managed.forceStopCleanupTimer)
+          managed.forceStopCleanupTimer = undefined
         }
-      }
-    }
 
-    // 3. Auto-complete mini agent sessions to avoid session list clutter
-    //    Mini agents are spawned from EditPopovers for quick config edits
-    //    and should automatically move to 'done' when finished
-    if (reason === 'complete' && managed.systemPromptPreset === 'mini' && managed.sessionStatus !== 'done') {
-      sessionLog.info(`Auto-completing mini agent session ${sessionId}`)
-      // Deterministic host code, not the model: a mini agent spawned from an EditPopover has
-      // finished its one job, and leaving it open is list clutter. Declared intent by design.
-      await this.setSessionStatus(sessionId, 'done', hostOrigin('mini-agent auto-complete'))
-    }
+        sessionLog.info(`Processing stopped for session ${sessionId}: ${reason}`)
 
-    // 4. Apply deferred external metadata updates captured while processing.
-    if (managed.pendingExternalMetadata) {
-      const pendingHeader = managed.pendingExternalMetadata
-      managed.pendingExternalMetadata = undefined
-      sessionLog.info(`Applying deferred external metadata for session ${sessionId} after processing stop`)
-      this.applyExternalSessionMetadata(managed, pendingHeader)
-    }
+        // 1. Cleanup state
+        this.setProcessing(managed, false, finalization)
+        managed.stopRequested = false  // Reset for next turn
 
-    // A Pages toggle that landed mid-turn must rebuild the static Claude/Pi
-    // prompt and tool registration before an already-queued follow-up starts.
-    // The refresh deliberately allows a queue but still refuses live work.
-    if (this.pendingPagesRuntimeRefreshes.has(managed.id)) {
-      try {
-        await this.refreshManagedPagesRuntime(managed)
-      } catch (error) {
-        sessionLog.warn(`Deferred Pages runtime refresh failed for ${managed.id}: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    }
+        // Settle the steer slot while the backend can still answer. Deliberately
+        // in this handler's SYNCHRONOUS prefix: the generator's `finally` runs
+        // when the iterator is closed, which is after this point, and it would
+        // clear the backend's copy first. A null answer here is the affirmative
+        // evidence that the last steer was delivered — the only thing allowed to
+        // drop a provisional marker.
+        this.reconcilePendingSteers(managed)
 
-    // 5. Check queue and process or complete
-    if (managed.messageQueue.length > 0) {
-      // Has queued messages - process next
-      this.processNextQueuedMessage(sessionId)
-    } else {
-      // Session is truly done — release browser ownership.
-      // The window stays alive (hidden) and becomes reusable by future sessions.
-      // On the next turn, getOrCreateForSession() will re-bind it.
-      const doneBpm = this.getBrowserPaneManagerForSession(sessionId)
-      if (doneBpm) {
-        // Teardown must never block completion. On a headless/WebUI server the BPM is
-        // remote and these calls throw (BROWSER_NO_CAPABLE_CLIENT) when no desktop
-        // browser client is connected — which previously aborted onProcessingStopped
-        // before emitSessionComplete, hanging the Tasks Conductor completion seam.
-        try {
-          await doneBpm.clearVisualsForSession(sessionId)
-          doneBpm.unbindAllForSession(sessionId)
-        } catch (err) {
-          sessionLog.warn(`Browser-pane teardown failed for ${sessionId} (continuing to completion):`, err)
+        // 1b. Orphan backstop: with the default per-turn subprocess model, any
+        // background sub-agent still marked `running` dies when this turn's
+        // subprocess is torn down. Flip those registry entries to `orphaned` so a
+        // later "status?" query never reports a dead task as running. Suppressed
+        // when WS2 keep-alive keeps the query alive across turns.
+        this.markOrphanedBackgroundTasks(sessionId)
+
+        const turnStartFinalMessageId = managed.turnStartFinalMessageId
+        managed.turnStartFinalMessageId = undefined
+
+        // Clear agent control overlay between turns. The session keeps browser
+        // ownership (boundSessionId) — only the visual overlay is removed.
+        // Full unbind happens below when the queue is empty (session truly done).
+        const turnBpm = this.getBrowserPaneManagerForSession(sessionId)
+        if (turnBpm) {
+          // Same guard as the queue-empty teardown below: a remote BPM throw on a
+          // headless server must not abort processing-stop handling.
+          try {
+            await turnBpm.clearVisualsForSession(sessionId)
+          } catch (err) {
+            sessionLog.warn(`Browser-pane visual clear failed for ${sessionId} (continuing):`, err)
+          }
         }
-      }
 
-      // No queue - emit complete to UI (include tokenUsage and hasUnread for state updates)
-      this.sendEvent({
-        type: 'complete',
-        sessionId,
-        tokenUsage: managed.tokenUsage,
-        hasUnread: managed.hasUnread,  // Propagate unread state to renderer
-        // WS2: when keep-alive keeps the persistent query open across turns, the
-        // turn ending does NOT kill background sub-agents. Tell the renderer so its
-        // chip orphan-backstop does not falsely flip live tasks to `orphaned`; a
-        // real `task_completed` will arrive when the agent actually finishes.
-        backgroundTasksAlive: this.keepBackgroundTasksAlive,
-      }, managed.workspace.id)
+        // 2. Handle unread state based on whether user is viewing this session
+        //    This is the explicit state machine for NEW badge:
+        //    - If user is viewing: mark as read (they saw it complete)
+        //    - If user is NOT viewing: mark as unread (they have new content)
+        //    IMPORTANT: only apply this when the turn produced a NEW final assistant message.
+        const isViewing = this.isSessionBeingViewed(sessionId, managed.workspace.id)
+        const currentFinalMessageId = this.getLastFinalAssistantMessageId(managed.messages)
+        const didReceiveNewFinalMessage = !!currentFinalMessageId && currentFinalMessageId !== turnStartFinalMessageId
 
-      // Tasks Conductor seam: signal true completion (queue empty) with the stop
-      // reason + this turn's final assistant message, so the Conductor can advance
-      // the corresponding node. In-process only; never sent to the renderer/agents.
-      this.emitSessionComplete({
-        sessionId,
-        workspaceId: managed.workspace.id,
-        reason,
-        finalMessageId: currentFinalMessageId,
-        finalText: currentFinalMessageId
-          ? managed.messages.find(m => m.id === currentFinalMessageId)?.content
-          : undefined,
-        tokenUsage: managed.tokenUsage,
-      })
+        if (reason === 'complete' && didReceiveNewFinalMessage) {
+          if (isViewing) {
+            // User is watching - mark as read immediately
+            await this.markSessionRead(sessionId)
+          } else {
+            // User is not watching - mark as unread for NEW badge
+            if (!managed.hasUnread) {
+              managed.hasUnread = true
+              await updateSessionMetadata(managed.workspace.rootPath, sessionId, { hasUnread: true })
+              this.emitUnreadSummaryChanged()
+            }
+          }
+        }
+
+        // 3. Auto-complete mini agent sessions to avoid session list clutter
+        //    Mini agents are spawned from EditPopovers for quick config edits
+        //    and should automatically move to 'done' when finished
+        if (reason === 'complete' && managed.systemPromptPreset === 'mini' && managed.sessionStatus !== 'done') {
+          sessionLog.info(`Auto-completing mini agent session ${sessionId}`)
+          // Deterministic host code, not the model: a mini agent spawned from an EditPopover has
+          // finished its one job, and leaving it open is list clutter. Declared intent by design.
+          await this.setSessionStatus(sessionId, 'done', hostOrigin('mini-agent auto-complete'))
+        }
+
+        // 4. Apply deferred external metadata updates captured while processing.
+        if (managed.pendingExternalMetadata) {
+          const pendingHeader = managed.pendingExternalMetadata
+          managed.pendingExternalMetadata = undefined
+          sessionLog.info(`Applying deferred external metadata for session ${sessionId} after processing stop`)
+          this.applyExternalSessionMetadata(managed, pendingHeader)
+        }
+
+        // A Pages toggle that landed mid-turn must rebuild the static Claude/Pi
+        // prompt and tool registration before an already-queued follow-up starts.
+        // The refresh deliberately allows a queue but still refuses live work.
+        if (this.pendingPagesRuntimeRefreshes.has(managed.id)) {
+          try {
+            await this.refreshManagedPagesRuntime(managed)
+          } catch (error) {
+            sessionLog.warn(`Deferred Pages runtime refresh failed for ${managed.id}: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+
+        // 5. Check queue and process or complete
+        if (managed.messageQueue.length > 0) {
+          // Has queued messages - process next
+          this.processNextQueuedMessage(sessionId)
+        } else {
+          // Session is truly done — release browser ownership.
+          // The window stays alive (hidden) and becomes reusable by future sessions.
+          // On the next turn, getOrCreateForSession() will re-bind it.
+          const doneBpm = this.getBrowserPaneManagerForSession(sessionId)
+          if (doneBpm) {
+            // Teardown must never block completion. On a headless/WebUI server the BPM is
+            // remote and these calls throw (BROWSER_NO_CAPABLE_CLIENT) when no desktop
+            // browser client is connected — which previously aborted onProcessingStopped
+            // before emitSessionComplete, hanging the Tasks Conductor completion seam.
+            try {
+              await doneBpm.clearVisualsForSession(sessionId)
+              doneBpm.unbindAllForSession(sessionId)
+            } catch (err) {
+              sessionLog.warn(`Browser-pane teardown failed for ${sessionId} (continuing to completion):`, err)
+            }
+          }
+
+          // No queue - emit complete to UI (include tokenUsage and hasUnread for state updates)
+          this.sendEvent({
+            type: 'complete',
+            sessionId,
+            tokenUsage: managed.tokenUsage,
+            hasUnread: managed.hasUnread,  // Propagate unread state to renderer
+            // WS2: when keep-alive keeps the persistent query open across turns, the
+            // turn ending does NOT kill background sub-agents. Tell the renderer so its
+            // chip orphan-backstop does not falsely flip live tasks to `orphaned`; a
+            // real `task_completed` will arrive when the agent actually finishes.
+            backgroundTasksAlive: this.keepBackgroundTasksAlive,
+          }, managed.workspace.id)
+
+          // Tasks Conductor seam: signal true completion (queue empty) with the stop
+          // reason + this turn's final assistant message, so the Conductor can advance
+          // the corresponding node. In-process only; never sent to the renderer/agents.
+          this.emitSessionComplete({
+            sessionId,
+            workspaceId: managed.workspace.id,
+            reason,
+            finalMessageId: currentFinalMessageId,
+            finalText: currentFinalMessageId
+              ? managed.messages.find(m => m.id === currentFinalMessageId)?.content
+              : undefined,
+            tokenUsage: managed.tokenUsage,
+          })
+        }
+
+        // 6. Always persist
+        this.persistSession(managed)
+    } finally {
+      // FINALISED — and only here. Everything above has run: visuals, read
+      // state, status, runtime teardown, the complete event, and the persist
+      // that records them. Resolving any earlier would let a shutdown resume
+      // while the state it is waiting for was still being assembled.
+      //
+      // `finally`, so a throw anywhere above still releases the waiter — a
+      // shutdown blocked forever on a failed finaliser is worse than one that
+      // proceeds and reports what it could not confirm.
+      finalization.release()
     }
-
-    // 6. Always persist
-    this.persistSession(managed)
   }
 
   /**
@@ -7717,6 +8971,27 @@ export class SessionManager implements ISessionManager {
   private processNextQueuedMessage(sessionId: string): void {
     const managed = this.sessions.get(sessionId)
     if (!managed || managed.messageQueue.length === 0) return
+    // Shutdown stops the CHAIN. `onProcessingStopped` still runs and still
+    // persists the turn that was in flight — that is what shutdown waits for —
+    // but it must not start the next one, or draining becomes a treadmill and
+    // the new turn's writes arrive after the queue closes. The queued messages
+    // survive through `isQueued` on the PERSISTED message — `messageQueue`
+    // itself is runtime state that dies with the process — so the cold-load
+    // re-queue scan replays them on the next launch.
+    if (this.shuttingDown) {
+      sessionLog.info(`Not replaying queued message for ${sessionId}: shutting down`)
+      return
+    }
+
+    // OWNED FIRST, synchronously, before the runtime queue gives the message up
+    // and before any marker moves. The send itself is deferred to the next tick,
+    // and the gap between those two things was a hole: the entry had been
+    // shifted out of `messageQueue`, disk had been told the message was no
+    // longer queued, and nothing yet held the work — so a quit landing there saw
+    // an idle session and the message was simply gone. With the admission taken
+    // here, that quit waits for this send to refuse or to take a turn, and the
+    // durable marker stays true until a turn genuinely owns it.
+    const admission = this.admitSend(sessionId)
 
     const next = managed.messageQueue.shift()!
     sessionLog.info('replay queued', {
@@ -7729,8 +9004,6 @@ export class SessionManager implements ISessionManager {
     if (next.messageId) {
       const existingMessage = managed.messages.find(m => m.id === next.messageId)
       if (existingMessage) {
-        // Clear isQueued flag and persist - prevents re-queueing if crash during processing
-        existingMessage.isQueued = false
         // Re-stamp so this replayed message sorts AFTER the previous turn's
         // finalized assistant reply. It was created mid-stream (an earlier
         // timestamp) while queued; groupMessagesByTurn sorts by timestamp, so
@@ -7738,10 +9011,14 @@ export class SessionManager implements ISessionManager {
         existingMessage.timestamp = this.monotonic()
         this.persistSession(managed)
 
+        // The renderer is told `processing`, and the copy it gets says so —
+        // while the PERSISTED message keeps `isQueued` until the replay owns a
+        // turn. The status is the display answer; the flag is the durability
+        // one, and they are allowed to differ for exactly this tick.
         this.sendEvent({
           type: 'user_message',
           sessionId,
-          message: existingMessage,
+          message: { ...existingMessage, isQueued: false, queuedSkillSlugs: undefined },
           status: 'processing',
           optimisticMessageId: next.optimisticMessageId
         }, managed.workspace.id)
@@ -7756,7 +9033,11 @@ export class SessionManager implements ISessionManager {
         next.attachments,
         next.storedAttachments,
         next.options,
-        next.messageId
+        next.messageId,
+        undefined,
+        undefined,
+        undefined,
+        admission,
       ).catch(err => {
         sessionLog.error('replay failed', {
           sessionId,
@@ -8805,10 +10086,23 @@ export class SessionManager implements ISessionManager {
     if (!agent) {
       let attempts = 0
       while (!managed.agent && attempts < 10) {
+        // This poll is the one place a title can sit for a whole second, so a
+        // quit that begins inside it should not be waited out and must not go
+        // on to open anything — see the discard below.
+        if (this.shuttingDown) break
         await new Promise(resolve => setTimeout(resolve, 100))
         attempts++
       }
       agent = managed.agent
+    }
+
+    // Never stand up a fresh backend during a shutdown. `postInit` opens a
+    // provider connection, and the title it would produce is already
+    // unwritable: the point of refusing here is that the handle is never
+    // created rather than created and then abandoned.
+    if (!agent && this.shuttingDown) {
+      sessionLog.info(`[generateTitle] Skipped for session ${managed.id}: shutting down`)
+      return
     }
 
     // If still no agent, create a temporary one using the session's connection
@@ -8828,11 +10122,19 @@ export class SessionManager implements ISessionManager {
           },
           isHeadless: true,
         }, buildBackendHostRuntimeContext()) as AgentInstance
-        await agent.postInit()
+        // Marked BEFORE `postInit`, because `postInit` is what opens the
+        // connection: anything that leaves this block after it — a throw, or
+        // the shutdown re-check below — has a live backend to tear down, and
+        // only this flag tells the cleanup that it owns one.
         isTemporary = true
+        await agent.postInit()
         sessionLog.info(`[generateTitle] Created temporary agent for session ${managed.id}`)
       } catch (error) {
         sessionLog.error(`[generateTitle] Failed to create temporary agent:`, error)
+        // Destroyed here rather than left to the `finally` below, which this
+        // `return` never reaches. A failed `postInit` can still have opened
+        // something.
+        agent?.destroy()
         return
       }
     }
@@ -8843,6 +10145,15 @@ export class SessionManager implements ISessionManager {
     }
 
     try {
+      // Before the REQUEST, not just before its result. A quit can begin while
+      // `postInit` above is opening the connection, and a title asked for after
+      // that point is one whose answer is already destined for the discard
+      // below — so the provider is never asked. Inside the `try`, so the
+      // `finally` still tears down a temporary backend this path created.
+      if (this.shuttingDown) {
+        sessionLog.info(`[generateTitle] Skipped for session ${managed.id}: shutting down`)
+        return
+      }
       // Race-free language resolution from persisted UI language; undefined => auto-detect (#885).
       const titleLanguage = resolveTitleLanguageName()
       sessionLog.info(`[generateTitle] language at call time`, {
@@ -8852,6 +10163,19 @@ export class SessionManager implements ISessionManager {
         titleLanguage: titleLanguage ?? null,
       })
       const title = await agent.generateTitle(userMessage, { language: titleLanguage })
+      // DISCARDED, before anything is mutated, persisted, announced, or logged
+      // as a success. This call is un-awaited by its caller and untracked by
+      // `stopPersistenceProducers` — a model round-trip is not something a quit
+      // may be held open for — so what bounds it instead is that it cannot act
+      // after the freeze. Applying the title here would mutate a session whose
+      // final state has already been written and enqueue a write the closing
+      // queue refuses, leaving memory, disk and the renderer disagreeing about
+      // the name. The title is DERIVED: dropping it costs a regeneration on the
+      // next turn, and the fallback name the session already has is correct.
+      if (this.shuttingDown) {
+        sessionLog.info(`[generateTitle] Discarded for session ${managed.id}: shutting down`)
+        return
+      }
       if (title) {
         managed.name = title
         this.persistSession(managed)
@@ -9717,13 +11041,28 @@ export class SessionManager implements ISessionManager {
         }
         break
 
-      case 'steer_undelivered':
+      case 'steer_undelivered': {
         // Steer message was not delivered (no PreToolUse fired before turn ended).
-        // Re-queue it so it's sent as a normal message on the next turn.
+        // Re-queue it so it's sent as a normal message on the next turn — as the
+        // SAME message it already is, not as a new one.
         sessionLog.info(`Steer message undelivered, re-queuing for session ${sessionId}`)
-        managed.messageQueue.push({ message: event.message })
+        // Reachable only when something drains the generator to its natural end.
+        // The usual path returns on `complete` and never sees this event, which
+        // is why correctness rests on the turn-end reconcile and not on this.
+        // Same routine either way, and it takes the backend's answer as it goes,
+        // so whichever runs first leaves the other nothing to double-queue.
+        const outstanding = managed.pendingSteers?.length ?? 0
+        this.reconcilePendingSteers(managed)
+        if (outstanding === 0) {
+          // No envelope, or it was already promoted at turn end. Re-queue the
+          // text alone rather than dropping it — the old shape, kept for a steer
+          // this manager did not record.
+          sessionLog.info(`Undelivered steer for ${sessionId} had no pending envelope; re-queuing text only`)
+          managed.messageQueue.push({ message: event.message })
+        }
         managed.wasInterrupted = true
         break
+      }
 
       // Note: working_directory_changed is user-initiated only (via updateWorkingDirectory),
       // the agent no longer has a change_working_directory tool
@@ -10770,29 +12109,9 @@ export class SessionManager implements ISessionManager {
   cleanup(): void {
     sessionLog.info('Cleaning up resources...')
 
-    // Stop all ConfigWatchers (file system watchers)
-    for (const [path, watcher] of this.configWatchers) {
-      watcher.stop()
-      sessionLog.info(`Stopped config watcher for ${path}`)
-    }
-    this.configWatchers.clear()
-
-    // Dispose all AutomationSystems (includes scheduler, handlers, and event loggers)
-    for (const [workspacePath, automationSystem] of this.automationSystems) {
-      try {
-        automationSystem.dispose()
-        sessionLog.info(`Disposed AutomationSystem for ${workspacePath}`)
-      } catch (error) {
-        sessionLog.error(`Failed to dispose AutomationSystem for ${workspacePath}:`, error)
-      }
-    }
-    this.automationSystems.clear()
-
-    // Stop the idle agent-runtime TTL sweep
-    if (this.idleSweepTimer) {
-      clearInterval(this.idleSweepTimer)
-      this.idleSweepTimer = null
-    }
+    // Idempotent, and normally already done by `flushAllSessions` — a caller
+    // that only calls `cleanup` still gets the producers stopped.
+    this.stopPersistenceProducers()
 
     // Clear all pending delta flush timers
     for (const [sessionId, timer] of this.deltaFlushTimers) {

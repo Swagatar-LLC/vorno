@@ -13,6 +13,7 @@ related-suvs:
   - SUV-0058-enable-pages-per-workspace-with-navigator-coexistence.md
   - SUV-0059-secure-page-grant-authority-and-actions.md
   - SUV-0065-enforce-page-action-runtime-authority.md
+  - SUV-0066-serialize-workspace-qualified-session-persistence-with-owner-receipts.md
   - SUV-0064-execute-pinned-page-session-callbacks.md
   - SUV-0060-operate-vorno-pages-sharing.md
   - SUV-0061-brand-and-publish-pages-documentation.md
@@ -88,6 +89,7 @@ on their landed prerequisites rather than broadening their scope.
 | SUV-0058 | SUV-0059, SUV-0060, SUV-0065, SUV-0064 | Persisted workspace opt-in is the availability boundary. |
 | SUV-0059 | SUV-0065 | Host grant lifecycle exists before runtime action enforcement. |
 | SUV-0065 | SUV-0064 | Runtime authority and trusted activation exist before callbacks execute. |
+| SUV-0066 | SUV-0064 | Session persistence is workspace-qualified, serialized per key, and reports durability per write before a callback can claim a message was delivered and saved. |
 | SUV-0060 | SUV-0062 | Worker implementation and public sharing contract are verified. |
 | SUV-0061 and SUV-0063 | SUV-0062 | Bundled/online docs and site prerelease/privacy support are live. |
 | Jeff retention decision plus SUV-0063 | Worker deployment and beta tag | Policy, retention, and prerelease support land before deployed sharing; deployed sharing is release acceptance. |
@@ -131,3 +133,8 @@ on their landed prerequisites rather than broadening their scope.
   prerequisites explicit.
 - `2026-09-10` — sizing correction: split grant lifecycle (SUV-0059), runtime
   action authority (SUV-0065), and pinned callback execution (SUV-0064).
+- `2026-09-12` — sizing correction: SUV-0064's review surfaced a generic session
+  persistence unit (workspace-qualified write keys, one tail per key, owner
+  receipts, deletion-vs-supersede, per-field external metadata authority) that
+  is independently shippable and fixes standing data-loss bugs of its own. Cut
+  as SUV-0066 and made a prerequisite of SUV-0064 rather than shipped inside it.

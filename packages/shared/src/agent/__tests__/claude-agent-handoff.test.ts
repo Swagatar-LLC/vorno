@@ -48,3 +48,25 @@ describe('ClaudeAgent handoff interrupts', () => {
     expect(debug).toHaveBeenCalledWith('Claude handoff interrupt failed: interrupt failed')
   })
 })
+
+describe('ClaudeAgent undelivered steer', () => {
+  it('hands the steer back once and forgets it', () => {
+    // The session layer PULLS this at turn end, because it will never be told:
+    // `chat()` yields the notice from its `finally`, and the consumer returns on
+    // `complete`, which abandons the generator and discards it. Clearing on take
+    // is what stops the trailing yield — if anything is still draining — from
+    // promoting the same message a second time.
+    const agent = Object.create(ClaudeAgent.prototype) as any
+    agent.pendingSteerMessage = 'never delivered'
+
+    expect(agent.takeUndeliveredSteer()).toBe('never delivered')
+    expect(agent.pendingSteerMessage).toBeNull()
+    expect(agent.takeUndeliveredSteer()).toBeNull()
+  })
+
+  it('answers null when the steer was delivered', () => {
+    const agent = Object.create(ClaudeAgent.prototype) as any
+    agent.pendingSteerMessage = null
+    expect(agent.takeUndeliveredSteer()).toBeNull()
+  })
+})

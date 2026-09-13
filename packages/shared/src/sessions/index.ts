@@ -16,6 +16,7 @@ export type {
   SessionConfig,
   StoredSession,
   SessionMetadata,
+  SessionMetadataWithPendingPlan,
   SessionHeader,
   SessionPersistentField,
 } from './types.ts';

@@ -19,7 +19,12 @@ import {
   writeSessionJsonl,
   type StoredSession,
 } from '@craft-agent/shared/sessions'
-import { listSessions } from '@craft-agent/shared/sessions'
+// The mirror rebuild is the ONE caller `listSessionsWithPendingPlan` exists
+// for — the public `listSessions` strips `pendingPlanExecution` at runtime so
+// unsent draft text cannot ride a wire payload. Hydrating through the public
+// one here would test a managed session the host never actually builds; this
+// is the same import `SessionManager` itself uses.
+import { listSessionsWithPendingPlan as listSessions } from '@craft-agent/shared/sessions/internal'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
 
 const WORKSPACE_ID = 'ws_callback'
@@ -383,7 +388,10 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
     // the assertion would be about nothing. A user's own send is the caller
     // that legitimately means "I have moved on".
     const source = readFileSync(join(import.meta.dir, 'SessionManager.ts'), 'utf-8')
-    expect(source).toContain('await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)')
+    expect(source).toContain('await this.clearStoredPendingPlan(managed)')
+    // And the method really is the clear, not a same-named stub: naming both
+    // halves keeps this honest if the wrapper is ever repointed.
+    expect(source).toContain('return clearStoredPendingPlanExecution(managed.workspace.rootPath, managed.id)')
   })
 
   /**
@@ -857,42 +865,68 @@ describe('tryDeliverPageCallback (real SessionManager)', () => {
    */
   it('performs no state mutation before the delivery guard on the callback path', () => {
     const source = readFileSync(join(import.meta.dir, 'SessionManager.ts'), 'utf-8')
-    const sendAt = source.indexOf('  private async sendMessageInner(')
+    // Anchored on the method that CONTAINS the guard, which is no longer
+    // `sendMessageInner`: SUV-0066 split the admitted-send body out into
+    // `runAdmittedSend`. Anchoring upstream of that split makes the slice span
+    // a whole extra method, and its `await this.runAdmittedSend(...)` then reads
+    // as a second yield on the callback path — a failure that says nothing
+    // about the property under test.
+    const sendAt = source.indexOf('  private async runAdmittedSend(')
     const guardAt = source.indexOf('const vetoed = pageCallback?.guard()')
     expect(sendAt).toBeGreaterThan(-1)
     expect(guardAt).toBeGreaterThan(sendAt)
 
     const preamble = source.slice(sendAt, guardAt)
 
-    // Brace-match the `if (!pageCallback)` block, the same way the adjacency
+    // Brace-match EVERY `if (!pageCallback)` block, the same way the adjacency
     // test matches the mid-stream branch. A `lastIndexOf` search would only
-    // prove the branch opens somewhere earlier in the file — it would keep
+    // prove a branch opens somewhere earlier in the file — it would keep
     // passing with every mutation moved out after the closing brace, which is
     // exactly the regression this is meant to catch.
-    const branchAt = preamble.indexOf('if (!pageCallback) {')
-    expect(branchAt).toBeGreaterThan(-1)
-
-    let depth = 0
-    let branchEnd = -1
-    for (let i = preamble.indexOf('{', branchAt); i < preamble.length; i++) {
-      if (preamble[i] === '{') depth++
-      else if (preamble[i] === '}') {
-        depth--
-        if (depth === 0) { branchEnd = i + 1; break }
+    //
+    // All of them, not the first: the preamble legitimately carries more than
+    // one exempt branch, because the mutations do not all belong at the same
+    // point. Clearing the stored plan is irreversible, so it sits below the
+    // shutdown refusal point while pinning the host and claiming the retry slot
+    // sit above it. Matching only the first branch would quietly stop checking
+    // whichever mutations moved into a later one.
+    const branches: Array<[number, number]> = []
+    for (let from = 0; ;) {
+      const branchAt = preamble.indexOf('if (!pageCallback) {', from)
+      if (branchAt === -1) break
+      let depth = 0
+      let branchEnd = -1
+      for (let i = preamble.indexOf('{', branchAt); i < preamble.length; i++) {
+        if (preamble[i] === '{') depth++
+        else if (preamble[i] === '}') {
+          depth--
+          if (depth === 0) { branchEnd = i + 1; break }
+        }
       }
+      expect(branchEnd).toBeGreaterThan(branchAt)
+      branches.push([branchAt, branchEnd])
+      from = branchEnd
     }
-    expect(branchEnd).toBeGreaterThan(branchAt)
+    expect(branches.length).toBeGreaterThan(0)
 
-    const insideBranch = preamble.slice(branchAt, branchEnd)
-    const outsideBranch = preamble.slice(0, branchAt) + preamble.slice(branchEnd)
+    const insideBranch = branches.map(([s, e]) => preamble.slice(s, e)).join('\n')
+    let outsideBranch = ''
+    let cursor = 0
+    for (const [s, e] of branches) { outsideBranch += preamble.slice(cursor, s); cursor = e }
+    outsideBranch += preamble.slice(cursor)
 
     // Each of these mutates: pins the browser host, claims the retry slot, or
-    // deletes a stored plan. All three must sit INSIDE the non-callback branch
+    // deletes a stored plan. All three must sit INSIDE a non-callback branch
     // and nowhere else before the guard.
+    //
+    // The plan clear is named by its METHOD rather than the free function it
+    // wraps, because the method is the seam `quit-flush.test.ts` holds open to
+    // prove a quit landing mid-clear still finishes. Asserting the free
+    // function here would pass just as happily with that seam inlined away.
     for (const mutation of [
       'this.setLastMessageClientId(',
       'claimAutoRetryPending(',
-      'clearStoredPendingPlanExecution(',
+      'this.clearStoredPendingPlan(',
     ]) {
       expect(insideBranch).toContain(mutation)
       expect(outsideBranch).not.toContain(mutation)

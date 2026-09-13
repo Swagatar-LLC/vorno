@@ -35,13 +35,14 @@ import type {
   SessionTokenUsage,
   SessionHeader,
   SessionStatus,
+  SessionMetadataWithPendingPlan,
 } from './types.ts';
 import type { Plan } from '../agent/plan-types.ts';
 import { validateSessionStatus } from '../statuses/validation.ts';
 import { debug } from '../utils/debug.ts';
 import { getStatusCategory } from '../statuses/storage.ts';
 import { readSessionHeader, readSessionJsonl } from './jsonl.ts';
-import { sessionWriteKey, sessionPersistenceQueue } from './persistence-queue.ts';
+import { sessionPersistenceQueue, type SessionWriteReceipt } from './persistence-queue.ts';
 
 // Re-export types for convenience
 export type { SessionConfig } from './types.ts';
@@ -315,10 +316,53 @@ export async function getOrCreateSessionById(
  * Writes in JSONL format: line 1 = header, lines 2+ = messages
  */
 export async function saveSession(session: StoredSession): Promise<void> {
-  sessionPersistenceQueue.enqueue(session);
+  // Goes through the CHECKED path and throws on a bad receipt, because this is
+  // an awaited API whose whole contract is "it is saved".
+  //
+  // The fire-and-forget `enqueue` + `flush` pair could not keep that promise.
+  // `enqueue` is refused once the queue is closing, which leaves nothing queued
+  // — and `flush` returns immediately for a key with no queued work and no
+  // tail. So during a shutdown drain this resolved happily having written
+  // nothing, and every awaiting caller (pending-plan writes, status and label
+  // mutations, an in-flight RPC or tool call) was told it had succeeded.
+  // A silent success is the one answer an awaited save must never give.
+  //
+  // The four failure reasons are NOT interchangeable here, and that is the
+  // whole reason the receipt carries one:
+  //
+  // - `superseded` — an external metadata edit was absorbed while this write
+  //   was in flight, so the write lost on purpose. Failing would make this
+  //   caller's patch collateral damage of somebody else's rename. It is
+  //   REAPPLIED once instead: the queue is holding the observed external edit,
+  //   so the retry's merge combines both and the caller's change commits.
+  //   Bounded to one retry — a second supersede means edits are arriving faster
+  //   than writes complete, and looping would hide that rather than fix it.
+  // - `deleted` — retrying would RESURRECT a session the user deleted, so this
+  //   throws without a retry. The distinction is the reason `superseded` and
+  //   `deleted` are separate reasons at all.
+  // - `refused` / `failed` — nothing to merge with; report it.
+  const first = await attemptSave(session);
+  if (first.ok) return;
+
+  if (first.reason === 'superseded') {
+    const retry = await attemptSave(session);
+    if (retry.ok) return;
+    throw new Error(
+      `Failed to save session ${session.id} after one retry: ${retry.error} (first attempt: ${first.error})`,
+    );
+  }
+
+  throw new Error(`Failed to save session ${session.id}: ${first.error}`);
+}
+
+/** One checked attempt, driven immediately rather than waiting out the debounce. */
+async function attemptSave(session: StoredSession): Promise<SessionWriteReceipt> {
+  const handle = sessionPersistenceQueue.enqueueChecked(session);
   // Keyed by workspace + id, not id alone: session ids are unique only within
-  // a workspace, and flushing the wrong workspace's entry would be silent.
-  await sessionPersistenceQueue.flush(sessionWriteKey(session.workspaceRootPath, session.id));
+  // a workspace, and flushing the wrong workspace's entry would be silent. The
+  // handle carries its own key, so this cannot drive a different one.
+  sessionPersistenceQueue.driveChecked(handle.key);
+  return handle.receipt;
 }
 
 /**
@@ -327,6 +371,7 @@ export async function saveSession(session: StoredSession): Promise<void> {
  * Use this during active sessions to avoid blocking the main thread.
  */
 export { sessionPersistenceQueue, sessionWriteKey, getHeaderMetadataSignature } from './persistence-queue.js'
+export type { SessionCommitHooks } from './persistence-queue.js'
 export type { SessionWriteKey } from './persistence-queue.js'
 export type { SessionWriteHandle, SessionWriteReceipt } from './persistence-queue.js'
 
@@ -356,7 +401,21 @@ export function loadSession(workspaceRootPath: string, sessionId: string): Store
  *
  * Uses JSONL header for fast loading (only reads first line of each file).
  */
-export function listSessions(workspaceRootPath: string): SessionMetadata[] {
+/**
+ * List a workspace's sessions INCLUDING pending-plan state.
+ *
+ * **Internal: for the host's startup hydration only.** Not on the package
+ * barrel — reach it through `@craft-agent/shared/sessions/internal`, which
+ * exists so that importing it is a deliberate act with a name attached.
+ *
+ * `pendingPlanExecution` carries `draftInputSnapshot`, text the user typed and
+ * did not send. The public {@link listSessions} strips it at RUNTIME rather
+ * than merely typing it away: a narrower type stops autocomplete from finding
+ * the field, and stops nothing at all from `JSON.stringify`-ing the object onto
+ * a wire payload. Only the caller that needs to rebuild a managed session's
+ * mirror should ever hold it.
+ */
+export function listSessionsWithPendingPlan(workspaceRootPath: string): SessionMetadataWithPendingPlan[] {
   const span = perf.span('session.listSessions');
   const sessionsDir = getWorkspaceSessionsPath(workspaceRootPath);
   if (!existsSync(sessionsDir)) {
@@ -403,7 +462,7 @@ export function listSessions(workspaceRootPath: string): SessionMetadata[] {
  * Convert SessionHeader to SessionMetadata
  * Used for fast session list loading from JSONL format.
  */
-function headerToMetadata(header: SessionHeader, workspaceRootPath: string): SessionMetadata | null {
+function headerToMetadata(header: SessionHeader, workspaceRootPath: string): SessionMetadataWithPendingPlan | null {
   try {
     // Migration: accept old 'todoState' field from pre-rename session files
     const rawStatus = header.sessionStatus ?? (header as unknown as { todoState?: string }).todoState;
@@ -417,11 +476,16 @@ function headerToMetadata(header: SessionHeader, workspaceRootPath: string): Ses
     const workingDir = header.workingDirectory ? expandPath(header.workingDirectory) : undefined;
     const sdkCwd = header.sdkCwd ? expandPath(header.sdkCwd) : workingDir;
 
-    // Destructure fields that don't exist on SessionMetadata or need overrides
-    // `pendingPlanExecution` is deliberately NOT destructured out any more: the
-    // managed session is built from this shape and the header is rebuilt from
-    // the managed session, so stripping it here meant the field lived only on
-    // disk until the next persist from any writer silently dropped it.
+    // Destructure fields that don't exist on the metadata shape or need
+    // overrides.
+    //
+    // `pendingPlanExecution` is deliberately NOT destructured out: the managed
+    // session is built from this shape and the header is rebuilt from the
+    // managed session, so stripping it here meant the field lived only on disk
+    // until the next persist from any writer silently dropped it. It rides the
+    // WIDER return type (`SessionMetadataWithPendingPlan`) rather than the
+    // public `SessionMetadata`, so it reaches the host's startup hydration and
+    // nothing else — it carries unsent user draft text.
     const {
       sessionStatus: _ss, workingDirectory: _wd, sdkCwd: _sc,
       workspaceRootPath: _wrp, ...headerFields
@@ -650,13 +714,33 @@ export async function unbindProjectFromSessions(
 ): Promise<number> {
   const sessions = listSessions(workspaceRootPath);
   let touched = 0;
+  // Failures are collected, not allowed to abandon the rest of the batch.
+  //
+  // `saveSession` can throw now that it reports the truth, and a bare `await`
+  // in this loop meant one unlucky session stopped every session after it from
+  // being unbound — while the caller received a count that looked like a
+  // complete answer. Unbinding is per-session work with no ordering between
+  // sessions, so one failure is not a reason to skip the others.
+  const failures: string[] = [];
   for (const meta of sessions) {
     const full = loadSession(workspaceRootPath, meta.id);
     if (full?.projectId === projectId) {
       full.projectId = undefined;
-      await saveSession(full);
-      touched++;
+      try {
+        await saveSession(full);
+        touched++;
+      } catch (error) {
+        failures.push(`${meta.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
+  }
+  if (failures.length) {
+    // Thrown AFTER the batch, so the work that could be done was done, and the
+    // message names what was not — a partial result reported as a partial
+    // result rather than as a smaller success.
+    throw new Error(
+      `Unbound ${touched} session(s) from project ${projectId}; ${failures.length} failed — ${failures.join('; ')}`,
+    );
   }
   return touched;
 }
@@ -805,6 +889,33 @@ export function listInboxSessions(workspaceRootPath: string): SessionMetadata[] 
     const category = getStatusCategory(workspaceRootPath, s.sessionStatus || 'todo');
     return category === 'open';
   });
+}
+
+/**
+ * List a workspace's sessions.
+ *
+ * Returns records with `pendingPlanExecution` REMOVED — a real delete, not a
+ * cast. Everything on this path (artifact scans, label and status queries, the
+ * session list) gets objects that cannot leak unsent draft text even if
+ * something downstream serializes them wholesale.
+ *
+ * The host's startup hydration wants the field and asks for it by name via
+ * `listSessionsWithPendingPlan` (`@craft-agent/shared/sessions/internal`).
+ */
+export function listSessions(workspaceRootPath: string): SessionMetadata[] {
+  return listSessionsWithPendingPlan(workspaceRootPath).map(stripPendingPlan);
+}
+
+/**
+ * Drop the pending-plan state from a metadata record.
+ *
+ * A fresh object rather than a `delete` on the original: `listSessions` and
+ * `listSessionsWithPendingPlan` would otherwise hand out references to the same
+ * records, and stripping in place would empty the hydration path too.
+ */
+function stripPendingPlan(session: SessionMetadataWithPendingPlan): SessionMetadata {
+  const { pendingPlanExecution: _internalOnly, ...safe } = session;
+  return safe;
 }
 
 /**
