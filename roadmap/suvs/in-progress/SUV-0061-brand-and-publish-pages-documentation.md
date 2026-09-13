@@ -193,3 +193,8 @@ branding, prompt, and release-note checks that catch imported Craft defaults.
   owner. `workers/pages/README.md` names the bundled guide as one of the places
   that must stay in agreement with `RETENTION_MS` and `/privacy` — this is that
   agreement.
+- `2026-09-13` — merged evidence recorded: PR #209 (`8a5f44d6`, this SUV) is on
+  `origin/main`, alongside supporting roadmap/docs PR #207 and quiescence-flake
+  fix PR #210. Remaining acceptance (item 6, the release-note entry after
+  SUV-0063's site manifest publishes) still depends on deploy/release evidence
+  that does not exist yet, so this stays in `in-progress/`.

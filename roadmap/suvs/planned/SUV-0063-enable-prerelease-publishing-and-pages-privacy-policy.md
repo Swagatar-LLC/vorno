@@ -55,3 +55,12 @@ Deliberately out: Worker/client implementation (SUV-0060), bundled docs
 
 - `2026-09-10` — created in `planned/`; this SUV owns the cross-repository
   vorno-site PR and the explicit policy gate for deployment and beta tagging.
+- `2026-09-13` — merged evidence recorded: `vorno-site` PR #2 carried this
+  SUV's implementation (prerelease dispatch guard, docs-manifest grouping, and
+  the `/privacy` policy page), and `https://vorno.ai/privacy/` is live. Also
+  merged to `origin/main` through `8a5f44d6`: SUV-0061 via PR #209, supporting
+  roadmap/docs PR #207, and quiescence-flake fix PR #210. This SUV stays in
+  `planned/` — the implementation is merged, but remaining acceptance is the
+  launch-status wording update and deploy verification (confirming the site
+  change is live ahead of Worker deployment and the beta tag); neither has
+  evidence recorded yet.

@@ -102,6 +102,14 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
           FEED="Swagatar-LLC/vorno-releases"
+          # SemVer prerelease suffix (e.g. v0.22.0-beta.1) => prerelease.
+          # A prerelease must never masquerade as the feed's "latest" stable
+          # release, and must never win a find-or-create against a stale
+          # published/prerelease flag from a prior partial run.
+          IS_PRERELEASE=false
+          if [[ "${VERSION}" == *-* ]]; then
+            IS_PRERELEASE=true
+          fi
           if gh api "repos/${FEED}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
             echo "Tag ${TAG} already exists in ${FEED}"
           else
@@ -111,10 +119,32 @@ jobs:
           fi
           if gh api "repos/${FEED}/releases/tags/${TAG}" >/dev/null 2>&1; then
             echo "Release for ${TAG} already exists in ${FEED}"
+            # Reconcile: an idempotent re-run must not leave a stable release
+            # marked prerelease (or vice versa) if the tag's SemVer changed
+            # meaning between attempts — don't just skip on "already exists".
+            EXISTING_PRERELEASE="$(gh api "repos/${FEED}/releases/tags/${TAG}" --jq .prerelease)"
+            if [ "${EXISTING_PRERELEASE}" != "${IS_PRERELEASE}" ]; then
+              # Only ever force --latest=false (demoting a prerelease). Forcing
+              # --latest=true on the stable path would drag the feed's "latest"
+              # pointer onto this tag even if a newer stable already holds it.
+              if [ "${IS_PRERELEASE}" = "true" ]; then
+                gh release edit "${TAG}" --repo "${FEED}" --prerelease=true --latest=false
+              else
+                gh release edit "${TAG}" --repo "${FEED}" --prerelease=false
+              fi
+              echo "Reconciled release ${VERSION} (${TAG}) prerelease flag ${EXISTING_PRERELEASE} -> ${IS_PRERELEASE} in ${FEED}"
+            fi
           else
-            gh release create "${TAG}" --repo "${FEED}" --title "${VERSION}" \
-              --notes "Vorno ${VERSION} — assets uploading. See https://github.com/Swagatar-LLC/vorno for the changelog."
-            echo "Created release ${VERSION} (${TAG}) in ${FEED}"
+            if [ "${IS_PRERELEASE}" = "true" ]; then
+              # --latest=false is explicit, not assumed: some gh/API versions
+              # will otherwise flip the feed's "latest" pointer to a prerelease.
+              gh release create "${TAG}" --repo "${FEED}" --title "${VERSION}" --prerelease --latest=false \
+                --notes "Vorno ${VERSION} — assets uploading. See https://github.com/Swagatar-LLC/vorno for the changelog."
+            else
+              gh release create "${TAG}" --repo "${FEED}" --title "${VERSION}" \
+                --notes "Vorno ${VERSION} — assets uploading. See https://github.com/Swagatar-LLC/vorno for the changelog."
+            fi
+            echo "Created release ${VERSION} (${TAG}) in ${FEED} (prerelease=${IS_PRERELEASE})"
           fi
 
       # ---------------------------------------------------------------------
