@@ -237,6 +237,12 @@ jobs:
       - name: Check brand/endpoint strings route through branding module
         run: bun run scripts/check-branding.ts
 
+      # The gate passing on a clean tree does not prove its rules fire. These
+      # inject the exact strings it exists to catch (SUV-0061) and assert each
+      # is reported — and that compatibility identifiers still are not.
+      - name: Mutation-test the gate's own rules
+        run: bun test scripts/check-branding.test.ts
+
   # ---------------------------------------------------------------------------
   # Headroom boundary gate — the Headroom SDK may be imported by exactly one
   # file (PLAN-040 / SUV-0015). The integration's whole long-term-support story

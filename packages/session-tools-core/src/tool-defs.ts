@@ -251,7 +251,12 @@ export const CreatePageSchema = z.object({
     .optional()
     .describe('Runtime capability class: static = no JS, interactive = JS allowed, live = JS + receives data snapshot updates while open. Default: interactive.'),
   projectId: z.string().optional().describe('Stable Project ID to bind the page to'),
-  content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read ~/.craft-agent/docs/pages.md for the authoring guide and data-bridge snippet BEFORE writing page HTML.'),
+  // fork(SUV-0061): no literal config-dir path here — session-tools-core cannot
+  // import DOC_REFS (shared depends on this package), and the hardcoded upstream
+  // `~/.craft-agent/...` it used to name does not exist in Vorno. The resolved
+  // path is appended for the Claude path in shared/agent/session-scoped-tools.ts
+  // and listed in the system prompt's Configuration Documentation table.
+  content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read the bundled Pages guide (Configuration Documentation table) for the authoring guide and data-bridge snippet BEFORE writing page HTML.'),
 });
 
 export const UpdatePageSchema = z.object({
@@ -573,7 +578,9 @@ The response includes absolute paths (contentPath, data.snapshotPath) — Read t
 
   create_page: `Create a new Page: a persistent, self-contained HTML document stored at pages/{slug}/ in the workspace, shown as a tile in the app's Pages section, and rendered in a sandboxed iframe.
 
-IMPORTANT — read ~/.craft-agent/docs/pages.md BEFORE authoring page HTML. Key rules: provide a FULL standalone HTML document with ALL CSS/JS inline (no external requests — shared copies get network egress blocked); to display data from the page's data store, listen for the 'craft-pages/v1' bridge messages (init/data) documented there; kind 'live' pages receive replacement data snapshots automatically while open.
+IMPORTANT — read the bundled Pages guide (listed in the Configuration Documentation table) BEFORE authoring page HTML. Key rules: provide a FULL standalone HTML document with ALL CSS/JS inline (no external requests — published copies block scripted network egress); to display data from the page's data store, listen for the 'craft-pages/v1' bridge messages (init/data) documented there; kind 'live' pages receive replacement data snapshots automatically while open.
+
+Pages is a per-workspace capability that is OFF by default: if it is disabled the call fails with PAGES_DISABLED, which means the user must enable Pages in Settings → Workspace — not that the call should be retried.
 
 Use Pages (instead of chat previews) when the user wants something persistent: a dashboard that an automation refreshes, a report they'll revisit or share, a tracker fed by write_page_data. Returns the created page details including the slug.`,
 

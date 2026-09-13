@@ -1,6 +1,16 @@
 # Pages
 
-Pages are persistent, self-hosted HTML mini apps stored in the workspace and rendered inside the app (sidebar → **Pages**). Use them for dashboards, reports, trackers, and small tools that should outlive the conversation — optionally auto-refreshed on a schedule and shareable as password-protected public links.
+Pages are persistent, self-hosted HTML mini apps stored in the workspace and rendered inside Vorno (sidebar → **Pages**). Use them for dashboards, reports, trackers, and small tools that should outlive the conversation — optionally auto-refreshed on a schedule and, where the capability is available, publishable as password-protected public links.
+
+## Availability (read this before offering to build a Page)
+
+Pages is **off by default in every workspace**. It is a persisted workspace capability, not a global app flag and not a renderer preference — the host re-reads it on every call.
+
+- **Turning it on:** Settings → Workspace → **Pages**. The setting is stored per workspace, so enabling it in one workspace does not enable it in another, and a copied or restored workspace keeps whatever it was saved with.
+- **What the switch covers:** the Pages navigator, the `*_page` / `write_page_data` session tools, scheduled refresh, and publication. If it is off, `create_page` and friends fail with `PAGES_DISABLED` — that is the host refusing, not a bug to work around. Offer to enable it in Settings instead of retrying.
+- **What stays available when it is off:** `delete_page`, unpublishing, and removing an approved action. Turning Pages off never strands a published copy or an approval.
+- **Sharing is a second, separate gate.** Publishing additionally requires the build's sharing flag *and* a configured Vorno publication endpoint. Both are absent in a default install, so **Share is unavailable unless it has been explicitly configured** — see [Sharing](#sharing). Assume a Page is local-only unless the user tells you otherwise.
+- **Confirmed actions are desktop-only.** Source actions, scripts, and session callbacks need a real click the host can vouch for, which only the Electron desktop app can supply. The web interface renders Pages and reads data, but declines anything that changes state.
 
 ## Folder layout (managed — do not edit directly)
 
@@ -14,6 +24,20 @@ Pages are persistent, self-hosted HTML mini apps stored in the workspace and ren
 ```
 
 Always use the session tools (`create_page`, `update_page`, `write_page_data`, `delete_page`) instead of file tools. They keep content digests, grants, the config watcher, and open renders consistent. `list_pages` / `get_page` are read-only and return absolute paths when you do need to Read something (e.g. `data.snapshotPath`).
+
+### Names that stay `craft-*` on purpose
+
+Vorno is a fork, and the Pages storage and bridge contracts are shared with upstream. These identifiers are **compatibility contracts, not stale branding** — a page, script, or tool that renames them stops working:
+
+| Identifier | Where it appears |
+|---|---|
+| `craft-pages/v1` | the `protocol` field of every bridge message |
+| `pages/{slug}/` | the on-disk page folder inside the workspace |
+| `CRAFT_WORKSPACE_PATH`, `CRAFT_PAGE_SLUG`, `CRAFT_PAGE_DIR`, `CRAFT_PAGE_DATA_DIR` | the environment given to refresh and script-grant runs |
+| `CRAFT_PAGES_SHARE_API_URL` | the publication-endpoint variable (its *value* must be a Vorno endpoint — see [Sharing](#sharing)) |
+| `@craft-agent/shared/pages/data-store` | the importable store helper |
+
+Everything a person reads — window chrome, dialogs, the published shell — says Vorno. Everything a machine matches on keeps the name above.
 
 ## Choosing a kind
 
@@ -137,9 +161,9 @@ function handleGrants(list) { grants = list || []; /* enable/disable buttons */ 
 
 const NEEDS = [
   { key: 'read',  description: 'Refresh the task list',
-    action: { kind: 'mcp', sourceSlug: 'craft-private', toolName: 'craft_read' } },
+    action: { kind: 'mcp', sourceSlug: 'todoist', toolName: 'list_tasks' } },
   { key: 'write', description: 'Add and complete tasks',
-    action: { kind: 'mcp', sourceSlug: 'craft-private', toolName: 'craft_write' } },
+    action: { kind: 'mcp', sourceSlug: 'todoist', toolName: 'update_task' } },
 ];
 // After init: request anything still missing (max 8 entries per request).
 if (NEEDS.some(n => !grantFor(n.action))) {
@@ -154,12 +178,14 @@ keep the page useful with buttons disabled and show what approval would unlock.
 What you must know about grants:
 
 - Grants are **user-approved capabilities** persisted in the page config: `{ kind: 'api', sourceSlug, method, pathPattern }` (anchored regex), `{ kind: 'mcp', sourceSlug, toolName }`, `{ kind: 'script', script, runtime?, args? }`, or `{ kind: 'session', sessionId, message }` (both see below). You cannot mint them with a session tool — the page requests them (`grant-request`) and the user approves them in the host dialog.
-- Grants are bound to the **exact content digest** at approval time and have a hard expiry (30 days). Editing the page's HTML invalidates all grants by design — the page should simply re-request on next open.
+- Grants are bound to the **exact content digest** at approval time and always expire. `api` and `mcp` grants default to **7 days** and are capped at **30**; the privileged kinds (`script`, `session`) default to **24 hours** and are capped at **7 days**. Editing the page's HTML invalidates all grants by design — the page should simply re-request on next open.
 - The user can **remove any approval at any time** (page ⋯ menu → Approved actions, or inline in the Share dialog). Open renders receive an updated `grants` message when that happens, so drive button state from `handleGrants` instead of caching the init-time list.
 - If a granted source **loses authentication**, actions fail fast with an error starting with `source-auth-required` (e.g. `source-auth-required: reconnect "gmail" in the app`). The host shows a reconnect banner above the page. Treat it as retryable: show a "reconnect in the app" hint and let the user simply click again after reconnecting — do not permanently disable the button.
 - Only **api GET** actions may run without a user gesture. Everything else — api non-GET, **every mcp tool** (opaque: it may write), and **every script** — requires a fresh user gesture inside the page (button click): fire the action directly from the click handler, never from a timer or on load. For data that should be visible on open, render from the snapshot and make live calls button-driven.
+- **The gesture is proven by the host, not by the page.** The host mints a single-use activation ticket bound to the render's lease and content digest, valid for at most 10 seconds, and the first use of each approved capability in a render also asks the user to confirm. A page cannot assert its own activation, and the browser's activation signal is not accepted as proof — so an action fired from a timer, a hover, a stale window, or a page reload is refused rather than silently allowed. Treat a refusal as "ask the user to click again".
 - Per-frame caps: 5 requests in flight, 1 mutating at a time, 30/minute. Cancel with `{ type: 'action-cancel', requestId, nonce }`.
-- Published (shared) copies never execute actions — viewers get `public-actions-disabled`.
+- Published (shared) copies never execute actions — viewers get `public-actions-disabled`, and the public shell supplies an empty grant list.
+- **Desktop only.** The web interface has no way to confirm a click, so it declines mutating actions outright.
 
 `get_page` lists existing grants with a `stale` flag (digest mismatch or expired).
 
@@ -257,7 +283,36 @@ CREATE TABLE IF NOT EXISTS timeseries (series TEXT NOT NULL, t INTEGER NOT NULL,
 
 ## Sharing
 
-Users publish pages from the page's **Share** button (feature-flagged): password-protectable public URL, opt-in data snapshot, instant revocation. You don't publish pages yourself — but remember: published copies block scripted network egress and disable source actions; frame self-navigation remains a documented residual, which is why inline-everything authoring matters. `delete_page` unpublishes first and blocks deletion if revocation cannot be confirmed. Only the Electron desktop host can offer a separately confirmed local-state-forget recovery for a lost management capability; headless and WebUI paths deliberately have no such escape hatch.
+Publishing is a **user action, not an agent action** — there is no publish tool. The user clicks **Share** on the page. Your job is to author HTML that survives publication and to describe the trade-offs honestly before the user commits.
+
+### When Share is available
+
+Three things must all hold: the workspace has Pages enabled, the build has sharing enabled, and a Vorno publication endpoint is configured. A default install satisfies neither of the last two, so **Share is unavailable out of the box**. Do not promise a public link you cannot confirm — check the page's share state with `get_page` and let the user tell you whether publishing is set up.
+
+Publication targets **only** `https://pages.vorno.ai` (or an explicit localhost endpoint during development). Craft's endpoint and arbitrary origins are refused for fresh publication. An already-published copy from an older endpoint stays revocable: update and unpublish recover the API base from the recognized stored URL, so turning the endpoint over never orphans a live page.
+
+### What the published copy is
+
+A separate public service, isolated from Vorno's session sharing — its own host, storage bucket, and credentials. A viewer gets:
+
+- A **Vorno-branded shell** with a permanent line reading *"Published by a Vorno user — not by Vorno."* Publication attributes content to the user, never to Vorno.
+- The page itself inside an **opaque sandboxed iframe** with a per-document CSP: `connect-src 'none'`, `default-src 'none'`, `form-action 'none'`, `object-src 'none'`, `base-uri 'none'`, scripts only for non-`static` kinds, plus `no-store` and `nosniff`. The honest claim is **no scripted network egress** — `fetch`, `XHR`, `WebSocket`, and beacons cannot leave the page. **Frame self-navigation is a known residual**, not an erased risk: do not tell a user a published page is incapable of reaching the network under every interpretation.
+- **No privileged bridge.** Actions return `public-actions-disabled`, grant requests return an empty list, and there is no `open-url` relay.
+- Optional **password protection** (minimum 8 characters) and, only if the user opts in, the current data snapshot. Opt-in snapshots are scanned for secret-looking keys before upload and the user is warned; nothing scans the HTML you wrote, so never inline a credential.
+- Size limits: 5 MB of HTML, 2 MB of snapshot, 10 MB total. Publication attempts are rate-limited per IP, and password attempts per publication.
+
+### Revocation, deletion, and retention
+
+- **Unpublish is immediate.** Public access is revoked first, so every public route 404s before physical deletion is even attempted. Deletion of the stored objects follows immediately on a best-effort basis and retries on the next authenticated delete if it fails; a pending cleanup is surfaced rather than hidden.
+- **Published content is retained for at most 30 days from its last update**, then removed, whether or not anyone unpublishes it. A published page is not permanent hosting — say so when a user asks for a link they plan to keep.
+- **Operational logs are retained for at most 90 days.** They record the fact and outcome of publication operations, not page content.
+- `delete_page` unpublishes first and **blocks deletion if revocation cannot be confirmed**, so a local delete can never leave an unmanageable public copy. Only the Electron desktop host offers a separately confirmed "forget local state" recovery when the management key is lost; headless and web paths deliberately have no such escape hatch.
+
+Everything in this section states the publication service's **policy**, which is not the same as something this build can demonstrate. Whether any of it is reachable at all depends on the availability check above — treat that as the authority, and never tell a user their page is published, retained, or deleted on the strength of this document alone.
+
+### A page that cannot be published at all
+
+A page holding a `script` or `session` grant is refused publication outright (`PAGE_SHARE_SCRIPT_GRANT` / `PAGE_SHARE_SESSION_GRANT`), including the view-only path, and stale or expired grants still count. Mention this **before** adding a script button or a session callback to a page the user has said they want to share.
 
 ## Starter template
 
@@ -313,5 +368,5 @@ Users publish pages from the page's **Share** button (feature-flagged): password
 
 - **"Make me a dashboard of X that updates every N minutes"** → `create_page` (kind `live`, content + `refresh` spec) → write the refresh script into the workspace → seed initial data with `write_page_data` so it isn't empty before the first tick.
 - **"Track this number over time"** → page with a series chart; append points with `write_page_data` whenever you learn a new value (idempotent by timestamp).
-- **"Turn this report into something I can share"** → `create_page` (kind `static`, fully inline HTML) → tell the user to use the Share button for a password-protected link.
+- **"Turn this report into something I can share"** → `create_page` (kind `static`, fully inline HTML) → point the user at the Share button, and say plainly that publishing may not be available in their build and that a published copy is retained for at most 30 days from its last update.
 - **Iterating on a page** → `update_page` with new `content`; warn the user that existing grants go stale on content changes.
