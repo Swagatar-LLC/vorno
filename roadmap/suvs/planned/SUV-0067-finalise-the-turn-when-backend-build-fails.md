@@ -19,7 +19,7 @@ so the session stops showing "processing" forever.
 
 ## The defect
 
-`beginTurnFromAdmittedSend` (`beginTurnFromAdmittedSend` in `packages/server-core/src/sessions/SessionManager.ts`)
+`beginTurnFromAdmittedSend` (`packages/server-core/src/sessions/SessionManager.ts`)
 takes turn ownership — `isProcessing = true` plus a finalisation deferred — but
 everything between it and the chat loop's own `try` sits outside every
 handler: OAuth refresh, `getOrCreateAgent` (backend construction *and* `postInit`
