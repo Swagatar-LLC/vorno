@@ -31,7 +31,7 @@ const PASSWORD_TICKET_TTL_SECONDS = 60 * 60 * 12
  * Keep this number, the lifecycle rule, the bundled Pages guide and /privacy in
  * agreement. A reader can check all four.
  */
-const RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+export const RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 // Measured locally with bench-password.js; deploy verification must remeasure on Workers.
 const DEFAULT_PBKDF2_ITERATIONS = 100_000
 
@@ -338,6 +338,7 @@ async function createPublication(request, env) {
     password,
     createdAt: now,
     updatedAt: now,
+    contentUpdatedAt: now,
     cleanup: { state: 'none', attempts: 0 },
   }
   try {
@@ -372,6 +373,8 @@ async function updatePublication(request, env, id) {
     revision,
     ...revisionPaths(id, revision),
     updatedAt: Date.now(),
+    // Moves ONLY here, because only here are the objects re-put. See `isExpired`.
+    contentUpdatedAt: Date.now(),
   }
   let saved
   try { saved = await writeBundle(env, record, upload, auth.etag) } catch { saved = undefined }
@@ -473,16 +476,36 @@ function passwordHtml(record) {
 /**
  * Has this publication passed its retention deadline?
  *
- * Fails CLOSED on a manifest that cannot prove its own age. A record without a
- * numeric `updatedAt` is unreachable through this Worker — every write stamps
- * one — so the only ways to get here are corruption or a hand-edited object,
- * and neither can demonstrate the content is still inside the window we promised
- * to delete it in. Treating "cannot tell" as "still fresh" would let exactly the
- * objects we have lost track of outlive the policy indefinitely.
+ * Anchored on `contentUpdatedAt` — when the CONTENT objects were last written —
+ * and deliberately not on `updatedAt`.
+ *
+ * The two halves of this policy must count the same event or they drift apart.
+ * The R2 lifecycle rule deletes an object N days after ITS OWN upload; it cannot
+ * see manifest writes. But `updatedAt` moves on manifest-only writes too — a
+ * password set or clear takes the branch in `updatePublication` that calls
+ * `saveRecord` without `writeBundle`, so the bytes are never re-put. Anchoring
+ * the deadline on `updatedAt` therefore extended the logical window while R2 went
+ * on counting from the original upload, and the page could lose its content to
+ * the lifecycle rule weeks before the Worker agreed it had expired: the shell
+ * still rendered, the iframe 404ed, and that split is both a broken page and a
+ * signal distinguishing "something was published here once" from "nothing ever
+ * was". Anchoring on the content write makes the two halves agree by
+ * construction rather than by remembering to keep them in step.
+ *
+ * A password change is therefore not "an update" for retention purposes. It
+ * changes who may read the page, not what is stored, and there is nothing whose
+ * lifetime it could honestly extend.
+ *
+ * Fails CLOSED on a manifest that cannot prove its own age. Every publish and
+ * every content update stamps this field, so a record without a finite numeric
+ * one is corruption or a hand-edited object, and neither can demonstrate the
+ * content is still inside the window we promised to delete it in. Treating
+ * "cannot tell" as "still fresh" would let exactly the objects we have lost
+ * track of outlive the policy indefinitely.
  */
-function isExpired(record, now) {
-  return !(typeof record.updatedAt === 'number' && Number.isFinite(record.updatedAt))
-    || now - record.updatedAt > RETENTION_MS
+export function isExpired(record, now) {
+  return !(typeof record.contentUpdatedAt === 'number' && Number.isFinite(record.contentUpdatedAt))
+    || now - record.contentUpdatedAt > RETENTION_MS
 }
 
 /**

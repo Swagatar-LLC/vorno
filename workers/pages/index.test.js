@@ -6,7 +6,7 @@
  * oversized multipart bodies never make a public object visible.
  */
 import { describe, expect, test } from 'bun:test'
-import { handle, MAX_CONTENT_BYTES, PAGE_ID_RE, randomToken } from './index.js'
+import { handle, isExpired, MAX_CONTENT_BYTES, PAGE_ID_RE, randomToken, RETENTION_MS } from './index.js'
 
 function makeBucket({ failDeletes = new Map() } = {}) {
   const objects = new Map()
@@ -349,11 +349,11 @@ describe('revocation and deletion recovery', () => {
 describe('retention TTL', () => {
   const DAY = 24 * 60 * 60 * 1000
 
-  /** Backdate a publication's last update, the only input the deadline reads. */
-  function setUpdatedAt(bucket, id, updatedAt) {
+  /** Backdate the CONTENT write, the only input the deadline reads. */
+  function setUpdatedAt(bucket, id, contentUpdatedAt) {
     const key = `${id}/manifest.json`
     const record = JSON.parse(new TextDecoder().decode(bucket.objects.get(key).bytes))
-    record.updatedAt = updatedAt
+    record.contentUpdatedAt = contentUpdatedAt
     const existing = bucket.objects.get(key)
     bucket.objects.set(key, { ...existing, bytes: new TextEncoder().encode(JSON.stringify(record)) })
     return record
@@ -364,11 +364,18 @@ describe('retention TTL', () => {
     const env = makeEnv({ PAGES: bucket })
     const { data } = await create(env)
 
-    // Exactly 30 days old. The comparison is strictly greater-than, so the last
-    // moment of the window still belongs to the publisher — an off-by-one here
-    // would delete a day early, which is worse than a second late because it
-    // breaks a live link before the promise fell due.
-    setUpdatedAt(bucket, data.id, Date.now() - 30 * DAY)
+    // Just INSIDE the window. The comparison is strictly greater-than, so the
+    // last moment belongs to the publisher — an off-by-one here deletes a day
+    // early, which is worse than a second late because it breaks a live link
+    // before the promise fell due.
+    //
+    // The margin is not padding. `Date.now() - 30 * DAY` lands exactly ON the
+    // boundary, and the Worker reads its own clock a few milliseconds later, so
+    // elapsed is 30 days + ε and the page expires — a test that passes or fails
+    // on scheduling luck. Measured at roughly a coin flip before this margin was
+    // added. One second either side is far inside the resolution of a 30-day
+    // rule and makes both directions deterministic.
+    setUpdatedAt(bucket, data.id, Date.now() - 30 * DAY + 1000)
     expect((await handle(req(`/p/${data.id}`), env)).status).toBe(200)
 
     setUpdatedAt(bucket, data.id, Date.now() - 30 * DAY - 1000)
@@ -460,5 +467,42 @@ describe('retention TTL', () => {
       setUpdatedAt(bucket, data.id, bad)
       expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
     }
+  })
+
+  test('a password change does not extend retention', async () => {
+    // The regression that made this field exist. The R2 lifecycle rule deletes
+    // an object 30 days after ITS OWN upload and cannot see manifest writes, so
+    // a deadline that moved on a manifest-only write drifted away from the rule
+    // enforcing it: the bytes went at day 30 while the Worker still called the
+    // page live, leaving a shell that renders over an iframe that 404s — both a
+    // broken page and a signal that something was published here once.
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env)
+    setUpdatedAt(bucket, data.id, Date.now() - 29 * DAY)
+
+    const form = new FormData()
+    form.set('passwordAction', 'set')
+    form.set('password', 'correct horse battery')
+    const changed = await handle(req(`/api/publications/${data.id}`, { method: 'PUT', headers: auth(data.adminToken), body: form }), env)
+    expect(changed.status).toBe(200)
+
+    // The content anchor did not move, so the deadline did not move.
+    const record = JSON.parse(new TextDecoder().decode(bucket.objects.get(`${data.id}/manifest.json`).bytes))
+    expect(Date.now() - record.contentUpdatedAt).toBeGreaterThan(28 * DAY)
+    // And two days later — day 31 of the ORIGINAL window — it is gone, not
+    // living on a window a password change bought it.
+    setUpdatedAt(bucket, data.id, Date.now() - 31 * DAY)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
+  })
+
+  test('the deadline is strictly greater-than, to the millisecond', async () => {
+    // `isExpired` takes `now` so the boundary can be pinned EXACTLY, with no
+    // clock between the fixture and the assertion. The route-level test above
+    // has to leave a second of margin to stay deterministic, which makes it
+    // blind to a one-millisecond off-by-one; this is the half that sees it.
+    const at = { contentUpdatedAt: 1_000_000 }
+    expect(isExpired(at, 1_000_000 + RETENTION_MS)).toBe(false)
+    expect(isExpired(at, 1_000_000 + RETENTION_MS + 1)).toBe(true)
   })
 })

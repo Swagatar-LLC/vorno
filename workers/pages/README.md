@@ -23,8 +23,12 @@ host, R2 bucket, rate-limit namespace, credentials, or deployment pipeline.
   actions, and no public `open-url` relay. The persistent shell says **“Published by a Vorno user — not by
   Vorno.”** Frame self-navigation is a documented residual; this Worker only
   claims no *scripted* network egress.
-- Published content is retained **30 days from its last update**; an update
-  restarts the window. Past the deadline every public `/p/{id}` route returns
+- Published content is retained **30 days from the last time its CONTENT was
+  written** — publication, or an update that uploads new content. A password set
+  or clear does not extend it: that changes who may read the page, not what is
+  stored, and the R2 lifecycle rule enforcing the other half of this promise
+  counts object uploads and cannot see a manifest-only write. The two halves must
+  count the same event or they drift apart. Past the deadline every public `/p/{id}` route returns
   the same bare `404` as an unknown id and as an unpublished page — expiry is
   never distinguishable from absence, because that difference would disclose
   someone else's publishing history to an unauthenticated caller. Admin routes
@@ -56,8 +60,9 @@ After that gate, the privacy owner must create and bind:
    retention policy Jeff approved on 2026-09-13 (PLAN-052 owner gate), published
    at `/privacy`:
 
-   - published content is retained **30 days from its last update** — an update
-     restarts the window;
+   - published content is retained **30 days from the last content write** — a
+     new publication or a content update restarts the window; a password change
+     does not, because the lifecycle rule below cannot see one;
    - unpublish immediately revokes public access;
    - physical deletion is attempted immediately and retried on failure, with the
      publisher warned while the content stays revoked;
@@ -68,9 +73,12 @@ After that gate, the privacy owner must create and bind:
    The lifecycle rule is bucket configuration, not `wrangler.jsonc`, so nothing
    in this repository can assert it exists. **Verify it against the real bucket
    before deploying** — this is the one provisioning item with no automated
-   check behind it. Because an update re-puts the content object, object age
-   resets on update and "30 days from last update" follows from an upload-age
-   rule without extra bookkeeping.
+   check behind it. Because a content update re-puts the content object, its R2
+   age resets at exactly the moment the Worker's `contentUpdatedAt` anchor does,
+   so an upload-age rule and the read-path deadline agree by construction. That
+   agreement is the reason the anchor is not `updatedAt`: a password-only update
+   writes the manifest without re-putting any object, so it would have advanced
+   the Worker's deadline while R2 went on counting from the original upload.
 
    The Worker enforces the same deadline on the read path (`RETENTION_MS` in
    `index.js`), and that is not redundant: R2 evaluates lifecycle
