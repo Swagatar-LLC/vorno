@@ -18,6 +18,7 @@ related-suvs:
   - SUV-0060-operate-vorno-pages-sharing.md
   - SUV-0061-brand-and-publish-pages-documentation.md
   - SUV-0063-enable-prerelease-publishing-and-pages-privacy-policy.md
+  - SUV-0069-enforce-the-thirty-day-pages-retention-ttl.md
   - SUV-0062-qualify-and-release-0-22-0-beta-1.md
 blocked-by: []
 ---
@@ -92,15 +93,34 @@ on their landed prerequisites rather than broadening their scope.
 | SUV-0066 | SUV-0064 | Session persistence is workspace-qualified, serialized per key, and reports durability per write before a callback can claim a message was delivered and saved. |
 | SUV-0060 | SUV-0062 | Worker implementation and public sharing contract are verified. |
 | SUV-0061 and SUV-0063 | SUV-0062 | Bundled/online docs and site prerelease/privacy support are live. |
-| Jeff retention decision plus SUV-0063 | Worker deployment and beta tag | Policy, retention, and prerelease support land before deployed sharing; deployed sharing is release acceptance. |
+| Jeff retention decision plus SUV-0063 | Worker deployment and beta tag | Policy, retention, and prerelease support land before deployed sharing; deployed sharing is release acceptance. **Decision cleared 2026-09-13.** |
+| SUV-0069 | Worker deployment | The published policy commits to a 30-day TTL the Worker does not yet enforce. |
 | SUVs 0057–0061 and 0063–0065 | SUV-0062 tag | Release qualification verifies the integrated, already-landed behavior only. |
 
-## Owner gate
+## Owner gate — CLEARED
 
-- **Pending Jeff:** retention policy. Proposed default: retain content until
-  unpublish, delete objects immediately on unpublish, and retain operational
-  logs for at most 30 days. Until decided, neither `pages.vorno.ai` deployment
-  nor the beta tag proceeds.
+**Decided by Jeff on 2026-09-13.** The retention policy is approved, with one
+change from the proposed default: content gets a **fixed TTL** rather than living
+until unpublish, and operational logs are kept longer than proposed.
+
+1. **Published content is retained for 30 days from its last update.** An update
+   restarts the window. This replaces the proposed
+   "retain until the publisher unpublishes it".
+2. **Unpublish immediately revokes public access** — logical revocation, every
+   public route returns 404 at once.
+3. **Physical deletion is attempted immediately and retried on failure**, and the
+   publisher is warned while the content remains revoked. Vorno does not claim
+   bytes are gone instantly; it claims access is gone instantly and deletion
+   follows.
+4. **Cloudflare operational logs are retained for no more than 90 days** — raised
+   from the proposed 30 to preserve an abuse-investigation window. Note this is
+   deliberately *longer* than content retention.
+
+Consequence: bullet 1 is **not implemented**. The Worker records `updatedAt` but
+has no TTL check, no scheduled handler, and no R2 lifecycle rule. **SUV-0069 is
+now a `pages.vorno.ai` deploy prerequisite** — deploying with the policy published
+and the TTL unenforced would state a deletion commitment the service does not
+honour.
 
 ## Acceptance
 
@@ -138,3 +158,14 @@ on their landed prerequisites rather than broadening their scope.
   receipts, deletion-vs-supersede, per-field external metadata authority) that
   is independently shippable and fixes standing data-loss bugs of its own. Cut
   as SUV-0066 and made a prerequisite of SUV-0064 rather than shipped inside it.
+- `2026-09-13` — owner gate cleared: retention approved with a fixed 30-day
+  content TTL and 90-day operational logs. SUV-0069 opened to enforce the TTL and
+  added as a deploy prerequisite.
+- `2026-09-13` — SUV-0066 froze at PR #206 head `1409619e` after the review loop
+  above it stopped converging, and merged as `dfd6dcbb`. Two lifecycle defects
+  found during the stand-down are pre-existing on `main` and were scoped out to
+  PLAN-054 (SUV-0067, SUV-0068) rather than held against the beta. A bounded
+  P0/P1 review of the frozen head caught one real P1 before merge: steer
+  durability was promised to backends that cannot confirm delivery, which on
+  Pi — the default for every non-Anthropic connection — silently dropped an
+  acknowledged steer. Fixed in `a7b39132`.
