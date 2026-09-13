@@ -24,9 +24,10 @@ program or by SUV-0066.
 
 If the build throws between
 `managed.agent = createBackendFromResolvedContext(...)`
-(`packages/server-core/src/sessions/SessionManager.ts:5032`) and
-`managed.agentReadyResolve?.()` (`:5409`) — which is exactly where `postInit` is
-awaited (`:5077`) — the half-built backend **stays on the session**.
+(the `createBackendFromResolvedContext` assignment in
+`packages/server-core/src/sessions/SessionManager.ts`) and
+`managed.agentReadyResolve?.()` — which is exactly where `postInit` is
+awaited — the half-built backend **stays on the session**.
 
 The consequences compound on every later send, because the guard that would rebuild
 it is `if (!managed.agent)`, and `managed.agent` is truthy:

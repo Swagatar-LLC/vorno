@@ -31,9 +31,9 @@ blocks `0.22.0-beta.1`. They are recorded here so the finding is not lost with
 the session that produced it.
 
 The shared shape: `beginTurnFromAdmittedSend`
-(`packages/server-core/src/sessions/SessionManager.ts:7731`) takes turn
+(`beginTurnFromAdmittedSend` in `packages/server-core/src/sessions/SessionManager.ts`) takes turn
 ownership — setting `isProcessing = true` and creating a finalisation deferred —
-but the work between it and the chat loop's `try` at `:7883` runs outside every
+but the work between it and the chat loop's own `try` runs outside every
 handler. That span contains OAuth refresh, `getOrCreateAgent` (both backend
 construction and `postInit`), and the source-server build. A throw there escapes
 `sendMessage` entirely, so no owner exists to end the turn, and separately can
@@ -69,7 +69,7 @@ re-fires the Tasks Conductor seam, and can shift a second queued message into a
 concurrent turn.
 
 Two existing callers already invoke it as compensation — `processNextQueuedMessage`'s
-`.catch` (`SessionManager.ts:8726`) and `attemptAuthRetry`'s `.catch`. That is why
+`.catch` and `attemptAuthRetry`'s `.catch`. That is why
 the replay and auth-retry paths already recover and only the RPC send path — a user
 typing a message — is exposed. **Any owner-side fix turns those two compensators
 into double-finalisers unless it deals with them in the same change.** The visible

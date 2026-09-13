@@ -19,9 +19,9 @@ so the session stops showing "processing" forever.
 
 ## The defect
 
-`beginTurnFromAdmittedSend` (`packages/server-core/src/sessions/SessionManager.ts:7731`)
+`beginTurnFromAdmittedSend` (`beginTurnFromAdmittedSend` in `packages/server-core/src/sessions/SessionManager.ts`)
 takes turn ownership — `isProcessing = true` plus a finalisation deferred — but
-everything between it and the chat loop's `try` at `:7883` sits outside every
+everything between it and the chat loop's own `try` sits outside every
 handler: OAuth refresh, `getOrCreateAgent` (backend construction *and* `postInit`
 both live inside it), and the source-server build. A throw there escapes
 `sendMessage` entirely. Nobody owns the turn, so nobody ends it.
@@ -45,9 +45,9 @@ is the hang and the quit delay.
 
 **Triggers are not exotic:** expired or missing credentials, a broken MCP source in
 `buildServersFromSources`, a `postInit` auth-injection failure, the browser-pane
-gate throw at `:5110`.
+gate throw.
 
-**Partly masked today.** `processNextQueuedMessage`'s `.catch` (`:8726`) and
+**Partly masked today.** `processNextQueuedMessage`'s `.catch` and
 `attemptAuthRetry`'s `.catch` each call `onProcessingStopped('error')` as
 compensation, so the **replay** and **auth-retry** paths recover. The **RPC send
 path — a user typing a message — does not.** That is the exposed surface.
@@ -67,7 +67,7 @@ deliberately — they are the before-picture. The fifth —
 *"a replayed queued message that fails to build finalises once, not twice"* —
 **passes today and must keep passing.** It asserts exactly one `complete` event and
 exactly one `emitSessionComplete` for the session. An owner-side fix that finalises
-the turn without also handling `processNextQueuedMessage`'s `.catch` at `:8726`
+the turn without also handling `processNextQueuedMessage`'s `.catch`
 flips that assertion from 1 to 2, and the visible consequence is **two queued
 messages entering turns concurrently** — not merely a duplicate event.
 

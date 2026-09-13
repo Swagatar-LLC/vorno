@@ -5,7 +5,7 @@ status: in-progress
 direction: DIR-04
 owner: jh
 created: 2026-09-10
-updated: 2026-09-10
+updated: 2026-09-13
 related: [ADR-0033]
 related-suvs:
   - SUV-0056-record-pages-program-decision-and-roadmap.md
@@ -116,15 +116,23 @@ until unpublish, and operational logs are kept longer than proposed.
    from the proposed 30 to preserve an abuse-investigation window. Note this is
    deliberately *longer* than content retention.
 
-Consequence: bullet 1 is **not implemented**. The Worker records `updatedAt` but
-has no TTL check, no scheduled handler, and no R2 lifecycle rule. **SUV-0069 is
-now a `pages.vorno.ai` deploy prerequisite** — deploying with the policy published
-and the TTL unenforced would state a deletion commitment the service does not
-honour.
+Consequence: bullet 1 was **not implemented** when this was decided — the Worker
+recorded `updatedAt` and had no TTL check, no scheduled handler, and no R2
+lifecycle rule. **SUV-0069 is a `pages.vorno.ai` deploy prerequisite**, because
+deploying with the policy published and the TTL unenforced would state a deletion
+commitment the service does not honour.
+
+One refinement came out of implementing it, and it narrows what bullet 1's "last
+update" means. The R2 lifecycle rule that deletes the bytes counts an object's own
+upload and cannot see a manifest-only write, so retention anchors on the last
+CONTENT write: a password set or clear does not extend it. Anchoring on any
+"publication was modified" timestamp would let the logical deadline drift past the
+physical one and leave a page whose shell loads over deleted content. SUV-0063
+must publish that wording at `/privacy`.
 
 ## Acceptance
 
-- [ ] ADR-0033, this plan, and all ten reserved SUVs are internally
+- [ ] ADR-0033, this plan, and every SUV listed in `related-suvs` are internally
       consistent; every SUV has one owning plan and one PR-sized outcome.
 - [ ] Upstream `e8963854` is an ancestor of `main` through a merge commit; the
       compatibility audit records Pages contracts, the grant-issuance divergence,
