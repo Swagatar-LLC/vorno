@@ -144,9 +144,15 @@ describe('a queued send crossing a process boundary', () => {
   function fakeTurnBoundary(sm: SessionManager) {
     let reached!: (sessionId: string) => void
     const at = new Promise<string>((r) => { reached = r })
+    const pending: string[] = []
     ;(sm as unknown as {
       getOrCreateAgent(m: { id: string }): Promise<unknown>
     }).getOrCreateAgent = async (managed) => {
+      // Recorded, not just signalled. A hydration that queues TWO messages
+      // replays twice, and the second replay arrives after the first turn has
+      // been closed — so a one-shot promise reports the first boundary and
+      // silently drops the rest.
+      pending.push(managed.id)
       reached(managed.id)
       throw new Error('fake turn boundary')
     }
@@ -184,34 +190,105 @@ describe('a queued send crossing a process boundary', () => {
           await new Promise((r) => setImmediate(r))
         }
       },
+      /**
+       * Close every turn this boundary has cut short since the last call.
+       *
+       * `endTurn` closes the FIRST one. That is enough when hydration queues a
+       * single message, and wrong the moment it queues two: the second replay
+       * starts only after the first turn ends, hits this boundary, and throws
+       * past every handler — leaving a turn nothing will ever finalise and an
+       * admission that never settles. Quiescence is then unreachable, and
+       * whether the second replay lands inside the wait's bound decides whether
+       * the test passes. That is the whole flake.
+       *
+       * Draining the recorded boundaries makes the fixture close as many turns
+       * as the replays actually start. It stands in for the production gap
+       * SUV-0067 tracks; until that lands, a test driving replays through this
+       * boundary has to finish what it interrupts.
+       */
+      closePending: async () => {
+        let closed = 0
+        while (pending.length) {
+          await (sm as unknown as {
+            onProcessingStopped(id: string, reason: string): Promise<void>
+          }).onProcessingStopped(pending.shift()!, 'error')
+          closed++
+        }
+        return closed
+      },
     }
   }
 
   /**
-   * Wait until this manager is STABLY idle, then assert it.
+   * Wait until this manager is STABLY idle, then assert it — in the same turn
+   * the stability was observed.
    *
-   * An empty admission map is not quiescence — it is momentarily true between a
-   * replay settling and the next one being admitted, and a check that samples
-   * that instant passes while work is still in flight. So idleness has to hold
-   * across consecutive turns of the loop before it counts, and the wait is
-   * bounded: work that never settles fails an assertion rather than hanging the
-   * suite.
+   * An empty admission map is not quiescence: it is momentarily true between a
+   * replay settling and the next one being admitted, and a check sampling that
+   * instant passes while work is still in flight. So idleness has to hold across
+   * consecutive turns before it counts, and the wait is bounded — work that
+   * never settles fails an assertion rather than hanging the suite.
+   *
+   * Two details are load-bearing, and the previous version had neither, which
+   * made this helper fail about five runs in eight.
+   *
+   * **A pending runtime queue is not idle.** `sendAdmissions` and `isProcessing`
+   * describe the turn that is running, not the ones still owed. A session whose
+   * `messageQueue` is non-empty will admit again the moment the current replay
+   * settles, so sampling only the first two reads idle in exactly the gap this
+   * helper exists to skip over. It is the queue that says whether more work is
+   * coming.
+   *
+   * **The assertion cannot sit after another `await`.** The old loop advanced
+   * the event loop after its final observation and asserted on the far side of
+   * it, so a replay admitted during that one turn failed an assertion about a
+   * state that had been true when last looked at. Stability is now confirmed and
+   * asserted in one synchronous continuation, with no yield in between — the
+   * whole point is to assert a state we are still standing in.
    */
-  async function quiesce(sm: SessionManager) {
+  async function quiesce(sm: SessionManager, turn?: { closePending(): Promise<number> }) {
     const inner = sm as unknown as {
       sendAdmissions: Map<symbol, unknown>
-      sessions: Map<string, { isProcessing?: boolean; turnFinalization?: unknown }>
+      sessions: Map<string, { isProcessing?: boolean; turnFinalization?: unknown; messageQueue?: unknown[] }>
     }
-    const idle = () => inner.sendAdmissions.size === 0
-      && [...inner.sessions.values()].every(m => !m.isProcessing && !m.turnFinalization)
+    const busy = () => [...inner.sessions.values()]
+      .filter(m => m.isProcessing || m.turnFinalization || (m.messageQueue?.length ?? 0) > 0)
+    const idle = () => inner.sendAdmissions.size === 0 && busy().length === 0
 
-    let stable = 0
-    for (let i = 0; i < 400 && stable < 5; i++) {
-      stable = idle() ? stable + 1 : 0
-      await new Promise((r) => setImmediate(r))
+    const assertIdle = () => {
+      expect(inner.sendAdmissions.size).toBe(0)
+      expect([...inner.sessions.values()].filter(m => m.isProcessing)).toHaveLength(0)
+      expect(busy()).toHaveLength(0)
     }
-    expect(inner.sendAdmissions.size).toBe(0)
-    expect([...inner.sessions.values()].filter(m => m.isProcessing)).toHaveLength(0)
+
+    // Bounded by WALL CLOCK, not by turns of the event loop. The previous
+    // version spun 400 `setImmediate`s, which on an unloaded machine elapse in
+    // well under a millisecond — far quicker than the persistence writes a
+    // replay is waiting on. It therefore did not wait for the work so much as
+    // observe that the work had not started, and its verdict tracked machine
+    // speed rather than the state of the manager. Pacing with a real timer lets
+    // I/O actually make progress between samples.
+    const deadline = Date.now() + 5000
+    let stable = 0
+    while (Date.now() < deadline) {
+      // A replay that starts during the wait hits the boundary and throws past
+      // every handler, so nothing else will ever finalise its turn. Closing it
+      // here is what makes quiescence REACHABLE rather than something the wait
+      // races against; without it the loop can only time out and assert on
+      // whatever it finds.
+      if (turn && await turn.closePending()) { stable = 0; continue }
+      if (idle()) {
+        // Asserted here, not after another await: nothing may run between the
+        // observation that ends the wait and the assertion about it.
+        if (++stable >= 5) return assertIdle()
+      } else {
+        stable = 0
+      }
+      await new Promise((r) => setTimeout(r, 1))
+    }
+    // Never reached stability inside the bound — assert anyway, so the failure
+    // reports the real outstanding state rather than a bare timeout.
+    assertIdle()
   }
 
   /** Nothing this manager started is still outstanding. */
@@ -449,7 +526,7 @@ describe('a queued send crossing a process boundary', () => {
     expect((revived.messageQueue as Array<{ messageId?: string; options?: { skillSlugs?: string[] } }>)
       .map((q) => q.options?.skillSlugs)).toEqual([[SKILL_SLUG]])
     await turn.endTurn()
-    await quiesce(second)
+    await quiesce(second, turn)
   }, 30000)
 
   it('queues both of two undelivered steers, exactly once each', async () => {
@@ -691,7 +768,7 @@ describe('a queued send crossing a process boundary', () => {
     // Let hydration's scheduled replay reach its boundary and unwind, rather
     // than leaving it running.
     await turn.endTurn()
-    await quiesce(sm)
+    await quiesce(sm, turn)
   }, 20000)
 
   it('keeps the durable marker when the replay is refused by a shutdown', async () => {
