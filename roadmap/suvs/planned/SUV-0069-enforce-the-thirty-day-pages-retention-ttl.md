@@ -83,7 +83,7 @@ Also in scope:
 
 ## Acceptance
 
-- [ ] A publication whose `contentUpdatedAt` is older than 30 days returns 404 on
+- [ ] A publication whose `retentionAnchorAt` is older than 30 days returns 404 on
       every public route, identically to an unpublished one and to an unknown id.
 - [ ] Any update resets the window; coverage proves a page updated on day 29
       survives past the original day-30 deadline.
