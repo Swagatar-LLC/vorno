@@ -98,7 +98,7 @@ export function MainContentPanel({
     getAutomationHistory,
     activeSessionWorkingDirectory,
   } = useAppShellContext()
-  const { pagesEnabled } = usePages(activeWorkspaceId)
+  const { pagesEnabled, pagesCapabilityResolved } = usePages(activeWorkspaceId)
 
   // Session multi-select state
   const isMultiSelectActive = useIsMultiSelectActive()
@@ -376,6 +376,12 @@ export function MainContentPanel({
   // route cannot render the unavailable feature before SUV-0058's workspace gate.
   if (isPagesNavigation(navState)) {
     if (!pagesEnabled) {
+      // The capability lookup is async and `pagesEnabled` starts false, so
+      // rendering the disabled state before the host answers would flash
+      // "Pages is off" on every workspace where it is on. Blank until settled.
+      if (!pagesCapabilityResolved) {
+        return wrapWithStoplight(<Panel variant="grow" className={className}>{null}</Panel>)
+      }
       // fork(SUV-0061): this used to render an empty Panel, so a route reached
       // with Pages off looked like a broken screen rather than a capability
       // that is off by default. Say which switch it is and where it lives.

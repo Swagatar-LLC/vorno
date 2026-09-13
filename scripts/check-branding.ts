@@ -221,19 +221,51 @@ function isAllowedForTargetedScan(relPath: string, ruleId: string): boolean {
   return false;
 }
 
-function isCommentLine(line: string, markdown = false): boolean {
+function isCommentLine(line: string): boolean {
   const t = line.trimStart();
-  // In markdown the only comment syntax is <!-- -->. Applying the code
-  // heuristics there would skip every heading (`#`) and every `*` bullet — so a
-  // "## Publish to <upstream>" heading in the bundled guide, which is exactly
-  // what the targeted scan watches for, would read as a comment and pass.
-  if (markdown) return t.startsWith('<!--');
   // Markdown bold (`**Product documentation:** …`) is NOT a comment — it is prompt/UX
   // text inside a template literal. JSDoc continuation lines are `* text`, never `** text`,
   // so excluding the `**` case is safe and closes a real blind spot: upstream v0.12.0 landed
   // a brand-visible docs pointer in the system prompt that this heuristic silently skipped.
   if (t.startsWith('**')) return false;
   return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t.startsWith('#') || t.startsWith('<!--');
+}
+
+/**
+ * Markdown has none of the code comment syntaxes above. Applying them would
+ * skip every `#` heading and every `*` bullet, which is most of a guide — a
+ * "## Publish to <upstream endpoint>" heading would read as a comment and pass.
+ *
+ * The one real markdown comment is `<!-- -->`, and it spans lines. Rather than
+ * decide per line whether to skip it, strip the commented spans and scan what
+ * is left: a line that opens or closes a comment keeps its visible half, and a
+ * legacy endpoint commented out across several lines cannot fail CI for text no
+ * reader ever sees.
+ */
+function stripMarkdownComments(lines: string[]): string[] {
+  let open = false;
+  return lines.map((line) => {
+    let visible = '';
+    let i = 0;
+    while (i < line.length) {
+      if (open) {
+        const close = line.indexOf('-->', i);
+        if (close === -1) return visible;
+        i = close + 3;
+        open = false;
+        continue;
+      }
+      const start = line.indexOf('<!--', i);
+      if (start === -1) {
+        visible += line.slice(i);
+        return visible;
+      }
+      visible += line.slice(i, start);
+      i = start + 4;
+      open = true;
+    }
+    return visible;
+  });
 }
 
 function* walk(dir: string): Generator<string> {
@@ -280,10 +312,11 @@ export function scanFile(relPath: string, content: string): Violation[] {
 
   const markdown = ext === '.md';
   const violations: Violation[] = [];
-  const lines = content.split('\n');
+  const rawLines = content.split('\n');
+  const lines = markdown ? stripMarkdownComments(rawLines) : rawLines;
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i]!;
-    if (isCommentLine(rawLine, markdown)) continue;
+    if (!markdown && isCommentLine(rawLine)) continue;
     // Trailing line comments are not user-visible; `https://` never matches
     // the ' // ' separator, so URLs in code survive the split.
     // Known limitation: the split is textual — a string literal that itself
@@ -315,10 +348,22 @@ export function scanFile(relPath: string, content: string): Violation[] {
   return violations;
 }
 
+/**
+ * Candidate files, filtered by extension BEFORE anything is read.
+ *
+ * `apps/electron` is a scan root and carries multi-megabyte binaries
+ * (Assets.car, a 11 MB .tiff, icon PNGs). Reading and utf8-decoding those on
+ * every gate run to have scanFile discard them by extension is pure waste, and
+ * one unreadable asset would fail a gate that has no opinion about it.
+ */
 function collectFiles(): string[] {
   const files = new Set<string>();
+  const addIfScannable = (file: string, extensions: Set<string>) => {
+    const ext = file.slice(file.lastIndexOf('.'));
+    if (extensions.has(ext)) files.add(file);
+  };
   for (const root of SCAN_ROOTS) {
-    for (const file of walk(join(REPO_ROOT, root))) files.add(file);
+    for (const file of walk(join(REPO_ROOT, root))) addIfScannable(file, SCAN_EXTENSIONS);
   }
   for (const name of SCAN_ROOT_FILES) files.add(join(REPO_ROOT, name));
   for (const scan of TARGETED_SCANS) {
@@ -331,8 +376,11 @@ function collectFiles(): string[] {
         console.error('  Update TARGETED_SCANS in scripts/check-branding.ts to the new location.');
         process.exit(1);
       }
-      if (statSync(abs).isDirectory()) for (const file of walk(abs)) files.add(file);
-      else files.add(abs);
+      if (statSync(abs).isDirectory()) {
+        for (const file of walk(abs)) addIfScannable(file, TARGETED_EXTENSIONS);
+      } else {
+        files.add(abs);
+      }
     }
   }
   return [...files];

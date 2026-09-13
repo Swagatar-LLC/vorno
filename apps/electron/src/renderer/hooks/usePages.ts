@@ -18,6 +18,13 @@ import type { LoadedPage } from '@craft-agent/shared/pages/types'
 export interface UsePagesResult {
   pages: LoadedPage[]
   pagesEnabled: boolean
+  /**
+   * False until the host has actually answered. `pagesEnabled` starts false and
+   * the capability lookup is async, so "not enabled" and "not asked yet" are
+   * the same value — a consumer that renders a disabled state on the former
+   * flashes it at every workspace where Pages IS enabled. Gate on this first.
+   */
+  pagesCapabilityResolved: boolean
   refresh: () => Promise<void>
 }
 
@@ -25,16 +32,20 @@ export function usePages(activeWorkspaceId: string | null | undefined): UsePages
   const pages = useAtomValue(pagesAtom)
   const setPages = useSetAtom(pagesAtom)
   const [pagesEnabled, setPagesEnabled] = useState(false)
+  const [pagesCapabilityResolved, setPagesCapabilityResolved] = useState(false)
 
   const refresh = useCallback(async () => {
     if (!activeWorkspaceId) {
       setPagesEnabled(false)
+      // No workspace is a settled answer, not a pending one.
+      setPagesCapabilityResolved(true)
       setPages([])
       return
     }
     try {
       const capabilities = await window.electronAPI.getPageShareCapabilities(activeWorkspaceId)
       setPagesEnabled(capabilities.pagesEnabled)
+      setPagesCapabilityResolved(true)
       if (!capabilities.pagesEnabled) {
         setPages([])
         return
@@ -44,6 +55,9 @@ export function usePages(activeWorkspaceId: string | null | undefined): UsePages
     } catch (err) {
       console.error('[usePages] Failed to load Pages capability:', err)
       setPagesEnabled(false)
+      // A failed lookup is resolved-and-unavailable: the host is the authority
+      // and it did not say yes, so never fall back to showing the feature.
+      setPagesCapabilityResolved(true)
       setPages([])
     }
   }, [activeWorkspaceId, setPages])
@@ -75,5 +89,5 @@ export function usePages(activeWorkspaceId: string | null | undefined): UsePages
     }
   }, [activeWorkspaceId, setPages, refresh])
 
-  return { pages, pagesEnabled, refresh }
+  return { pages, pagesEnabled, pagesCapabilityResolved, refresh }
 }

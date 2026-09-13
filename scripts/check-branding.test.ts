@@ -40,6 +40,23 @@ describe('upstream endpoints on Pages surfaces', () => {
     expect(scanFile(PAGES_GUIDE, '<!-- was https://thecraftagents.com/p/api -->')).toEqual([]);
   });
 
+  test('bundled Pages guide — multi-line HTML comments are skipped across every line', () => {
+    // The other direction from the heading case: a legacy endpoint commented
+    // out over several lines must not fail CI for text no reader ever sees.
+    const commented = [
+      '<!--',
+      'Legacy: publication used to target https://thecraftagents.com/p/api',
+      'and the docs lived at https://craft.do/docs',
+      '-->',
+    ].join('\n');
+    expect(scanFile(PAGES_GUIDE, commented)).toEqual([]);
+    // The comment must actually close — text after `-->` is visible again.
+    expect(ruleIds(PAGES_GUIDE, '<!--\nold\n-->\nPublish to https://thecraftagents.com/p/api')).toContain('upstream-domain');
+    // And visible text sharing a line with a comment is still scanned.
+    expect(ruleIds(PAGES_GUIDE, '<!-- note --> Publish to https://thecraftagents.com/p/api')).toContain('upstream-domain');
+    expect(ruleIds(PAGES_GUIDE, 'Publish to https://craft.do/p/api <!-- fix me -->')).toContain('upstream-domain');
+  });
+
   test('a targeted hit carries the targeted remedy, not the general one', () => {
     // Both passes own `upstream-domain`. A bundled-markdown hit told to "import
     // SERVICE_BASE_URL from the branding module" is unactionable advice.

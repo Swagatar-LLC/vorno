@@ -12,6 +12,7 @@ import {
 } from '@craft-agent/session-tools-core';
 import { FEATURE_FLAGS } from '../../../feature-flags.ts';
 import { isPagesEnabled } from '../../../pages/capability.ts';
+import { DOC_REFS } from '../../../docs/index.ts';
 
 export type SessionToolProxyDef = JsonSchemaToolDef;
 
@@ -22,5 +23,9 @@ export function getSessionToolProxyDefs(workspaceRootPath?: string): SessionTool
     prefix: 'mcp__session__',
     includeDeveloperFeedback: FEATURE_FLAGS.developerFeedback,
     includePages: isPagesEnabled(workspaceRootPath),
+    // fork(SUV-0061): the description resolves the Pages guide on its own rather
+    // than deferring to the system prompt's documentation table, so it stays
+    // correct if the tool defs are ever read without that prompt.
+    docsDir: DOC_REFS.docsDir,
   });
 }

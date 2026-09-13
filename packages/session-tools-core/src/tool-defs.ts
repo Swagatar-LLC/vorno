@@ -253,10 +253,10 @@ export const CreatePageSchema = z.object({
   projectId: z.string().optional().describe('Stable Project ID to bind the page to'),
   // fork(SUV-0061): no literal config-dir path here — session-tools-core cannot
   // import DOC_REFS (shared depends on this package), and the hardcoded upstream
-  // `~/.craft-agent/...` it used to name does not exist in Vorno. The resolved
-  // path is appended for the Claude path in shared/agent/session-scoped-tools.ts
-  // and listed in the system prompt's Configuration Documentation table.
-  content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read the bundled Pages guide (Configuration Documentation table) for the authoring guide and data-bridge snippet BEFORE writing page HTML.'),
+  // `~/.craft-agent/...` it used to name does not exist in Vorno. Every consumer
+  // appends the resolved path itself (see PAGES_GUIDE_REFERENCE below), so the
+  // base text names the guide without pointing anywhere it cannot reach.
+  content: z.string().optional().describe('Full self-contained HTML document for index.html (inline CSS/JS, no external requests). Read the bundled Pages guide for the authoring rules and data-bridge snippet BEFORE writing page HTML.'),
 });
 
 export const UpdatePageSchema = z.object({
@@ -578,7 +578,7 @@ The response includes absolute paths (contentPath, data.snapshotPath) — Read t
 
   create_page: `Create a new Page: a persistent, self-contained HTML document stored at pages/{slug}/ in the workspace, shown as a tile in the app's Pages section, and rendered in a sandboxed iframe.
 
-IMPORTANT — read the bundled Pages guide (listed in the Configuration Documentation table) BEFORE authoring page HTML. Key rules: provide a FULL standalone HTML document with ALL CSS/JS inline (no external requests — published copies block scripted network egress); to display data from the page's data store, listen for the 'craft-pages/v1' bridge messages (init/data) documented there; kind 'live' pages receive replacement data snapshots automatically while open.
+IMPORTANT — read the bundled Pages guide BEFORE authoring page HTML. Key rules: provide a FULL standalone HTML document with ALL CSS/JS inline (no external requests — published copies block scripted network egress); to display data from the page's data store, listen for the 'craft-pages/v1' bridge messages (init/data) documented there; kind 'live' pages receive replacement data snapshots automatically while open.
 
 Pages is a per-workspace capability that is OFF by default: if it is disabled the call fails with PAGES_DISABLED, which means the user must enable Pages in Settings → Workspace — not that the call should be retried.
 
@@ -844,16 +844,33 @@ export interface JsonSchemaToolDef {
 }
 
 /**
+ * Render the "where the Pages guide actually is" line (SUV-0061).
+ *
+ * This package cannot import DOC_REFS — shared depends on it — so every
+ * consumer resolves the docs directory itself and appends this. The standalone
+ * MCP server in particular ships no system prompt, so a description that
+ * deferred to the prompt's documentation table would point a Codex or external
+ * MCP agent at something it can never read.
+ */
+export function pagesGuideReference(docsDir: string): string {
+  return `\n\n**Reference:** ${docsDir.replace(/\/+$/, '')}/pages.md`;
+}
+
+/**
  * Convert session tool definitions to JSON Schema format.
  *
  * @param opts.prefix - Optional prefix for tool names (e.g., 'mcp__session__' for Pi)
  * @param opts.includeDeveloperFeedback - Include experimental feedback tool in output
+ * @param opts.docsDir - Resolved bundled-docs directory; appends the Pages guide
+ *                       path to create_page so the reference resolves for
+ *                       consumers with no system prompt
  * @returns Array of tool definitions with JSON Schema inputSchema
  */
 export function getToolDefsAsJsonSchema(opts?: {
   prefix?: string;
   includeDeveloperFeedback?: boolean;
   includePages?: boolean;
+  docsDir?: string;
 }): JsonSchemaToolDef[] {
   const prefix = opts?.prefix || '';
   const defs = getSessionToolDefs({
@@ -868,9 +885,12 @@ export function getToolDefsAsJsonSchema(opts?: {
     // Strip metadata not needed by MCP/Pi consumers
     delete jsonSchema.$schema;
     delete jsonSchema.additionalProperties;
+    const description = def.name === 'create_page' && opts?.docsDir
+      ? def.description + pagesGuideReference(opts.docsDir)
+      : def.description;
     return {
       name: prefix + def.name,
-      description: def.description,
+      description,
       inputSchema: jsonSchema,
     };
   });

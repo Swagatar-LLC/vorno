@@ -256,9 +256,21 @@ function createCodexContext(config: SessionConfig): SessionToolContext {
 // Tool Definitions (from canonical registry)
 // ============================================================
 
-function createSessionTools(includeDeveloperFeedback: boolean): Tool[] {
+/**
+ * fork(SUV-0061): this server ships no system prompt, so a tool description
+ * that deferred to the prompt's documentation table would point the agent at
+ * something it can never read. Resolve the docs dir the same way the feedback
+ * writer below does and hand it to the registry, which appends the real path.
+ */
+function resolveDocsDir(workspaceRootPath: string): string {
+  // workspaceRootPath = {configDir}/workspaces/{id}
+  return join(process.env.CRAFT_CONFIG_DIR || join(workspaceRootPath, '..', '..'), 'docs');
+}
+
+function createSessionTools(includeDeveloperFeedback: boolean, workspaceRootPath: string): Tool[] {
   return getToolDefsAsJsonSchema({
     includeDeveloperFeedback,
+    docsDir: resolveDocsDir(workspaceRootPath),
   }).map(def => ({
     name: def.name,
     description: def.description,
@@ -453,7 +465,7 @@ async function main() {
 
   // Handle tool listing — session tools
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: createSessionTools(includeDeveloperFeedback),
+    tools: createSessionTools(includeDeveloperFeedback, workspaceRootPath),
   }));
 
   // Handle tool calls — route via canonical registry or call_llm

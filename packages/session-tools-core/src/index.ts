@@ -259,6 +259,7 @@ export {
   getSessionSafeBlockedToolNames,
   // JSON Schema converter
   getToolDefsAsJsonSchema,
+  pagesGuideReference,
 } from './tool-defs.ts';
 
 export type {
