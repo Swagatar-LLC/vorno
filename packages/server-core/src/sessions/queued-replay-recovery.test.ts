@@ -171,6 +171,14 @@ describe('a queued send crossing a process boundary', () => {
        */
       endTurn: async () => {
         const sessionId = await at
+        // CONSUME the boundary being closed. Leaving it recorded would let
+        // `closePending` finalise this same turn a second time, and
+        // `onProcessingStopped` is not idempotent — a second pass can shift
+        // another queued message into a concurrent turn, which is the exact
+        // hazard SUV-0067 documents. Exactly one occurrence, so a later replay
+        // on the same session still has its own entry to drain.
+        const recorded = pending.indexOf(sessionId)
+        if (recorded !== -1) pending.splice(recorded, 1)
         await (sm as unknown as {
           onProcessingStopped(id: string, reason: string): Promise<void>
         }).onProcessingStopped(sessionId, 'error')
