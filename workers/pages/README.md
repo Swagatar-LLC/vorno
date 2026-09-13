@@ -23,6 +23,13 @@ host, R2 bucket, rate-limit namespace, credentials, or deployment pipeline.
   actions, and no public `open-url` relay. The persistent shell says **“Published by a Vorno user — not by
   Vorno.”** Frame self-navigation is a documented residual; this Worker only
   claims no *scripted* network egress.
+- Published content is retained **30 days from its last update**; an update
+  restarts the window. Past the deadline every public `/p/{id}` route returns
+  the same bare `404` as an unknown id and as an unpublished page — expiry is
+  never distinguishable from absence, because that difference would disclose
+  someone else's publishing history to an unauthenticated caller. Admin routes
+  keep working past the deadline so an owner is never stranded from cleanup by
+  the deadline that hid the page.
 - Snapshots are optional and only exist when explicitly uploaded. The desktop
   scans opt-in snapshot data for secret-looking key names before upload; the
   Worker validates all byte limits again but does not create a second heuristic
@@ -44,10 +51,34 @@ After that gate, the privacy owner must create and bind:
 4. The Worker secret `PASSWORD_TICKET_SECRET`, a random 256-bit value. It signs
    short-lived, path-scoped, HttpOnly, Secure, SameSite=Strict password tickets
    and is never a repository variable or client credential.
-5. The proposed retention lifecycle only after Jeff decides it: content until
-   unpublish, immediate physical deletion attempt on unpublish, operational
-   tombstone/audit data at most 30 days. The Worker does not invent a retention
-   rule in code.
+5. **An R2 lifecycle rule on `vorno-pages` deleting objects 30 days after
+   upload**, and **operational log retention set to 90 days**. Both follow the
+   retention policy Jeff approved on 2026-09-13 (PLAN-052 owner gate), published
+   at `/privacy`:
+
+   - published content is retained **30 days from its last update** — an update
+     restarts the window;
+   - unpublish immediately revokes public access;
+   - physical deletion is attempted immediately and retried on failure, with the
+     publisher warned while the content stays revoked;
+   - Cloudflare operational logs are kept **no more than 90 days** —
+     deliberately longer than content, to preserve an abuse-investigation
+     window.
+
+   The lifecycle rule is bucket configuration, not `wrangler.jsonc`, so nothing
+   in this repository can assert it exists. **Verify it against the real bucket
+   before deploying** — this is the one provisioning item with no automated
+   check behind it. Because an update re-puts the content object, object age
+   resets on update and "30 days from last update" follows from an upload-age
+   rule without extra bookkeeping.
+
+   The Worker enforces the same deadline on the read path (`RETENTION_MS` in
+   `index.js`), and that is not redundant: R2 evaluates lifecycle
+   asynchronously, so bytes can outlive the deadline by hours, and serving them
+   in that window would be the service contradicting its own policy. The
+   lifecycle rule makes the promise true on disk; the read path makes it true
+   for a reader at the moment it falls due. Keep the two numbers, the bundled
+   Pages guide, and `/privacy` in agreement.
 6. A narrowly scoped deployment credential (if CI deployment is later added):
    Workers edit for this Worker, R2 access for `vorno-pages`, and nothing for
    `vorno-share`/`vorno-shares` or unrelated zones.

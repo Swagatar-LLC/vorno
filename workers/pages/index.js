@@ -16,6 +16,22 @@ const PASSWORD_MIN_CHARS = 8
 const PASSWORD_MAX_CHARS = 1024
 const MAX_PASSWORD_REQUEST_BYTES = 16 * 1024
 const PASSWORD_TICKET_TTL_SECONDS = 60 * 60 * 12
+/**
+ * Published content is retained for 30 days from its LAST UPDATE, per the
+ * retention policy Jeff approved on 2026-09-13 and published at /privacy.
+ *
+ * Two mechanisms enforce this and neither is redundant. This constant drives the
+ * read path, which is exact and immediate — it is what makes the promise true
+ * from a reader's point of view at the moment it falls due. An R2 bucket
+ * lifecycle rule deletes the bytes (see README "Required Cloudflare
+ * provisioning"), which is what makes it true on disk, but R2 evaluates
+ * lifecycle asynchronously, so bytes can outlive the deadline by hours. Serving
+ * them in that window would be the service disagreeing with its own policy.
+ *
+ * Keep this number, the lifecycle rule, the bundled Pages guide and /privacy in
+ * agreement. A reader can check all four.
+ */
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 // Measured locally with bench-password.js; deploy verification must remeasure on Workers.
 const DEFAULT_PBKDF2_ITERATIONS = 100_000
 
@@ -454,9 +470,43 @@ function passwordHtml(record) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Password required — Vorno Pages</title><style>body{max-width:32rem;margin:4rem auto;padding:0 1rem;font-family:system-ui,sans-serif}input,button{font:inherit;padding:.6rem;width:100%;box-sizing:border-box;margin:.4rem 0}button{width:auto}</style></head><body><h1>Password required</h1><p>This page was published by a Vorno user, not by Vorno.</p><form method="post" action="/p/${record.id}/password"><label>Password<input required type="password" name="password" autocomplete="current-password"></label><button type="submit">View page</button></form></body></html>`
 }
 
+/**
+ * Has this publication passed its retention deadline?
+ *
+ * Fails CLOSED on a manifest that cannot prove its own age. A record without a
+ * numeric `updatedAt` is unreachable through this Worker — every write stamps
+ * one — so the only ways to get here are corruption or a hand-edited object,
+ * and neither can demonstrate the content is still inside the window we promised
+ * to delete it in. Treating "cannot tell" as "still fresh" would let exactly the
+ * objects we have lost track of outlive the policy indefinitely.
+ */
+function isExpired(record, now) {
+  return !(typeof record.updatedAt === 'number' && Number.isFinite(record.updatedAt))
+    || now - record.updatedAt > RETENTION_MS
+}
+
+/**
+ * The one loader every public route goes through — shell, content, data,
+ * snapshot and the password POST. The retention check lives HERE rather than in
+ * each route so a route added later inherits it instead of having to remember
+ * it.
+ *
+ * An expired publication is indistinguishable from one that never existed and
+ * from one that was unpublished: the same `null`, and every caller turns that
+ * into the same bare 404. A distinct "expired" status would let an
+ * unauthenticated caller separate "no such page" from "a page existed here and
+ * lapsed", which is a disclosure about someone else's publishing history that
+ * the link-holder model never promised to keep, and that nothing needs.
+ *
+ * Admin routes deliberately do NOT pass through here. They authenticate against
+ * the record directly, so unpublish and cleanup keep working past the deadline —
+ * the policy withdraws public access, it does not strand an owner who still
+ * wants the objects gone.
+ */
 async function publicRecord(env, id) {
   const loaded = await loadRecord(env, id)
-  return loaded?.record.status === 'published' ? loaded.record : null
+  if (loaded?.record.status !== 'published') return null
+  return isExpired(loaded.record, Date.now()) ? null : loaded.record
 }
 
 async function serveShell(request, env, id) {

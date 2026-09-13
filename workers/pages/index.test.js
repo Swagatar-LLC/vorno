@@ -336,3 +336,129 @@ describe('revocation and deletion recovery', () => {
     expect(bucket.objects.has(activeRecord.contentKey)).toBe(false)
   })
 })
+
+/**
+ * SUV-0069 — the 30-day retention TTL.
+ *
+ * The Worker publishes a deletion promise at /privacy, so these tests are about
+ * that promise being TRUE rather than about a cache expiring. An R2 lifecycle
+ * rule deletes the bytes, but R2 evaluates lifecycle asynchronously and can run
+ * hours late; the read path is what makes the deadline exact, so it is the half
+ * that can be tested here at all.
+ */
+describe('retention TTL', () => {
+  const DAY = 24 * 60 * 60 * 1000
+
+  /** Backdate a publication's last update, the only input the deadline reads. */
+  function setUpdatedAt(bucket, id, updatedAt) {
+    const key = `${id}/manifest.json`
+    const record = JSON.parse(new TextDecoder().decode(bucket.objects.get(key).bytes))
+    record.updatedAt = updatedAt
+    const existing = bucket.objects.get(key)
+    bucket.objects.set(key, { ...existing, bytes: new TextEncoder().encode(JSON.stringify(record)) })
+    return record
+  }
+
+  test('serves at the deadline and refuses past it', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env)
+
+    // Exactly 30 days old. The comparison is strictly greater-than, so the last
+    // moment of the window still belongs to the publisher — an off-by-one here
+    // would delete a day early, which is worse than a second late because it
+    // breaks a live link before the promise fell due.
+    setUpdatedAt(bucket, data.id, Date.now() - 30 * DAY)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(200)
+
+    setUpdatedAt(bucket, data.id, Date.now() - 30 * DAY - 1000)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
+  })
+
+  test('an expired page is indistinguishable from one that never existed', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { snapshot: { version: 1 } })
+    setUpdatedAt(bucket, data.id, Date.now() - 31 * DAY)
+
+    // Every public route, and byte-for-byte the same answer as a random id.
+    // Anything that separated "lapsed" from "never existed" would disclose
+    // someone else's publishing history to an unauthenticated caller.
+    const unknown = randomToken(8)
+    for (const suffix of ['', '/content', '/snapshot']) {
+      const expired = await handle(req(`/p/${data.id}${suffix}`), env)
+      const missing = await handle(req(`/p/${unknown}${suffix}`), env)
+      expect(expired.status).toBe(404)
+      expect(missing.status).toBe(404)
+      expect(await expired.text()).toBe(await missing.text())
+    }
+  })
+
+  test('the password gate does not leak an expired publication either', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { password: 'correct horse battery' })
+    // Fresh, it answers the password challenge rather than 404 — so the 404
+    // below is the retention check and not simply a missing page.
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(401)
+
+    setUpdatedAt(bucket, data.id, Date.now() - 31 * DAY)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
+    const form = new FormData()
+    form.set('password', 'correct horse battery')
+    const submit = await handle(req(`/p/${data.id}/password`, { method: 'POST', body: form }), env)
+    expect(submit.status).toBe(404)
+  })
+
+  test('an update restarts the window', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env)
+
+    // Day 29: nearly expired, still live, and the owner updates it.
+    setUpdatedAt(bucket, data.id, Date.now() - 29 * DAY)
+    const update = await handle(req(`/api/publications/${data.id}`, {
+      method: 'PUT', headers: auth(data.adminToken), body: bundle({ content: '<p>revised</p>' }),
+    }), env)
+    expect(update.status).toBe(200)
+
+    // The deadline now runs from the update, so what would have been day 31 of
+    // the original window is day 2 of the new one.
+    setUpdatedAt(bucket, data.id, Date.now() - 2 * DAY)
+    const served = await handle(req(`/p/${data.id}/content`), env)
+    expect(served.status).toBe(200)
+    expect(await served.text()).toContain('revised')
+  })
+
+  test('an owner can still unpublish and clean up after the deadline', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { snapshot: { version: 1 } })
+    const record = setUpdatedAt(bucket, data.id, Date.now() - 40 * DAY)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
+
+    // Retention withdraws PUBLIC access. Admin routes authenticate against the
+    // record directly, so an owner who wants the objects gone is never stranded
+    // by the very deadline that hid them.
+    const unpublish = await handle(req(`/api/publications/${data.id}`, { method: 'DELETE', headers: auth(data.adminToken) }), env)
+    expect(unpublish.status).toBe(200)
+    expect((await unpublish.json()).cleanupPending).toBe(false)
+    expect(bucket.objects.has(record.contentKey)).toBe(false)
+  })
+
+  test('a manifest that cannot prove its age is treated as expired', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(200)
+
+    // Unreachable through this Worker — every write stamps `updatedAt` — so this
+    // is corruption or a hand-edited object. Failing closed means the objects we
+    // have lost track of are exactly the ones that stop being served, rather
+    // than the ones that outlive the policy forever.
+    for (const bad of [undefined, 'yesterday', Number.NaN]) {
+      setUpdatedAt(bucket, data.id, bad)
+      expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
+    }
+  })
+})

@@ -1,6 +1,12 @@
 // SUV-0060: isolated from the inert-JSON vorno-share Worker by worker name,
 // host, R2 bucket, rate-limit namespaces, and password-ticket secret.
-// Do not deploy until SUV-0063 lands and Jeff has approved privacy + retention.
+//
+// Do not deploy until SUV-0063 lands. Retention was approved 2026-09-13 and the
+// read-path deadline ships in index.js (SUV-0069), but the other half of that
+// promise — an R2 lifecycle rule deleting objects 30 days after upload, and
+// 90-day operational log retention — is BUCKET configuration and cannot be
+// declared here. See README "Required Cloudflare provisioning"; it is the one
+// item with no automated check behind it.
 {
   "name": "vorno-pages",
   "main": "index.js",
