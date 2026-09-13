@@ -76,9 +76,15 @@ branding, prompt, and release-note checks that catch imported Craft defaults.
   is the one an agent can repeat to a user without misleading them.
 
   **Retention is stated as approved policy, not as deployed behavior.** Jeff's
-  decision — content retained at most 30 days from last update, unpublish and
-  revocation immediate, physical deletion immediate/best-effort with retry,
-  operational logs at most 90 days — is now disclosed in the guide. The guide
+  decision — content retained at most 30 days from its last **successful
+  content or password update**, unpublish and revocation immediate, physical
+  deletion immediate/best-effort with retry, operational logs at most 90 days —
+  is now disclosed in the guide. Jeff clarified on `2026-09-13` that setting,
+  changing, or clearing the viewer password is a real update and restarts the
+  full window; the guide says so explicitly rather than leaving a user to infer
+  that only republished content counts. The Worker will re-put retained content
+  and snapshot on a password change so physical object age matches the stated
+  window, which is SUV-0069's to implement. The guide
   does **not** say the service enforces it, because no deployment has happened
   and TTL enforcement is SUV-0069's. A reader is pointed back at the
   availability check as the authority on what is reachable today.

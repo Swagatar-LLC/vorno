@@ -304,7 +304,7 @@ A separate public service, isolated from Vorno's session sharing — its own hos
 ### Revocation, deletion, and retention
 
 - **Unpublish is immediate.** Public access is revoked first, so every public route 404s before physical deletion is even attempted. Deletion of the stored objects follows immediately on a best-effort basis and retries on the next authenticated delete if it fails; a pending cleanup is surfaced rather than hidden.
-- **Published content is retained for at most 30 days from its last update**, then removed, whether or not anyone unpublishes it. A published page is not permanent hosting — say so when a user asks for a link they plan to keep.
+- **Published content is retained for at most 30 days from its last successful update**, then removed, whether or not anyone unpublishes it. A published page is not permanent hosting — say so when a user asks for a link they plan to keep. "Update" means **content or password**: republishing the page and setting, changing, or clearing the viewer password each restart the full 30 days.
 - **Operational logs are retained for at most 90 days.** They record the fact and outcome of publication operations, not page content.
 - `delete_page` unpublishes first and **blocks deletion if revocation cannot be confirmed**, so a local delete can never leave an unmanageable public copy. Only the Electron desktop host offers a separately confirmed "forget local state" recovery when the management key is lost; headless and web paths deliberately have no such escape hatch.
 
@@ -368,5 +368,5 @@ A page holding a `script` or `session` grant is refused publication outright (`P
 
 - **"Make me a dashboard of X that updates every N minutes"** → `create_page` (kind `live`, content + `refresh` spec) → write the refresh script into the workspace → seed initial data with `write_page_data` so it isn't empty before the first tick.
 - **"Track this number over time"** → page with a series chart; append points with `write_page_data` whenever you learn a new value (idempotent by timestamp).
-- **"Turn this report into something I can share"** → `create_page` (kind `static`, fully inline HTML) → point the user at the Share button, and say plainly that publishing may not be available in their build and that a published copy is retained for at most 30 days from its last update.
+- **"Turn this report into something I can share"** → `create_page` (kind `static`, fully inline HTML) → point the user at the Share button, and say plainly that publishing may not be available in their build and that a published copy is retained for at most 30 days from its last successful content or password update.
 - **Iterating on a page** → `update_page` with new `content`; warn the user that existing grants go stale on content changes.
