@@ -1,7 +1,7 @@
 ---
 id: SUV-0069
 title: Enforce the thirty-day Pages retention TTL
-status: planned
+status: in-progress
 plan: PLAN-052
 direction: DIR-04
 owner: jh
@@ -103,6 +103,8 @@ Also in scope:
 - `2026-09-13` — created in `planned/` when Jeff's retention decision changed
   bullet 1 from indefinite-until-unpublish to a fixed 30-day TTL, which the Worker
   does not implement. Raised as a `pages.vorno.ai` deploy prerequisite.
+- `2026-09-13` — moved from `planned` to `in-progress`: implementation opened as
+  PR #208.
 - `2026-09-13` — the bounded review found the deadline and the R2 lifecycle rule
   counting different events, because a password-only update moved `updatedAt`
   without re-putting an object. The implementation first narrowed "update" to
