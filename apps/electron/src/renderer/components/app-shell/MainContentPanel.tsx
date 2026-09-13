@@ -375,13 +375,15 @@ export function MainContentPanel({
   // Pages navigator - host capability is authoritative; a manually entered
   // route cannot render the unavailable feature before SUV-0058's workspace gate.
   if (isPagesNavigation(navState)) {
+    // Resolution is checked BEFORE the flag, not inside it. Both `pagesEnabled`
+    // and the pages atom hold the previous workspace's answer while a switch is
+    // in flight, so testing the flag first renders whichever stale state it
+    // carries: the disabled screen on a workspace where Pages is on, or the
+    // previous workspace's pages on one where it is off.
+    if (!pagesCapabilityResolved) {
+      return wrapWithStoplight(<Panel variant="grow" className={className}>{null}</Panel>)
+    }
     if (!pagesEnabled) {
-      // The capability lookup is async and `pagesEnabled` starts false, so
-      // rendering the disabled state before the host answers would flash
-      // "Pages is off" on every workspace where it is on. Blank until settled.
-      if (!pagesCapabilityResolved) {
-        return wrapWithStoplight(<Panel variant="grow" className={className}>{null}</Panel>)
-      }
       // fork(SUV-0061): this used to render an empty Panel, so a route reached
       // with Pages off looked like a broken screen rather than a capability
       // that is off by default. Say which switch it is and where it lives.
