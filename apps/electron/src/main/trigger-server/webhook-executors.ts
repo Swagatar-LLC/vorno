@@ -30,11 +30,11 @@ import {
   createPromptHistoryEntry,
   checkStatusAction,
   sessionActionOutcome,
+  resolveWorkspaceSessionTarget,
   type AutomationCause,
   type ContextActionRejection,
   type PendingPrompt,
   type PendingSessionAction,
-  type SessionTargetSelector,
   type ResolvedWorkspace,
   type ExecResult,
   type WebhookDispatcherExecutors,
@@ -159,27 +159,16 @@ export function createDesktopWebhookExecutors(sm: WebhookSessionManager): Webhoo
     }
   }
 
-  /**
-   * Resolve a target selector to a concrete session id, or null.
-   * `id` → verify the session exists. `label` → most recently active session in
-   * the workspace carrying that label (exact entry match; valued `id::value`
-   * entries included). `getSessions` is sorted most-recent-first.
-   */
-  async function resolveTargetSession(ws: ResolvedWorkspace, target: SessionTargetSelector): Promise<string | null> {
-    if (target.id) {
-      return (await sm.getSession(target.id)) ? target.id : null
-    }
-    if (target.label) {
-      for (const meta of sm.getSessions(ws.workspaceId)) {
-        if ((meta.labels ?? []).includes(target.label)) return meta.id
-      }
-    }
-    return null
-  }
-
   async function executeSessionAction(ws: ResolvedWorkspace, action: PendingSessionAction): Promise<ExecResult> {
     const rootPath = ws.rootPath
-    const sessionId = await resolveTargetSession(ws, action.target)
+    // fork(SUV-0064): was `sm.getSession(target.id)` — a by-id lookup across the
+    // process's whole session map, with no workspace comparison, followed by
+    // acting on the result with THIS workspace's root path. An explicit `{ id }`
+    // naming a session in another workspace resolved, and the action ran. The
+    // shared resolver matches inside this workspace's own session list instead,
+    // so containment is a property of the lookup rather than a check that a
+    // later edit can drop. Page callbacks use the same primitive.
+    const sessionId = resolveWorkspaceSessionTarget(sm, ws.workspaceId, action.target)
     if (!sessionId) {
       await safeAppendHistory(rootPath, sessionActionHistoryEntry(action, sessionActionOutcome.targetNotFound, false, {
         target: action.target,

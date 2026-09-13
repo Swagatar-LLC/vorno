@@ -83,6 +83,24 @@ type GrantHarness = ((channel: string, ...args: unknown[]) => Promise<unknown>) 
   resolveActionConfirmation: () => void
   invokeWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
   invokeTransportWithContext: (ctx: RequestContext, channel: string, ...args: unknown[]) => Promise<unknown>
+  /**
+   * The live sessions this host knows about, as `SessionManager.getSessions`
+   * would report them — keyed by workspace, because a session belonging to the
+   * wrong workspace is the containment case under test and a flat list would
+   * make it unrepresentable.
+   */
+  setSessions: (sessions: Record<string, HarnessSession[]>) => void
+  /** Every message the host actually delivered, in order. */
+  deliveries: Array<{ sessionId: string; message: string }>
+}
+
+/** One session, in the shape the callback gate reads. */
+interface HarnessSession {
+  id: string
+  name?: string
+  isProcessing?: boolean
+  isArchived?: boolean
+  sessionStatus?: string
 }
 
 function createHarness(
@@ -151,11 +169,39 @@ function createHarness(
       signal.addEventListener('abort', () => resolve(false), { once: true })
     })
   }
+  // Live sessions per workspace, exactly as SessionManager would report them.
+  // Empty by default: a workspace with no sessions is the state a "no ambient
+  // current session" test needs, and every other test says what it seeds.
+  let sessionsByWorkspace = new Map<string, HarnessSession[]>()
+  const deliveries: Array<{ sessionId: string; message: string }> = []
   registerPagesHandlers(server, {
     platform: { logger: { info() {}, warn() {}, error() {}, debug() {} } },
     sessionManager: {
       notifyConfigFileChange() {},
       enqueuePageThumbnail() {},
+      // Mirrors the real accessor's workspace filter. Returning everything on
+      // an absent id would hide the containment bug this fake exists to expose.
+      getSessions(workspaceId?: string) {
+        if (!workspaceId) return [...sessionsByWorkspace.values()].flat()
+        return sessionsByWorkspace.get(workspaceId) ?? []
+      },
+      // The atomic primitive, modelled the way the real one behaves: it
+      // re-reads live session state and the abort signal at the commit point
+      // rather than trusting whatever the executor saw before it awaited.
+      async tryDeliverPageCallback(
+        sessionId: string,
+        message: string,
+        options: { workspaceId: string; signal?: AbortSignal; onCommitted?: () => void },
+      ) {
+        const live = (sessionsByWorkspace.get(options.workspaceId) ?? []).find(s => s.id === sessionId)
+        if (!live) return { ok: false as const, code: 'session-not-found' as const }
+        if (options.signal?.aborted) return { ok: false as const, code: 'cancelled' as const }
+        if (live.isArchived) return { ok: false as const, code: 'session-closed' as const }
+        if (live.isProcessing) return { ok: false as const, code: 'session-busy' as const }
+        deliveries.push({ sessionId, message })
+        options.onCommitted?.()
+        return { ok: true as const, durable: true }
+      },
     },
     // A host answers about its own window's workspace. It receives the
     // resolved id and is free to hold that workspace under any name it knows
@@ -266,6 +312,10 @@ function createHarness(
     resolveActionConfirmation: () => actionConfirmationResolvers.shift()?.(true),
     invokeWithContext,
     invokeTransportWithContext,
+    setSessions: (sessions: Record<string, HarnessSession[]>) => {
+      sessionsByWorkspace = new Map(Object.entries(sessions))
+    },
+    deliveries,
   })
 }
 
@@ -1438,5 +1488,427 @@ describe('Pages RPC workspace capability gate', () => {
     await expect(invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, 'unknown-request')).resolves.toBe(false)
     await expect(invoke(RPC_CHANNELS.pages.REVOKE_GRANT, WORKSPACE_A, page.slug, 'unknown-grant')).resolves.toBe(false)
     await expect(invoke(RPC_CHANNELS.pages.DELETE, WORKSPACE_A, page.slug)).resolves.toEqual({ publicCopyMayRemain: false })
+  })
+})
+
+/**
+ * SUV-0064 — pinned session callbacks at the RPC boundary.
+ *
+ * The executor's own unit tests prove the gate; these prove the gate is
+ * reachable through the channels a real caller uses, that consent describes the
+ * session the host resolved rather than the id a page asserted, and that every
+ * documented bypass shape still fails.
+ */
+describe('Page session callbacks', () => {
+  const TARGET = { id: 'sess_target', name: 'Quarterly review' }
+  const PINNED = 'Refresh the quarterly numbers.'
+
+  /** A page with an approved, digest-bound session grant, ready to be invoked. */
+  async function seedSessionGrant(
+    invoke: GrantHarness,
+    descriptor: Record<string, unknown> = { kind: 'session', sessionId: TARGET.id, message: PINNED },
+  ) {
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Callback page', content: '<p>callback</p>',
+    }) as { slug: string }
+    const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+      lease: { leaseId: string; nonce: string }
+    }
+    const grant = await invoke(
+      RPC_CHANNELS.pages.REQUEST_GRANT,
+      WORKSPACE_A,
+      page.slug,
+      { action: descriptor },
+      lease.lease.leaseId,
+    ) as { id: string } | null
+    return { page, lease: lease.lease, grant }
+  }
+
+  const requestFor = (
+    page: { slug: string },
+    lease: { leaseId: string; nonce: string },
+    grant: { id: string },
+    requestId = `req_${Math.random().toString(36).slice(2)}`,
+  ) => ({
+    requestId,
+    pageSlug: page.slug,
+    leaseId: lease.leaseId,
+    nonce: lease.nonce,
+    grantId: grant.id,
+    invocation: { kind: 'session' as const },
+  })
+
+  /** Seed, approve, mint, and execute — the whole happy path in one call. */
+  async function runCallback(invoke: GrantHarness, descriptor?: Record<string, unknown>) {
+    const { page, lease, grant } = await seedSessionGrant(invoke, descriptor)
+    if (!grant) throw new Error('grant was not approved')
+    const request = requestFor(page, lease, grant)
+    const ticket = await invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, request)
+    const result = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, {
+      ...request, activationTicket: ticket.ticketId,
+    }) as { ok: boolean; error?: string }
+    return { page, lease, grant, request, result }
+  }
+
+  test('delivers the pinned message to the pinned session, with host attribution', async () => {
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+
+    const { result } = await runCallback(invoke)
+
+    expect(result.ok).toBe(true)
+    expect(invoke.deliveries).toHaveLength(1)
+    expect(invoke.deliveries[0]!.sessionId).toBe(TARGET.id)
+    // The approved body arrives verbatim...
+    expect(invoke.deliveries[0]!.message).toContain(PINNED)
+    // ...behind an unforgeable host-authored provenance line, so neither the
+    // user reading the transcript nor the model reading the context mistakes a
+    // page's text for something the user typed.
+    expect(invoke.deliveries[0]!.message).toContain('[Page callback')
+    expect(invoke.deliveries[0]!.message.indexOf('[Page callback')).toBe(0)
+  })
+
+  test('shows the host-resolved session name in consent, not the id the page sent', async () => {
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+
+    await seedSessionGrant(invoke)
+
+    // A human cannot consent to an opaque id. The host looked it up in the
+    // workspace that owns the page and passed back the name it actually found.
+    const spec = invoke.confirmations.at(-1)!
+    expect(spec.targetSession).toEqual({ id: TARGET.id, name: TARGET.name })
+    expect(spec.action).toMatchObject({ kind: 'session', sessionId: TARGET.id, message: PINNED })
+  })
+
+  test('refuses a target in another workspace before any chrome opens', async () => {
+    const invoke = createHarness('approve')
+    // The session is real — it just belongs to somebody else.
+    invoke.setSessions({ [WORKSPACE_B]: [{ id: 'sess_other', name: 'Other tenant' }] })
+
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Cross page', content: '<p>x</p>',
+    }) as { slug: string }
+    const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+      lease: { leaseId: string; nonce: string }
+    }
+
+    await expect(invoke(
+      RPC_CHANNELS.pages.REQUEST_GRANT,
+      WORKSPACE_A,
+      page.slug,
+      { action: { kind: 'session', sessionId: 'sess_other', message: PINNED } },
+      lease.lease.leaseId,
+    )).rejects.toThrow('PAGE_GRANT_SESSION_TARGET_UNAVAILABLE')
+
+    // No dialog was shown, which is the second half of the property: the sheet
+    // must not become an oracle for which session ids exist elsewhere.
+    expect(invoke.confirmations).toHaveLength(0)
+  })
+
+  test('refuses a target that does not exist anywhere — there is no default session', async () => {
+    const invoke = createHarness('approve')
+    // Deliberately NOT empty: a workspace with live sessions is the case where
+    // an ambient "current session" fallback would silently pick one.
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: 'sess_unrelated', name: 'Something else' }] })
+
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'No target', content: '<p>x</p>',
+    }) as { slug: string }
+    const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+      lease: { leaseId: string; nonce: string }
+    }
+
+    await expect(invoke(
+      RPC_CHANNELS.pages.REQUEST_GRANT,
+      WORKSPACE_A,
+      page.slug,
+      { action: { kind: 'session', sessionId: 'sess_missing', message: PINNED } },
+      lease.lease.leaseId,
+    )).rejects.toThrow('PAGE_GRANT_SESSION_TARGET_UNAVAILABLE')
+    expect(invoke.confirmations).toHaveLength(0)
+    expect(invoke.deliveries).toHaveLength(0)
+  })
+
+  test('refuses to GRANT against a session that is already finished', async () => {
+    for (const finished of [{ sessionStatus: 'done' }, { isArchived: true }] as const) {
+      const invoke = createHarness('approve')
+      invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name, ...finished }] })
+      const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+        name: 'Finished target', content: '<p>x</p>',
+      }) as { slug: string }
+      const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+        lease: { leaseId: string; nonce: string }
+      }
+
+      // Existence and containment are not enough to make a target grantable.
+      // A grant against finished work can never fire — the executor refuses
+      // every finished target — so approving one hands the user a capability
+      // that only looks like it works.
+      await expect(invoke(
+        RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug,
+        { action: { kind: 'session', sessionId: TARGET.id, message: PINNED } },
+        lease.lease.leaseId,
+      )).rejects.toThrow('PAGE_GRANT_SESSION_TARGET_UNAVAILABLE')
+      expect(invoke.confirmations).toHaveLength(0)
+    }
+  })
+
+  test('persists no grant when the target finishes while the sheet is open', async () => {
+    for (const finished of [{ sessionStatus: 'done' }, { isArchived: true }] as const) {
+      // `duringConfirmation` fires while the native sheet is on screen, which
+      // is the only way to reach the post-answer re-check: the user approves a
+      // callback aimed at a session that got archived behind the dialog.
+      let invoke!: GrantHarness
+      invoke = createHarness('approve', () => {
+        invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name, ...finished }] })
+      })
+      invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+
+      const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+        name: 'Races the sheet', content: '<p>x</p>',
+      }) as { slug: string }
+      const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+        lease: { leaseId: string; nonce: string }
+      }
+
+      const outcome = await invoke(
+        RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug,
+        { action: { kind: 'session', sessionId: TARGET.id, message: PINNED } },
+        lease.lease.leaseId,
+      ).catch(() => null)
+
+      expect(outcome).toBeNull()
+      const { loadPageConfig } = await import('@craft-agent/shared/pages')
+      expect(loadPageConfig(ROOT_A, page.slug)?.grants ?? []).toHaveLength(0)
+    }
+  })
+
+  test('still GRANTS against a session that is merely busy', async () => {
+    // Busy is a moment, not a state. Refusing to grant on a mid-turn session
+    // would make approval depend on timing the user cannot see; it refuses at
+    // delivery instead, where clicking again fixes it.
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name, isProcessing: true }] })
+
+    const { grant } = await seedSessionGrant(invoke)
+    expect(grant).not.toBeNull()
+    expect(invoke.confirmations.at(-1)!.targetSession).toEqual({ id: TARGET.id, name: TARGET.name })
+  })
+
+  test('refuses a descriptor that smuggles an action or a target selector', async () => {
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+
+    const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+      name: 'Smuggle page', content: '<p>x</p>',
+    }) as { slug: string }
+    const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+      lease: { leaseId: string; nonce: string }
+    }
+
+    // A stripped field would hand back an approved send-message grant for a
+    // request that asked for something else entirely, with no way for the page
+    // to tell the difference. The strict arm refuses instead.
+    for (const hostile of [
+      { kind: 'session', sessionId: TARGET.id, message: PINNED, action: 'set-status' },
+      { kind: 'session', sessionId: TARGET.id, message: PINNED, status: 'done' },
+      { kind: 'session', sessionId: TARGET.id, message: PINNED, allowClosed: true },
+      { kind: 'session', sessionId: TARGET.id, message: PINNED, target: { label: 'anything' } },
+      // Neither field is optional: a descriptor missing one is not a capability.
+      { kind: 'session', sessionId: TARGET.id },
+      { kind: 'session', message: PINNED },
+      { kind: 'session', sessionId: '', message: PINNED },
+      { kind: 'session', sessionId: TARGET.id, message: '' },
+      { kind: 'session', sessionId: TARGET.id, message: 'x'.repeat(1001) },
+    ]) {
+      await expect(invoke(
+        RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug, { action: hostile }, lease.lease.leaseId,
+      )).rejects.toThrow('PAGE_GRANT_INVALID_REQUEST')
+    }
+    expect(invoke.confirmations).toHaveLength(0)
+  })
+
+  test('a declined, disconnected, or unanswered consent leaves no grant', async () => {
+    for (const verdict of ['decline', 'disconnect', 'no-answer'] as const) {
+      const invoke = createHarness(verdict)
+      invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+      const page = await invoke(RPC_CHANNELS.pages.CREATE, WORKSPACE_A, {
+        name: `Declined ${verdict}`, content: `<p>${verdict}</p>`,
+      }) as { slug: string }
+      const lease = await invoke(RPC_CHANNELS.pages.CREATE_LEASE, WORKSPACE_A, page.slug) as {
+        lease: { leaseId: string; nonce: string }
+      }
+      const outcome = await invoke(
+        RPC_CHANNELS.pages.REQUEST_GRANT, WORKSPACE_A, page.slug,
+        { action: { kind: 'session', sessionId: TARGET.id, message: PINNED } },
+        lease.lease.leaseId,
+      ).catch(() => null)
+      expect(outcome).toBeNull()
+
+      const { loadPageConfig } = await import('@craft-agent/shared/pages')
+      expect(loadPageConfig(ROOT_A, page.slug)?.grants ?? []).toHaveLength(0)
+      expect(invoke.deliveries).toHaveLength(0)
+    }
+  })
+
+  test('refuses over transport RPC with no activation ticket', async () => {
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+    const { page, lease, grant } = await seedSessionGrant(invoke)
+
+    // The whole bypass: a token-holding client holding a real lease, nonce, and
+    // approved grant, calling the channel directly. It has everything it can
+    // assert. It still cannot mint the one thing it needs.
+    const result = await invoke.invokeTransportWithContext(
+      { workspaceId: WORKSPACE_A, clientId: 'hostile-client', webContentsId: undefined } as never,
+      RPC_CHANNELS.pages.EXECUTE_ACTION,
+      WORKSPACE_A,
+      requestFor(page, lease, grant!),
+    ) as { ok: boolean; error?: string }
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('activation-required')
+    expect(invoke.deliveries).toHaveLength(0)
+  })
+
+  test('refuses a stale grant after the page content changes', async () => {
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+    const { page, lease, grant } = await seedSessionGrant(invoke)
+
+    savePageContent(ROOT_A, page.slug, '<p>rewritten by an agent</p>')
+
+    const result = await invoke(
+      RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, requestFor(page, lease, grant!),
+    ) as { ok: boolean; error?: string }
+    expect(result.ok).toBe(false)
+    expect(invoke.deliveries).toHaveLength(0)
+  })
+
+  test('refuses after the grant is revoked, with no re-mount required', async () => {
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+    const { page, lease, grant } = await seedSessionGrant(invoke)
+    const request = requestFor(page, lease, grant!)
+    const ticket = await invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, request)
+
+    await invoke(RPC_CHANNELS.pages.REVOKE_GRANT, WORKSPACE_A, page.slug, grant!.id)
+
+    const result = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, {
+      ...request, activationTicket: ticket.ticketId,
+    }) as { ok: boolean; error?: string }
+    expect(result.ok).toBe(false)
+    expect(invoke.deliveries).toHaveLength(0)
+  })
+
+  test('burns its ticket: a replayed authorized call does not deliver twice', async () => {
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+    const { page, lease, grant } = await seedSessionGrant(invoke)
+    const request = requestFor(page, lease, grant!)
+    const ticket = await invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, request)
+    const activated = { ...request, activationTicket: ticket.ticketId }
+
+    expect((await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, activated) as { ok: boolean }).ok).toBe(true)
+    expect((await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, activated) as { ok: boolean }).ok).toBe(false)
+    expect(invoke.deliveries).toHaveLength(1)
+  })
+
+  test('refuses in Explore mode', async () => {
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+    const { page, lease, grant } = await seedSessionGrant(invoke)
+
+    writeWorkspace(ROOT_A, WORKSPACE_A, true, WORKSPACE_A, 'safe')
+
+    const result = await invoke(
+      RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, requestFor(page, lease, grant!),
+    ) as { ok: boolean; error?: string }
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('permission-mode-forbidden')
+    expect(invoke.deliveries).toHaveLength(0)
+  })
+
+  test('refuses a target that went closed, archived, or busy after approval', async () => {
+    for (const [state, expected] of [
+      [{ sessionStatus: 'done' }, 'session-closed'],
+      [{ isArchived: true }, 'session-closed'],
+      [{ isProcessing: true }, 'session-busy'],
+      // Deleted between approval and use.
+      [null, 'session-not-found'],
+    ] as const) {
+      const invoke = createHarness('approve')
+      invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+      const { page, lease, grant } = await seedSessionGrant(invoke)
+      const request = requestFor(page, lease, grant!)
+      const ticket = await invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, request)
+
+      // The world moves between approval and use, which is exactly why the
+      // executor re-resolves rather than trusting the name it showed.
+      invoke.setSessions({ [WORKSPACE_A]: state === null ? [] : [{ id: TARGET.id, name: TARGET.name, ...state }] })
+
+      const result = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, {
+        ...request, activationTicket: ticket.ticketId,
+      }) as { ok: boolean; error?: string }
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain(expected)
+      expect(invoke.deliveries).toHaveLength(0)
+    }
+  })
+
+  test('audits the target but never the pinned body', async () => {
+    const invoke = createHarness('approve')
+    // A target id unique to this test: the audit file accumulates across the
+    // whole suite, so filtering on kind alone would sweep up every other
+    // callback test's rows.
+    const auditTarget = 'sess_audit_probe'
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: auditTarget, name: TARGET.name }] })
+    const secret = 'DELIVER-THIS-EXACT-SENTENCE-abc123'
+    await runCallback(invoke, { kind: 'session', sessionId: auditTarget, message: secret })
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const audit = readFileSync(AUDIT_LOG, 'utf-8')
+    const executed = audit.trim().split('\n').map(line => JSON.parse(line))
+      .filter(entry => entry.event === 'page_action_executed' && entry.targetSessionId === auditTarget)
+    expect(executed).toHaveLength(1)
+    expect(executed[0]!.actionKind).toBe('session')
+    // The containment fact is recorded...
+    expect(executed[0]!.outcome).toBe('ok')
+    // ...and the payload is not, anywhere in the file.
+    expect(audit).not.toContain(secret)
+  })
+
+  test('cancelling before execution withdraws the callback entirely', async () => {
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+    const { page, lease, grant } = await seedSessionGrant(invoke)
+    const request = requestFor(page, lease, grant!)
+    const ticket = await invoke.requestActivationAsHost(101, WORKSPACE_A, page.slug, request)
+
+    // Cancellation has to withdraw the unspent ticket too, or a withdrawn
+    // message still holds a live authorization for the call it took back.
+    // Arg order is (workspaceId, requestId, leaseId, nonce) — the lease and its
+    // nonce are the proof of ownership, not the thing being named.
+    await invoke(RPC_CHANNELS.pages.CANCEL_ACTION, WORKSPACE_A, request.requestId, lease.leaseId, lease.nonce)
+
+    const result = await invoke(RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, {
+      ...request, activationTicket: ticket.ticketId,
+    }) as { ok: boolean }
+    expect(result.ok).toBe(false)
+    expect(invoke.deliveries).toHaveLength(0)
+  })
+
+  test('is unavailable while Pages is disabled for the workspace', async () => {
+    const invoke = createHarness('approve')
+    invoke.setSessions({ [WORKSPACE_A]: [{ id: TARGET.id, name: TARGET.name }] })
+    const { page, lease, grant } = await seedSessionGrant(invoke)
+
+    writeWorkspace(ROOT_A, WORKSPACE_A, false)
+
+    await expect(invoke(
+      RPC_CHANNELS.pages.EXECUTE_ACTION, WORKSPACE_A, requestFor(page, lease, grant!),
+    )).rejects.toThrow()
+    expect(invoke.deliveries).toHaveLength(0)
   })
 })

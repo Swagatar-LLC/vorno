@@ -163,6 +163,52 @@ describe('buildPageShareBundle', () => {
     ).toThrow(/PAGE_SHARE_SCRIPT_GRANT/);
   });
 
+  test('a session grant blocks publishing outright, exactly as a script grant does', () => {
+    const page = createPage(root, { name: 'Session Grant', content: HTML });
+    addPageGrant(root, page.slug, {
+      action: { kind: 'session', sessionId: 'sess_target', message: 'Refresh the numbers.' },
+    });
+    // A published copy has no bridge and no host, so it could not exercise the
+    // grant even if it tried. What is refused is handing the HTML that asks to
+    // write into someone's live session to strangers to read, adapt, and
+    // re-host — and the view-only ack cannot buy past it.
+    expect(() => buildPageShareBundle(root, page.slug, { includeData: false })).toThrow(
+      /PAGE_SHARE_SESSION_GRANT/,
+    );
+    expect(() =>
+      buildPageShareBundle(root, page.slug, { includeData: false, viewOnlyAcknowledged: true }),
+    ).toThrow(/PAGE_SHARE_SESSION_GRANT/);
+  });
+
+  test('even a STALE session grant blocks publishing — what the page is built to do does not expire', () => {
+    const page = createPage(root, { name: 'Stale Session Grant', content: HTML });
+    addPageGrant(root, page.slug, {
+      action: { kind: 'session', sessionId: 'sess_target', message: 'Refresh the numbers.' },
+      ttlMs: -1000,
+    });
+    savePageContent(root, page.slug, HTML.replace('bundle', 'bundle v2'));
+    expect(() =>
+      buildPageShareBundle(root, page.slug, { includeData: false, viewOnlyAcknowledged: true }),
+    ).toThrow(/PAGE_SHARE_SESSION_GRANT/);
+  });
+
+  test('never puts a pinned callback body into the published manifest', () => {
+    // Belt and braces on the refusal above: if the publish gate were ever
+    // relaxed, this is the assertion that would still catch the body leaking.
+    const page = createPage(root, { name: 'No Leak', content: HTML });
+    addPageGrant(root, page.slug, {
+      action: { kind: 'session', sessionId: 'sess_target', message: 'SECRET-PINNED-BODY-xyz' },
+      ttlMs: -1000,
+    });
+    let serialized = '';
+    try {
+      serialized = JSON.stringify(buildPageShareBundle(root, page.slug, { includeData: false }));
+    } catch (err) {
+      serialized = String(err);
+    }
+    expect(serialized).not.toContain('SECRET-PINNED-BODY-xyz');
+  });
+
   test('enforces content size cap and missing-content/page errors', () => {
     const page = createPage(root, { name: 'Too Big' });
     expect(() => buildPageShareBundle(root, page.slug, { includeData: false })).toThrow(/PAGE_NO_CONTENT/);

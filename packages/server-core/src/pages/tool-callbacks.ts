@@ -112,9 +112,14 @@ function toDetails(
   const grants = (config.grants ?? []).map((grant) => ({
     id: grant.id,
     kind: grant.action.kind,
+    // One identifying field per kind, and never the pinned body of a session
+    // callback: an agent asking `get_page` is being told what capabilities
+    // exist, not handed the text a human approved for delivery into a session.
     ...(grant.action.kind === 'script'
       ? { script: grant.action.script }
-      : { sourceSlug: grant.action.sourceSlug }),
+      : grant.action.kind === 'session'
+        ? { sessionId: grant.action.sessionId }
+        : { sourceSlug: grant.action.sourceSlug }),
     description: grant.description,
     expiresAt: grant.expiresAt,
     stale: !isPageGrantUsable(grant, config.contentDigest, now),

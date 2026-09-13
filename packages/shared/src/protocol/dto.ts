@@ -455,6 +455,12 @@ export interface SendMessageOptions {
    * surfacing) that should wake the agent without looking user-authored.
    */
   hidden?: boolean
+  // NOTE: this type is a WIRE DTO — it crosses RPC, is stored on
+  // `managed.lastSentOptions`, and is replayed by the auth-retry path. Only
+  // add serializable, replay-safe fields. The Page-callback delivery seam
+  // deliberately lives OUTSIDE this shape, in SessionManager's internal
+  // options, because it carries closures that must never be persisted,
+  // serialized, or re-run by a retry.
 }
 
 // ---------------------------------------------------------------------------

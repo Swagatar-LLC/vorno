@@ -77,7 +77,22 @@ export interface RenderIdentity {
   renderGeneration: number
 }
 
-/** Exact, escaped host-dialog representation of a consented action descriptor. */
+/**
+ * Exact, escaped host-dialog representation of a consented action descriptor.
+ *
+ * **Nothing here truncates, and nothing may.** A consent dialog that showed a
+ * prefix while the grant persisted and delivered the whole body would let a
+ * page put innocuous text in the visible part and instructions in the hidden
+ * part — the user authorizes one thing and a live session receives another.
+ * That is precisely the prompt-injection shape this feature is built to
+ * prevent, so truncating here would defeat the feature from inside the
+ * mechanism meant to protect it.
+ *
+ * The "a long body buries the target" problem is real, and it is solved by
+ * ordering (host-resolved identity leads the sheet) and by a body cap small
+ * enough to display whole (`SESSION_CALLBACK_MESSAGE_MAX_CHARS` in
+ * `pages/validation.ts`) — never by showing less than was approved.
+ */
 export function formatPageGrantDescriptor(action: import('@craft-agent/core').PageActionDescriptor): string {
   const serialized = JSON.stringify(
     action.kind === 'script'

@@ -158,6 +158,32 @@ export const PageRefreshStatusSchema = z.object({
 
 export const PageActionHttpMethodSchema = z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
+/**
+ * Upper bound on a pinned callback body.
+ *
+ * This cap is a **security control, not ergonomics**, and it is the reason the
+ * consent dialog is allowed to render the body in full. The alternative —
+ * a large cap plus a truncated preview — lets a page put innocuous text in the
+ * visible prefix and instructions in the hidden suffix, so the user authorizes
+ * one thing and a live session receives another. That is the exact
+ * prompt-injection shape this feature exists to prevent, arriving through the
+ * mechanism meant to prevent it.
+ *
+ * So the rule is: whatever a human must approve, a human must be able to see
+ * whole. The cap is therefore set where a native dialog stays legible rather
+ * than where a session's context window gives out. Raising it means first
+ * proving the consent surface can still show every character.
+ */
+const SESSION_CALLBACK_MESSAGE_MAX_CHARS = 1000;
+
+/**
+ * Upper bound on a pinned target session id. Session ids are generated
+ * identifiers, so this only has to be wide enough for one; it exists because
+ * the field reaches a host dialog and unbounded text in host chrome is how a
+ * descriptor buries the action it is describing.
+ */
+const SESSION_CALLBACK_ID_MAX_CHARS = 128;
+
 export const PageActionDescriptorSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('api'),
@@ -176,6 +202,23 @@ export const PageActionDescriptorSchema = z.discriminatedUnion('kind', [
     runtime: PageScriptRuntimeSchema.optional(),
     args: z.array(z.string().max(500)).max(20).optional(),
   }),
+  z.object({
+    kind: z.literal('session'),
+    // Non-empty and bounded only. Whether this session EXISTS, and whether it
+    // belongs to the workspace that owns the page, are not schema questions —
+    // they are answered server-side against live session state before consent
+    // is even requested, and again immediately before execution.
+    sessionId: z.string().min(1, 'A session callback must name a session').max(SESSION_CALLBACK_ID_MAX_CHARS),
+    message: z
+      .string()
+      .min(1, 'A session callback must carry a message')
+      .max(SESSION_CALLBACK_MESSAGE_MAX_CHARS, `Message cannot exceed ${SESSION_CALLBACK_MESSAGE_MAX_CHARS} characters`),
+  // `.strict()`, unlike its sibling arms, because a stripped field on THIS
+  // descriptor is a silent downgrade of what the page asked for. A page that
+  // sends `action: 'set-status'` has to be told no; stripping it would hand
+  // back an approved send-message grant for a request that wanted something
+  // else, and the page would have no way to tell the difference.
+  }).strict(),
 ]);
 
 /** Client-facing request shape. The host adds the expected content digest after consent. */

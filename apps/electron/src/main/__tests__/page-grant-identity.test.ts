@@ -79,6 +79,52 @@ describe('host grant descriptor rendering', () => {
     expect(rendered).not.toContain('line\nbreak')
   })
 
+  test('renders a session descriptor with its target and its full pinned body', () => {
+    // The sheet has to show BOTH, because approving a session callback means
+    // agreeing to this exact sentence going to this exact session. Truncating
+    // the body here would be approving something the user never read.
+    const rendered = formatPageGrantDescriptor({
+      kind: 'session',
+      sessionId: 'sess_target',
+      message: 'Please re-run the quarterly export and post the totals.',
+    })
+    expect(rendered).toContain('"kind": "session"')
+    expect(rendered).toContain('"sessionId": "sess_target"')
+    expect(rendered).toContain('Please re-run the quarterly export and post the totals.')
+  })
+
+  test('renders a pinned body in full — never a truncated preview', () => {
+    // A dialog that showed a prefix while the grant delivered the whole body
+    // would let a page put innocuous text in the visible part and instructions
+    // in the hidden part: the user authorizes one thing, a live session
+    // receives another. That is the injection this feature exists to stop,
+    // arriving through the mechanism meant to stop it. The body is capped at
+    // 1000 characters precisely so the sheet can always show all of it.
+    const body = `LEADING-VISIBLE-${'x'.repeat(940)}-TRAILING-HIDDEN-INSTRUCTION`
+    const rendered = formatPageGrantDescriptor({
+      kind: 'session', sessionId: 'sess_target', message: body,
+    })
+    expect(rendered).toContain('LEADING-VISIBLE')
+    expect(rendered).toContain('TRAILING-HIDDEN-INSTRUCTION')
+    expect(rendered).not.toContain('truncated')
+    expect(rendered).not.toContain('…')
+  })
+
+  test('escapes invisible characters inside a pinned callback body', () => {
+    // A pinned body is agent-authored prose heading for a native dialog, so it
+    // is the widest surface in this descriptor for hiding text a user is being
+    // asked to approve — bidi overrides, zero-width joins, the lot.
+    const rendered = formatPageGrantDescriptor({
+      kind: 'session',
+      sessionId: 'sess_target',
+      message: 'harmless\u202ereversed\u200bhidden\u2028break',
+    })
+    expect(rendered).toContain('\\u202e')
+    expect(rendered).toContain('\\u200b')
+    expect(rendered).toContain('\\u2028')
+    expect(rendered).not.toContain('\u202e')
+  })
+
   test('escapes every invisible or reordering category, not a hand-picked list of them', () => {
     // These are all Cc/Cf/Zl/Zp and every one of them renders as nothing in a
     // native dialog, so an unescaped one lets a descriptor hide or reorder text

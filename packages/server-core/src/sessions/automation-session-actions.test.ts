@@ -97,6 +97,69 @@ describe('automation session actions (app events)', () => {
     ...extra,
   })
 
+  /**
+   * fork(SUV-0064) — workspace containment on the app-event path.
+   *
+   * `resolveAutomationTargetSession` answered an explicit `{ id }` from
+   * `this.sessions`, the process-wide map, with no workspace comparison — then
+   * the action ran against the CALLING workspace's root path. An automation in
+   * one workspace could therefore mutate a session in another. It now shares
+   * `resolveWorkspaceSessionTarget` with the webhook executor and Page
+   * callbacks, so containment is a property of the lookup.
+   */
+  describe('workspace containment', () => {
+    /** A session that exists in the process but belongs to a different workspace. */
+    function seedForeignSession(sessionId: string, labels: string[] = []) {
+      const managed = createManagedSession(
+        { id: sessionId, name: 'foreign', sessionStatus: 'todo', labels, createdAt: Date.now() },
+        { id: 'ws_other', name: 'Other Workspace', rootPath: tmpRoot, createdAt: Date.now() } as never
+      )
+      ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, managed)
+      return managed as unknown as { sessionStatus: string; labels: string[] }
+    }
+
+    it('refuses an explicit id owned by another workspace, for every action type', async () => {
+      const foreign = seedForeignSession('sess-foreign')
+      const before = foreign.sessionStatus
+
+      await run(setStatus('needs-review', { target: { id: 'sess-foreign' } }))
+      await run({
+        matcherId: 'r', type: 'set-labels', target: { id: 'sess-foreign' }, add: ['urgent'],
+        event: 'LabelAdd', cause: { matcherId: 'r', depth: 1 },
+      } as PendingSessionAction)
+      await run({
+        matcherId: 'r', type: 'send-message', target: { id: 'sess-foreign' }, message: 'hi',
+        event: 'LabelAdd', cause: { matcherId: 'r', depth: 1 },
+      } as PendingSessionAction)
+      await run({
+        matcherId: 'r', type: 'apply-context', target: { id: 'sess-foreign' }, profile: 'focus',
+        event: 'LabelAdd', cause: { matcherId: 'r', depth: 1 },
+      } as PendingSessionAction)
+
+      // Nothing applied, and every attempt is recorded as an unresolved target
+      // rather than vanishing.
+      expect(foreign.sessionStatus).toBe(before)
+      expect(foreign.labels ?? []).not.toContain('urgent')
+      expect(outcomes()).toEqual(Array(4).fill('deferred:target-not-found'))
+    })
+
+    it('refuses a label carried only by another workspace', async () => {
+      seedLabels('ci-target')
+      seedForeignSession('sess-foreign', ['ci-target'])
+
+      await run(setStatus('needs-review', { target: { label: 'ci-target' } }))
+      expect(outcomes()).toEqual(['deferred:target-not-found'])
+    })
+
+    it('still resolves a session this workspace owns', async () => {
+      const mine = seedSession('sess-1')
+      seedForeignSession('sess-foreign')
+
+      await run(setStatus('needs-review'))
+      expect(mine.sessionStatus).toBe('needs-review')
+    })
+  })
+
   describe('set-status', () => {
     it('applies an open status from a LabelAdd rule', async () => {
       // The whole point of the phase: this rule shape could not run before.

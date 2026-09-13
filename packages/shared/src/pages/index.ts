@@ -31,10 +31,13 @@ export type {
   PageConfig,
   CreatePageInput,
   LoadedPage,
+  PageSessionRefusalCode,
 } from './types.ts';
 export {
   PAGE_ACTION_KINDS,
   PAGE_ACTION_ORIGINS,
+  PAGE_SESSION_REFUSAL_CODES,
+  isPrivilegedPageGrantKind,
   isBoundedPageActionId,
   isMutatingPageAction,
   isPageGrantUsable,

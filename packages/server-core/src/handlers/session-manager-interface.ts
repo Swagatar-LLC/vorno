@@ -71,6 +71,24 @@ export interface ISessionManager {
     status: SessionStatus,
     origin?: StatusChangeOrigin
   ): Promise<void>
+  /**
+   * Atomic check-and-commit for a Page session callback (SUV-0064, ADR-0033 §4).
+   *
+   * Separate from `sendMessage` because "check state, then send" cannot be made
+   * safe from outside: `sendMessage` awaits twice before it decides whether a
+   * turn is running, so a caller's own check spans those awaits. This performs
+   * the final workspace/archived/closed/busy/abort check in the same JS turn as
+   * the commit, and resolves at **acceptance** rather than at the end of the
+   * turn it starts.
+   */
+  tryDeliverPageCallback(
+    sessionId: string,
+    message: string,
+    options: { workspaceId: string; signal?: AbortSignal; onCommitted?: () => void },
+  ): Promise<
+    | { ok: true; durable: boolean }
+    | { ok: false; code: 'session-not-found' | 'session-closed' | 'session-busy' | 'cancelled' }
+  >
   markSessionRead(sessionId: string): Promise<void>
   markSessionUnread(sessionId: string): Promise<void>
   markAllSessionsRead(workspaceId: string): Promise<void>

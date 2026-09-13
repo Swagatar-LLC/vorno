@@ -65,6 +65,9 @@ import {
   getSessionFilePath,
   generateSessionId,
   sessionPersistenceQueue,
+  type SessionWriteHandle,
+  type SessionWriteKey,
+  sessionWriteKey,
   getHeaderMetadataSignature,
   writeSessionJsonl,
   serializeSession,
@@ -106,6 +109,82 @@ import { listLabels, loadLabelConfig, isValidLabelId } from '@craft-agent/shared
 import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
+import { pageCallbackRefusal, type PageCallbackRefusalCode } from './page-callback-guards.ts'
+
+/**
+ * The Page-callback delivery seam (SUV-0064) — `sendMessage`'s only internal
+ * extension, and deliberately NOT part of the wire `SendMessageOptions`.
+ *
+ * It carries closures. `SendMessageOptions` crosses RPC, is stored on
+ * `managed.lastSentOptions`, and is replayed verbatim by the auth-retry path;
+ * a closure on that shape would be dropped by serialization (silently
+ * disabling the guard on a remote caller) or re-run by a retry against a world
+ * that has moved on. Keeping it here means neither can happen by accident, and
+ * `toPersistableSendOptions` makes it impossible on purpose.
+ */
+interface PageCallbackDeliverySeam {
+  /**
+   * Identity of THIS delivery, shared by its reservation and its accepted-turn
+   * marker.
+   *
+   * Both are session-keyed and both are released after an await, so both can
+   * race a successor: callback A finishing must not clear state that callback B
+   * has since established. Only the holder of the matching token may clear.
+   */
+  token: symbol
+  /**
+   * Evaluated SYNCHRONOUSLY at `sendMessage`'s decision point. Returning a code
+   * refuses, having mutated nothing; returning null commits. An `async` guard
+   * would reintroduce the exact window this exists to close.
+   */
+  guard: () => PageCallbackRefusalCode | null
+  /**
+   * Phase one: the message is in `managed.messages`. Fired synchronously the
+   * instant it is pushed, before any await.
+   *
+   * From here the delivery is **irreversible and unrelabelable** — a cancel, a
+   * lease release, or a broker deadline arriving after this point describes
+   * something that already happened. It is deliberately separate from durability
+   * below, because the two answer different questions: this one answers "may
+   * anything still stop or rename this?", and the answer becomes no here.
+   */
+  markCommitted: () => void
+  /**
+   * The `isProcessing` handover: a turn is now running, and that flag is the
+   * authoritative "busy" answer from here on. Lets the caller drop a
+   * reservation it would otherwise hold until the whole turn ends — so a stuck
+   * turn is governed by `isProcessing` rather than by a leaked reservation.
+   */
+  onProcessingStarted: () => void
+  /**
+   * Phase two: the durability question has an ANSWER — either way.
+   *
+   * Separate from the commit because a crash between the two loses a message
+   * the page was told had landed. Called with `false` as promptly as with
+   * `true`: a failed write is a result, and leaving the caller to discover it
+   * by timing out would make a disk error look like a slow turn. The caller
+   * resolves on this, so a write failure returns at the moment it is known
+   * rather than at the end of the turn the message started.
+   */
+  onDurabilityResolved: (durable: boolean) => void
+}
+
+/** What `sendMessage` actually accepts: the wire shape plus the internal seam. */
+type SendMessageInternalOptions = SendMessageOptions & { pageCallback?: PageCallbackDeliverySeam }
+
+/**
+ * Drop the internal seam before options are stored or replayed.
+ *
+ * Assignability alone would not protect this: `SendMessageInternalOptions`
+ * extends `SendMessageOptions`, so TypeScript accepts it wherever the wire
+ * shape is expected and the closures would ride along at runtime. The strip has
+ * to be an action, not a type.
+ */
+function toPersistableSendOptions(options?: SendMessageInternalOptions): SendMessageOptions | undefined {
+  if (!options || !('pageCallback' in options)) return options
+  const { pageCallback: _internal, ...wire } = options
+  return wire
+}
 import {
   type StatusChangeOrigin,
   UNATTRIBUTED_ORIGIN,
@@ -114,7 +193,7 @@ import {
   mayCloseSession,
   describeOrigin,
 } from '@craft-agent/shared/statuses'
-import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, checkContextAction, sessionActionOutcome, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, createOutcomeHistoryEntry, appendAutomationHistoryEntry, runOnFailureActions, checkStatusAction, checkContextAction, sessionActionOutcome, resolveWorkspaceSessionTarget, type WorkspaceSessionLookup, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
 import type { PromptAction as AutomationPromptAction, PendingSessionAction, AutomationCause, SessionActionSkip, ContextActionRejection } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, buildRuntimeEnvelope, filterAttachmentsForModelInput } from './runtime-config'
 import { validateArchiveTarget } from './archive-guards'
@@ -887,7 +966,41 @@ interface ManagedSession {
   lastSentMessage?: string
   lastSentAttachments?: FileAttachment[]
   lastSentStoredAttachments?: StoredAttachment[]
+  /**
+   * Replayed verbatim by the auth-retry path, so this is deliberately the WIRE
+   * shape and never {@link SendMessageInternalOptions}. See
+   * `toPersistableSendOptions`.
+   */
   lastSentOptions?: SendMessageOptions
+  /**
+   * Whether the last send was a Page callback. Blocks auth retry: replaying it
+   * would re-deliver page-authored text with none of the grant, activation, or
+   * consent checks that authorized it the first time.
+   */
+  lastSentWasPageCallback?: boolean
+  /**
+   * A Page callback has committed a message but its turn has not started yet.
+   *
+   * `isProcessing` does not cover this window — it flips at the handover, which
+   * is several awaits later (persist, flush, and on a first message the title
+   * generation flush). An ordinary send arriving in between would otherwise see
+   * an idle session and commit a second message, and two turns would start.
+   *
+   * User priority is preserved where it belongs: BEFORE the callback commits, a
+   * user send wins and the callback stands down. After it commits, there is a
+   * turn to be behind, so the user's message queues rather than racing it.
+   *
+   * Holds the owning delivery's token rather than a bare flag: A finishing
+   * while B has already committed must not clear B's marker, or a send would
+   * treat the session as idle and commit alongside B's turn.
+   */
+  pageCallbackTurnPendingToken?: symbol
+  /**
+   * Mirror of the stored record's pending-plan state, hydrated at a Page
+   * callback's commit so the write that follows preserves it rather than
+   * dropping a field the metadata projection strips.
+   */
+  pendingPlanExecution?: StoredSession['pendingPlanExecution']
   // Flag to prevent infinite retry loops (reset at start of each sendMessage)
   authRetryAttempted?: boolean
   // Flag indicating auth retry is in progress (to prevent complete handler from interfering)
@@ -1081,8 +1194,22 @@ const DEFAULT_TOKEN_USAGE = {
  * Uses pickSessionFields() for persistent fields so new fields propagate automatically.
  */
 function managedToSession(m: ManagedSession, overrides?: Partial<Session>): Session {
+  // `pendingPlanExecution` is persisted state, not transport state, and it is
+  // omitted here on purpose.
+  //
+  // It carries `draftInputSnapshot` — whatever the user had typed and not sent
+  // when they accepted a plan. That belongs on disk for recovery and nowhere
+  // else: this projection feeds every session-list push, so including it would
+  // put unsent user text on the wire for every session, repeatedly, to every
+  // connected client. It became reachable the moment the field started living
+  // on the managed session (it is in `SESSION_PERSISTENT_FIELDS`, so
+  // `pickSessionFields` takes it automatically), which is exactly the kind of
+  // silent widening that a spread invites.
+  //
+  // Read it through `getPendingPlanExecution`, which is the deliberate door.
+  const { pendingPlanExecution: _persistedOnly, ...persistedFields } = pickSessionFields(m)
   return {
-    ...pickSessionFields(m),
+    ...persistedFields,
     // Pre-computed fields from header (not in SESSION_PERSISTENT_FIELDS)
     preview: m.preview,
     lastMessageRole: m.lastMessageRole,
@@ -1570,11 +1697,57 @@ export class SessionManager implements ISessionManager {
       changed = true
     }
 
-    if (changed) {
+    // Read state. Plain display fields with no event contract of their own —
+    // like projectId and kanbanColumn above, they ride the metaChanged
+    // broadcast — so mirroring them here is safe and keeps the badge honest
+    // when another window marks the session read.
+    if (managed.lastReadMessageId !== header.lastReadMessageId) {
+      managed.lastReadMessageId = header.lastReadMessageId
+      changed = true
+    }
+    if ((managed.hasUnread ?? false) !== (header.hasUnread ?? false)) {
+      managed.hasUnread = header.hasUnread
+      changed = true
+    }
+
+    // `permissionMode` is deliberately NOT mirrored here. It is a declared-intent
+    // mutation with its own `permission_mode_changed` event and ADR-0021 emit
+    // rules, and quietly assigning it from a watcher event would manufacture a
+    // mode change that no origin asked for. Persistence still keeps the external
+    // value — the supersede below carries it, and the queue merges it into the
+    // next write — so disk stays correct while in-memory mode remains owned by
+    // the mode-change path. Recorded as a residual rather than smuggled in here.
+
+    // The supersede decision is deliberately INDEPENDENT of `changed`.
+    //
+    // `changed` only tracks fields this method mirrors into memory. An edit that
+    // touches nothing else — a pure `permissionMode` change, or another window
+    // marking the session read before this one loaded that state — left
+    // `changed` false, so no supersede happened, so an in-flight stale write
+    // committed straight over it with nothing held to recover from. The question
+    // that matters is "did an external writer diverge from what we last wrote",
+    // and only the full signature answers it.
+    const observedSignature = getHeaderMetadataSignature(header)
+    const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(this.writeKeyFor(managed))
+    const divergedFromOurLastWrite = observedSignature !== lastWrittenSignature
+
+    if (divergedFromOurLastWrite) {
       sessionLog.info(`External metadata change detected for session ${sessionId}`)
 
-      // Prevent stale pending writes from reverting externally-updated metadata.
-      sessionPersistenceQueue.cancel(sessionId)
+      // Supersede, NOT cancel-for-deletion. This session is live and is being
+      // written again on the next line; the only thing that has to stop is an
+      // in-flight write carrying pre-edit state. The deletion variant would
+      // unlink the committed file — deleting a live session's transcript and
+      // leaving it absent from disk until the replacement write lands — and
+      // would drop the header-signature baseline that the replacement write
+      // needs to detect this very edit.
+      //
+      // The observed header travels with the call. Re-reading disk later is not
+      // equivalent: a write that read its header before this edit and renames
+      // after we saw it commits a pre-edit snapshot over it, and supersede
+      // (correctly) keeps that file — so disk no longer holds the edit, and the
+      // baseline matches the stale file so nothing detects the divergence.
+      sessionPersistenceQueue.supersedePendingWrites(this.writeKeyFor(managed), header)
       this.persistSession(managed)
     }
 
@@ -1710,7 +1883,7 @@ export class SessionManager implements ISessionManager {
         // Self-writes need nothing here: in-memory state is already up to date,
         // and the mutator fed the automation differ directly at write time.
         const incomingSignature = getHeaderMetadataSignature(header)
-        const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(sessionId)
+        const lastWrittenSignature = sessionPersistenceQueue.getLastWrittenSignature(this.writeKeyFor(managed))
         const isSelfWrite = !!(lastWrittenSignature && incomingSignature === lastWrittenSignature)
 
         // For external writes: sync in-memory state + emit UI events.
@@ -2217,25 +2390,50 @@ export class SessionManager implements ISessionManager {
 
   // Build the StoredSession snapshot and hand it to the persistence queue.
   // Caller must ensure `managed.messagesLoaded` is true.
+  /**
+   * Build the record this session would persist right now.
+   *
+   * Split out so the checked path enqueues the SAME snapshot as the ordinary
+   * one. Two constructions would be two chances to diverge, and the divergence
+   * would only show up as a callback reporting durability for a record that did
+   * not match what an ordinary persist writes.
+   */
+  private buildStoredSession(managed: ManagedSession): StoredSession {
+    // Filter out transient status messages (progress indicators like "Compacting...")
+    // Error messages are now persisted with rich fields for diagnostics
+    const persistableMessages = managed.messages.filter(m => m.role !== 'status')
+    return {
+      ...pickSessionFields(managed),
+      workspaceRootPath: managed.workspace.rootPath,
+      createdAt: managed.createdAt ?? Date.now(),
+      lastUsedAt: Date.now(),
+      messages: persistableMessages.map(messageToStored),
+      tokenUsage: managed.tokenUsage ?? DEFAULT_TOKEN_USAGE,
+    } as StoredSession
+  }
+
+  /**
+   * The persistence-queue identity for a session.
+   *
+   * Session ids are unique per WORKSPACE, so the queue keys its state on both.
+   * Everything here goes through this helper rather than building a key inline,
+   * so there is one place to be wrong instead of a dozen.
+   */
+  private writeKeyFor(managed: Pick<ManagedSession, 'id' | 'workspace'>): SessionWriteKey {
+    return sessionWriteKey(managed.workspace.rootPath, managed.id)
+  }
+
+  /** Enqueue and return a claim on that exact snapshot. */
+  private enqueuePersistChecked(managed: ManagedSession): SessionWriteHandle {
+    return sessionPersistenceQueue.enqueueChecked(this.buildStoredSession(managed))
+  }
+
   private enqueuePersist(managed: ManagedSession): void {
     try {
       // Filter out transient status messages (progress indicators like "Compacting...")
       // Error messages are now persisted with rich fields for diagnostics
-      const persistableMessages = managed.messages.filter(m =>
-        m.role !== 'status'
-      )
-
-      const storedSession: StoredSession = {
-        ...pickSessionFields(managed),
-        workspaceRootPath: managed.workspace.rootPath,
-        createdAt: managed.createdAt ?? Date.now(),
-        lastUsedAt: Date.now(),
-        messages: persistableMessages.map(messageToStored),
-        tokenUsage: managed.tokenUsage ?? DEFAULT_TOKEN_USAGE,
-      } as StoredSession
-
       // Queue for async persistence with debouncing
-      sessionPersistenceQueue.enqueue(storedSession)
+      sessionPersistenceQueue.enqueue(this.buildStoredSession(managed))
     } catch (error) {
       sessionLog.error(`Failed to queue session ${managed.id} for persistence:`, error)
     }
@@ -2245,7 +2443,39 @@ export class SessionManager implements ISessionManager {
   // Cold-persist hydration is synchronous, so by the time we reach here the
   // queue already has an entry whenever persistSession was just called.
   async flushSession(sessionId: string): Promise<void> {
-    await sessionPersistenceQueue.flush(sessionId)
+    const managed = this.sessions.get(sessionId)
+    // No managed session means no workspace, and therefore no key to flush
+    // under. Nothing is lost: an unloaded session's pending write was keyed by a
+    // root this call cannot reconstruct, and the unload path flushes before
+    // dropping it.
+    if (!managed) return
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
+  }
+
+  /**
+   * Persist and hand back a claim on THIS write.
+   *
+   * `flushSession` cannot report a failure: the queue catches its own write
+   * errors so its many fire-and-forget callers keep working, which leaves a
+   * failed write indistinguishable from a successful one to anyone awaiting it.
+   * A Page callback tells its page the message was delivered AND saved, so it
+   * needs the difference.
+   *
+   * It takes a HANDLE rather than asking "is the latest write done", because
+   * that question has no truthful answer once bookkeeping has been retired —
+   * there is nothing left to reconstruct which generation the caller meant, and
+   * the honest-looking default is optimistic. Holding the handle means the
+   * caller waits on the write it actually made.
+   */
+  private persistSessionChecked(managed: ManagedSession): SessionWriteHandle {
+    if (!managed.messagesLoaded) {
+      this.hydrateMessagesForColdPersist(managed)
+    }
+    const handle = this.enqueuePersistChecked(managed)
+    // Drive the tail so the handle settles without waiting out the debounce.
+    // The handle carries its own key, so this cannot drive a different one.
+    sessionPersistenceQueue.driveChecked(handle.key)
+    return handle
   }
 
   // Flush all pending sessions (call on app quit).
@@ -2936,7 +3166,7 @@ export class SessionManager implements ISessionManager {
 
         // Flush source session to disk to ensure latest message list is available for branch copy.
         this.persistSession(sourceManaged)
-        await sessionPersistenceQueue.flush(sourceManaged.id)
+        await sessionPersistenceQueue.flush(this.writeKeyFor(sourceManaged))
       }
 
       const sourceSession = loadStoredSession(workspaceRootPath, options.branchFromSessionId)
@@ -3845,14 +4075,14 @@ export class SessionManager implements ISessionManager {
           sessionLog.info(`SDK session ID captured for ${managed.id}: ${sdkSessionId}`)
         }
         this.persistSession(managed)
-        sessionPersistenceQueue.flush(managed.id)
+        sessionPersistenceQueue.flush(this.writeKeyFor(managed))
       }
 
       const onSdkSessionIdCleared = () => {
         managed.sdkSessionId = undefined
         sessionLog.info(`SDK session ID cleared for ${managed.id} (resume recovery)`)
         this.persistSession(managed)
-        sessionPersistenceQueue.flush(managed.id)
+        sessionPersistenceQueue.flush(this.writeKeyFor(managed))
       }
 
       const onBranchForkInvalidated = () => {
@@ -3862,7 +4092,7 @@ export class SessionManager implements ISessionManager {
         managed.branchFromSdkTurnId = undefined
         sessionLog.info(`Branch fork invalidated for ${managed.id}: cleared all fork metadata`)
         this.persistSession(managed)
-        sessionPersistenceQueue.flush(managed.id)
+        sessionPersistenceQueue.flush(this.writeKeyFor(managed))
       }
 
       const getRecoveryMessages = () => {
@@ -5264,6 +5494,11 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await setStoredPendingPlanExecution(managed.workspace.rootPath, sessionId, planPath, draftInputSnapshot)
+      // Mirror, not cache: `persistSession` rebuilds the header from managed
+      // state, so a value that exists only on disk is dropped by the next
+      // persist from any writer. The mirror is what makes the field survive an
+      // ordinary session lifetime.
+      managed.pendingPlanExecution = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId) ?? undefined
       sessionLog.info(`Session ${sessionId}: set pending plan execution for ${planPath}`)
     }
   }
@@ -5277,6 +5512,11 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await markStoredCompactionComplete(managed.workspace.rootPath, sessionId)
+      // The mirror moves with it. Every owner of this state updates both, or
+      // the copy goes stale and a later persist writes the old value back —
+      // here that would restore `awaitingCompaction: true` and un-complete a
+      // compaction that had finished.
+      managed.pendingPlanExecution = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId) ?? undefined
       sessionLog.info(`Session ${sessionId}: compaction marked complete for pending plan`)
     }
   }
@@ -5290,6 +5530,7 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await markStoredPendingPlanExecutionDispatched(managed.workspace.rootPath, sessionId)
+      managed.pendingPlanExecution = getStoredPendingPlanExecution(managed.workspace.rootPath, sessionId) ?? undefined
       sessionLog.info(`Session ${sessionId}: marked pending plan execution as dispatched`)
     }
   }
@@ -5303,6 +5544,8 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (managed) {
       await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+      // Both, or a later persist writes the dismissed plan straight back.
+      managed.pendingPlanExecution = undefined
       sessionLog.info(`Session ${sessionId}: cleared pending plan execution`)
     }
   }
@@ -6238,8 +6481,10 @@ export class SessionManager implements ISessionManager {
     this.clearAdminRememberApprovalsForSession(sessionId)
     this.clearPendingPermissionRequestsForSession(sessionId)
 
-    // Cancel any pending persistence write (session is being deleted, no need to save)
-    sessionPersistenceQueue.cancel(sessionId)
+    // The session is being deleted, so pending writes are not merely stale —
+    // their artifact must not survive either, including one whose rename has
+    // already committed.
+    sessionPersistenceQueue.cancelForDeletion(this.writeKeyFor(managed))
 
     // Clean up session-scoped tool callbacks to prevent memory accumulation
     unregisterSessionScopedToolCallbacks(sessionId)
@@ -6291,12 +6536,67 @@ export class SessionManager implements ISessionManager {
     sessionLog.info(`Deleted session ${sessionId}`)
   }
 
+  /**
+   * Public entry point. Announces an ordinary send for the whole of its
+   * lifetime and guarantees the announcement is withdrawn — including on a
+   * throw, which is the case scattered `delete` calls cannot cover and where a
+   * leak would leave the session permanently un-callable by any Page.
+   *
+   * The inner method releases it earlier, at the `isProcessing` handover, so
+   * the announcement stops mattering as soon as a stronger signal exists.
+   * Deleting twice is a no-op.
+   */
   async sendMessage(
     sessionId: string,
     message: string,
     attachments?: FileAttachment[],
     storedAttachments?: StoredAttachment[],
-    options?: SendMessageOptions,
+    options?: SendMessageInternalOptions,
+    existingMessageId?: string,
+    _isAuthRetry?: boolean,
+    onAck?: (messageId: string) => void,
+    rpcContext?: { callerClientId?: string },
+  ): Promise<void> {
+    const announces = options?.pageCallback === undefined
+    if (announces) this.announceOrdinarySend(sessionId)
+    try {
+      return await this.sendMessageInner(
+        sessionId, message, attachments, storedAttachments, options,
+        existingMessageId, _isAuthRetry, onAck, rpcContext,
+      )
+    } finally {
+      if (announces) this.withdrawOrdinarySend(sessionId)
+      else {
+        // The accepted-turn marker must not outlive this call. It is set at
+        // commit and cleared at the `isProcessing` handover, but persistence,
+        // the flush, the ack, the event dispatch and title generation all sit
+        // between those two points and any of them can throw. A marker left set
+        // with `isProcessing` false is the worst possible residue: every later
+        // user message queues behind a turn that will never start, and the
+        // session goes quiet with no error the user can see.
+        //
+        // Clearing here is safe on the success path too — by the time this send
+        // settles the turn has already started and cleared it, so this is a
+        // no-op — and it is the only place that covers every failure path at
+        // once.
+        const target = this.sessions.get(sessionId)
+        const token = options?.pageCallback?.token
+        // Only if it is still OURS. A later callback may have committed while
+        // this send was settling, and clearing its marker would let the next
+        // send commit alongside a turn that has not started.
+        if (target && token !== undefined && target.pageCallbackTurnPendingToken === token) {
+          target.pageCallbackTurnPendingToken = undefined
+        }
+      }
+    }
+  }
+
+  private async sendMessageInner(
+    sessionId: string,
+    message: string,
+    attachments?: FileAttachment[],
+    storedAttachments?: StoredAttachment[],
+    options?: SendMessageInternalOptions,
     existingMessageId?: string,
     _isAuthRetry?: boolean,
     /**
@@ -6319,25 +6619,70 @@ export class SessionManager implements ISessionManager {
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
     }
-    this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
 
-    // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
-    // has just scheduled or committed a "[<slug> activated]" retry, drop a matching
-    // duplicate that arrives from a legacy renderer still running the client-side
-    // auto_retry. The first matching caller wins (server timer or legacy RPC,
-    // whichever arrives first), subsequent matching calls within the deadline drop.
-    if (claimAutoRetryPending(managed, message) === 'drop') {
-      sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
-      return
+    /**
+     * The Page-callback delivery seam (SUV-0064). Never on the wire, never
+     * persisted — see `SendMessageInternalOptions`.
+     *
+     * Its presence reorders this method's preamble, and that reordering is the
+     * point rather than an optimization. Everything a user's own send does
+     * before deciding — pinning the browser-host client, claiming the
+     * auto-retry slot, clearing pending plan execution — is a MUTATION, and two
+     * of them touch state a refused callback has no business touching. A
+     * callback that is about to be refused must leave the session exactly as it
+     * found it.
+     */
+    const pageCallback = options?.pageCallback
+
+    if (!pageCallback) {
+      this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
+
+      // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
+      // has just scheduled or committed a "[<slug> activated]" retry, drop a matching
+      // duplicate that arrives from a legacy renderer still running the client-side
+      // auto_retry. The first matching caller wins (server timer or legacy RPC,
+      // whichever arrives first), subsequent matching calls within the deadline drop.
+      if (claimAutoRetryPending(managed, message) === 'drop') {
+        sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
+        return
+      }
+
+      // Clear any pending plan execution state when a new user message is sent.
+      // This acts as a safety valve - if the user moves on, we don't want to
+      // auto-execute an old plan later.
+      //
+      // A Page callback deliberately does NOT do this, refused or delivered. It
+      // is a page's button, not the user moving on: discarding a plan the user
+      // is still deciding about would be destructive, silent, and attributable
+      // to nobody they can see.
+      await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+      // And any in-memory mirror, so a later persist cannot write back a plan
+      // the user has just dismissed.
+      managed.pendingPlanExecution = undefined
     }
 
-    // Clear any pending plan execution state when a new user message is sent.
-    // This acts as a safety valve - if the user moves on, we don't want to
-    // auto-execute an old plan later.
-    await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
-
-    // Ensure messages are loaded before we try to add new ones
+    // Ensure messages are loaded before we try to add new ones. For the
+    // callback path this is the ONLY await preceding the guard, and it mutates
+    // nothing observable — which is what makes "no await or mutation before the
+    // guard" true of that path rather than merely intended.
     await this.ensureMessagesLoaded(managed)
+
+    // Last-moment veto, and the LAST statement before the branch below for a
+    // reason: this is the only point in the process where session state has
+    // been settled by every await this method performs and nothing yields
+    // before the message is committed. A caller that checked `isProcessing`
+    // itself and then called this method would be checking across those awaits,
+    // so a turn could start in between and its message would be steered into
+    // it. See `tryDeliverPageCallback`, the one caller.
+    //
+    // Do not insert an `await` between here and the `messages.push` below —
+    // `page-callback-acceptance.test.ts` reads this source and fails if one
+    // appears, because such an await silently re-opens the window this closes.
+    const vetoed = pageCallback?.guard()
+    if (vetoed) {
+      sessionLog.info(`sendMessage: delivery guard refused for ${sessionId} (${vetoed})`)
+      return
+    }
 
     // If currently processing, behavior depends on the connection's
     // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
@@ -6350,7 +6695,11 @@ export class SessionManager implements ISessionManager {
     // - 'queue': hold the message untouched; the current turn keeps running
     //   to natural completion; replay as a new turn afterwards. NO call to
     //   `agent.redirect()`, NO forceAbort, NO interruption.
-    if (managed.isProcessing) {
+    // `pageCallbackTurnPending` joins `isProcessing` here, not instead of it: a
+    // callback that has committed has an accepted turn, so a send arriving now
+    // belongs behind it exactly as it would behind a running one. Without this
+    // the user's message commits alongside and two turns start.
+    if (managed.isProcessing || managed.pageCallbackTurnPendingToken !== undefined) {
       const connection = resolveSessionConnection(managed.llmConnection, undefined)
       // Fallback to 'steer' when no connection is resolvable — preserves
       // today's exact behavior (call redirect, take whatever it returns).
@@ -6358,7 +6707,18 @@ export class SessionManager implements ISessionManager {
 
       const agent = managed.agent
       let steered = false
-      if (behavior === 'steer') {
+      // A send that got here via the accepted-turn marker has NO running turn
+      // to steer: the callback committed, but `setProcessing` has not run. A
+      // redirect would ask the backend to interrupt something that is not
+      // happening — on Claude it falls through to `forceAbort(Redirect)` — and
+      // the queued message would then be replayed carrying `wasInterrupted`,
+      // which injects the "previous response was interrupted and may be
+      // incomplete" reminder for a turn that had not even begun.
+      //
+      // So this send queues directly, exactly as 'queue' mode does, and leaves
+      // `wasInterrupted` alone.
+      const awaitingAcceptedTurn = !managed.isProcessing
+      if (behavior === 'steer' && !awaitingAcceptedTurn) {
         steered = agent?.redirect(message) ?? false
       }
       // For 'queue': skip redirect entirely. The current turn is undisturbed.
@@ -6367,6 +6727,7 @@ export class SessionManager implements ISessionManager {
         sessionId,
         behavior,
         steered,
+        awaitingAcceptedTurn,
         queueLengthBefore: managed.messageQueue.length,
         backend: agent ? agent.constructor.name : 'none',
         connectionSlug: connection?.slug,
@@ -6403,13 +6764,22 @@ export class SessionManager implements ISessionManager {
         // for both queue-direct (current turn still running) and
         // queue-after-abort (backend already aborted) — the replay path in
         // processNextQueuedMessage is identical.
-        managed.messageQueue.push({ message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId })
+        // Stripped: a queued message is replayed on a later turn, and the
+        // callback seam's guard and commit hook belong to THIS attempt only.
+        // (A callback never reaches here — its guard refuses a processing
+        // session — but the strip is structural rather than reliant on that.)
+        managed.messageQueue.push({ message, attachments, storedAttachments, options: toPersistableSendOptions(options), messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId })
         // Only claim interruption when a steer attempt actually aborted the
         // in-flight turn. In 'queue' mode the current turn runs to natural
         // completion, so the replayed turn must NOT inject the "previous response
         // was interrupted" reminder (it would falsely tell the model its own
         // complete answer was cut off → confusion).
-        if (delivery.wasInterrupted) managed.wasInterrupted = true
+        // ...and never when nothing was interrupted because nothing was
+        // running. `resolveMidStreamDeliveryOutcome` reads a failed steer as an
+        // abort, which is right for a live turn and wrong for an accepted one
+        // that has not started — no `forceAbort` happened, so claiming one
+        // would put the reminder in front of a turn that was never cut off.
+        if (delivery.wasInterrupted && !awaitingAcceptedTurn) managed.wasInterrupted = true
       }
 
       this.persistSession(managed)
@@ -6445,6 +6815,22 @@ export class SessionManager implements ISessionManager {
       }
       managed.messages.push(userMessage)
 
+      // COMMIT POINT. Fired synchronously, immediately after the push and
+      // before any await, because this — not the ack below — is the instant the
+      // message becomes real.
+      //
+      // `onAck` fires after `flushSession`, so resolving a callback there would
+      // leave a window in which the message is already in `managed.messages`
+      // but the caller has not been told: a deadline or a cancel landing in that
+      // window would audit delivered work as a timeout. Once this returns, the
+      // action has succeeded and nothing downstream may relabel it.
+      if (pageCallback) {
+        // Marks the accepted-but-not-started window for any send that arrives
+        // before `setProcessing` — see `pageCallbackTurnPendingToken`.
+        managed.pageCallbackTurnPendingToken = pageCallback.token
+        pageCallback.markCommitted()
+      }
+
       // Update lastMessageRole for badge display. Skip for hidden messages so the
       // session-list preview isn't briefly driven by an invisible system nudge.
       if (!options?.hidden) {
@@ -6454,9 +6840,29 @@ export class SessionManager implements ISessionManager {
       // Persist + flush before announcing — the user message must be
       // genuinely on disk before we tell the renderer "accepted", and
       // `persistSession` is debounced (500ms). #616.
-      this.persistSession(managed)
-      await this.flushSession(managed.id)
-      onAck?.(userMessage.id)
+      // A callback holds a claim on its own write; every other sender keeps the
+      // existing fire-and-forget persist.
+      const persistHandle = pageCallback ? this.persistSessionChecked(managed) : undefined
+      if (!pageCallback) this.persistSession(managed)
+      if (pageCallback) {
+        // Checked flush, and `onDurable` only if it really succeeded. The
+        // unchecked path resolves just as happily after a failed write, so
+        // firing durability off it would have the page told its message was
+        // saved when the disk had said otherwise.
+        const receipt = await persistHandle!.receipt
+        onAck?.(userMessage.id)
+        if (!receipt.ok) {
+          sessionLog.warn(`Page callback message not durable for ${sessionId}: ${receipt.error}`)
+        }
+        // Answered either way, and answered here. Resolving only on success
+        // left a failed write to surface as a stalled caller — the page would
+        // wait out the whole turn, or the broker's deadline, to learn something
+        // the disk had already said.
+        pageCallback.onDurabilityResolved(receipt.ok)
+      } else {
+        await this.flushSession(managed.id)
+        onAck?.(userMessage.id)
+      }
 
       // Emit user_message event so UI can confirm the optimistic message
       this.sendEvent({
@@ -6529,6 +6935,20 @@ export class SessionManager implements ISessionManager {
     }
 
     managed.lastMessageAt = Date.now()
+    // The ORDINARY announcement is deliberately not released here — the wrapper
+    // owns exactly one decrement, and a second would under-count a sibling send
+    // still pre-handoff.
+    //
+    // The callback RESERVATION is different and is released here, because from
+    // this line `isProcessing` is the authoritative answer and holding both
+    // would mean a stuck turn leaks a reservation nobody clears. Token-scoped
+    // and idempotent; the wrapper's backstop then finds nothing to do.
+    if (pageCallback) pageCallback.onProcessingStarted()
+    // `isProcessing` now covers the window this marker stood in for. Scoped to
+    // this delivery: a successor that has already committed keeps its own.
+    if (pageCallback && managed.pageCallbackTurnPendingToken === pageCallback.token) {
+      managed.pageCallbackTurnPendingToken = undefined
+    }
     this.setProcessing(managed, true)
     managed.streamingText = ''
     managed.streamingTurnId = undefined
@@ -6549,7 +6969,20 @@ export class SessionManager implements ISessionManager {
     managed.lastSentMessage = message
     managed.lastSentAttachments = attachments
     managed.lastSentStoredAttachments = storedAttachments
-    managed.lastSentOptions = options
+    managed.lastSentOptions = toPersistableSendOptions(options)
+    // Provenance, and it gates the auth-retry replay below (SUV-0064).
+    //
+    // The retry path resends `lastSentMessage` verbatim after refreshing the
+    // token. For a Page callback that would re-deliver a page's text into a
+    // live session with NO grant validation, NO activation ticket, and NO
+    // consent — the whole authorization chain is upstream of `sendMessage` and
+    // is not re-run by a retry. Recording where the message came from is what
+    // lets `attemptAuthRetry` refuse it.
+    //
+    // It is stored rather than skipped so the retry path cannot fall back to an
+    // OLDER user message instead: the flag makes the turn non-retryable, which
+    // is the honest outcome, rather than silently retrying the wrong thing.
+    managed.lastSentWasPageCallback = pageCallback !== undefined
 
     // Capture the generation to detect if a new request supersedes this one.
     // This prevents the finally block from clobbering state when a follow-up message arrives.
@@ -6753,7 +7186,7 @@ export class SessionManager implements ISessionManager {
             sessionLog.info(`Captured SDK session ID via fallback: ${sdkId}`)
             // Also flush here since we're in fallback mode
             this.persistSession(managed)
-            sessionPersistenceQueue.flush(managed.id)
+            sessionPersistenceQueue.flush(this.writeKeyFor(managed))
           }
         }
 
@@ -7002,6 +7435,16 @@ export class SessionManager implements ISessionManager {
     failureErrorCode?: string,
   ): boolean {
     if (managed.authRetryAttempted || !managed.lastSentMessage) return false
+    // A Page callback is authorized by a grant, an activation ticket, and a
+    // user's confirmation — all upstream of `sendMessage`, and none of them
+    // re-run here. Resending its message after a token refresh would deliver
+    // page-authored text into a live session on nobody's authority. The turn is
+    // simply not retryable; the page can be clicked again, which goes through
+    // the whole chain properly.
+    if (managed.lastSentWasPageCallback) {
+      sessionLog.info(`Auth error on a Page callback turn for ${sessionId}; not retrying (would bypass grant/activation)`)
+      return false
+    }
 
     sessionLog.info(`Auth error detected, attempting token refresh and retry for session ${sessionId}`)
     managed.authRetryAttempted = true
@@ -7728,6 +8171,270 @@ export class SessionManager implements ISessionManager {
    * `setSessionStatus` there is no origin parameter here: labels have no closure gate, so
    * there is nothing for an origin to authorize.
    */
+  /**
+   * Deliver one Page callback message to one session, atomically (SUV-0064).
+   *
+   * The primitive exists because "check, then send" is not safe here and cannot
+   * be made safe from outside. `sendMessage` awaits twice before it decides
+   * whether a turn is running, so a caller that checked `isProcessing` itself
+   * would be checking across those awaits: a turn started in between gets the
+   * page's text steered or queued into it, and a session archived in between
+   * receives a message into finished work. Both are exactly what a Page
+   * callback must never do.
+   *
+   * So the final check runs as `sendMessage`'s own `deliveryGuard`, in the same
+   * JS turn as the commit, with nothing able to yield between the two. This is
+   * not a second send path — it is the one send path, told when to stop.
+   *
+   * **Returns at ACCEPTANCE, not at completion.** `onAck` fires once the user
+   * message is persisted and flushed; the turn it starts outlives this call by
+   * design. Awaiting the whole turn would make every callback look like a
+   * 30-second action to the broker's deadline, and a deadline that fired after
+   * the message was already on disk would audit delivered work as a timeout.
+   *
+   * `signal` is re-read inside the guard, so a cancellation or a broker
+   * deadline that lands while this is mid-flight refuses *before* the commit.
+   * Once the commit happens the action has succeeded and nothing downstream may
+   * relabel it — which is why acceptance, not completion, is the boundary.
+   */
+  /**
+   * Identity-only view of this workspace's sessions, for target resolution.
+   *
+   * Deliberately NOT `getSessions`, even though that satisfies the same
+   * interface. `getSessions` is the UI-facing projection: it maps every managed
+   * session through `managedToSession` and sorts the result, which is a lot of
+   * work to answer "does this workspace own this id", and it puts a render
+   * concern on an authorization path. Routing automation dispatch through it
+   * also measurably shifted timing — enough to expose a latent race in an
+   * unrelated history test, which is a fair warning about the coupling.
+   *
+   * Ordering is preserved because label resolution means "most recently active
+   * session carrying this label", and that is a real part of the contract.
+   */
+  /**
+   * Sessions with a Page callback currently between its guard and its commit.
+   *
+   * `isProcessing` cannot carry this. A turn does not start until well after
+   * the message is pushed, so two callbacks racing the same idle session both
+   * see it idle, both pass the guard, and both commit — two page-authored
+   * messages into one session, neither of which the other could see coming.
+   * The guard's verdict is only as good as its exclusivity, and nothing in the
+   * existing session state provides it.
+   *
+   * Held for the synchronous span between reserving and committing, so it is
+   * never awaited across and cannot deadlock: the reservation is taken inside
+   * the guard and released when the send settles, success or failure.
+   */
+  private readonly pageCallbackReservations = new Map<string, symbol>()
+
+  /**
+   * Claim the callback reservation for a session, returning the owning token.
+   *
+   * A token rather than a bare flag because release is deferred and can race a
+   * successor: without identity, a finishing callback's release would clear a
+   * *later* callback's reservation and reopen the window for whatever arrives
+   * next. Only the holder of the matching token may release.
+   */
+  private reservePageCallback(sessionId: string, token: symbol): symbol {
+    this.pageCallbackReservations.set(sessionId, token)
+    return token
+  }
+
+  /**
+   * Release the reservation, but only if this token still owns it. Idempotent:
+   * called at the `isProcessing` handover and again when the send settles, and
+   * the second call is a no-op.
+   */
+  private releasePageCallback(sessionId: string, token: symbol): void {
+    if (this.pageCallbackReservations.get(sessionId) === token) {
+      this.pageCallbackReservations.delete(sessionId)
+    }
+  }
+
+  /**
+   * Sessions with an ORDINARY send between its entry and its commit.
+   *
+   * The asymmetry with the reservation above is the whole design, and it only
+   * points one way: a Page callback yields to a user, and a user never yields
+   * to a Page. Ordinary sends therefore only *announce* here — nothing consults
+   * this set on their behalf, so no user message is ever delayed or refused by
+   * it — while a callback's guard reads it and stands down.
+   *
+   * Without this, the reservation serialised callbacks against each other and
+   * nothing else: a user pressing send during a callback's flush window still
+   * saw an idle session, and both committed.
+   */
+  private readonly ordinarySendsInFlight = new Map<string, number>()
+
+  /** Announce an ordinary send. Counted, because overlapping sends share a key. */
+  private announceOrdinarySend(sessionId: string): void {
+    this.ordinarySendsInFlight.set(sessionId, (this.ordinarySendsInFlight.get(sessionId) ?? 0) + 1)
+  }
+
+  /**
+   * Withdraw one announcement.
+   *
+   * A count rather than a flag because two ordinary sends for one session share
+   * a key: with a Set, whichever finished first deleted the shared entry while
+   * the other was still pre-handoff, and a callback could then commit alongside
+   * the survivor — the exact overlap the announcement exists to prevent.
+   *
+   * **Exactly one decrement per send**, from the wrapper's `finally` and
+   * nowhere else. There is deliberately no early release at the handover: a
+   * second decrement inside would take the count below the number of sends
+   * actually outstanding, clearing the announcement for a sibling that is still
+   * pre-handoff — which is the same shared-entry bug in a new shape. Guards
+   * against an unmatched call anyway (`undefined` returns, never goes negative).
+   */
+  private withdrawOrdinarySend(sessionId: string): void {
+    const outstanding = this.ordinarySendsInFlight.get(sessionId)
+    if (outstanding === undefined) return
+    if (outstanding <= 1) this.ordinarySendsInFlight.delete(sessionId)
+    else this.ordinarySendsInFlight.set(sessionId, outstanding - 1)
+  }
+
+  private readonly sessionTargetLookup: WorkspaceSessionLookup = {
+    getSessions: (workspaceId: string) =>
+      Array.from(this.sessions.values())
+        .filter((m) => m.workspace.id === workspaceId)
+        .sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0))
+        .map((m) => ({ id: m.id, labels: m.labels })),
+  }
+
+  async tryDeliverPageCallback(
+    sessionId: string,
+    message: string,
+    options: { workspaceId: string; signal?: AbortSignal; onCommitted?: () => void },
+  ): Promise<{ ok: true; durable: boolean } | { ok: false; code: PageCallbackRefusalCode }> {
+    const managed = this.sessions.get(sessionId)
+    // Workspace containment is re-proven here, against live state, however the
+    // caller resolved the target earlier.
+    if (!managed || managed.workspace.id !== options.workspaceId) {
+      return { ok: false, code: 'session-not-found' }
+    }
+
+    /**
+     * Everything refusable, read synchronously from LIVE state each time.
+     * Called once before the send as a cheap early-out, and again as the guard,
+     * where it is authoritative. Re-reading `this.sessions` rather than closing
+     * over `managed` is the point: the session may have been replaced or
+     * removed since.
+     */
+    const refusal = (): PageCallbackRefusalCode | null => {
+      // Another callback holds this session between its own guard and commit.
+      // Reported as busy because that is what it is from the caller's side —
+      // a turn is about to start — and because distinguishing it would leak
+      // one page's activity to another.
+      if (this.pageCallbackReservations.has(sessionId)) return 'session-busy'
+      // A user is mid-send. Their message wins; the page stands down and the
+      // click can be repeated. The reverse never happens.
+      if (this.ordinarySendsInFlight.has(sessionId)) return 'session-busy'
+      return pageCallbackRefusal(this.sessions.get(sessionId), options.workspaceId, options.signal?.aborted === true)
+    }
+
+    const early = refusal()
+    if (early) return { ok: false, code: early }
+
+    let refused: PageCallbackRefusalCode | null = null
+    let committed = false
+    let durable = false
+    /** One identity for this delivery's reservation and its accepted-turn marker. */
+    const deliveryToken = Symbol(sessionId)
+    let reservation: symbol | undefined
+    /**
+     * The underlying send, settled independently of when the CALLER is
+     * answered.
+     *
+     * The two lifetimes are genuinely different and conflating them was a bug:
+     * the caller is answered at durability, but on a session's first message
+     * `sendMessage` performs another flush (title generation) before
+     * `setProcessing`, so releasing the reservation when the caller returns
+     * left a window with `isProcessing` still false — and a second callback or
+     * an ordinary send could commit into it, starting overlapping turns.
+     *
+     * The reservation therefore follows the SEND, not the answer — released at
+     * the `isProcessing` handover if the send gets that far, and by this
+     * fallback otherwise. A stuck turn is then governed by `isProcessing`,
+     * which is the flag that already means "a turn is running", rather than by
+     * a reservation nobody will ever clear.
+     */
+    let sendSettled: Promise<void> | undefined
+    try {
+      await new Promise<void>((resolve) => {
+        sendSettled = this.sendMessage(
+          sessionId,
+          message,
+          undefined,
+          undefined,
+          {
+            pageCallback: {
+              token: deliveryToken,
+              guard: () => {
+                refused = refusal()
+                // Reserve in the SAME synchronous frame that clears the
+                // session. A reservation taken any later is a reservation two
+                // callers can both pass.
+                if (!refused) reservation = this.reservePageCallback(sessionId, deliveryToken)
+                return refused
+              },
+              markCommitted: () => {
+                committed = true
+                // Tell the broker before anything can await: from here the
+                // delivery cannot be cancelled, timed out, or relabelled.
+                options.onCommitted?.()
+              },
+              onProcessingStarted: () => {
+                if (reservation) this.releasePageCallback(sessionId, reservation)
+              },
+              onDurabilityResolved: (isDurable: boolean) => {
+                durable = isDurable
+                // Resolve HERE, not on send-settle. `sendMessage` does not
+                // return until the whole agent turn completes, so waiting for
+                // it made every callback as slow as the turn it started — the
+                // broker held its mutating queue slot throughout and its
+                // deadline could not help, because the caller was blocked on
+                // work that had already succeeded. Durability is the last thing
+                // this primitive promises; everything after it belongs to the
+                // turn, not to the delivery.
+                resolve()
+              },
+            },
+          },
+          undefined,
+          undefined,
+          undefined,
+        )
+          .catch((error) => {
+            sessionLog.warn(`tryDeliverPageCallback: send failed for ${sessionId}: ${error}`)
+          })
+          // Fallback resolution for the paths that never reach durability: a
+          // guard refusal, or a throw before the flush. The durable path has
+          // already resolved by here, and resolving twice is a no-op.
+          .finally(() => resolve())
+      })
+    } finally {
+      if (reservation) {
+        const token = reservation
+        if (sendSettled) {
+          // Backstop only. The handover inside `sendMessageInner` normally
+          // releases first, the moment `isProcessing` becomes the authoritative
+          // answer; this covers the paths that never reach it (a refusal, a
+          // throw before the handover). Token-scoped, so a release arriving
+          // late cannot clear a LATER callback's reservation.
+          void sendSettled.finally(() => this.releasePageCallback(sessionId, token))
+        } else {
+          this.releasePageCallback(sessionId, token)
+        }
+      }
+    }
+
+    if (committed) return { ok: true, durable }
+    // Neither committed nor named a refusal: the send failed for some other
+    // reason. Report the most conservative truthful thing available rather than
+    // a delivery.
+    return { ok: false, code: refused ?? 'session-not-found' }
+  }
+
   async setSessionLabels(sessionId: string, labels: string[], cause?: AutomationCause): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (managed) {
@@ -9132,7 +9839,13 @@ export class SessionManager implements ISessionManager {
     workspaceRootPath: string,
     action: PendingSessionAction,
   ): Promise<void> {
-    const sessionId = this.resolveAutomationTargetSession(workspaceId, action)
+    // fork(SUV-0064): was a private copy that answered an explicit `{ id }` from
+    // `this.sessions` — the process-wide map — with no workspace comparison, so
+    // an app-event automation registered in one workspace could mutate a session
+    // in another. One resolver now, shared with the desktop webhook executor and
+    // Page callbacks, and containment is a property of the lookup rather than a
+    // check each caller has to remember.
+    const sessionId = resolveWorkspaceSessionTarget(this.sessionTargetLookup, workspaceId, action.target)
     if (!sessionId) {
       await this.appendSessionActionHistory(workspaceRootPath, action, sessionActionOutcome.targetNotFound, false, {
         target: action.target,
@@ -9262,17 +9975,6 @@ export class SessionManager implements ISessionManager {
    * workspace carrying that label (exact entry match, so valued `id::value` entries are
    * included). `getSessions` is sorted most-recent-first.
    */
-  private resolveAutomationTargetSession(workspaceId: string, action: PendingSessionAction): string | null {
-    if (action.target.id) {
-      return this.sessions.has(action.target.id) ? action.target.id : null
-    }
-    if (action.target.label) {
-      for (const meta of this.getSessions(workspaceId)) {
-        if ((meta.labels ?? []).includes(action.target.label)) return meta.id
-      }
-    }
-    return null
-  }
 
   /** Session-action history envelope. Matches the desktop webhook executor's shape. */
   private async appendSessionActionHistory(
@@ -9768,7 +10470,7 @@ export class SessionManager implements ISessionManager {
     }
 
     this.persistSession(managed)
-    await sessionPersistenceQueue.flush(sessionId)
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
 
     const summary = await this.generateRemoteTransferSummary(managed)
     if (!summary) {
@@ -9809,7 +10511,7 @@ export class SessionManager implements ISessionManager {
     managed.transferredSessionSummary = payload.summary.trim()
     managed.transferredSessionSummaryApplied = false
     this.persistSession(managed)
-    await sessionPersistenceQueue.flush(session.id)
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
 
     return { sessionId: session.id }
   }
@@ -9842,7 +10544,7 @@ export class SessionManager implements ISessionManager {
 
     // Flush pending writes to ensure JSONL is up to date
     this.persistSession(managed)
-    await sessionPersistenceQueue.flush(sessionId)
+    await sessionPersistenceQueue.flush(this.writeKeyFor(managed))
 
     const bundle = serializeSession(managed.workspace.rootPath, sessionId)
     if (!bundle) {
