@@ -732,6 +732,59 @@ describe('a queued send crossing a process boundary', () => {
       .filter((m) => m.content === 'queued then refused')).toHaveLength(1)
   }, 30000)
 
+  /**
+   * A backend that cannot be ASKED must not be enrolled in the provisional
+   * marker scheme at all.
+   *
+   * `takeUndeliveredSteer` is optional on `AgentBackend`, and `PiAgent` does not
+   * implement it — `redirect()` is a fire-and-forget IPC send that returns true
+   * unconditionally. Pi is not a corner case: `defaultMidStreamBehavior` makes
+   * 'steer' the default for every provider except 'anthropic'.
+   *
+   * Without the gate in `recordAcceptedSteer`, such a backend gets a marker it
+   * can never settle: the reconciler asks, reads the absent method as null,
+   * treats that silence as AFFIRMATIVE DELIVERY, and clears the marker — leaving
+   * an acknowledged steer neither on disk nor in the runtime queue. That is
+   * strictly worse than never marking it, which is what this pins.
+   */
+  it('does not mark a steer durable on a backend that cannot report undelivered steers', async () => {
+    const sessionId = 'sess_steer_no_capability'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId)
+    const turns = sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void }
+
+    // Pi's shape: accepts the steer, reports nothing, and has no
+    // `takeUndeliveredSteer` at all.
+    const sent: string[] = []
+    managed.agent = { redirect: (text: string) => { sent.push(text); return true } }
+
+    turns.setProcessing(managed, true)
+    await sm.sendMessage(sessionId, 'steered at a mute backend', undefined, undefined, {
+      skillSlugs: [SKILL_SLUG],
+    })
+    const steered = (managed.messages as Array<{ id: string; content?: string }>)
+      .find((m) => m.content === 'steered at a mute backend')!
+    expect(sent).toEqual(['steered at a mute backend'])
+
+    // Not enrolled: no provisional marker, and nothing for the reconciler to
+    // mis-settle.
+    expect((managed.messages as Array<{ id: string; isQueued?: boolean }>)
+      .find((m) => m.id === steered.id)?.isQueued).toBeFalsy()
+    expect((managed as { pendingSteers?: unknown[] }).pendingSteers).toBeUndefined()
+
+    await (sm as unknown as {
+      onProcessingStopped(id: string, reason: string): Promise<void>
+    }).onProcessingStopped(sessionId, 'complete')
+
+    // Still exactly one copy, still unmarked — the turn end neither promoted a
+    // phantom nor cleared a marker that was never written.
+    expect((managed.messages as Array<{ content?: string }>)
+      .filter((m) => m.content === 'steered at a mute backend')).toHaveLength(1)
+    expect((managed.messages as Array<{ id: string; isQueued?: boolean }>)
+      .find((m) => m.id === steered.id)?.isQueued).toBeFalsy()
+    expect((managed.messageQueue as unknown[]).length).toBe(0)
+  }, 30000)
+
 })
 
 describe('a title generated across a shutdown', () => {

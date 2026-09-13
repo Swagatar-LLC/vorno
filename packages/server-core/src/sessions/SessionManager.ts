@@ -1711,12 +1711,30 @@ export class SessionManager implements ISessionManager {
    * will then be cleared. The trade is deliberate and one-directional: a crash
    * replays a message that may already have been seen (at-least-once), where the
    * alternative loses one that was not.
+   *
+   * ONLY for a backend that can answer `takeUndeliveredSteer`. The marker is
+   * provisional, and the only thing that may retire it is the backend saying
+   * "that one went out" — so a backend which cannot be asked can never settle
+   * one. Marking anyway would be strictly worse than not marking: the
+   * reconciler reads its silence as delivery and clears the marker, leaving an
+   * ACKed steer neither on disk nor in the runtime queue, which is exactly the
+   * loss this method exists to prevent. `takeUndeliveredSteer` is optional on
+   * `AgentBackend` and `PiAgent` does not implement it — its `redirect()` is a
+   * fire-and-forget IPC `send` that returns `true` unconditionally — and Pi is
+   * not a corner: `defaultMidStreamBehavior` makes 'steer' the default for
+   * every provider except 'anthropic'.
+   *
+   * Those backends keep their pre-existing behaviour: no marker, no false
+   * clear, and no replay. The guarantee narrows to where it can be verified
+   * rather than being claimed everywhere and honoured in one place. Implement
+   * `takeUndeliveredSteer` on a backend and it earns the guarantee.
    */
   private recordAcceptedSteer(
     managed: ManagedSession,
     userMessage: Message,
     envelope: { message: string; attachments?: FileAttachment[]; storedAttachments?: StoredAttachment[]; options?: SendMessageOptions },
   ): void {
+    if (typeof managed.agent?.takeUndeliveredSteer !== 'function') return
     userMessage.isQueued = true
     userMessage.queuedSkillSlugs = envelope.options?.skillSlugs
     ;(managed.pendingSteers ??= []).push({ ...envelope, messageId: userMessage.id })
@@ -1776,6 +1794,11 @@ export class SessionManager implements ISessionManager {
    *
    * Asking also takes: the backend forgets, so two callers cannot both act on
    * one answer.
+   *
+   * The null branch is only sound because `recordAcceptedSteer` refuses to
+   * enrol a backend that cannot be asked. Without that gate, a backend with no
+   * `takeUndeliveredSteer` answers null to every question and its silence reads
+   * as delivery — so do not relax one of these two without the other.
    */
   private reconcilePendingSteers(managed: ManagedSession): void {
     const undelivered = managed.agent?.takeUndeliveredSteer?.() ?? null
