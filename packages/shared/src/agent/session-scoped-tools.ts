@@ -27,6 +27,7 @@ import {
   SESSION_TOOL_REGISTRY,
   getSessionToolDefs,
   TOOL_DESCRIPTIONS as BASE_DESCRIPTIONS,
+  pagesGuideReference,
   // Types
   type ToolResult,
   type AuthRequest,
@@ -202,6 +203,11 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   skill_validate: BASE_DESCRIPTIONS.skill_validate + `\n\n**Reference:** ${DOC_REFS.skills}`,
   mermaid_validate: BASE_DESCRIPTIONS.mermaid_validate + `\n\n**Reference:** ${DOC_REFS.mermaid}`,
   source_test: BASE_DESCRIPTIONS.source_test + `\n\n**Reference:** ${DOC_REFS.sources}`,
+  // fork(SUV-0061): the base description names the Pages guide without a path —
+  // session-tools-core cannot import DOC_REFS (shared depends on it). Resolve it
+  // here so the agent gets the real config dir rather than upstream's. Shares
+  // one renderer with the MCP/Pi paths so the three cannot drift apart.
+  create_page: BASE_DESCRIPTIONS.create_page + pagesGuideReference(DOC_REFS.docsDir),
 };
 
 // ============================================================

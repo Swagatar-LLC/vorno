@@ -25,6 +25,7 @@ import { useAppShellContext } from '@/context/AppShellContext'
 import { sessionMetaMapAtom, type SessionMeta } from '@/atoms/sessions'
 import { StoplightProvider } from '@/context/StoplightContext'
 import {
+  useNavigation,
   useNavigationState,
   isSessionsNavigation,
   isSourcesNavigation,
@@ -51,6 +52,9 @@ import ArtifactHomePage from '@/pages/ArtifactHomePage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
 import { PagesHome } from '../pages/PagesHome'
 import { PageView } from '../pages/PageView'
+import { PanelsTopLeft } from 'lucide-react'
+import { EntityListEmptyScreen } from '@/components/ui/entity-list-empty'
+import { routes } from '@/lib/navigate'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
@@ -75,6 +79,7 @@ export function MainContentPanel({
 }: MainContentPanelProps) {
   const { t } = useTranslation()
   const globalNavState = useNavigationState()
+  const { navigate } = useNavigation()
   const navState = navStateOverride ?? globalNavState
   const {
     activeWorkspaceId,
@@ -93,7 +98,7 @@ export function MainContentPanel({
     getAutomationHistory,
     activeSessionWorkingDirectory,
   } = useAppShellContext()
-  const { pagesEnabled } = usePages(activeWorkspaceId)
+  const { pagesEnabled, pagesCapabilityResolved } = usePages(activeWorkspaceId)
 
   // Session multi-select state
   const isMultiSelectActive = useIsMultiSelectActive()
@@ -370,8 +375,34 @@ export function MainContentPanel({
   // Pages navigator - host capability is authoritative; a manually entered
   // route cannot render the unavailable feature before SUV-0058's workspace gate.
   if (isPagesNavigation(navState)) {
-    if (!pagesEnabled) {
+    // Resolution is checked BEFORE the flag, not inside it. Both `pagesEnabled`
+    // and the pages atom hold the previous workspace's answer while a switch is
+    // in flight, so testing the flag first renders whichever stale state it
+    // carries: the disabled screen on a workspace where Pages is on, or the
+    // previous workspace's pages on one where it is off.
+    if (!pagesCapabilityResolved) {
       return wrapWithStoplight(<Panel variant="grow" className={className}>{null}</Panel>)
+    }
+    if (!pagesEnabled) {
+      // fork(SUV-0061): this used to render an empty Panel, so a route reached
+      // with Pages off looked like a broken screen rather than a capability
+      // that is off by default. Say which switch it is and where it lives.
+      return wrapWithStoplight(
+        <Panel variant="grow" className={className}>
+          <EntityListEmptyScreen
+            icon={<PanelsTopLeft />}
+            title={t("pages.disabledTitle")}
+            description={t("pages.disabledDescription")}
+          >
+            <button
+              onClick={() => navigate(routes.view.settings('workspace'))}
+              className="inline-flex h-7 items-center gap-1.5 rounded-[8px] bg-foreground/[0.02] px-3 text-xs font-medium shadow-minimal transition-colors hover:bg-foreground/[0.05]"
+            >
+              {t("pages.disabledOpenSettings")}
+            </button>
+          </EntityListEmptyScreen>
+        </Panel>
+      )
     }
     return wrapWithStoplight(
       <Panel variant="grow" className={className}>
