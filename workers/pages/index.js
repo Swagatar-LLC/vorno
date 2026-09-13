@@ -16,6 +16,22 @@ const PASSWORD_MIN_CHARS = 8
 const PASSWORD_MAX_CHARS = 1024
 const MAX_PASSWORD_REQUEST_BYTES = 16 * 1024
 const PASSWORD_TICKET_TTL_SECONDS = 60 * 60 * 12
+/**
+ * Published content is retained for 30 days from its LAST UPDATE, per the
+ * retention policy Jeff approved on 2026-09-13 and published at /privacy.
+ *
+ * Two mechanisms enforce this and neither is redundant. This constant drives the
+ * read path, which is exact and immediate — it is what makes the promise true
+ * from a reader's point of view at the moment it falls due. An R2 bucket
+ * lifecycle rule deletes the bytes (see README "Required Cloudflare
+ * provisioning"), which is what makes it true on disk, but R2 evaluates
+ * lifecycle asynchronously, so bytes can outlive the deadline by hours. Serving
+ * them in that window would be the service disagreeing with its own policy.
+ *
+ * Keep this number, the lifecycle rule, the bundled Pages guide and /privacy in
+ * agreement. A reader can check all four.
+ */
+export const RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 // Measured locally with bench-password.js; deploy verification must remeasure on Workers.
 const DEFAULT_PBKDF2_ITERATIONS = 100_000
 
@@ -301,6 +317,47 @@ async function writeBundle(env, record, upload, etag) {
   return saveRecord(env, record, etag)
 }
 
+/**
+ * Re-upload every retained object so its R2 age restarts.
+ *
+ * A password change is a real update for retention (Jeff, 2026-09-13), and the
+ * R2 lifecycle rule that deletes the bytes counts each object's OWN upload — it
+ * cannot see a manifest write. So renewing the deadline means renewing the
+ * objects; anything else advances the manifest past the age R2 is enforcing and
+ * leaves a page whose shell outlives its content.
+ *
+ * Returns false if any retained object is missing or fails to re-put, and the
+ * caller must then NOT advance the anchor. Failing that way is safe in one
+ * direction only, and this is the safe one: the objects are younger than the
+ * manifest claims, so the Worker stops serving at or before the bytes go. The
+ * reverse — an advanced manifest over un-renewed objects — is the exact split
+ * this guards against.
+ */
+async function renewRetainedObjects(env, record) {
+  const keys = [record.contentKey, ...(record.manifest.includesData ? [record.snapshotKey] : [])]
+  for (const key of keys) {
+    const contentType = key === record.contentKey
+      ? 'text/html; charset=utf-8'
+      : 'application/json; charset=utf-8'
+    // The READ is inside the guard too. `handle` has no top-level catch, so a
+    // transient R2 read failure thrown from here would leave the Worker as an
+    // unhandled error rather than the 503 this contract promises — and the
+    // caller would lose the one thing it must know, which is that nothing was
+    // renewed.
+    try {
+      const existing = await env.PAGES.get(key)
+      if (!existing) return false
+      // Buffered, not streamed: `put` must not consume a body we may need to
+      // abandon, and a retained object is already bounded by the upload caps.
+      const bytes = await new Response(existing.body).arrayBuffer()
+      await env.PAGES.put(key, bytes, { httpMetadata: { contentType } })
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
 async function createPublication(request, env) {
   if (await rateLimited(env, 'PAGE_CREATE_LIMIT', request, 'create', true)) return json({ error: 'rate_limited' }, 429)
   const upload = await readUpload(request)
@@ -322,6 +379,7 @@ async function createPublication(request, env) {
     password,
     createdAt: now,
     updatedAt: now,
+    retentionAnchorAt: now,
     cleanup: { state: 'none', attempts: 0 },
   }
   try {
@@ -344,7 +402,18 @@ async function updatePublication(request, env, id) {
   if (upload.passwordAction) {
     let password
     try { password = upload.passwordAction === 'set' ? await passwordMetadata(env, upload.password) : undefined } catch { return json({ error: 'password_tickets_unconfigured' }, 503) }
-    const record = { ...auth.record, password, updatedAt: Date.now() }
+    // A password change renews retention, so the objects are re-uploaded BEFORE
+    // the manifest records a later deadline. Ordered this way because the only
+    // acceptable failure leaves the anchor behind the object age, never ahead of
+    // it: a refusal here writes nothing at all, so the publication keeps both its
+    // old password and its old deadline rather than claiming a renewal it did
+    // not get.
+    if (!(await renewRetainedObjects(env, auth.record))) return json({ error: 'storage_failed' }, 503)
+    const now = Date.now()
+    const record = { ...auth.record, password, updatedAt: now, retentionAnchorAt: now }
+    // A concurrent content update loses this etag, so the save fails and the
+    // anchor is not advanced. The objects it re-put are simply younger than the
+    // winning revision's — harmless, and in the safe direction.
     if (!(await saveRecord(env, record, auth.etag))) return json({ error: 'conflict' }, 409)
     return json(publicationDto(request, record))
   }
@@ -356,6 +425,8 @@ async function updatePublication(request, env, id) {
     revision,
     ...revisionPaths(id, revision),
     updatedAt: Date.now(),
+    // Moves here because `writeBundle` below re-puts the objects. See `isExpired`.
+    retentionAnchorAt: Date.now(),
   }
   let saved
   try { saved = await writeBundle(env, record, upload, auth.etag) } catch { saved = undefined }
@@ -454,9 +525,63 @@ function passwordHtml(record) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Password required — Vorno Pages</title><style>body{max-width:32rem;margin:4rem auto;padding:0 1rem;font-family:system-ui,sans-serif}input,button{font:inherit;padding:.6rem;width:100%;box-sizing:border-box;margin:.4rem 0}button{width:auto}</style></head><body><h1>Password required</h1><p>This page was published by a Vorno user, not by Vorno.</p><form method="post" action="/p/${record.id}/password"><label>Password<input required type="password" name="password" autocomplete="current-password"></label><button type="submit">View page</button></form></body></html>`
 }
 
+/**
+ * Has this publication passed its retention deadline?
+ *
+ * Anchored on `retentionAnchorAt` — when the retained objects were last
+ * UPLOADED — and deliberately not on `updatedAt`.
+ *
+ * Every update restarts the window, password changes included (Jeff,
+ * 2026-09-13). The subtlety is not which operations count; it is that the two
+ * halves of this policy must count the same event or they drift apart. The R2
+ * lifecycle rule deletes an object N days after ITS OWN upload and cannot see a
+ * manifest write, so a renewal that only moved a timestamp would advance the
+ * Worker's deadline past the age R2 is enforcing: the content would be deleted
+ * on the old schedule while the shell kept rendering over it — a broken page,
+ * and a 200-over-404 split that occurs in no other state and so distinguishes
+ * "something was published here once" from "nothing ever was".
+ *
+ * `renewRetainedObjects` is what makes a password change a real renewal: it
+ * re-uploads the objects so R2 restarts too, and this field is advanced only
+ * after that succeeds. The name is `retentionAnchorAt` rather than anything
+ * about content changing, because a password renewal moves it without the
+ * content differing by a byte.
+ *
+ *
+ * Fails CLOSED on a manifest that cannot prove its own age. Every publish and
+ * every content update stamps this field, so a record without a finite numeric
+ * one is corruption or a hand-edited object, and neither can demonstrate the
+ * content is still inside the window we promised to delete it in. Treating
+ * "cannot tell" as "still fresh" would let exactly the objects we have lost
+ * track of outlive the policy indefinitely.
+ */
+export function isExpired(record, now) {
+  return !(typeof record.retentionAnchorAt === 'number' && Number.isFinite(record.retentionAnchorAt))
+    || now - record.retentionAnchorAt > RETENTION_MS
+}
+
+/**
+ * The one loader every public route goes through — shell, content, data,
+ * snapshot and the password POST. The retention check lives HERE rather than in
+ * each route so a route added later inherits it instead of having to remember
+ * it.
+ *
+ * An expired publication is indistinguishable from one that never existed and
+ * from one that was unpublished: the same `null`, and every caller turns that
+ * into the same bare 404. A distinct "expired" status would let an
+ * unauthenticated caller separate "no such page" from "a page existed here and
+ * lapsed", which is a disclosure about someone else's publishing history that
+ * the link-holder model never promised to keep, and that nothing needs.
+ *
+ * Admin routes deliberately do NOT pass through here. They authenticate against
+ * the record directly, so unpublish and cleanup keep working past the deadline —
+ * the policy withdraws public access, it does not strand an owner who still
+ * wants the objects gone.
+ */
 async function publicRecord(env, id) {
   const loaded = await loadRecord(env, id)
-  return loaded?.record.status === 'published' ? loaded.record : null
+  if (loaded?.record.status !== 'published') return null
+  return isExpired(loaded.record, Date.now()) ? null : loaded.record
 }
 
 async function serveShell(request, env, id) {

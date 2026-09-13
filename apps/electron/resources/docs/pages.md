@@ -305,10 +305,12 @@ A separate public service, isolated from Vorno's session sharing — its own hos
 
 - **Unpublish is immediate.** Public access is revoked first, so every public route 404s before physical deletion is even attempted. Deletion of the stored objects follows immediately on a best-effort basis and retries on the next authenticated delete if it fails; a pending cleanup is surfaced rather than hidden.
 - **Published content is retained for at most 30 days from its last successful update**, then removed, whether or not anyone unpublishes it. A published page is not permanent hosting — say so when a user asks for a link they plan to keep. "Update" means **content or password**: republishing the page and setting, changing, or clearing the viewer password each restart the full 30 days.
-- **Operational logs are retained for at most 90 days.** They record the fact and outcome of publication operations, not page content.
+- **An expired page is indistinguishable from one that never existed.** Past the deadline every public route returns the same bare 404 as an unknown id and as an unpublished page. That is deliberate — the alternative would disclose someone's publishing history to anyone who could guess a URL. So you cannot tell a user "your link expired" from the outside; check the page's own share state instead.
+- **Expiry never strands the owner.** Unpublish and cleanup keep working after the deadline, so a page that has aged out can still be tidied up properly.
+- **Operational logs are retained for at most 90 days.** They record the fact and outcome of publication operations, not page content. This is deliberately *longer* than content retention, to keep an abuse-investigation window.
 - `delete_page` unpublishes first and **blocks deletion if revocation cannot be confirmed**, so a local delete can never leave an unmanageable public copy. Only the Electron desktop host offers a separately confirmed "forget local state" recovery when the management key is lost; headless and web paths deliberately have no such escape hatch.
 
-Everything in this section states the publication service's **policy**, which is not the same as something this build can demonstrate. Whether any of it is reachable at all depends on the availability check above — treat that as the authority, and never tell a user their page is published, retained, or deleted on the strength of this document alone.
+This section states the publication service's **policy**, and the service enforces it in code. What it is not is something this build can demonstrate: whether any of it is reachable at all depends on the availability check above. Treat that as the authority, and never tell a user their page is published, retained, or deleted on the strength of this document alone.
 
 ### A page that cannot be published at all
 

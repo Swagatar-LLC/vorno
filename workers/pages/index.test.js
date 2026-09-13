@@ -6,7 +6,7 @@
  * oversized multipart bodies never make a public object visible.
  */
 import { describe, expect, test } from 'bun:test'
-import { handle, MAX_CONTENT_BYTES, PAGE_ID_RE, randomToken } from './index.js'
+import { handle, isExpired, MAX_CONTENT_BYTES, PAGE_ID_RE, randomToken, RETENTION_MS } from './index.js'
 
 function makeBucket({ failDeletes = new Map() } = {}) {
   const objects = new Map()
@@ -16,6 +16,12 @@ function makeBucket({ failDeletes = new Map() } = {}) {
   const drain = async value => {
     if (value instanceof Blob) return new Uint8Array(await value.arrayBuffer())
     if (value instanceof ReadableStream) return new Uint8Array(await new Response(value).arrayBuffer())
+    // R2's `put` takes ArrayBuffer and typed arrays too. Without these the
+    // fallback stringifies them to "[object ArrayBuffer]" and stores that —
+    // which is not a put failure the double reports, but silent corruption that
+    // surfaces much later as a page whose snapshot no longer parses.
+    if (value instanceof ArrayBuffer) return new Uint8Array(value)
+    if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
     return new TextEncoder().encode(String(value))
   }
   return {
@@ -334,5 +340,276 @@ describe('revocation and deletion recovery', () => {
     const retry = await handle(req(`/api/publications/${data.id}`, { method: 'DELETE', headers: auth(data.adminToken) }), env)
     expect((await retry.json()).cleanupPending).toBe(false)
     expect(bucket.objects.has(activeRecord.contentKey)).toBe(false)
+  })
+})
+
+/**
+ * SUV-0069 — the 30-day retention TTL.
+ *
+ * The Worker publishes a deletion promise at /privacy, so these tests are about
+ * that promise being TRUE rather than about a cache expiring. An R2 lifecycle
+ * rule deletes the bytes, but R2 evaluates lifecycle asynchronously and can run
+ * hours late; the read path is what makes the deadline exact, so it is the half
+ * that can be tested here at all.
+ */
+describe('retention TTL', () => {
+  const DAY = 24 * 60 * 60 * 1000
+
+  /** Backdate the retention anchor, the only input the deadline reads. */
+  function setUpdatedAt(bucket, id, retentionAnchorAt) {
+    const key = `${id}/manifest.json`
+    const record = JSON.parse(new TextDecoder().decode(bucket.objects.get(key).bytes))
+    record.retentionAnchorAt = retentionAnchorAt
+    const existing = bucket.objects.get(key)
+    bucket.objects.set(key, { ...existing, bytes: new TextEncoder().encode(JSON.stringify(record)) })
+    return record
+  }
+
+  test('serves at the deadline and refuses past it', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env)
+
+    // Just INSIDE the window. The comparison is strictly greater-than, so the
+    // last moment belongs to the publisher — an off-by-one here deletes a day
+    // early, which is worse than a second late because it breaks a live link
+    // before the promise fell due.
+    //
+    // The margin is not padding. `Date.now() - 30 * DAY` lands exactly ON the
+    // boundary, and the Worker reads its own clock a few milliseconds later, so
+    // elapsed is 30 days + ε and the page expires — a test that passes or fails
+    // on scheduling luck. Measured at roughly a coin flip before this margin was
+    // added. One second either side is far inside the resolution of a 30-day
+    // rule and makes both directions deterministic.
+    setUpdatedAt(bucket, data.id, Date.now() - 30 * DAY + 1000)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(200)
+
+    setUpdatedAt(bucket, data.id, Date.now() - 30 * DAY - 1000)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
+  })
+
+  test('an expired page is indistinguishable from one that never existed', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { snapshot: { version: 1 } })
+    setUpdatedAt(bucket, data.id, Date.now() - 31 * DAY)
+
+    // Every public route, and byte-for-byte the same answer as a random id.
+    // Anything that separated "lapsed" from "never existed" would disclose
+    // someone else's publishing history to an unauthenticated caller.
+    const unknown = randomToken(8)
+    for (const suffix of ['', '/content', '/snapshot']) {
+      const expired = await handle(req(`/p/${data.id}${suffix}`), env)
+      const missing = await handle(req(`/p/${unknown}${suffix}`), env)
+      expect(expired.status).toBe(404)
+      expect(missing.status).toBe(404)
+      expect(await expired.text()).toBe(await missing.text())
+    }
+  })
+
+  test('the password gate does not leak an expired publication either', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { password: 'correct horse battery' })
+    // Fresh, it answers the password challenge rather than 404 — so the 404
+    // below is the retention check and not simply a missing page.
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(401)
+
+    setUpdatedAt(bucket, data.id, Date.now() - 31 * DAY)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
+    const form = new FormData()
+    form.set('password', 'correct horse battery')
+    const submit = await handle(req(`/p/${data.id}/password`, { method: 'POST', body: form }), env)
+    expect(submit.status).toBe(404)
+  })
+
+  test('an update restarts the window', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env)
+
+    // Day 29: nearly expired, still live, and the owner updates it.
+    setUpdatedAt(bucket, data.id, Date.now() - 29 * DAY)
+    const update = await handle(req(`/api/publications/${data.id}`, {
+      method: 'PUT', headers: auth(data.adminToken), body: bundle({ content: '<p>revised</p>' }),
+    }), env)
+    expect(update.status).toBe(200)
+
+    // The deadline now runs from the update, so what would have been day 31 of
+    // the original window is day 2 of the new one.
+    setUpdatedAt(bucket, data.id, Date.now() - 2 * DAY)
+    const served = await handle(req(`/p/${data.id}/content`), env)
+    expect(served.status).toBe(200)
+    expect(await served.text()).toContain('revised')
+  })
+
+  test('an owner can still unpublish and clean up after the deadline', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { snapshot: { version: 1 } })
+    const record = setUpdatedAt(bucket, data.id, Date.now() - 40 * DAY)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
+
+    // Retention withdraws PUBLIC access. Admin routes authenticate against the
+    // record directly, so an owner who wants the objects gone is never stranded
+    // by the very deadline that hid them.
+    const unpublish = await handle(req(`/api/publications/${data.id}`, { method: 'DELETE', headers: auth(data.adminToken) }), env)
+    expect(unpublish.status).toBe(200)
+    expect((await unpublish.json()).cleanupPending).toBe(false)
+    expect(bucket.objects.has(record.contentKey)).toBe(false)
+  })
+
+  test('a manifest that cannot prove its age is treated as expired', async () => {
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(200)
+
+    // Unreachable through this Worker — every write stamps `updatedAt` — so this
+    // is corruption or a hand-edited object. Failing closed means the objects we
+    // have lost track of are exactly the ones that stop being served, rather
+    // than the ones that outlive the policy forever.
+    for (const bad of [undefined, 'yesterday', Number.NaN]) {
+      setUpdatedAt(bucket, data.id, bad)
+      expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
+    }
+  })
+
+  const passwordForm = (action, password) => {
+    const form = new FormData()
+    form.set('passwordAction', action)
+    if (password !== undefined) form.set('password', password)
+    return form
+  }
+
+  const readRecord = (bucket, id) =>
+    JSON.parse(new TextDecoder().decode(bucket.objects.get(`${id}/manifest.json`).bytes))
+
+  test('every password action renews retention by re-uploading the objects', async () => {
+    // Jeff, 2026-09-13: a password change IS an update for the 30-day TTL. The
+    // R2 lifecycle rule counts each object's own upload and cannot see a manifest
+    // write, so a renewal that only moved a timestamp would leave the bytes on
+    // the old schedule and the shell rendering over deleted content. Renewing
+    // therefore means re-uploading. Every put in the fixture mints a fresh etag,
+    // so a changed etag is proof the object was really re-written.
+    for (const [action, password] of [['set', 'correct horse battery'], ['set', 'a different password'], ['clear', undefined]]) {
+      const bucket = makeBucket()
+      const env = makeEnv({ PAGES: bucket })
+      const { data } = await create(env, { snapshot: { version: 1 }, password: 'starting password' })
+      const before = readRecord(bucket, data.id)
+      const etagsBefore = [bucket.objects.get(before.contentKey).etag, bucket.objects.get(before.snapshotKey).etag]
+
+      // Day 29 — one day of the window left.
+      setUpdatedAt(bucket, data.id, Date.now() - 29 * DAY)
+      const response = await handle(req(`/api/publications/${data.id}`, {
+        method: 'PUT', headers: auth(data.adminToken), body: passwordForm(action, password),
+      }), env)
+      expect(response.status).toBe(200)
+
+      const after = readRecord(bucket, data.id)
+      expect(Date.now() - after.retentionAnchorAt).toBeLessThan(DAY)
+      expect([bucket.objects.get(after.contentKey).etag, bucket.objects.get(after.snapshotKey).etag]).not.toEqual(etagsBefore)
+
+      // And it outlives the deadline it would have hit without the renewal.
+      setUpdatedAt(bucket, data.id, Date.now() - 2 * DAY)
+      expect((await handle(req(`/p/${data.id}`), env)).status).not.toBe(404)
+    }
+  }, 30000)
+
+  test('a partial re-upload failure renews nothing and claims nothing', async () => {
+    // The one direction that must never happen is a manifest deadline later than
+    // the age R2 is enforcing. A renewal that cannot finish therefore writes no
+    // manifest at all: the publication keeps its old password AND its old
+    // deadline rather than reporting a renewal it did not get. The object
+    // re-uploaded before the failure is younger than the manifest claims, which
+    // is the safe direction.
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { snapshot: { version: 1 } })
+    setUpdatedAt(bucket, data.id, Date.now() - 29 * DAY)
+    const before = readRecord(bucket, data.id)
+
+    bucket.failNextPut(key => key.endsWith('/snapshot.json'))
+    const response = await handle(req(`/api/publications/${data.id}`, {
+      method: 'PUT', headers: auth(data.adminToken), body: passwordForm('set', 'correct horse battery'),
+    }), env)
+    expect(response.status).toBe(503)
+
+    const after = readRecord(bucket, data.id)
+    expect(after.retentionAnchorAt).toBe(before.retentionAnchorAt)
+    expect(after.password).toBeUndefined()
+    // The original deadline still governs, so it still lapses on schedule.
+    setUpdatedAt(bucket, data.id, Date.now() - 31 * DAY)
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
+  }, 30000)
+
+  test('a transient read failure during renewal is a 503, not an unhandled error', async () => {
+    // `handle` has no top-level catch, so a throw out of the renewal would reach
+    // the Workers runtime as an unhandled error instead of the documented
+    // contract — and the caller would not learn the one thing that matters, that
+    // nothing was renewed.
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { snapshot: { version: 1 } })
+    setUpdatedAt(bucket, data.id, Date.now() - 29 * DAY)
+    const before = readRecord(bucket, data.id)
+
+    const realGet = bucket.get.bind(bucket)
+    let thrown = false
+    bucket.get = async key => {
+      if (!thrown && key.includes('/revisions/')) { thrown = true; throw new Error('R2 unavailable') }
+      return realGet(key)
+    }
+    const response = await handle(req(`/api/publications/${data.id}`, {
+      method: 'PUT', headers: auth(data.adminToken), body: passwordForm('set', 'correct horse battery'),
+    }), env)
+    bucket.get = realGet
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'storage_failed' })
+    const after = readRecord(bucket, data.id)
+    expect(after.retentionAnchorAt).toBe(before.retentionAnchorAt)
+    expect(after.password).toBeUndefined()
+  }, 30000)
+
+  test('a password renewal losing a race to a content update does not advance the anchor', async () => {
+    // Ordering: objects are re-put BEFORE the manifest records a later deadline,
+    // so a renewal that loses the conditional write has already published fresh
+    // bytes. Harmless — younger objects under an older manifest — but the anchor
+    // must belong to the revision that actually won.
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { snapshot: { version: 1 } })
+    setUpdatedAt(bucket, data.id, Date.now() - 29 * DAY)
+
+    const block = bucket.blockNextManifest()
+    const renewal = handle(req(`/api/publications/${data.id}`, {
+      method: 'PUT', headers: auth(data.adminToken), body: passwordForm('set', 'correct horse battery'),
+    }), env)
+    await block.entered
+
+    const contentUpdate = await handle(req(`/api/publications/${data.id}`, {
+      method: 'PUT', headers: auth(data.adminToken), body: bundle({ content: '<p>winner</p>', snapshot: { version: 2 } }),
+    }), env)
+    expect(contentUpdate.status).toBe(200)
+    block.release()
+    expect((await renewal).status).toBe(409)
+
+    // The winning content update owns the record; no password was recorded.
+    const after = readRecord(bucket, data.id)
+    expect(after.password).toBeUndefined()
+    expect(await (await content(env, data.id)).text()).toBe('<p>winner</p>')
+    expect(after.retentionAnchorAt).toBeLessThanOrEqual(Date.now())
+    expect((await handle(req(`/p/${data.id}`), env)).status).toBe(200)
+  }, 30000)
+
+  test('the deadline is strictly greater-than, to the millisecond', async () => {
+    // `isExpired` takes `now` so the boundary can be pinned EXACTLY, with no
+    // clock between the fixture and the assertion. The route-level test above
+    // has to leave a second of margin to stay deterministic, which makes it
+    // blind to a one-millisecond off-by-one; this is the half that sees it.
+    const at = { retentionAnchorAt: 1_000_000 }
+    expect(isExpired(at, 1_000_000 + RETENTION_MS)).toBe(false)
+    expect(isExpired(at, 1_000_000 + RETENTION_MS + 1)).toBe(true)
   })
 })

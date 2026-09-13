@@ -168,10 +168,28 @@ branding, prompt, and release-note checks that catch imported Craft defaults.
   as resolved-and-unavailable — the host is the authority and it did not say
   yes). CI 12/12 green on `305cc36f`.
 
-  **Residual for the policy owner, not folded in:** `ADR-0033` §7, PLAN-052's
-  Owner gate, and `workers/pages/README.md` item 5 still record retention as
-  *pending Jeff* under the older proposal (retain until unpublish, logs ≤30
-  days). The approved policy differs on both counts. Those are governance and
-  deployment-gate records owned by the policy/deployment SUVs (0063 and 0069),
-  and SUV-0069's branch will rewrite the Worker README item; editing them from
-  the documentation SUV would be scope creep with a guaranteed conflict.
+  **Residual for the policy owner, narrowed after merging `main` forward.** When
+  this SUV opened, three records still described retention as *pending Jeff*
+  under the superseded proposal. Two of them have since been corrected on `main`
+  by the retention lane (PR #208/#210): PLAN-052's Owner gate now reads
+  **CLEARED** with the approved policy and the password-change ruling, and
+  `workers/pages/README.md` item 5 now carries the R2 lifecycle rule and the
+  90-day log setting. **`ADR-0033` §7 is the one left** — it still says the
+  proposed policy "remains pending Jeff: retain content until unpublish …
+  operational logs for at most 30 days", which is now wrong on both counts. It
+  is an accepted ADR, so amending it is a governance act belonging to the
+  policy SUV (0063), not to the documentation lane.
+
+  The forward merge also let the guide sharpen a claim it had to hedge before.
+  The Worker now enforces the deadline on the read path (`RETENTION_MS`,
+  anchored on `retentionAnchorAt` so object age and the served deadline move
+  together), so the guide says the service enforces the policy **in code** while
+  still refusing to claim this build can demonstrate it — deployment has not
+  happened. Two user-visible properties that shipped with the enforcement were
+  added because an agent will otherwise get them wrong: an expired page returns
+  the same bare 404 as an unknown id, so expiry is **not** externally
+  distinguishable from absence and must not be reported as "your link expired";
+  and cleanup keeps working past the deadline, so aging out never strands the
+  owner. `workers/pages/README.md` names the bundled guide as one of the places
+  that must stay in agreement with `RETENTION_MS` and `/privacy` — this is that
+  agreement.
