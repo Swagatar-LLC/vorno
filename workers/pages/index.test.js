@@ -543,6 +543,35 @@ describe('retention TTL', () => {
     expect((await handle(req(`/p/${data.id}`), env)).status).toBe(404)
   }, 30000)
 
+  test('a transient read failure during renewal is a 503, not an unhandled error', async () => {
+    // `handle` has no top-level catch, so a throw out of the renewal would reach
+    // the Workers runtime as an unhandled error instead of the documented
+    // contract — and the caller would not learn the one thing that matters, that
+    // nothing was renewed.
+    const bucket = makeBucket()
+    const env = makeEnv({ PAGES: bucket })
+    const { data } = await create(env, { snapshot: { version: 1 } })
+    setUpdatedAt(bucket, data.id, Date.now() - 29 * DAY)
+    const before = readRecord(bucket, data.id)
+
+    const realGet = bucket.get.bind(bucket)
+    let thrown = false
+    bucket.get = async key => {
+      if (!thrown && key.includes('/revisions/')) { thrown = true; throw new Error('R2 unavailable') }
+      return realGet(key)
+    }
+    const response = await handle(req(`/api/publications/${data.id}`, {
+      method: 'PUT', headers: auth(data.adminToken), body: passwordForm('set', 'correct horse battery'),
+    }), env)
+    bucket.get = realGet
+
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: 'storage_failed' })
+    const after = readRecord(bucket, data.id)
+    expect(after.retentionAnchorAt).toBe(before.retentionAnchorAt)
+    expect(after.password).toBeUndefined()
+  }, 30000)
+
   test('a password renewal losing a race to a content update does not advance the anchor', async () => {
     // Ordering: objects are re-put BEFORE the manifest records a later deadline,
     // so a renewal that loses the conditional write has already published fresh

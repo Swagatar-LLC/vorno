@@ -336,12 +336,17 @@ async function writeBundle(env, record, upload, etag) {
 async function renewRetainedObjects(env, record) {
   const keys = [record.contentKey, ...(record.manifest.includesData ? [record.snapshotKey] : [])]
   for (const key of keys) {
-    const existing = await env.PAGES.get(key)
-    if (!existing) return false
     const contentType = key === record.contentKey
       ? 'text/html; charset=utf-8'
       : 'application/json; charset=utf-8'
+    // The READ is inside the guard too. `handle` has no top-level catch, so a
+    // transient R2 read failure thrown from here would leave the Worker as an
+    // unhandled error rather than the 503 this contract promises — and the
+    // caller would lose the one thing it must know, which is that nothing was
+    // renewed.
     try {
+      const existing = await env.PAGES.get(key)
+      if (!existing) return false
       // Buffered, not streamed: `put` must not consume a body we may need to
       // abandon, and a retained object is already bounded by the upload caps.
       const bytes = await new Response(existing.body).arrayBuffer()
