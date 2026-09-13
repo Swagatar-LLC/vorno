@@ -122,13 +122,19 @@ lifecycle rule. **SUV-0069 is a `pages.vorno.ai` deploy prerequisite**, because
 deploying with the policy published and the TTL unenforced would state a deletion
 commitment the service does not honour.
 
-One refinement came out of implementing it, and it narrows what bullet 1's "last
-update" means. The R2 lifecycle rule that deletes the bytes counts an object's own
-upload and cannot see a manifest-only write, so retention anchors on the last
-CONTENT write: a password set or clear does not extend it. Anchoring on any
-"publication was modified" timestamp would let the logical deadline drift past the
-physical one and leave a page whose shell loads over deleted content. SUV-0063
-must publish that wording at `/privacy`.
+Implementing it raised one question, and Jeff answered it on 2026-09-13 at
+14:53 EDT: **a password change counts as an update.** Bullet 1 stands exactly as
+written above — every update restarts the window, with no carve-out.
+
+That answer has a cost the Worker pays deliberately. The R2 lifecycle rule that
+deletes the bytes counts each object's own upload and cannot see a manifest
+write, so renewing on a password change means re-uploading the retained objects
+rather than only moving a timestamp, and the stored anchor advances only after
+those re-uploads succeed. The alternative on the table was to narrow "update" to
+content writes; it was cheaper and it was declined, because the published policy
+should say the simple true thing rather than the thing that was convenient to
+enforce. SUV-0069 carries the implementation and SUV-0063 publishes bullet 1
+unmodified.
 
 ## Acceptance
 

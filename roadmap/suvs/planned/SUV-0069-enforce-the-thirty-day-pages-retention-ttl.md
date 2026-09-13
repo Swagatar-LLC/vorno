@@ -49,20 +49,21 @@ Two independent mechanisms, because neither alone is sufficient:
   asynchronously and bytes can outlive the deadline by hours, which is why the
   read guard above is not redundant.
 
-**Both halves must count the same event.** The deadline is anchored on
-`contentUpdatedAt` — stamped only where `writeBundle` runs, meaning publication
-and content update — and deliberately not on `updatedAt`. A password set or
-clear writes the manifest without re-putting any object, so `updatedAt` moves
-while the R2 rule goes on counting from the original upload. Anchoring on
-`updatedAt` therefore advanced the logical window while the physical one did
-not: publish on day 0 and set a password on day 25, and the content is deleted
-at day 30 while the Worker still serves the shell until day 55 — an iframe
-404ing under a 200 shell, which is both a broken page and a status split that
-occurs in no other state, so it distinguishes "something was published here
-once" from "nothing ever was".
+**Both halves must count the same event.** The R2 lifecycle rule deletes an
+object N days after its own upload and cannot see a manifest write, so a renewal
+that moved only a timestamp would advance the read-path deadline past the age R2
+is enforcing: the content would be deleted on the old schedule while the shell
+kept rendering over it — a broken page, and a 200-over-404 split that occurs in
+no other state and so distinguishes "something was published here once" from
+"nothing ever was".
 
-A password change is therefore **not** an update for retention purposes. It
-changes who may read the page, not what is stored.
+**Every update restarts the window, password changes included** (Jeff,
+2026-09-13). Honouring that means a password set or clear **re-uploads the
+retained objects** so their R2 age restarts too. The anchor — `retentionAnchorAt`,
+named for what it tracks rather than for content changing — advances only after
+every re-upload succeeds. A renewal that cannot finish writes no manifest at all,
+leaving the anchor behind the object age rather than ahead of it, which is the
+only safe direction.
 
 Also in scope:
 
@@ -84,15 +85,16 @@ Also in scope:
 
 - [ ] A publication whose `contentUpdatedAt` is older than 30 days returns 404 on
       every public route, identically to an unpublished one and to an unknown id.
-- [ ] A CONTENT update resets the window; coverage proves a page updated on day 29
+- [ ] Any update resets the window; coverage proves a page updated on day 29
       survives past the original day-30 deadline.
-- [ ] A password set or clear does NOT reset the window, so the read-path deadline
-      and the R2 lifecycle rule cannot drift apart.
+- [ ] A password set, change, or clear renews the window AND re-uploads the
+      retained objects, so the read-path deadline and the R2 lifecycle rule cannot
+      drift apart. A partial re-upload failure advances nothing and reports no
+      renewal.
 - [ ] The R2 lifecycle rule is declared in the deployment guide and verified against
       the real bucket before deploy, not assumed.
 - [ ] The bundled Pages guide and `/privacy` state the same number — 30 days —
-      and both say it runs from the last CONTENT update, not from any change to
-      the publication.
+      running from the last update, with no carve-out.
 - [ ] Cloudflare operational log retention is configured to 90 days and recorded in
       the deployment guide.
 
@@ -101,8 +103,10 @@ Also in scope:
 - `2026-09-13` — created in `planned/` when Jeff's retention decision changed
   bullet 1 from indefinite-until-unpublish to a fixed 30-day TTL, which the Worker
   does not implement. Raised as a `pages.vorno.ai` deploy prerequisite.
-- `2026-09-13` — the bounded review of the implementation found the deadline and
-  the R2 lifecycle rule counting different events, because a password-only update
-  moves `updatedAt` without re-putting an object. Retention re-anchored on
-  `contentUpdatedAt`. This narrows the published wording: SUV-0063 must say the
-  last CONTENT update and that a password change does not extend it.
+- `2026-09-13` — the bounded review found the deadline and the R2 lifecycle rule
+  counting different events, because a password-only update moved `updatedAt`
+  without re-putting an object. The implementation first narrowed "update" to
+  content writes, which would have changed the published policy without
+  authority. Jeff decided at 14:53 EDT that a password change IS an update, so
+  the narrowing was reverted and the Worker re-uploads the retained objects on a
+  password change instead. `/privacy` publishes bullet 1 unmodified.
