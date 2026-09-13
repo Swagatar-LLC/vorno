@@ -14,6 +14,7 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Improvements
 
+- **Pages documentation that matches Vorno** — the built-in Pages guide now says what actually happens here: Pages stays off until you enable it for a workspace, publishing is a separate thing again and is unavailable unless it has been set up, and approvals for the riskier actions expire in a day rather than a month. It states plainly who a published page is attributed to, what a published copy is and is not allowed to do, and how long published content and operational logs are kept. Opening Pages in a workspace where it is turned off now explains that and points at the setting, instead of showing an empty panel. #209, SUV-0061, 07196c15
 - **More resilient Pi conversations** — upstream retry/recovery work keeps eligible transient provider failures open with visible backoff progress, discards failed partial output, and bounds utility-query execution. (from upstream v0.13.3)
 - **Updated Claude and Pi SDKs** — upstream SDK updates add improved usage/cost reporting, MCP resource links, model catalog coverage, and streaming/recovery fixes. (from upstream v0.13.1–v0.13.3)
 
