@@ -317,6 +317,42 @@ async function writeBundle(env, record, upload, etag) {
   return saveRecord(env, record, etag)
 }
 
+/**
+ * Re-upload every retained object so its R2 age restarts.
+ *
+ * A password change is a real update for retention (Jeff, 2026-09-13), and the
+ * R2 lifecycle rule that deletes the bytes counts each object's OWN upload — it
+ * cannot see a manifest write. So renewing the deadline means renewing the
+ * objects; anything else advances the manifest past the age R2 is enforcing and
+ * leaves a page whose shell outlives its content.
+ *
+ * Returns false if any retained object is missing or fails to re-put, and the
+ * caller must then NOT advance the anchor. Failing that way is safe in one
+ * direction only, and this is the safe one: the objects are younger than the
+ * manifest claims, so the Worker stops serving at or before the bytes go. The
+ * reverse — an advanced manifest over un-renewed objects — is the exact split
+ * this guards against.
+ */
+async function renewRetainedObjects(env, record) {
+  const keys = [record.contentKey, ...(record.manifest.includesData ? [record.snapshotKey] : [])]
+  for (const key of keys) {
+    const existing = await env.PAGES.get(key)
+    if (!existing) return false
+    const contentType = key === record.contentKey
+      ? 'text/html; charset=utf-8'
+      : 'application/json; charset=utf-8'
+    try {
+      // Buffered, not streamed: `put` must not consume a body we may need to
+      // abandon, and a retained object is already bounded by the upload caps.
+      const bytes = await new Response(existing.body).arrayBuffer()
+      await env.PAGES.put(key, bytes, { httpMetadata: { contentType } })
+    } catch {
+      return false
+    }
+  }
+  return true
+}
+
 async function createPublication(request, env) {
   if (await rateLimited(env, 'PAGE_CREATE_LIMIT', request, 'create', true)) return json({ error: 'rate_limited' }, 429)
   const upload = await readUpload(request)
@@ -338,7 +374,7 @@ async function createPublication(request, env) {
     password,
     createdAt: now,
     updatedAt: now,
-    contentUpdatedAt: now,
+    retentionAnchorAt: now,
     cleanup: { state: 'none', attempts: 0 },
   }
   try {
@@ -361,7 +397,18 @@ async function updatePublication(request, env, id) {
   if (upload.passwordAction) {
     let password
     try { password = upload.passwordAction === 'set' ? await passwordMetadata(env, upload.password) : undefined } catch { return json({ error: 'password_tickets_unconfigured' }, 503) }
-    const record = { ...auth.record, password, updatedAt: Date.now() }
+    // A password change renews retention, so the objects are re-uploaded BEFORE
+    // the manifest records a later deadline. Ordered this way because the only
+    // acceptable failure leaves the anchor behind the object age, never ahead of
+    // it: a refusal here writes nothing at all, so the publication keeps both its
+    // old password and its old deadline rather than claiming a renewal it did
+    // not get.
+    if (!(await renewRetainedObjects(env, auth.record))) return json({ error: 'storage_failed' }, 503)
+    const now = Date.now()
+    const record = { ...auth.record, password, updatedAt: now, retentionAnchorAt: now }
+    // A concurrent content update loses this etag, so the save fails and the
+    // anchor is not advanced. The objects it re-put are simply younger than the
+    // winning revision's — harmless, and in the safe direction.
     if (!(await saveRecord(env, record, auth.etag))) return json({ error: 'conflict' }, 409)
     return json(publicationDto(request, record))
   }
@@ -373,8 +420,8 @@ async function updatePublication(request, env, id) {
     revision,
     ...revisionPaths(id, revision),
     updatedAt: Date.now(),
-    // Moves ONLY here, because only here are the objects re-put. See `isExpired`.
-    contentUpdatedAt: Date.now(),
+    // Moves here because `writeBundle` below re-puts the objects. See `isExpired`.
+    retentionAnchorAt: Date.now(),
   }
   let saved
   try { saved = await writeBundle(env, record, upload, auth.etag) } catch { saved = undefined }
@@ -476,25 +523,25 @@ function passwordHtml(record) {
 /**
  * Has this publication passed its retention deadline?
  *
- * Anchored on `contentUpdatedAt` — when the CONTENT objects were last written —
- * and deliberately not on `updatedAt`.
+ * Anchored on `retentionAnchorAt` — when the retained objects were last
+ * UPLOADED — and deliberately not on `updatedAt`.
  *
- * The two halves of this policy must count the same event or they drift apart.
- * The R2 lifecycle rule deletes an object N days after ITS OWN upload; it cannot
- * see manifest writes. But `updatedAt` moves on manifest-only writes too — a
- * password set or clear takes the branch in `updatePublication` that calls
- * `saveRecord` without `writeBundle`, so the bytes are never re-put. Anchoring
- * the deadline on `updatedAt` therefore extended the logical window while R2 went
- * on counting from the original upload, and the page could lose its content to
- * the lifecycle rule weeks before the Worker agreed it had expired: the shell
- * still rendered, the iframe 404ed, and that split is both a broken page and a
- * signal distinguishing "something was published here once" from "nothing ever
- * was". Anchoring on the content write makes the two halves agree by
- * construction rather than by remembering to keep them in step.
+ * Every update restarts the window, password changes included (Jeff,
+ * 2026-09-13). The subtlety is not which operations count; it is that the two
+ * halves of this policy must count the same event or they drift apart. The R2
+ * lifecycle rule deletes an object N days after ITS OWN upload and cannot see a
+ * manifest write, so a renewal that only moved a timestamp would advance the
+ * Worker's deadline past the age R2 is enforcing: the content would be deleted
+ * on the old schedule while the shell kept rendering over it — a broken page,
+ * and a 200-over-404 split that occurs in no other state and so distinguishes
+ * "something was published here once" from "nothing ever was".
  *
- * A password change is therefore not "an update" for retention purposes. It
- * changes who may read the page, not what is stored, and there is nothing whose
- * lifetime it could honestly extend.
+ * `renewRetainedObjects` is what makes a password change a real renewal: it
+ * re-uploads the objects so R2 restarts too, and this field is advanced only
+ * after that succeeds. The name is `retentionAnchorAt` rather than anything
+ * about content changing, because a password renewal moves it without the
+ * content differing by a byte.
+ *
  *
  * Fails CLOSED on a manifest that cannot prove its own age. Every publish and
  * every content update stamps this field, so a record without a finite numeric
@@ -504,8 +551,8 @@ function passwordHtml(record) {
  * track of outlive the policy indefinitely.
  */
 export function isExpired(record, now) {
-  return !(typeof record.contentUpdatedAt === 'number' && Number.isFinite(record.contentUpdatedAt))
-    || now - record.contentUpdatedAt > RETENTION_MS
+  return !(typeof record.retentionAnchorAt === 'number' && Number.isFinite(record.retentionAnchorAt))
+    || now - record.retentionAnchorAt > RETENTION_MS
 }
 
 /**
