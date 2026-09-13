@@ -112,3 +112,10 @@ Also in scope:
   authority. Jeff decided at 14:53 EDT that a password change IS an update, so
   the narrowing was reverted and the Worker re-uploads the retained objects on a
   password change instead. `/privacy` publishes bullet 1 unmodified.
+- `2026-09-13` — merged evidence recorded: SUV-0061 landed via PR #209
+  (`8a5f44d6`, on `origin/main`), with supporting roadmap/docs PR #207 and
+  quiescence-flake fix PR #210. `vorno-site` PR #2 carried SUV-0063's
+  privacy-page implementation and `https://vorno.ai/privacy/` is live. This
+  SUV's own acceptance (TTL enforcement, R2 lifecycle rule, deploy
+  verification) is unaffected by that evidence and remains open, so it stays
+  in `in-progress/`.

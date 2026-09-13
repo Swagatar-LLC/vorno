@@ -1,12 +1,12 @@
 ---
 id: SUV-0062
 title: Qualify and release 0.22.0-beta.1
-status: planned
+status: in-progress
 plan: PLAN-052
 direction: DIR-04
 owner: jh
 created: 2026-09-10
-updated: 2026-09-10
+updated: 2026-09-13
 related: [SUV-0057, SUV-0058, SUV-0059, SUV-0060, SUV-0061, SUV-0063, SUV-0064, SUV-0065]
 blocked-by: []
 ---
@@ -60,3 +60,5 @@ qualification and publish an updater-safe, signed/notarized prerelease.
   the separate vorno-site prerequisite SUV.
 - `2026-09-10` — narrowed to verification/release only with an explicit browser
   and Electron matrix; feature failures return to their owning SUV.
+- `2026-09-13` — moved from `planned` to `in-progress`: implementation is
+  underway on branch `release/0.22.0-beta.1`.

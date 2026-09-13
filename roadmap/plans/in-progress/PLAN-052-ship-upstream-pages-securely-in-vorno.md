@@ -183,3 +183,12 @@ unmodified.
   durability was promised to backends that cannot confirm delivery, which on
   Pi — the default for every non-Anthropic connection — silently dropped an
   acknowledged steer. Fixed in `a7b39132`.
+- `2026-09-13` — release-program state reconciled: `origin/main` is at
+  `8a5f44d6`. SUV-0061 merged (PR #209), with supporting roadmap/docs PR #207
+  and quiescence-flake fix PR #210; it stays in `in-progress/` pending its
+  release-note acceptance item. `vorno-site` PR #2 carried SUV-0063's privacy
+  page and `https://vorno.ai/privacy/` is live; SUV-0063 stays in `planned/`
+  pending the launch-status wording update and deploy verification. SUV-0069
+  (TTL enforcement) remains `in-progress/` with its own acceptance open.
+  SUV-0062 moved from `planned` to `in-progress`: qualification/release work
+  is underway on branch `release/0.22.0-beta.1`.
