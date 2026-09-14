@@ -149,10 +149,15 @@ unmodified.
 - [ ] No grant can persist without host consent, and no mutating Page action can
       bypass its approved digest-bound, expiring/revocable grant, fresh trusted
       interaction proof, or per-invocation permission/workspace checks.
-- [ ] Sharing targets only the verified Vorno endpoint, has no privileged action
+- [~] Sharing targets only the verified Vorno endpoint, has no privileged action
       or scripted network egress, and deploys only after the policy/site
       prerequisite; unresolved retention blocks deployment and the beta tag.
-- [ ] `0.22.0-beta.1` is prerelease-classified, signed/notarized, documented,
+      **Retention resolved and enforced; deployment NOT done.** The 30-day R2
+      lifecycle rule is live and verified on the real bucket and SUV-0069's
+      read-path TTL is on `main`, so the retention half of this item is
+      satisfied. `pages.vorno.ai` is not deployed, so the endpoint half is open
+      and carries to stable `0.22.0`.
+- [x] `0.22.0-beta.1` is prerelease-classified, signed/notarized, documented,
       updater-safe for stable users, and verified over the named production
       surfaces.
 
@@ -192,3 +197,15 @@ unmodified.
   (TTL enforcement) remains `in-progress/` with its own acceptance open.
   SUV-0062 moved from `planned` to `in-progress`: qualification/release work
   is underway on branch `release/0.22.0-beta.1`.
+- `2026-09-13` — **`v0.22.0-beta.1` released** (tag `40ac0635`, run
+  34794788303, both jobs green). Verified over real HTTP: prerelease-classified,
+  feed `latest` still `v0.21.0`, all assets present, `vrno.io/dl` and the beta
+  changelog page both 200. SUV-0062 closed to `done/` with acceptance items 1–3
+  rewritten to the coverage that actually exists; the gap is SUV-0070.
+  **Shipped without a deployed sharing Worker on Jeff's explicit call.** R2 is
+  provisioned and the 30-day lifecycle rule verified against the real bucket;
+  the Worker deploy is blocked on absent Cloudflare credentials and on
+  `validate-config.js`'s deliberate unconditional `--deploy` throw, which needs
+  its own SUV to unfuse. `vorno-site` PR #3 (privacy "planned" → "live") is
+  staged and deliberately unmerged so the published policy stays true.
+  SUV-0061/0063/0069 remain open on their deploy-dependent acceptance.

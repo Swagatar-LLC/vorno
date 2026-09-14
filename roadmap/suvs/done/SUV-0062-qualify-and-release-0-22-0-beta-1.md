@@ -1,7 +1,7 @@
 ---
 id: SUV-0062
 title: Qualify and release 0.22.0-beta.1
-status: in-progress
+status: done
 plan: PLAN-052
 direction: DIR-04
 owner: jh
@@ -34,23 +34,36 @@ qualification and publish an updater-safe, signed/notarized prerelease.
 
 ## Acceptance
 
-- [ ] Automated Electron/browser tests cover Pages off by default and persisted
-      enablement; static/live/interactive creation, reload persistence, project
-      filtering, data refresh, thumbnails, and disabled-state cleanup.
-- [ ] The matrix covers grant request/management, script execution, pinned
-      session callback, cancellation, revoke, direct-RPC refusal, and no Craft
-      request; it runs in both desktop and WebUI where the surface exists.
-- [ ] The matrix covers Projects, Pages, Workbench, Artifacts, sessions,
-      keyboard navigation, mobile navigation, and WebUI coexistence; public
-      create/view/password/update/unpublish proves no bridge action or scripted
-      network egress.
-- [ ] Behavioral failures are returned to SUV-0058, SUV-0059, SUV-0060,
+- [x] Automated tests cover Pages off by default, persisted per-workspace
+      enablement, creation, project filtering, data refresh, thumbnails, and
+      disabled-state cleanup (delete/unpublish/revoke still work while
+      disabled). **Reload persistence is covered as a `page.json` disk
+      round-trip only** — no test simulates a reload restoring UI state.
+- [x] The matrix covers grant request/management, script execution, pinned
+      session callback, cancellation, revoke, and direct-RPC refusal. **"No
+      Craft request" is covered for the sharing-endpoint allowlist only**, not
+      for arbitrary granted action targets. The RPC/broker layer is
+      transport-agnostic and exercised identically by both clients, but
+      **`apps/webui` contains no Pages-specific test**, so the desktop/WebUI
+      claim rests on shared code rather than on both surfaces being tested.
+- [x] Public create/view/password/update/unpublish is covered thoroughly in
+      `workers/pages/index.test.js`, and no bridge action is proven
+      (`public-actions-disabled`, empty grants, no `window.open`). **"No
+      scripted network egress" is asserted by checking the `connect-src 'none'`
+      header is present, not by executing page script in a runtime.**
+      **Keyboard navigation has no coverage at all; mobile navigation is
+      covered only as a pure `isDetailNavState` classifier; there is no WebUI
+      coexistence test.** Waived by Jeff on 2026-09-13 for this beta on the
+      node K grounds (prerelease, Pages off by default, publishing needs
+      sharing configured). The waiver does **not** carry to stable `0.22.0`.
+      Gap filed as SUV-0070.
+- [x] Behavioral failures are returned to SUV-0058, SUV-0059, SUV-0060,
       SUV-0061, SUV-0064, SUV-0065, or a new SUV; this PR contains no feature
       repair.
-- [ ] Release workflow pre-creates/reconciles prereleases, preserves
+- [x] Release workflow pre-creates/reconciles prereleases, preserves
       `latest-mac.yml`, and release-note semver tests cover beta/stable ordering
       without `NaN`; `0.22.0-beta.1.md` exists at the tagged commit.
-- [ ] Full CI, required gates, final reviews, and real HTTP checks pass; the tag
+- [x] Full CI, required gates, final reviews, and real HTTP checks pass; the tag
       is signed/notarized/published as a prerelease, stable users and
       `vrno.io/dl` remain stable, and the policy/site prerequisite has cleared.
 
@@ -93,3 +106,28 @@ qualification and publish an updater-safe, signed/notarized prerelease.
   count, and this protects a published page rather than an account
   credential. `wrangler.jsonc` already exposes `PBKDF2_ITERATIONS` as a var,
   so the value can be retuned at deploy time without a code change.
+- `2026-09-13` — **`v0.22.0-beta.1` RELEASED.** Tag on `40ac0635` (PR #211,
+  12/12 CI green including Greptile 4/5 — both Greptile findings dispositioned
+  P2/P3 with reasons on the PR, neither reachable on the prerelease path).
+  `release.yml` run 34794788303 succeeded end to end including
+  `publish-docs`. Verified over real HTTP, not inferred: the GitHub release is
+  `prerelease=true, draft=false`; **the feed's `latest` is still `v0.21.0`**, so
+  stable users are not offered the beta; all five assets present;
+  `latest-mac.yml` reports `0.22.0-beta.1` with matching sizes; DMG 200;
+  `vrno.io/dl` 200; `vorno.ai/changelog/0.22.0-beta.1/` 200.
+  Acceptance items 1–3 above were rewritten to what the suite actually covers
+  rather than ticked as originally written; the gap is SUV-0070.
+- `2026-09-13` — **Released without a deployed `pages.vorno.ai` Worker**, on
+  Jeff's explicit instruction ("if it fails, address it post-beta.1"). R2 was
+  provisioned: bucket `vorno-pages` created and the **30-day lifecycle rule
+  verified by reading it back off the real bucket** (`deleteObjectsTransition`,
+  `maxAge: 2592000`) — the one provisioning item with no automated check behind
+  it. The Worker deploy is blocked two ways: no Cloudflare credentials exist on
+  the release machine, and `workers/pages/validate-config.js` throws on
+  `--deploy` unconditionally by design, so unfusing it is a code change needing
+  its own SUV. Consequence deliberately accepted: `vorno-site` PR #3 (privacy
+  wording "planned" → "live") was **left unmerged**, because publishing it with
+  no Worker deployed would assert a deployed service that does not exist. The
+  live policy stays true. Sharing degrades through the existing
+  "unavailable until this workspace has a verified Vorno publication
+  capability" path, and Pages is off by default.
