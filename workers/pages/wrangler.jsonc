@@ -1,12 +1,9 @@
 // SUV-0060: isolated from the inert-JSON vorno-share Worker by worker name,
 // host, R2 bucket, rate-limit namespaces, and password-ticket secret.
-//
-// Do not deploy until SUV-0063 lands. Retention was approved 2026-09-13 and the
-// read-path deadline ships in index.js (SUV-0069), but the other half of that
-// promise — an R2 lifecycle rule deleting objects 30 days after upload, and
-// 90-day operational log retention — is BUCKET configuration and cannot be
-// declared here. See README "Required Cloudflare provisioning"; it is the one
-// item with no automated check behind it.
+// Deploy gate discharged 2026-09-13: SUV-0063 landed (vorno-site a829555) and
+// Jeff approved privacy + retention explicitly. Rate-limit namespace ids are
+// self-assigned per Worker (not provisioned resources); 2001/2002 leave the
+// 1001-block free for vorno-share, which does not yet exist on the account.
 {
   "name": "vorno-pages",
   "main": "index.js",
@@ -17,12 +14,12 @@
   "ratelimits": [
     {
       "name": "PAGE_CREATE_LIMIT",
-      "namespace_id": "REPLACE_WITH_ISOLATED_PAGES_CREATE_NAMESPACE",
+      "namespace_id": "2001",
       "simple": { "limit": 5, "period": 60 }
     },
     {
       "name": "PAGE_PASSWORD_LIMIT",
-      "namespace_id": "REPLACE_WITH_ISOLATED_PAGES_PASSWORD_NAMESPACE",
+      "namespace_id": "2002",
       "simple": { "limit": 10, "period": 60 }
     }
   ],

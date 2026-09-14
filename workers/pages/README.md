@@ -42,24 +42,46 @@ host, R2 bucket, rate-limit namespace, credentials, or deployment pipeline.
 
 ## Required Cloudflare provisioning — owner gate
 
-**Do not deploy yet.** SUV-0063 plus Jeff’s privacy policy and retention
-approval are prerequisites. No CI workflow deploys this Worker.
+**Gate discharged 2026-09-13.** SUV-0063 landed (`vorno-site` a829555) and Jeff
+approved the privacy policy and retention explicitly. First deploy went out the
+same evening as version `7a690805-5d0f-4097-bc89-c428303ddfec`. No CI workflow
+deploys this Worker; it is deployed by hand with `npx wrangler deploy`.
 
-After that gate, the privacy owner must create and bind:
+Provisioning state:
 
-1. Worker `vorno-pages` at custom domain `pages.vorno.ai`.
-2. A dedicated R2 bucket named `vorno-pages`; never `vorno-shares`.
-3. Two isolated Workers rate-limit namespaces, replacing the two explicit
-   `REPLACE_WITH_…` placeholders in `wrangler.jsonc`:
-   `PAGE_CREATE_LIMIT` (5/minute/IP) and `PAGE_PASSWORD_LIMIT`
-   (10/minute/publication+IP).
-4. The Worker secret `PASSWORD_TICKET_SECRET`, a random 256-bit value. It signs
+1. DONE. Worker `vorno-pages` at custom domain `pages.vorno.ai`. Wrangler creates
+   the DNS record itself from the `custom_domain: true` route — **do not
+   pre-create it by hand**, a conflicting record makes the attach fail.
+2. DONE. A dedicated R2 bucket named `vorno-pages`; never `vorno-shares`.
+3. DONE. Two Workers rate-limit namespaces, `2001` (`PAGE_CREATE_LIMIT`,
+   5/minute/IP) and `2002` (`PAGE_PASSWORD_LIMIT`, 10/minute/publication+IP).
+   These ids are **self-assigned per Worker**, not provisioned resources — there
+   is no API that creates them. The `1001` block is left free for `vorno-share`,
+   which does not yet exist on the account.
+4. DONE. The Worker secret `PASSWORD_TICKET_SECRET`, a random 256-bit value. It signs
    short-lived, path-scoped, HttpOnly, Secure, SameSite=Strict password tickets
    and is never a repository variable or client credential.
-5. **An R2 lifecycle rule on `vorno-pages` deleting objects 30 days after
-   upload**, and **operational log retention set to 90 days**. Both follow the
-   retention policy Jeff approved on 2026-09-13 (PLAN-052 owner gate), published
-   at `/privacy`:
+5. DONE. The R2 lifecycle rule and the operational log ceiling, both verified on
+   the free plan on 2026-09-13:
+
+   - **R2 lifecycle** — rule `vorno-pages-30-day-retention` is enabled on
+     `vorno-pages`, all prefixes, "expire objects after 30 days". Confirm with
+     `npx wrangler r2 bucket lifecycle list vorno-pages`. Age is measured from
+     upload, which is why the Worker re-uploads retained objects on a password
+     change: that restarts the clock so "30 days from last update" and the R2
+     rule stay in step rather than drifting apart.
+   - **Log retention** — nothing to configure, and this item was previously
+     misstated as "set log retention to 90 days". Workers Logs retention is a
+     fixed plan benefit, not a setting: 3 days on Free, 7 on Paid. The published
+     commitment is a *ceiling* ("no more than 90 days"), so the platform default
+     satisfies it with two orders of magnitude to spare. The only mechanism that
+     could exceed the ceiling is Logpush to external storage, which is
+     Enterprise-only and therefore unavailable here. If Vorno ever leaves the
+     free plan, re-check that no Logpush job ships Pages logs somewhere with a
+     longer retention than 90 days.
+
+   Both follow the retention policy Jeff approved on 2026-09-13 (PLAN-052 owner
+   gate), published at `/privacy`:
 
    - published content is retained **30 days from its last update** — publication,
      content update, or password change; the Worker re-uploads the retained
