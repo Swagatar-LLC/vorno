@@ -64,8 +64,14 @@ qualification and publish an updater-safe, signed/notarized prerelease.
       `latest-mac.yml`, and release-note semver tests cover beta/stable ordering
       without `NaN`; `0.22.0-beta.1.md` exists at the tagged commit.
 - [x] Full CI, required gates, final reviews, and real HTTP checks pass; the tag
-      is signed/notarized/published as a prerelease, stable users and
-      `vrno.io/dl` remain stable, and the policy/site prerequisite has cleared.
+      is signed/notarized/published as a prerelease, and stable users and
+      `vrno.io/dl` remain stable. **The policy/site prerequisite did NOT
+      clear and was waived for this beta by Jeff on 2026-09-13**: `vorno-site`
+      PR #3 is deliberately unmerged and SUV-0063 stays planned, because with no
+      `pages.vorno.ai` Worker deployed the "live" privacy wording would assert a
+      service that does not exist. The currently published policy therefore
+      remains true. The waiver does **not** carry to stable `0.22.0`, which must
+      clear SUV-0063 before release.
 
 ## Status log
 
@@ -131,3 +137,8 @@ qualification and publish an updater-safe, signed/notarized prerelease.
   live policy stays true. Sharing degrades through the existing
   "unavailable until this workspace has a verified Vorno publication
   capability" path, and Pages is off by default.
+- `2026-09-13` — PR #212 review pass: the final acceptance item was rewritten.
+  It had claimed the policy/site prerequisite "has cleared" while the status log
+  directly above it records `vorno-site` PR #3 left unmerged and SUV-0063 still
+  planned. The item now records the explicit beta waiver instead of a cleared
+  prerequisite, so the ticked claim matches the evidence in this same file.

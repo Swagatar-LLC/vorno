@@ -2,7 +2,7 @@
 id: SUV-0070
 title: Cover Pages keyboard and WebUI surfaces
 status: planned
-plan: PLAN-054
+plan: PLAN-052
 direction: DIR-04
 owner: jh
 created: 2026-09-13
@@ -61,11 +61,15 @@ any of these surfaces. What is missing is the evidence that they work.
       round-trip.
 - [ ] The egress claim is either proven at runtime or the header-only stopping
       point is recorded in the test itself.
-- [ ] SUV-0062's acceptance items 1–3 are rewritten to match reality, so no
-      future reader inherits a coverage claim the suite does not support.
 
 ## Status log
 
 - `2026-09-13` — cut during the `0.22.0-beta.1` release run. Jeff waived the
   gap for the beta and asked for a future item; the waiver does not carry to
   stable `0.22.0`.
+- `2026-09-13` — owning plan corrected `PLAN-054` → **PLAN-052** and PLAN-052's
+  reciprocal `related-suvs` edge added. PLAN-054 is DIR-03 backend-init turn
+  lifecycle; this SUV is DIR-04 Pages verification and was mis-assigned at cut.
+  Also dropped the "rewrite SUV-0062's acceptance items 1–3" criterion: that
+  rewrite landed in the same PR that cut this SUV, so carrying it as remaining
+  work overstated the scope.

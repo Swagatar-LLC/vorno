@@ -20,6 +20,7 @@ related-suvs:
   - SUV-0063-enable-prerelease-publishing-and-pages-privacy-policy.md
   - SUV-0069-enforce-the-thirty-day-pages-retention-ttl.md
   - SUV-0062-qualify-and-release-0-22-0-beta-1.md
+  - SUV-0070-cover-pages-keyboard-and-webui-surfaces.md
 blocked-by: []
 ---
 
