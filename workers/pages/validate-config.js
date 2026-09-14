@@ -9,10 +9,28 @@ if (!isolation.every(value => source.includes(value))) throw new Error('Pages Wo
 // Deploy gate discharged 2026-09-13 (SUV-0063 landed; privacy + retention approved).
 // The isolation invariants above still apply and are the part worth keeping: they
 // fail closed if the Worker name, bucket, or host ever drifts toward vorno-share.
-// Namespace ids are now real and must stay distinct from any future vorno-share ids.
-const namespaces = [...source.matchAll(/"namespace_id":\s*"(\d+)"/g)].map(m => m[1])
+//
+// Rate-limit namespace ids are self-assigned per Worker; no API allocates them, so
+// there is no registry a single-Worker validator could consult. This file can only
+// pin THIS Worker's ids, which is what it does: 2000-2099 is the block reserved for
+// vorno-pages, and any change here is a deliberate edit rather than a silent drift.
+// It cannot prove another Worker has not reused 2001/2002 — the reservation is a
+// convention recorded in README.md, not an enforced invariant. Keeping vorno-share
+// out of this block is that Worker's responsibility when it is written.
+const PAGES_NAMESPACE_BLOCK = [2000, 2099]
+const EXPECTED_NAMESPACES = { PAGE_CREATE_LIMIT: '2001', PAGE_PASSWORD_LIMIT: '2002' }
+const namespaces = [...source.matchAll(/"name":\s*"(PAGE_[A-Z_]+)",\s*"namespace_id":\s*"(\d+)"/g)]
+  .map(([, name, id]) => ({ name, id }))
 if (namespaces.length !== 2) throw new Error('Expected two rate-limit namespace ids')
-if (new Set(namespaces).size !== 2) throw new Error('Rate-limit namespace ids must be distinct')
+if (new Set(namespaces.map(n => n.id)).size !== 2) throw new Error('Rate-limit namespace ids must be distinct')
+for (const { name, id } of namespaces) {
+  if (EXPECTED_NAMESPACES[name] !== id) {
+    throw new Error(`Rate-limit namespace ${name} expected id ${EXPECTED_NAMESPACES[name]}, found ${id}`)
+  }
+  if (Number(id) < PAGES_NAMESPACE_BLOCK[0] || Number(id) > PAGES_NAMESPACE_BLOCK[1]) {
+    throw new Error(`Rate-limit namespace ${name} id ${id} is outside the reserved vorno-pages block ${PAGES_NAMESPACE_BLOCK.join('-')}`)
+  }
+}
 if (source.includes('REPLACE_WITH_')) throw new Error('Unreplaced namespace placeholder remains')
 
 // Validate the real Wrangler schema with safe throwaway namespace IDs. `--dry-run`
@@ -28,7 +46,7 @@ try {
     cwd: process.cwd(), env: { ...process.env, CLOUDFLARE_API_TOKEN: '', NO_PROXY: '*', no_proxy: '*' }, encoding: 'utf8',
   })
   if (result.status !== 0) throw new Error(`Wrangler dry-run validation failed:\n${result.stderr || result.stdout}`)
-  console.log(`Wrangler schema/dry-run passed with real namespace ids ${namespaces.join('/')}; isolation invariants hold.`)
+  console.log(`Wrangler schema/dry-run passed with real namespace ids ${namespaces.map(n => n.id).join("/")}; isolation invariants hold.`)
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

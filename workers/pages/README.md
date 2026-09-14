@@ -49,27 +49,39 @@ deploys this Worker; it is deployed by hand with `npx wrangler deploy`.
 
 Provisioning state:
 
-1. ✅ Worker `vorno-pages` at custom domain `pages.vorno.ai`. Wrangler creates
+1. DONE. Worker `vorno-pages` at custom domain `pages.vorno.ai`. Wrangler creates
    the DNS record itself from the `custom_domain: true` route — **do not
    pre-create it by hand**, a conflicting record makes the attach fail.
-2. ✅ A dedicated R2 bucket named `vorno-pages`; never `vorno-shares`.
-3. ✅ Two Workers rate-limit namespaces, `2001` (`PAGE_CREATE_LIMIT`,
+2. DONE. A dedicated R2 bucket named `vorno-pages`; never `vorno-shares`.
+3. DONE. Two Workers rate-limit namespaces, `2001` (`PAGE_CREATE_LIMIT`,
    5/minute/IP) and `2002` (`PAGE_PASSWORD_LIMIT`, 10/minute/publication+IP).
    These ids are **self-assigned per Worker**, not provisioned resources — there
    is no API that creates them. The `1001` block is left free for `vorno-share`,
    which does not yet exist on the account.
-4. ✅ The Worker secret `PASSWORD_TICKET_SECRET`, a random 256-bit value. It signs
+4. DONE. The Worker secret `PASSWORD_TICKET_SECRET`, a random 256-bit value. It signs
    short-lived, path-scoped, HttpOnly, Secure, SameSite=Strict password tickets
    and is never a repository variable or client credential.
-5. ⬜ **OUTSTANDING.** An R2 lifecycle rule on `vorno-pages` deleting objects 30
-   days after upload, and operational log retention set to 90 days. Neither is
-   configured yet, and neither has been confirmed available on the free plan
-   (Cloudflare is on the free plan and stays there). The `/privacy` page already
-   states both commitments in the present tense as of 2026-09-13, so this is a
-   known gap between the published policy and the deployed configuration —
-   Jeff's explicit call to ship and reconcile after. Both follow the
-   retention policy Jeff approved on 2026-09-13 (PLAN-052 owner gate), published
-   at `/privacy`:
+5. DONE. The R2 lifecycle rule and the operational log ceiling, both verified on
+   the free plan on 2026-09-13:
+
+   - **R2 lifecycle** — rule `vorno-pages-30-day-retention` is enabled on
+     `vorno-pages`, all prefixes, "expire objects after 30 days". Confirm with
+     `npx wrangler r2 bucket lifecycle list vorno-pages`. Age is measured from
+     upload, which is why the Worker re-uploads retained objects on a password
+     change: that restarts the clock so "30 days from last update" and the R2
+     rule stay in step rather than drifting apart.
+   - **Log retention** — nothing to configure, and this item was previously
+     misstated as "set log retention to 90 days". Workers Logs retention is a
+     fixed plan benefit, not a setting: 3 days on Free, 7 on Paid. The published
+     commitment is a *ceiling* ("no more than 90 days"), so the platform default
+     satisfies it with two orders of magnitude to spare. The only mechanism that
+     could exceed the ceiling is Logpush to external storage, which is
+     Enterprise-only and therefore unavailable here. If Vorno ever leaves the
+     free plan, re-check that no Logpush job ships Pages logs somewhere with a
+     longer retention than 90 days.
+
+   Both follow the retention policy Jeff approved on 2026-09-13 (PLAN-052 owner
+   gate), published at `/privacy`:
 
    - published content is retained **30 days from its last update** — publication,
      content update, or password change; the Worker re-uploads the retained
