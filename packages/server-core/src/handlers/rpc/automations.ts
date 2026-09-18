@@ -17,7 +17,7 @@ const HISTORY_FILE = 'automations-history.jsonl'
 // boundary the renderer's history view reads through. It was already flowing at runtime
 // (the parse keeps unknown keys) while being invisible to types — which is how a record
 // ends up written, transported, and then silently unrenderable.
-interface HistoryEntry { id: string; ts: number; ok: boolean; kind?: 'outcome' | 'missed' | 'config-diagnostic'; reason?: string; detail?: string; event?: string; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; sessionAction?: { type?: string; outcome?: string; event?: string; depth?: number; reason?: string; detail?: string; sessionId?: string }; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }
+interface HistoryEntry { id: string; ts: number; ok: boolean; test?: boolean; kind?: 'outcome' | 'missed' | 'config-diagnostic'; reason?: string; detail?: string; event?: string; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; sessionAction?: { type?: string; outcome?: string; event?: string; depth?: number; reason?: string; detail?: string; sessionId?: string }; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }
 
 // Per-workspace config mutex: serializes read-modify-write cycles on automations.json
 // to prevent concurrent IPC calls from clobbering each other's changes.
@@ -108,7 +108,7 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
     if (!workspace) throw new Error('Workspace not found')
 
     const results: import('@craft-agent/shared/protocol').TestAutomationActionResult[] = []
-    const { parsePromptReferences } = await import('@craft-agent/shared/automations')
+    const { parsePromptReferences, buildEnvFromPayload, expandEnvVars } = await import('@craft-agent/shared/automations')
     const { executeWebhookRequest, createWebhookHistoryEntry, createPromptHistoryEntry } = await import('@craft-agent/shared/automations/webhook-utils')
 
     for (const action of payload.actions) {
@@ -189,15 +189,31 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
         continue
       }
 
-      // Prompt action
+      // Prompt action.
+      //
+      // Expand `$CRAFT_*` the same way PromptHandler does on the real dispatch
+      // path, with the synthesized SchedulerTick payload the `script` branch
+      // above already uses. Without this the test run delivered the prompt RAW,
+      // so a prompt written against `$CRAFT_WEBHOOK_PAYLOAD_PATH` reached the
+      // model as that literal string. The model cannot Read a file it was never
+      // given a path to, and in `safe` mode its attempt to resolve the variable
+      // through Bash is blocked, so the run dies with no report. An unset
+      // variable now expands to empty — still not a usable path, but a visibly
+      // empty one rather than a name the model tries to dereference.
+      const testEnv = buildEnvFromPayload('SchedulerTick', {
+        workspaceId: payload.workspaceId,
+        timestamp: Date.now(),
+      })
+      const expandedPrompt = expandEnvVars(action.prompt, testEnv)
+
       // Parse @mentions from the prompt to resolve source/skill references
-      const references = parsePromptReferences(action.prompt)
+      const references = parsePromptReferences(expandedPrompt)
 
       try {
         const { sessionId } = await deps.sessionManager.executePromptAutomation({
           workspaceId: payload.workspaceId,
           workspaceRootPath: workspace.rootPath,
-          prompt: action.prompt,
+          prompt: expandedPrompt,
           labels: payload.labels,
           permissionMode: payload.permissionMode,
           mentions: references.mentions,
@@ -220,7 +236,7 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
 
         // Write history entry for test runs
         if (payload.automationId) {
-          const entry = createPromptHistoryEntry({ matcherId: payload.automationId, ok: true, sessionId, prompt: action.prompt })
+          const entry = createPromptHistoryEntry({ matcherId: payload.automationId, ok: true, sessionId, prompt: expandedPrompt, test: true })
           try {
             await appendAutomationHistoryEntry(workspace.rootPath, entry)
           } catch (e) {
@@ -237,7 +253,7 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
 
         // Write failed history entry
         if (payload.automationId) {
-          const entry = createPromptHistoryEntry({ matcherId: payload.automationId, ok: false, error: (err as Error).message, prompt: action.prompt })
+          const entry = createPromptHistoryEntry({ matcherId: payload.automationId, ok: false, error: (err as Error).message, prompt: expandedPrompt, test: true })
           try {
             await appendAutomationHistoryEntry(workspace.rootPath, entry)
           } catch (e) {
