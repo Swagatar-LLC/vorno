@@ -117,7 +117,7 @@
     },
     "apps/cli": {
       "name": "@craft-agent/cli",
-      "version": "0.22.0-beta.2",
+      "version": "0.22.0-beta.3",
       "bin": {
         "vorno-cli": "src/index.ts",
       },
@@ -133,7 +133,7 @@
     },
     "apps/electron": {
       "name": "@craft-agent/electron",
-      "version": "0.22.0-beta.2",
+      "version": "0.22.0-beta.3",
       "dependencies": {
         "@craft-agent/core": "workspace:*",
         "@craft-agent/http-trigger": "workspace:*",
@@ -196,7 +196,7 @@
     },
     "apps/viewer": {
       "name": "@craft-agent/viewer",
-      "version": "0.22.0-beta.2",
+      "version": "0.22.0-beta.3",
       "dependencies": {
         "@craft-agent/core": "workspace:*",
         "@craft-agent/ui": "workspace:*",
@@ -224,7 +224,7 @@
     },
     "apps/webui": {
       "name": "@craft-agent/webui",
-      "version": "0.22.0-beta.2",
+      "version": "0.22.0-beta.3",
       "dependencies": {
         "@craft-agent/shared": "workspace:*",
         "@craft-agent/ui": "workspace:*",
