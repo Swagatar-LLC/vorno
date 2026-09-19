@@ -265,12 +265,15 @@ function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): bo
 export function createScriptHistoryEntry(opts: {
   matcherId: string;
   result: ScriptActionResult;
+  /** True when the run came from the UI's "Run test" rather than a real event. */
+  test?: boolean;
 }): Record<string, unknown> {
   const { result } = opts;
   return {
     id: opts.matcherId,
     ts: Date.now(),
     ok: result.success,
+    ...(opts.test ? { test: true } : {}),
     script: {
       script: result.script,
       exitCode: result.exitCode,

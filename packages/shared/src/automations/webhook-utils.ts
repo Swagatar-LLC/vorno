@@ -39,11 +39,14 @@ export function createWebhookHistoryEntry(opts: {
   attempts?: number;
   error?: string;
   responseBody?: string;
+  /** True when the run came from the UI's "Run test" rather than a real event. */
+  test?: boolean;
 }): Record<string, unknown> {
   return {
     id: opts.matcherId,
     ts: Date.now(),
     ok: opts.ok,
+    ...(opts.test ? { test: true } : {}),
     webhook: {
       method: opts.method ?? DEFAULT_WEBHOOK_METHOD,
       url: redactUrl(opts.url),

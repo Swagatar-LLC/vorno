@@ -122,4 +122,36 @@ describe('automations:test — prompt env expansion', () => {
     expect(written[0].test).toBe(true)
     expect(written[0].sessionId).toBe('sess_test')
   })
+
+  test('a WebhookReceived matcher gets a real staged payload path, not an empty string', async () => {
+    delivered.length = 0
+    writeFileSync(join(ROOT, 'automations.json'), JSON.stringify({
+      version: 1,
+      automations: {
+        WebhookReceived: [{
+          id: 'hook1',
+          name: 'router',
+          hook: { slug: 'cos-inbox' },
+          actions: [{ type: 'prompt', prompt: 'unused' }],
+        }],
+      },
+    }))
+    const invoke = buildHarness()
+
+    await invoke(RPC_CHANNELS.automations.TEST, {
+      workspaceId: WORKSPACE_ID,
+      automationId: 'hook1',
+      actions: [{ type: 'prompt', prompt: 'Read $CRAFT_WEBHOOK_PAYLOAD_PATH now. hook=$CRAFT_WEBHOOK_HOOK' }],
+    })
+
+    expect(delivered).toHaveLength(1)
+    const match = delivered[0]!.match(/^Read (\S+) now\. hook=cos-inbox$/)
+    expect(match).not.toBeNull()
+    const stagedPath = match![1]!
+    expect(stagedPath).toContain(join(ROOT, 'webhooks-payloads'))
+    expect(existsSync(stagedPath)).toBe(true)
+    const staged = JSON.parse(readFileSync(stagedPath, 'utf-8'))
+    expect(staged.test).toBe(true)
+    expect(staged.hookSlug).toBe('cos-inbox')
+  })
 })

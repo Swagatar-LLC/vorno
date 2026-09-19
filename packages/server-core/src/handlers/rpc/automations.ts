@@ -108,8 +108,33 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
     if (!workspace) throw new Error('Workspace not found')
 
     const results: import('@craft-agent/shared/protocol').TestAutomationActionResult[] = []
-    const { parsePromptReferences, buildEnvFromPayload, expandEnvVars } = await import('@craft-agent/shared/automations')
+    const { parsePromptReferences, buildEnvFromPayload, expandEnvVars, WEBHOOKS_PAYLOADS_DIR } = await import('@craft-agent/shared/automations')
     const { executeWebhookRequest, createWebhookHistoryEntry, createPromptHistoryEntry } = await import('@craft-agent/shared/automations/webhook-utils')
+
+    // Resolve the matcher's event (and hook slug) from automations.json by id,
+    // so a test run builds the env family the REAL dispatch would. Without this
+    // every test simulated SchedulerTick, so a WebhookReceived prompt written
+    // against $CRAFT_WEBHOOK_PAYLOAD_PATH had no path to expand and the test
+    // could never exercise the automation it claims to test. No DTO change:
+    // the id is already on the payload and the config is already on disk.
+    let matcherEvent = 'SchedulerTick'
+    let matcherHookSlug: string | undefined
+    if (payload.automationId) {
+      try {
+        const { resolveAutomationsConfigPath } = await import('@craft-agent/shared/automations/resolve-config-path')
+        const config = JSON.parse(await readFile(resolveAutomationsConfigPath(workspace.rootPath), 'utf-8'))
+        for (const [eventName, matchers] of Object.entries(config?.automations ?? {})) {
+          const m = (matchers as Record<string, unknown>[]).find((m) => m.id === payload.automationId)
+          if (m) {
+            matcherEvent = eventName
+            matcherHookSlug = (m.hook as { slug?: string } | undefined)?.slug
+            break
+          }
+        }
+      } catch {
+        // No config / unreadable — keep the SchedulerTick simulation.
+      }
+    }
 
     for (const action of payload.actions) {
       const start = Date.now()
@@ -135,6 +160,7 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
             durationMs: result.durationMs ?? 0,
             error: result.error,
             responseBody: result.responseBody,
+            test: true,
           })
           try {
             await appendAutomationHistoryEntry(workspace.rootPath, entry)
@@ -179,7 +205,7 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
         })
 
         if (payload.automationId) {
-          const entry = createScriptHistoryEntry({ matcherId: payload.automationId, result })
+          const entry = createScriptHistoryEntry({ matcherId: payload.automationId, result, test: true })
           try {
             await appendAutomationHistoryEntry(workspace.rootPath, entry)
           } catch (e) {
@@ -192,18 +218,37 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
       // Prompt action.
       //
       // Expand `$CRAFT_*` the same way PromptHandler does on the real dispatch
-      // path, with the synthesized SchedulerTick payload the `script` branch
-      // above already uses. Without this the test run delivered the prompt RAW,
-      // so a prompt written against `$CRAFT_WEBHOOK_PAYLOAD_PATH` reached the
-      // model as that literal string. The model cannot Read a file it was never
-      // given a path to, and in `safe` mode its attempt to resolve the variable
-      // through Bash is blocked, so the run dies with no report. An unset
-      // variable now expands to empty — still not a usable path, but a visibly
-      // empty one rather than a name the model tries to dereference.
-      const testEnv = buildEnvFromPayload('SchedulerTick', {
+      // path, using the matcher's own event resolved above. Without this the
+      // test run delivered the prompt RAW, so a prompt written against
+      // `$CRAFT_WEBHOOK_PAYLOAD_PATH` reached the model as that literal string.
+      // The model cannot Read a file it was never given a path to, and in
+      // `safe` mode its attempt to resolve the variable through Bash is
+      // blocked, so the run dies with no report.
+      //
+      // For a WebhookReceived matcher, a usable env needs a real staged file —
+      // the variable IS a path. Stage a small synthetic payload in the same
+      // directory the receiver uses, marked as a test so the automation's
+      // prompt sees honest content rather than an empty string.
+      const eventPayload: Record<string, unknown> = {
         workspaceId: payload.workspaceId,
         timestamp: Date.now(),
-      })
+      }
+      if (matcherEvent === 'WebhookReceived') {
+        const { mkdir, writeFile: writeFileAsync } = await import('fs/promises')
+        const slug = matcherHookSlug ?? 'hook'
+        const dir = join(workspace.rootPath, WEBHOOKS_PAYLOADS_DIR)
+        const stagedPath = join(dir, `${slug}-test-${Date.now()}.json`)
+        try {
+          await mkdir(dir, { recursive: true })
+          await writeFileAsync(stagedPath, JSON.stringify({ test: true, source: 'automation-run-test', hookSlug: slug, ts: Date.now() }, null, 2), 'utf-8')
+          eventPayload.payloadPath = stagedPath
+        } catch (e) {
+          log.warn('[Automations] Failed to stage test webhook payload:', e)
+        }
+        eventPayload.hookSlug = slug
+        eventPayload.eventId = `test-${Date.now()}`
+      }
+      const testEnv = buildEnvFromPayload(matcherEvent as import('@craft-agent/shared/automations').AutomationEvent, eventPayload as never)
       const expandedPrompt = expandEnvVars(action.prompt, testEnv)
 
       // Parse @mentions from the prompt to resolve source/skill references
