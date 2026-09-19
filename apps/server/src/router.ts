@@ -75,9 +75,20 @@ export function createRouter(pool: SessionPool, registry?: ClientRegistry, webho
     // fork(PLAN-014): inbound webhook receiver — an unauthenticated route class
     // (providers can't send our craft_sk_ bearer). Security = capability URL +
     // optional HMAC. Registered BEFORE the auth gate, like /health.
-    if (method === 'POST' && webhooks) {
+    // The PATH claims the route; the METHOD only decides the answer. Gating the
+    // match on `method === 'POST'` sent every non-POST hook URL — a browser GET
+    // being the common one — into the auth gate, which answered `401 Missing
+    // Authorization header`. That reads as "the webhook token was rejected" and
+    // is a lie: the request never reached the receiver. 405 says what happened.
+    if (webhooks) {
       const hookParams = matchRoute(path, '/hooks/:workspace/:hookSlug/:token');
       if (hookParams) {
+        if (method !== 'POST') {
+          return new Response(JSON.stringify({ error: 'method not allowed' }), {
+            status: 405,
+            headers: { 'Content-Type': 'application/json', Allow: 'POST', ...corsHeaders() },
+          });
+        }
         return handleWebhookRoute(
           request,
           { workspace: hookParams.workspace, hookSlug: hookParams.hookSlug, token: hookParams.token },
