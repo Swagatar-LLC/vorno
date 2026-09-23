@@ -110,6 +110,9 @@ export function getMatchValue(event: AutomationEvent, data: Record<string, unkno
       // `matchField` narrows this to a specific field — handled in
       // matcherMatches() where the matcher (and thus matchField) is available.
       return data.body !== undefined ? JSON.stringify(data.body) : '';
+    case 'ContextThresholdReached':
+      // fork(PLAN-055): match on the crossed level so a rule can target `warn` or `danger`.
+      return String(data.level ?? '');
     default:
       return JSON.stringify(data);
   }

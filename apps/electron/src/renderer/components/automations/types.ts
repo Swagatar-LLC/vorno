@@ -31,6 +31,8 @@ export type AppEvent =
   // fork(PLAN-014): inbound webhook trigger. Deliberately NOT in APP_EVENTS so it
   // forms its own "Webhooks" sub-group rather than folding into "Event-based".
   | 'WebhookReceived'
+  // fork(PLAN-055): a session's context usage crossed a token-limit threshold.
+  | 'ContextThresholdReached'
 
 export type AgentEvent =
   | 'PreToolUse'
@@ -51,7 +53,8 @@ export type AutomationTrigger = AppEvent | AgentEvent
 
 export const APP_EVENTS: AppEvent[] = [
   'LabelAdd', 'LabelRemove', 'LabelConfigChange',
-  'PermissionModeChange', 'FlagChange', 'TodoStateChange', 'SessionStatusChange', 'SchedulerTick'
+  'PermissionModeChange', 'FlagChange', 'TodoStateChange', 'SessionStatusChange', 'SchedulerTick',
+  'ContextThresholdReached', // fork(PLAN-055)
 ]
 
 export const AGENT_EVENTS: AgentEvent[] = [
@@ -317,6 +320,7 @@ export const EVENT_DISPLAY_NAMES: Record<AutomationTrigger, string> = {
   SessionStatusChange:  'Status Changed',
   SchedulerTick:        'Scheduled',
   WebhookReceived:      'Webhook', // fork(PLAN-014)
+  ContextThresholdReached: 'Context Threshold Reached', // fork(PLAN-055)
 
   // Agent events
   PreToolUse:           'Before Tool Runs',
@@ -523,6 +527,7 @@ export function getEventCategory(event: AutomationTrigger): EventCategory {
       return 'agent-error'
     case 'SessionStart':
     case 'Notification':
+    case 'ContextThresholdReached': // fork(PLAN-055)
       return 'session'
     default:
       return 'other'
