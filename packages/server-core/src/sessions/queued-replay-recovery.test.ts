@@ -433,9 +433,154 @@ describe('a queued send crossing a process boundary', () => {
   // "transfers handoff steers ahead of already queued later attachments",
   // "hard Stop visibly cancels accepted pending steers") and in
   // `packages/shared/src/agent/__tests__/claude-steering.test.ts`.
-  // Deliberately accepted with the design swap: upstream does not mark a
-  // steered message durably queued at accept time, so a crash mid-turn can lose
-  // an acknowledged steer that the fork's at-least-once marker preserved.
+  // The one thing NOT covered by that equivalent coverage is durability across
+  // a crash, which upstream's design drops: it keeps an accepted steer only in
+  // the runtime `acceptedSteers` map and persists the message with
+  // `isQueued = false` before the ack. The fork's at-least-once marker is
+  // restored on top of upstream's queue, and the three tests below are what hold
+  // it: provisional marker written before the ack, retired at settlement for
+  // steers the backend delivered, kept for steers it handed back.
+
+  /**
+   * A steer the backend can be asked about, with a scripted answer for the one
+   * question settlement asks it.
+   *
+   * `takePendingSteers` returning `[]` is the backend saying "everything you
+   * gave me went out" — the only evidence allowed to retire a provisional
+   * marker. Returning an envelope is the opposite answer.
+   */
+  function steerableAgent(undelivered: Array<{ message: string; messageId?: string }> = []) {
+    let asked = false
+    return {
+      redirect: () => true,
+      takePendingSteers: () => {
+        if (asked) return []
+        asked = true
+        return undelivered
+      },
+    }
+  }
+
+  it('replays an accepted steer whose process died before the turn settled', async () => {
+    // The crash boundary the marker exists for: the steer was ACKed to the user,
+    // lives only in the backend's memory and in the runtime `acceptedSteers`
+    // map, and the process dies before `onProcessingStopped` ever runs. Without
+    // a durable marker the cold-load scan sees nothing and the message the user
+    // was told had landed is simply gone.
+    const sessionId = 'sess_steer_crash'
+
+    // ---- Process 1: steer accepted, then nothing. No settlement, no clean quit.
+    const first = new SessionManager()
+    const managed = seed(first, sessionId, { agent: steerableAgent() })
+    ;(first as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void })
+      .setProcessing(managed, true)
+    await first.sendMessage(sessionId, 'steer into the running turn')
+
+    // Accepted, not queued — and durably marked anyway. The mid-stream path
+    // flushes before it acks, so this is already on disk.
+    const steered = (managed.messages as Array<{ content?: string; isQueued?: boolean }>)
+      .find(m => m.content === 'steer into the running turn')
+    expect(steered?.isQueued).toBe(true)
+    expect((managed.messageQueue as unknown[]).length).toBe(0)
+    const stored = JSON.parse(
+      readFileSync(getSessionFilePath(root, sessionId), 'utf-8')
+        .trim().split('\n').slice(1).find(l => l.includes('steer into the running turn'))!,
+    ) as Record<string, unknown>
+    expect(stored.isQueued).toBe(true)
+
+    // ---- Process 2: a fresh manager hydrates the same session cold.
+    const second = new SessionManager()
+    const revived = createManagedSession(
+      { id: sessionId, name: 'Replay session', sessionStatus: 'todo', createdAt: Date.now() },
+      workspace(),
+    ) as unknown as Record<string, unknown>
+    revived.messageQueue = []
+    ;(second as unknown as { sessions: Map<string, unknown> }).sessions.set(sessionId, revived)
+    const turn = fakeTurnBoundary(second)
+
+    await (second as unknown as {
+      ensureMessagesLoaded(m: unknown): Promise<void>
+    }).ensureMessagesLoaded(revived)
+
+    // THE POINT: the ACKed steer came back as a queued message to replay.
+    const queue = revived.messageQueue as Array<{ messageId?: string }>
+    expect(queue).toHaveLength(1)
+    expect(queue[0]!.messageId).toBe(steered!.id as unknown as string)
+
+    await turn.endTurn()
+    await quiesce(second, turn)
+  }, 30000)
+
+  it('retires the provisional marker once the turn settles with the steer delivered', async () => {
+    // The no-crash path, and the reason the marker is PROVISIONAL: a steer that
+    // was delivered must not come back on the next launch. Settlement asks the
+    // backend, gets silence, and drops the marker on that evidence.
+    const sessionId = 'sess_steer_delivered'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId, { agent: steerableAgent() })
+    ;(sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void })
+      .setProcessing(managed, true)
+    await sm.sendMessage(sessionId, 'steer that lands')
+
+    await (sm as unknown as {
+      onProcessingStopped(id: string, reason: string): Promise<void>
+    }).onProcessingStopped(sessionId, 'complete')
+
+    const settled = (managed.messages as Array<{ content?: string; isQueued?: boolean; queuedSkillSlugs?: unknown }>)
+      .find(m => m.content === 'steer that lands')
+    expect(settled?.isQueued).toBeFalsy()
+    expect(settled?.queuedSkillSlugs).toBeUndefined()
+    expect((managed.messageQueue as unknown[]).length).toBe(0)
+
+    // And on disk, so the next launch's scan finds nothing to replay.
+    await sm.flushAllSessions()
+    const lines = readFileSync(getSessionFilePath(root, sessionId), 'utf-8')
+      .trim().split('\n').slice(1).filter(l => l.includes('steer that lands'))
+    const last = JSON.parse(lines[lines.length - 1]!) as Record<string, unknown>
+    expect(last.isQueued).toBeFalsy()
+  }, 30000)
+
+  it('keeps the marker for a steer the backend hands back undelivered', async () => {
+    // The third answer: the backend still had it. The message is put back on the
+    // runtime queue AND keeps its durable marker, so a crash before the replay
+    // owns a turn still recovers it.
+    const sessionId = 'sess_steer_undelivered'
+    const sm = new SessionManager()
+    const managed = seed(sm, sessionId)
+    // The recovered message is replayed, so the turn it starts needs the same
+    // boundary the other replay tests use.
+    const turn = fakeTurnBoundary(sm)
+    ;(sm as unknown as { setProcessing(m: unknown, p: boolean, f?: unknown): void })
+      .setProcessing(managed, true)
+    // The agent is installed with a placeholder id first, then pointed at the
+    // real message id: the id only exists once the send has created it.
+    const handback: Array<{ message: string; messageId?: string }> = []
+    managed.agent = steerableAgent(handback)
+    const originalRedirect = (managed.agent as { redirect(m: string, o?: { messageId?: string }): boolean }).redirect
+    ;(managed.agent as { redirect(m: string, o?: { messageId?: string }): boolean }).redirect =
+      (message, opts) => {
+        handback.push({ message, messageId: opts?.messageId })
+        return originalRedirect(message)
+      }
+    await sm.sendMessage(sessionId, 'steer that never went out')
+
+    await (sm as unknown as {
+      onProcessingStopped(id: string, reason: string): Promise<void>
+    }).onProcessingStopped(sessionId, 'complete')
+
+    const kept = (managed.messages as Array<{ id?: string; content?: string; isQueued?: boolean }>)
+      .find(m => m.content === 'steer that never went out')
+    expect(kept?.isQueued).toBe(true)
+    // Settlement put it back on the runtime queue, which `onProcessingStopped`
+    // then drained into a replay turn — so the queue is already empty here and
+    // the observable proof of the re-queue is the turn that started for it.
+    expect(await turn.at).toBe(sessionId)
+    // One copy of the message, not a duplicate bubble.
+    expect((managed.messages as Array<{ content?: string }>)
+      .filter(m => m.content === 'steer that never went out')).toHaveLength(1)
+
+    await quiesce(sm, turn)
+  }, 30000)
 
   it('opens a session whose queued message has a corrupted slug field', async () => {
     // The read path, which is the one that matters: a hand-edited or

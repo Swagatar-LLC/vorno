@@ -7707,6 +7707,31 @@ export class SessionManager implements ISessionManager {
       const delivery = resolveMidStreamDeliveryOutcome(attemptedSteer ? 'steer' : 'queue', steered)
       userMessage.isQueued = delivery.shouldQueue
 
+      // fork: PROVISIONAL DURABLE MARKER for an accepted steer.
+      //
+      // A steer is a user message pushed into a RUNNING turn rather than queued,
+      // so for the length of that turn `acceptedSteers` — runtime state that dies
+      // with the process — is its only other home. Upstream persists it with
+      // `isQueued = false` and ACKs, so a crash between the ACK and delivery loses
+      // a message the user was told had landed. Marking it queued HERE, before the
+      // persist and the ACK below, makes the cold-load scan
+      // (`recoverOrphanedQueuedMessages`) find it after a crash.
+      //
+      // The marker is provisional: the steer will probably be delivered, and
+      // `clearProvisionalSteers` drops it at settlement for exactly the ids the
+      // backend did NOT hand back. The trade is one-directional and deliberate —
+      // a crash may replay a message that was already seen (at-least-once), where
+      // the alternative loses one that was not.
+      //
+      // Only for a backend that can answer `takePendingSteers`, which is the same
+      // gate the map itself uses: a backend that can never be asked would have its
+      // silence read as delivery, and the marker would be cleared on evidence that
+      // does not exist.
+      if (steered && agent?.takePendingSteers) {
+        userMessage.isQueued = true
+        userMessage.queuedSkillSlugs = options?.skillSlugs
+      }
+
       // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
       // (covers both queue-direct and queue-after-abort paths).
       this.sendEvent({
@@ -8634,7 +8659,39 @@ export class SessionManager implements ISessionManager {
     for (const steer of managed.agent?.takePendingSteers?.() ?? []) {
       this.recoverUndeliveredSteer(managed, steer)
     }
-    managed.acceptedSteers?.clear()
+    this.clearProvisionalSteers(managed)
+  }
+
+  /**
+   * Retire the provisional `isQueued` markers of steers that WERE delivered, and
+   * empty the runtime map.
+   *
+   * Called only after the backend has been asked and every undelivered steer has
+   * been taken out of `acceptedSteers` — by `recoverUndeliveredSteer`, whether it
+   * ran from a `steer_undelivered` event or from the sweep above. So whatever is
+   * still in the map at this point is a steer the backend kept, i.e. delivered,
+   * and its marker is the only kind this is allowed to drop. A message that has
+   * been put back on `messageQueue` keeps its marker until the replay owns a turn
+   * (`processNextQueuedMessage`), so it is skipped here.
+   *
+   * Do NOT replace this with a bare `acceptedSteers.clear()`: that was upstream's
+   * behaviour and it is what loses an ACKed steer across a crash, because the
+   * evidence of delivery and the marker are dropped in the same breath.
+   */
+  private clearProvisionalSteers(managed: ManagedSession): void {
+    const delivered = managed.acceptedSteers
+    if (!delivered?.size) return
+    let dirty = false
+    for (const messageId of delivered.keys()) {
+      const original = managed.messages.find(m => m.id === messageId)
+      if (!original?.isQueued) continue
+      if (managed.messageQueue.some(q => q.messageId === messageId)) continue
+      original.isQueued = false
+      original.queuedSkillSlugs = undefined
+      dirty = true
+    }
+    delivered.clear()
+    if (dirty) this.persistSession(managed)
   }
 
   /**
@@ -8761,8 +8818,13 @@ export class SessionManager implements ISessionManager {
           managed.forceStopCleanupTimer = undefined
         }
 
-        // Backend recovery events precede complete; discard payloads already delivered.
-        managed.acceptedSteers?.clear()
+        // fork: upstream clears `acceptedSteers` HERE, ahead of the settlement
+        // below. That clear destroys the only record of which steers were
+        // outstanding, so `recoverPendingSteers` finds no payload for anything the
+        // backend hands back, and the provisional markers of the delivered ones
+        // are dropped without ever asking. Both jobs — re-queue the undelivered,
+        // retire the markers of the delivered — belong to the one settlement call
+        // a few lines down, which empties the map itself.
 
         sessionLog.info(`Processing stopped for session ${sessionId}: ${reason}`)
 
