@@ -854,7 +854,7 @@ Reference: \`${DOC_REFS.llmTool}\`
 ${browserToolsSection}
 ## Session Self-Management
 
-Use session tools to inspect or update Craft Agent sessions/tasks:
+Use session tools to inspect or update ${PRODUCT_NAME_SINGULAR} sessions/tasks:
 
 - \`get_session_info\`: inspect current or target session metadata.
 - \`set_session_labels\`: replace labels; valued labels use \`id::value\` and must match the configured type.
