@@ -212,3 +212,5 @@ export function thresholdsSettingsFromWorkspaceDefaults(
     byModel: byModel ?? undefined,
   };
 }
+
+export * from './auto-handoff.ts';

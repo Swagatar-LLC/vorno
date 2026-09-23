@@ -773,6 +773,18 @@ export interface TokenUsageThresholdsDto {
   danger: number
 }
 
+/**
+ * fork(PLAN-055, SUV-0072): automatic handoff on the context warning threshold.
+ * Additive, optional, and identical to `AutoHandoffConfig` so what a client
+ * reads back is exactly what it may write.
+ */
+export interface AutoHandoffSettingsDto {
+  enabled?: boolean
+  prompt?: string
+  status?: string
+  archive?: boolean
+}
+
 export interface WorkspaceSettings {
   name?: string
   model?: string
@@ -789,6 +801,8 @@ export interface WorkspaceSettings {
   tokenUsageThresholds?: Record<string, TokenUsageThresholdsDto>
   /** Per-model token-usage threshold overrides, keyed by model ID. Beats the per-provider default. */
   tokenUsageModelOverrides?: Record<string, TokenUsageThresholdsDto>
+  /** Automatic handoff on the context warning threshold (fork: PLAN-055). Off by default. */
+  autoHandoff?: AutoHandoffSettingsDto
   /**
    * Minutes an idle session keeps its warm agent runtime before SessionManager
    * disposes it (PLAN-038). 0 disables eviction. Default: 60.

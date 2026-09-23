@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, isAbsolute } from 'path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
+import { normalizeAutoHandoffConfig, validateAutoHandoffConfigShape } from '@craft-agent/shared/context-usage'
 import { getPreferencesPath, getSessionDraft, setSessionDraft, deleteSessionDraft, getAllSessionDrafts, getWorkspaceByNameOrId, getDefaultThinkingLevel, setDefaultThinkingLevel } from '@craft-agent/shared/config'
 import { isValidThinkingLevel, normalizeThinkingLevel, THINKING_LEVEL_IDS } from '@craft-agent/shared/agent/thinking-levels'
 
@@ -123,6 +124,8 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       enabledSourceSlugs: config?.defaults?.enabledSourceSlugs ?? [],
       tokenUsageThresholds: config?.defaults?.tokenUsageThresholds,
       tokenUsageModelOverrides: config?.defaults?.tokenUsageModelOverrides,
+      // fork(PLAN-055, SUV-0072): normalized so a hand-edited block reads back well-typed
+      autoHandoff: normalizeAutoHandoffConfig(config?.defaults?.autoHandoff) ?? undefined,
       idleAgentTtlMinutes: config?.defaults?.idleAgentTtlMinutes,
       idleBrowserTtlMinutes: config?.defaults?.idleBrowserTtlMinutes,
       workbenchEnabled: config?.defaults?.workbenchEnabled ?? false,
@@ -154,7 +157,7 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
       : value
 
     // Validate key is a known workspace setting
-    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'idleAgentTtlMinutes', 'idleBrowserTtlMinutes', 'workbenchEnabled', 'pagesEnabled', 'artifactsEnabled', 'artifactRoots', 'headroom', 'memory']
+    const validKeys = ['name', 'model', 'enabledSourceSlugs', 'permissionMode', 'cyclablePermissionModes', 'thinkingLevel', 'workingDirectory', 'localMcpEnabled', 'defaultLlmConnection', 'tokenUsageThresholds', 'tokenUsageModelOverrides', 'autoHandoff', 'idleAgentTtlMinutes', 'idleBrowserTtlMinutes', 'workbenchEnabled', 'pagesEnabled', 'artifactsEnabled', 'artifactRoots', 'headroom', 'memory']
     if (!validKeys.includes(key)) {
       throw new Error(`Invalid workspace setting key: ${key}. Valid keys: ${validKeys.join(', ')}`)
     }
@@ -261,6 +264,20 @@ export function registerSettingsHandlers(server: RpcServer, deps: HandlerDeps): 
             throw new Error(`${key}.${entryKey}: warn and danger must be numbers in (0, 1) with warn < danger`)
           }
         }
+      }
+    }
+
+    // Validate autoHandoff (fork: PLAN-055, SUV-0072). Shape is shared with the
+    // settings card; status existence is checked here because only the host
+    // owns the workspace's status config. A blank status means "leave unchanged".
+    if (key === 'autoHandoff' && normalizedValue !== undefined && normalizedValue !== null) {
+      const shapeError = validateAutoHandoffConfigShape(normalizedValue)
+      if (shapeError) throw new Error(shapeError)
+      const status = (normalizedValue as { status?: string }).status?.trim()
+      if (status) {
+        const { loadStatusConfig } = await import('@craft-agent/shared/statuses/storage')
+        const known = loadStatusConfig(workspace.rootPath).statuses.some((s) => s.id === status)
+        if (!known) throw new Error(`autoHandoff.status "${status}" is not a configured status in this workspace`)
       }
     }
 
