@@ -141,12 +141,30 @@ describe('SessionManager auto-handoff (SUV-0072)', () => {
     await flushTimers()
     expect(sent).toHaveLength(0)
     expect(managed.contextThresholdState?.autoHandoffFiredAt).toBeUndefined()
+    expect(managed.contextThresholdState?.autoHandoffRefusedAt).toEqual(expect.any(Number))
     expect(managed.contextThresholdState?.warnReachedAt).toEqual(expect.any(Number))
 
     sample(managed, 66_000)
     await flushTimers()
     expect(sent).toHaveLength(1)
     expect(managed.contextThresholdState?.autoHandoffMessageId).toBe('handoff-msg-retry')
+    expect(managed.contextThresholdState?.autoHandoffRefusedAt).toBeUndefined()
+  })
+
+  it('never fires retroactively for a session that crossed while the feature was off', async () => {
+    writeConfig({ enabled: false })
+    const managed = buildSession('ah-late-enable')
+    sample(managed, 65_000)
+    sample(managed, 85_000)
+    await flushTimers()
+    expect(sent).toHaveLength(0)
+
+    writeConfig({ enabled: true })
+    sample(managed, 90_000)
+    sample(managed, 95_000)
+    await flushTimers()
+    expect(sent).toHaveLength(0)
+    expect(managed.contextThresholdState?.autoHandoffFiredAt).toBeUndefined()
   })
 
   it('marks follow-through pending when a status or archive is configured', async () => {

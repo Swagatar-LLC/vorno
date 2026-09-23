@@ -61,8 +61,12 @@ export function WorkspaceAutoHandoffCard({ workspace }: Props) {
   // replaces the whole object.
   const configRef = useRef<AutoHandoffConfig>({})
   const promptDraftRef = useRef('')
-  // Writes are serialized so two quick edits cannot land out of order.
+  // Writes are serialized so two quick edits cannot land out of order, and
+  // counted so a failure reconciles against storage only once the queue has
+  // settled — a later queued write carries the full merged snapshot and would
+  // otherwise land AFTER the reload and leave the ref behind storage.
   const saveChain = useRef<Promise<void>>(Promise.resolve())
+  const queuedWrites = useRef(0)
 
   useEffect(() => {
     let cancelled = false
@@ -92,16 +96,24 @@ export function WorkspaceAutoHandoffCard({ workspace }: Props) {
     if (!next.status || next.status.trim() === '') delete next.status
     configRef.current = next
     setConfig(next)
+    queuedWrites.current += 1
     const run = async () => {
+      let failed = false
       try {
         await window.electronAPI.updateWorkspaceSetting(workspace.id, 'autoHandoff', next)
       } catch (err) {
+        failed = true
         console.error('[AutoHandoff] save failed:', err)
         toast.error(t('settings.ai.autoHandoff.saveFailed'), {
           description: err instanceof Error ? err.message : String(err),
         })
-        // Re-read what actually persisted rather than guessing at a revert:
-        // an earlier queued write may have landed after this one's snapshot.
+      } finally {
+        queuedWrites.current -= 1
+      }
+      // Reconcile only when this was the LAST queued write: a later one carries
+      // the full merged snapshot (this patch included), so either it lands and
+      // storage matches the ref, or it fails too and reconciles as the last.
+      if (failed && queuedWrites.current === 0) {
         try {
           const ws = await window.electronAPI.getWorkspaceSettings(workspace.id)
           const persisted = normalizeAutoHandoffConfig(ws?.autoHandoff) ?? {}

@@ -2204,10 +2204,10 @@ export class SessionManager implements ISessionManager {
    */
   observeContextThresholds(managed: ManagedSession): void {
     const state = managed.contextThresholdState
-    // Fast path: both levels fired AND the handoff (if any) was delivered. A
+    // Fast path: both levels fired and no handoff send is awaiting a retry. A
     // settled session whose handoff send was refused stays on the slow path so
-    // the re-armed latch can retry on a later sample (SUV-0072 review fix).
-    if (isContextThresholdSettled(state) && state?.autoHandoffFiredAt) return
+    // the explicit refusal marker can retry on a later sample (SUV-0072 review fix).
+    if (isContextThresholdSettled(state) && !state?.autoHandoffRefusedAt) return
     if (!isContextThresholdEligible(managed)) return
     const used = managed.tokenUsage?.inputTokens
     if (!used || used <= 0) return
@@ -2225,9 +2225,11 @@ export class SessionManager implements ISessionManager {
     if (!usage.denominatorKnown) return
     const crossings = detectContextThresholdCrossings(state, usage)
     if (crossings.length === 0) {
-      // No new level, but a handoff whose send was refused earlier is re-armed
-      // (`warnReachedAt` set, `autoHandoffFiredAt` cleared) — give it its retry.
-      if (state?.warnReachedAt && !state.autoHandoffFiredAt) this.maybeFireAutoHandoff(managed, wsConfig)
+      // No new level. The ONLY way a handoff fires without a fresh crossing is a
+      // send that was refused earlier (`autoHandoffRefusedAt`): a session that
+      // crossed while the feature was off must not receive a handoff just
+      // because the setting was switched on afterwards.
+      if (state?.autoHandoffRefusedAt && !state.autoHandoffFiredAt) this.maybeFireAutoHandoff(managed, wsConfig)
       return
     }
 
@@ -2297,8 +2299,9 @@ export class SessionManager implements ISessionManager {
       sessionLog.warn(`Auto-handoff: could not resolve skill mentions for ${managed.id}: ${error instanceof Error ? error.message : String(error)}`)
     }
 
+    const { autoHandoffRefusedAt: _refused, ...armed } = state
     managed.contextThresholdState = {
-      ...state,
+      ...armed,
       autoHandoffFiredAt: Date.now(),
       autoHandoffPending: autoHandoffHasFollowThrough(config),
     }
@@ -2327,14 +2330,16 @@ export class SessionManager implements ISessionManager {
       ).catch((error) => {
         sessionLog.error(`Auto-handoff: failed to deliver handoff prompt to ${sessionId}:`, error)
         // The send was refused before the message was acked, so nothing reached
-        // the transcript. Re-arm the latch: a durable `autoHandoffFiredAt` with
-        // no message behind it would silence every later sample and every
-        // restart, and the handoff would be lost for good. The next threshold
-        // sample retries; `warnReachedAt` stays so the event is not re-emitted.
+        // the transcript. Re-arm with an EXPLICIT refusal marker: a durable
+        // `autoHandoffFiredAt` with no message behind it would silence every
+        // later sample and every restart, but silently clearing it would make
+        // "crossed while the feature was off" indistinguishable from "refused",
+        // and the former must never fire retroactively. `warnReachedAt` stays so
+        // the event is not re-emitted.
         const current = this.sessions.get(sessionId)
         if (!current?.contextThresholdState || current.contextThresholdState.autoHandoffMessageId) return
         const { autoHandoffFiredAt: _fired, autoHandoffPending: _pending, ...rest } = current.contextThresholdState
-        current.contextThresholdState = rest
+        current.contextThresholdState = { ...rest, autoHandoffRefusedAt: Date.now() }
         this.persistSession(current)
       })
     }, 0)
