@@ -55,6 +55,14 @@ export function WorkspaceAutoHandoffCard({ workspace }: Props) {
   // the RPC; the draft is flushed on a short debounce.
   const [promptDraft, setPromptDraft] = useState('')
   const promptTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Latest committed config and draft, readable from timers and the unmount
+  // cleanup without a stale closure: a debounced prompt save must merge
+  // against whatever toggle/select landed AFTER the keystroke, and the RPC
+  // replaces the whole object.
+  const configRef = useRef<AutoHandoffConfig>({})
+  const promptDraftRef = useRef('')
+  // Writes are serialized so two quick edits cannot land out of order.
+  const saveChain = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => {
     let cancelled = false
@@ -63,6 +71,8 @@ export function WorkspaceAutoHandoffCard({ workspace }: Props) {
     void window.electronAPI.getWorkspaceSettings(workspace.id).then(ws => {
       if (cancelled) return
       const loaded = normalizeAutoHandoffConfig(ws?.autoHandoff) ?? {}
+      configRef.current = loaded
+      promptDraftRef.current = loaded.prompt ?? ''
       setConfig(loaded)
       setPromptDraft(loaded.prompt ?? '')
     }).catch(err => {
@@ -73,38 +83,60 @@ export function WorkspaceAutoHandoffCard({ workspace }: Props) {
     return () => { cancelled = true }
   }, [workspace.id])
 
-  const persist = useCallback(async (patch: Partial<AutoHandoffConfig>) => {
-    if (!window.electronAPI) return
-    const previous = config
-    const next: AutoHandoffConfig = { ...previous, ...patch }
+  const persist = useCallback((patch: Partial<AutoHandoffConfig>): Promise<void> => {
+    if (!window.electronAPI) return Promise.resolve()
+    // Merge against the LATEST committed state, not the render that created
+    // this callback — see configRef.
+    const next: AutoHandoffConfig = { ...configRef.current, ...patch }
     // A blank status means "leave unchanged"; store it as absent.
     if (!next.status || next.status.trim() === '') delete next.status
+    configRef.current = next
     setConfig(next)
-    try {
-      await window.electronAPI.updateWorkspaceSetting(workspace.id, 'autoHandoff', next)
-    } catch (err) {
-      console.error('[AutoHandoff] save failed:', err)
-      setConfig(previous)
-      setPromptDraft(previous.prompt ?? '')
-      toast.error(t('settings.ai.autoHandoff.saveFailed'), {
-        description: err instanceof Error ? err.message : String(err),
-      })
+    const run = async () => {
+      try {
+        await window.electronAPI.updateWorkspaceSetting(workspace.id, 'autoHandoff', next)
+      } catch (err) {
+        console.error('[AutoHandoff] save failed:', err)
+        toast.error(t('settings.ai.autoHandoff.saveFailed'), {
+          description: err instanceof Error ? err.message : String(err),
+        })
+        // Re-read what actually persisted rather than guessing at a revert:
+        // an earlier queued write may have landed after this one's snapshot.
+        try {
+          const ws = await window.electronAPI.getWorkspaceSettings(workspace.id)
+          const persisted = normalizeAutoHandoffConfig(ws?.autoHandoff) ?? {}
+          configRef.current = persisted
+          promptDraftRef.current = persisted.prompt ?? ''
+          setConfig(persisted)
+          setPromptDraft(persisted.prompt ?? '')
+        } catch (reloadErr) {
+          console.warn('[AutoHandoff] reload after failed save failed:', reloadErr)
+        }
+      }
     }
-  }, [config, workspace.id, t])
+    saveChain.current = saveChain.current.then(run, run)
+    return saveChain.current
+  }, [workspace.id, t])
 
-  const onPromptChange = useCallback((value: string) => {
-    setPromptDraft(value)
-    if (promptTimer.current) clearTimeout(promptTimer.current)
-    promptTimer.current = setTimeout(() => {
+  const flushPromptDraft = useCallback(() => {
+    if (promptTimer.current) {
+      clearTimeout(promptTimer.current)
       promptTimer.current = null
-      void persist({ prompt: value })
-    }, PROMPT_SAVE_DEBOUNCE_MS)
+    }
+    if (promptDraftRef.current !== (configRef.current.prompt ?? '')) {
+      void persist({ prompt: promptDraftRef.current })
+    }
   }, [persist])
 
-  // Flush a pending prompt edit if the card unmounts mid-debounce.
-  useEffect(() => () => {
+  const onPromptChange = useCallback((value: string) => {
+    promptDraftRef.current = value
+    setPromptDraft(value)
     if (promptTimer.current) clearTimeout(promptTimer.current)
-  }, [])
+    promptTimer.current = setTimeout(flushPromptDraft, PROMPT_SAVE_DEBOUNCE_MS)
+  }, [flushPromptDraft])
+
+  // Flush (not drop) a pending prompt edit if the card unmounts mid-debounce.
+  useEffect(() => () => { flushPromptDraft() }, [flushPromptDraft])
 
   const statusOptions = useMemo(() => [
     { value: STATUS_UNCHANGED, label: t('settings.ai.autoHandoff.statusNone') },

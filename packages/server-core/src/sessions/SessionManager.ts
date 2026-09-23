@@ -2204,7 +2204,10 @@ export class SessionManager implements ISessionManager {
    */
   observeContextThresholds(managed: ManagedSession): void {
     const state = managed.contextThresholdState
-    if (isContextThresholdSettled(state)) return
+    // Fast path: both levels fired AND the handoff (if any) was delivered. A
+    // settled session whose handoff send was refused stays on the slow path so
+    // the re-armed latch can retry on a later sample (SUV-0072 review fix).
+    if (isContextThresholdSettled(state) && state?.autoHandoffFiredAt) return
     if (!isContextThresholdEligible(managed)) return
     const used = managed.tokenUsage?.inputTokens
     if (!used || used <= 0) return
@@ -2221,7 +2224,12 @@ export class SessionManager implements ISessionManager {
     const usage = computeContextUsage(used, limit, thresholds)
     if (!usage.denominatorKnown) return
     const crossings = detectContextThresholdCrossings(state, usage)
-    if (crossings.length === 0) return
+    if (crossings.length === 0) {
+      // No new level, but a handoff whose send was refused earlier is re-armed
+      // (`warnReachedAt` set, `autoHandoffFiredAt` cleared) — give it its retry.
+      if (state?.warnReachedAt && !state.autoHandoffFiredAt) this.maybeFireAutoHandoff(managed, wsConfig)
+      return
+    }
 
     const now = Date.now()
     managed.contextThresholdState = recordContextThresholdCrossings(state, crossings, now)
@@ -2318,6 +2326,16 @@ export class SessionManager implements ISessionManager {
         },
       ).catch((error) => {
         sessionLog.error(`Auto-handoff: failed to deliver handoff prompt to ${sessionId}:`, error)
+        // The send was refused before the message was acked, so nothing reached
+        // the transcript. Re-arm the latch: a durable `autoHandoffFiredAt` with
+        // no message behind it would silence every later sample and every
+        // restart, and the handoff would be lost for good. The next threshold
+        // sample retries; `warnReachedAt` stays so the event is not re-emitted.
+        const current = this.sessions.get(sessionId)
+        if (!current?.contextThresholdState || current.contextThresholdState.autoHandoffMessageId) return
+        const { autoHandoffFiredAt: _fired, autoHandoffPending: _pending, ...rest } = current.contextThresholdState
+        current.contextThresholdState = rest
+        this.persistSession(current)
       })
     }, 0)
   }
@@ -2351,16 +2369,20 @@ export class SessionManager implements ISessionManager {
     const handoffIndex = managed.messages.findIndex(m => m.id === state.autoHandoffMessageId)
     if (handoffIndex === -1) return
     if (managed.messages[handoffIndex]?.isQueued) return
-    const answered = managed.messages.slice(handoffIndex + 1).some(m => m.role === 'assistant')
+    // A FINAL assistant message, not commentary between tool calls: an
+    // intermediate message followed by a `complete` with no final response is a
+    // half-finished handoff, and archiving it would strand the brief.
+    const answered = managed.messages.slice(handoffIndex + 1).some(m => m.role === 'assistant' && !m.isIntermediate)
     if (!answered) return
 
     const config = normalizeAutoHandoffConfig(loadWorkspaceConfig(managed.workspace.rootPath)?.defaults?.autoHandoff)
     const status = config?.status?.trim()
     const archive = config?.archive === true
 
-    managed.contextThresholdState = { ...state, autoHandoffPending: false, autoHandoffCompletedAt: Date.now() }
-    this.persistSession(managed)
-
+    // The pending marker clears only after every configured action has
+    // succeeded. Each is idempotent, so a status write that lands and an
+    // archive that fails leaves the marker pending and the next completed turn
+    // re-applies both — the alternative is a permanently skipped archive.
     if (status) {
       sessionLog.info(`Auto-handoff: setting status '${status}' on session ${managed.id} after handoff turn`)
       await this.setSessionStatus(managed.id, status as SessionStatus, hostOrigin('auto-handoff: workspace setting'))
@@ -2369,6 +2391,9 @@ export class SessionManager implements ISessionManager {
       sessionLog.info(`Auto-handoff: archiving session ${managed.id} after handoff turn`)
       await this.archiveSession(managed.id)
     }
+
+    managed.contextThresholdState = { ...managed.contextThresholdState, autoHandoffPending: false, autoHandoffCompletedAt: Date.now() }
+    this.persistSession(managed)
   }
 
   private syncAutomationSessionMetadata(managed: ManagedSession, cause?: AutomationCause): void {

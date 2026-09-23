@@ -4,12 +4,13 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Features
 
-- New `ContextThresholdReached` automation event: fires once when an interactive session's context usage first crosses the workspace's warning threshold and once more at the danger threshold (Settings → AI → Token limits), so automations can react — for example, post a webhook or prompt a handoff. Matches on the level (`warn` / `danger`) and exposes `$CRAFT_LEVEL`, `$CRAFT_FRACTION`, `$CRAFT_USED_TOKENS`, and `$CRAFT_CONTEXT_WINDOW`.
-- Automatic handoff on the context warning threshold (per workspace, off by default): when an interactive session first crosses its warning threshold, Vorno delivers your handoff prompt into it — skills mentioned as `[skill:slug]` or `@slug` are enabled — through the same mid-turn path as the composer, so the running turn is never interrupted. Once the handoff turn completes, an optional status is applied and the session can be archived. Stored under the workspace's `defaults.autoHandoff`; the settings card follows in the next release note.
+- **Automatic handoff on the context warning threshold** — A new per-workspace setting (Settings → AI → Token limits → *Automatic handoff*, off by default). When an interactive session first crosses its warning threshold, Vorno delivers your handoff prompt into it — skills mentioned as `[skill:slug]` or `@slug` are enabled — the same way a message typed mid-turn is delivered (queued for the next turn, or steered into the current one, per the connection's mid-stream setting). Once the handoff turn completes, an optional status is applied and the session can be archived. PLAN-055 / SUV-0072 (#220, `38537d92`).
+- **`ContextThresholdReached` automation event** — Fires once when an interactive session's context usage first crosses the workspace's warning threshold and once more at the danger threshold, so automations can react — for example, post a webhook or prompt a handoff. Matches on the level (`warn` / `danger`) and exposes `$CRAFT_LEVEL`, `$CRAFT_FRACTION`, `$CRAFT_USED_TOKENS`, and `$CRAFT_CONTEXT_WINDOW`. PLAN-055 / SUV-0071 (#219, `48a38e73`).
 
 ## Improvements
 
-- Settings → AI → Token limits gains an *Automatic handoff* card per workspace: enable it, edit the handoff prompt (with `[skill:slug]` or `@slug` mentions), choose a status to apply afterwards, and optionally archive the session once the handoff turn completes.
+- **Automatic handoff settings card** — Settings → AI → Token limits gains an *Automatic handoff* card per workspace: enable it, edit the handoff prompt (with `[skill:slug]` or `@slug` mentions), choose a status to apply afterwards, and optionally archive the session once the handoff turn completes. PLAN-055 / SUV-0073 (#221, `5694f721`).
+
 ## Bug Fixes
 
 ## Breaking Changes
