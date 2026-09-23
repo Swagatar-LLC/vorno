@@ -1,13 +1,16 @@
 ---
 id: PLAN-055
 title: Auto-handoff at the context warning threshold
-status: planned
+status: in-progress
 direction: DIR-05
 owner: jh
 created: 2026-09-23
 updated: 2026-09-23
 related: [PLAN-003, PLAN-030, ADR-0021]
-related-suvs: []
+related-suvs:
+  - SUV-0071-emit-contextthresholdreached-from-the-session-manager.md
+  - SUV-0072-auto-handoff-on-the-warning-threshold.md
+  - SUV-0073-auto-handoff-workspace-settings-card.md
 blocked-by: []
 ---
 
@@ -111,3 +114,4 @@ flowchart LR
 ## Status log
 
 - `2026-09-23` — created in `planned/`
+- `2026-09-23` — moved from planned to in-progress: decomposed into SUV-0071/0072/0073; SUV-0071 starts first
