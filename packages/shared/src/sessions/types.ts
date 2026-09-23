@@ -130,6 +130,12 @@ export interface ContextThresholdState {
   autoHandoffFiredAt?: number;
   /** Id of the injected handoff user message, once the send was acked (SUV-0072). */
   autoHandoffMessageId?: string;
+  /**
+   * ms timestamp of a handoff send that was refused before ack (SUV-0072). Only this
+   * marker re-arms a retry; a crossing that happened while the feature was off never
+   * fires retroactively when it is switched on later.
+   */
+  autoHandoffRefusedAt?: number;
   /** True while a configured status/archive follow-through awaits turn completion (SUV-0072). */
   autoHandoffPending?: boolean;
   /** ms timestamp the follow-through (status/archive) was applied (SUV-0072). */

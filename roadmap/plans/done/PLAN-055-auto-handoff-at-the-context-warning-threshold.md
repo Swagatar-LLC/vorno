@@ -118,3 +118,12 @@ flowchart LR
 - `2026-09-23` — moved from in-progress to done: SUV-0071 (event + watcher,
   PR #219), SUV-0072 (auto-handoff consumer), and SUV-0073 (settings card)
   landed as three stacked PRs. `documented/` follows the 0.22.0-beta.4 cut.
+
+- `2026-09-23` — post-merge review follow-up (Greptile on #219/#220/#221):
+  `ContextThresholdReached` gets its own bus rate limit (latched before emit,
+  so a drop would be permanent); a refused handoff send re-arms the latch;
+  follow-through requires a final (non-intermediate) assistant reply and clears
+  its pending marker only after status and archive both succeed; the settings
+  card merges debounced saves against the latest state, serializes writes, and
+  flushes a pending prompt edit on unmount; docs and release notes qualify the
+  "never interrupted" claim to match the composer's steer fallback.

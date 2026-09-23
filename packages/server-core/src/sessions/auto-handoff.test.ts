@@ -125,6 +125,48 @@ describe('SessionManager auto-handoff (SUV-0072)', () => {
     expect(sent).toHaveLength(0)
   })
 
+  it('re-arms the latch when the send is refused before ack, so the next sample retries', async () => {
+    writeConfig({ enabled: true })
+    let failNext = true
+    ;(sm as unknown as { sendMessage: unknown }).sendMessage = async (
+      sessionId: string, message: string, _a: unknown, _b: unknown, options?: { skillSlugs?: string[] },
+      _c?: unknown, _d?: unknown, onAck?: (id: string) => void,
+    ) => {
+      if (failNext) { failNext = false; throw new Error('transcript unavailable') }
+      sent.push({ sessionId, message, options })
+      onAck?.('handoff-msg-retry')
+    }
+    const managed = buildSession('ah-refused')
+    sample(managed, 65_000)
+    await flushTimers()
+    expect(sent).toHaveLength(0)
+    expect(managed.contextThresholdState?.autoHandoffFiredAt).toBeUndefined()
+    expect(managed.contextThresholdState?.autoHandoffRefusedAt).toEqual(expect.any(Number))
+    expect(managed.contextThresholdState?.warnReachedAt).toEqual(expect.any(Number))
+
+    sample(managed, 66_000)
+    await flushTimers()
+    expect(sent).toHaveLength(1)
+    expect(managed.contextThresholdState?.autoHandoffMessageId).toBe('handoff-msg-retry')
+    expect(managed.contextThresholdState?.autoHandoffRefusedAt).toBeUndefined()
+  })
+
+  it('never fires retroactively for a session that crossed while the feature was off', async () => {
+    writeConfig({ enabled: false })
+    const managed = buildSession('ah-late-enable')
+    sample(managed, 65_000)
+    sample(managed, 85_000)
+    await flushTimers()
+    expect(sent).toHaveLength(0)
+
+    writeConfig({ enabled: true })
+    sample(managed, 90_000)
+    sample(managed, 95_000)
+    await flushTimers()
+    expect(sent).toHaveLength(0)
+    expect(managed.contextThresholdState?.autoHandoffFiredAt).toBeUndefined()
+  })
+
   it('marks follow-through pending when a status or archive is configured', async () => {
     writeConfig({ enabled: true, status: 'done' })
     const managed = buildSession('ah-pending')
@@ -171,6 +213,31 @@ describe('SessionManager auto-handoff (SUV-0072)', () => {
       const notSent = buildSession('ah-not-sent', { contextThresholdState: { warnReachedAt: 1, autoHandoffFiredAt: 2, autoHandoffPending: true } })
       await complete(notSent)
       expect(notSent.contextThresholdState?.autoHandoffPending).toBe(true)
+    })
+
+    it('does not count an intermediate assistant message as the handoff answer', async () => {
+      writeConfig({ enabled: true, status: 'done' })
+      const managed = pendingSession('ah-intermediate', [{ id: 'handoff-msg', role: 'user' }, { id: 'a1', role: 'assistant' }])
+      ;(managed.messages[1] as { isIntermediate?: boolean }).isIntermediate = true
+      await complete(managed)
+      expect(managed.sessionStatus).toBeUndefined()
+      expect(managed.contextThresholdState?.autoHandoffPending).toBe(true)
+    })
+
+    it('keeps the follow-through pending when an action fails, and finishes it next time', async () => {
+      writeConfig({ enabled: true, status: 'done', archive: true })
+      const managed = pendingSession('ah-archive-fails', [{ id: 'handoff-msg', role: 'user' }, { id: 'a1', role: 'assistant' }])
+      const realArchive = sm.archiveSession.bind(sm)
+      let calls = 0
+      sm.archiveSession = async (id: string) => { calls++; if (calls === 1) throw new Error('disk full'); return realArchive(id) }
+      await expect(complete(managed)).rejects.toThrow('disk full')
+      expect(managed.sessionStatus).toBe('done')
+      expect(managed.isArchived).toBeUndefined()
+      expect(managed.contextThresholdState?.autoHandoffPending).toBe(true)
+
+      await complete(managed)
+      expect(managed.isArchived).toBe(true)
+      expect(managed.contextThresholdState).toMatchObject({ autoHandoffPending: false, autoHandoffCompletedAt: expect.any(Number) })
     })
 
     it('ignores interrupted or errored stops and sessions with nothing pending', async () => {
