@@ -1289,6 +1289,8 @@ To protect against runaway automations (e.g., an automation that indirectly trig
 | Event | Max fires / minute |
 |-------|--------------------|
 | `SchedulerTick` | 60 (1/sec) |
+| `WebhookReceived` | 600 — a workspace-wide bus cap; each hook is additionally gated at the receiver, 60/min by default (`rateLimit.perMinute`, plus `burst`) |
+| `ContextThresholdReached` | 120 (at most two per session — `warn`, then `danger` — and the per-session latch is written before the bus is asked, so a drop here would be permanent) |
 | All others (`LabelAdd`, `FlagChange`, `PreToolUse`, etc.) | 10 |
 
 When a limit is hit, further events of that type are **silently dropped** for the remainder of the 60-second window. A warning is logged. The window resets automatically.
