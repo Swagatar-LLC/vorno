@@ -1,7 +1,7 @@
 ---
 id: SUV-0073
 title: Auto-handoff workspace settings card
-status: planned
+status: done
 plan: PLAN-055
 direction: DIR-05
 owner: jh
@@ -36,17 +36,25 @@ follow-up status, archive) with complete i18n.
 
 ## Acceptance
 
-- [ ] The card appears under each workspace's token-threshold card and only when
+- [x] The card appears under each workspace's token-threshold card and only when
       that section renders; disabled state greys the prompt, status, and archive
       controls.
-- [ ] `bun run lint:i18n:parity`, `bun run lint:i18n:sorted`, and
+- [x] `bun run lint:i18n:parity`, `bun run lint:i18n:sorted`, and
       `bun run lint:i18n:coverage` pass with the new keys.
-- [ ] Saving each control writes the merged `autoHandoff` object through the RPC
+- [x] Saving each control writes the merged `autoHandoff` object through the RPC
       and reflects the persisted value on reload.
-- [ ] `apps/electron` typecheck is clean and `bun run lint:branding` passes.
-- [ ] `next.md` gains an Improvements bullet; PLAN-055 moves to `done/`.
+- [x] `apps/electron` typecheck is clean and `bun run lint:branding` passes.
+- [x] `next.md` gains an Improvements bullet; PLAN-055 moves to `done/`.
 
 ## Status log
 
 - `2026-09-23` — created in `planned/` (id allocated from the all-refs floor;
   see SUV-0071 for the refused reservation push).
+- `2026-09-23` — moved from planned to in-progress (stacked on SUV-0072)
+- `2026-09-23` — moved from in-progress to done: `WorkspaceAutoHandoffCard`
+  under each token-threshold card (toggle, debounced prompt textarea with the
+  default prompt as placeholder, status select fed by `useStatuses`, archive
+  toggle), 15 `settings.ai.autoHandoff.*` keys in all seven locales, the
+  automations-guide note, and the release-note bullet. Verified: i18n parity,
+  sort, and coverage gates pass; branding gate clean; `apps/electron` typecheck
+  unchanged against baseline.

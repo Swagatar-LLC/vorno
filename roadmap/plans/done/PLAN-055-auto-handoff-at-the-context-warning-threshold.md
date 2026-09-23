@@ -1,7 +1,7 @@
 ---
 id: PLAN-055
 title: Auto-handoff at the context warning threshold
-status: in-progress
+status: done
 direction: DIR-05
 owner: jh
 created: 2026-09-23
@@ -93,25 +93,28 @@ flowchart LR
 
 ## Acceptance
 
-- [ ] `ContextThresholdReached` is emitted once per level per interactive
+- [x] `ContextThresholdReached` is emitted once per level per interactive
       session, with the documented payload, and is listed in the automations
       docs, renderer event labels, and shared event tables.
-- [ ] Threshold resolution on the host produces the same level the renderer
+- [x] Threshold resolution on the host produces the same level the renderer
       indicator shows for the same `(providerType, model, used, limit)`.
-- [ ] `defaults.autoHandoff` persists through workspace config, DTO, and RPC
+- [x] `defaults.autoHandoff` persists through workspace config, DTO, and RPC
       validation (unknown status ids are rejected); the setting is off by default.
-- [ ] On the first `warn` crossing, the configured prompt reaches the session via
+- [x] On the first `warn` crossing, the configured prompt reaches the session via
       `sendMessage` with resolved skill slugs and no abort; the latch survives a
       restart.
-- [ ] After the handoff turn completes, the configured status is applied (closed
+- [x] After the handoff turn completes, the configured status is applied (closed
       statuses included, via `host` origin) and the session is archived when
       requested; nothing is applied while the turn is still running.
-- [ ] Settings card renders under the token limits with every locale carrying
+- [x] Settings card renders under the token limits with every locale carrying
       the new keys; `bun run lint:i18n:parity`, `:sorted`, `:coverage` pass.
-- [ ] Tests added for the watcher, the event, the RPC validation, and the
+- [x] Tests added for the watcher, the event, the RPC validation, and the
       follow-through; release notes appended to `next.md`.
 
 ## Status log
 
 - `2026-09-23` — created in `planned/`
 - `2026-09-23` — moved from planned to in-progress: decomposed into SUV-0071/0072/0073; SUV-0071 starts first
+- `2026-09-23` — moved from in-progress to done: SUV-0071 (event + watcher,
+  PR #219), SUV-0072 (auto-handoff consumer), and SUV-0073 (settings card)
+  landed as three stacked PRs. `documented/` follows the 0.22.0-beta.4 cut.

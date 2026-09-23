@@ -41,6 +41,7 @@ import {
 import { cn } from '@/lib/utils'
 import { ConnectionIcon } from '@/components/icons/ConnectionIcon'
 import { WorkspaceTokenThresholdsCard } from './TokenUsageThresholdsSettings'
+import { WorkspaceAutoHandoffCard } from './AutoHandoffSettings'
 
 import {
   SettingsSection,
@@ -1136,11 +1137,14 @@ export default function AiSettingsPage() {
                 >
                   <div className="space-y-2">
                     {workspaces.map((workspace) => (
-                      <WorkspaceTokenThresholdsCard
-                        key={workspace.id}
-                        workspace={workspace}
-                        llmConnections={llmConnections}
-                      />
+                      <div key={workspace.id} className="space-y-2">
+                        <WorkspaceTokenThresholdsCard
+                          workspace={workspace}
+                          llmConnections={llmConnections}
+                        />
+                        {/* PLAN-055 / SUV-0073: automatic handoff on the warning threshold, per workspace */}
+                        <WorkspaceAutoHandoffCard workspace={workspace} />
+                      </div>
                     ))}
                   </div>
                 </SettingsSection>

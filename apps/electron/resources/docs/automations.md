@@ -74,6 +74,15 @@ vorno-cli automation validate
 | `WebhookReceived` | An inbound HTTP request hit a registered hook | Configurable via `matchField` (default: the whole body) |
 | `ContextThresholdReached` | A session's context usage first crossed a token-limit threshold (Settings → AI → Token limits) | The crossed level: `warn` or `danger` |
 
+> **Automatic handoff.** `ContextThresholdReached` also drives a built-in behavior you do not
+> need an automation for: Settings → AI → Token limits → *Automatic handoff* (per workspace,
+> off by default). When enabled, the first `warn` crossing of an interactive session delivers
+> your handoff prompt into that session — skills mentioned as `[skill:slug]` or `@slug` are
+> enabled — through the same mid-turn path as the composer (the connection's steer/queue
+> setting; the running turn is never interrupted). Once the handoff turn completes, an optional
+> status is applied and the session can be archived. Hidden, Task, and automation-created
+> sessions are excluded from both the event and the handoff.
+
 > **Note:** `TodoStateChange` is a deprecated alias for `SessionStatusChange`. Existing configs using the old name will continue to work but will show a deprecation warning during validation.
 
 > **Event names are case-sensitive and exact.** A block filed under a name that
