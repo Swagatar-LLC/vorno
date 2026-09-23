@@ -101,7 +101,16 @@ import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlA
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
 import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
-import { getDefaultSummarizationModel } from '@craft-agent/shared/config/models'
+import { getDefaultSummarizationModel, getModelContextWindow } from '@craft-agent/shared/config/models'
+// fork(PLAN-055 / SUV-0071): host-side context-threshold watcher
+import { computeContextUsage, resolveThresholds, thresholdsSettingsFromWorkspaceDefaults } from '@craft-agent/shared/context-usage'
+import type { ContextThresholdState } from '@craft-agent/shared/sessions'
+import {
+  detectContextThresholdCrossings,
+  isContextThresholdEligible,
+  isContextThresholdSettled,
+  recordContextThresholdCrossings,
+} from './context-threshold-watch.ts'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
@@ -1067,6 +1076,8 @@ interface ManagedSession {
   tokenRefreshManager: TokenRefreshManager
   // Metadata for sessions created by automations
   triggeredBy?: { automationName?: string; event?: string; timestamp?: number }
+  // fork(PLAN-055): persisted context-threshold latch (see ContextThresholdState)
+  contextThresholdState?: ContextThresholdState
   // Promise that resolves when the agent instance is ready (for title gen to await)
   agentReady?: Promise<void>
   agentReadyResolve?: () => void
@@ -2167,6 +2178,72 @@ export class SessionManager implements ISessionManager {
    * for user / agent / external writes — those genuinely have no automation ancestor, and
    * treating them as depth 0 is correct rather than merely convenient.
    */
+  /**
+   * fork(PLAN-055 / SUV-0071): the host-side context-threshold watcher.
+   *
+   * Called with the session's freshest `tokenUsage` after every `usage_update`
+   * and `complete`. Resolves the same `(providerType, model)` thresholds the
+   * renderer indicator resolves (PLAN-003, via `@craft-agent/shared/context-usage`)
+   * and the same denominator (session-reported window, else the model registry),
+   * so the level judged here is the level the user sees. On the FIRST crossing
+   * of a level it persists the latch and emits `ContextThresholdReached` on the
+   * workspace automation bus — once per level per session, restart-safe because
+   * the latch lives in the session header.
+   *
+   * Interactive sessions only (`isContextThresholdEligible`). Fire-and-forget:
+   * automation dispatch must never reenter or block the event loop that fed it.
+   */
+  observeContextThresholds(managed: ManagedSession): void {
+    const state = managed.contextThresholdState
+    if (isContextThresholdSettled(state)) return
+    if (!isContextThresholdEligible(managed)) return
+    const used = managed.tokenUsage?.inputTokens
+    if (!used || used <= 0) return
+
+    const wsConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+    const connection = resolveSessionConnection(managed.llmConnection, wsConfig?.defaults?.defaultLlmConnection)
+    const model = managed.model ?? wsConfig?.defaults?.model ?? connection?.defaultModel
+    const limit = managed.tokenUsage?.contextWindow ?? (model ? getModelContextWindow(model) : undefined)
+    const thresholds = resolveThresholds({
+      providerId: connection?.providerType,
+      modelId: model,
+      settings: thresholdsSettingsFromWorkspaceDefaults(wsConfig?.defaults),
+    })
+    const usage = computeContextUsage(used, limit, thresholds)
+    if (!usage.denominatorKnown) return
+    const crossings = detectContextThresholdCrossings(state, usage)
+    if (crossings.length === 0) return
+
+    const now = Date.now()
+    managed.contextThresholdState = recordContextThresholdCrossings(state, crossings, now)
+    this.persistSession(managed)
+
+    const automationSystem = this.automationSystems.get(managed.workspace.rootPath)
+    for (const level of crossings) {
+      sessionLog.info(
+        `Context threshold '${level}' reached for session ${managed.id}: ${usage.used}/${usage.limit} ` +
+          `(${Math.round(usage.fraction * 100)}%, warn ${thresholds.warn}, danger ${thresholds.danger})`,
+      )
+      automationSystem?.emit('ContextThresholdReached', {
+        sessionId: managed.id,
+        sessionName: managed.name,
+        workspaceId: managed.workspace.id,
+        timestamp: now,
+        labels: managed.labels,
+        level,
+        usedTokens: usage.used,
+        contextWindow: usage.limit,
+        fraction: usage.fraction,
+        warnThreshold: thresholds.warn,
+        dangerThreshold: thresholds.danger,
+        model,
+        providerType: connection?.providerType,
+      }).catch((error) => {
+        sessionLog.error(`[Automations] Failed to emit ContextThresholdReached for ${managed.id}:`, error)
+      })
+    }
+  }
+
   private syncAutomationSessionMetadata(managed: ManagedSession, cause?: AutomationCause): void {
     const automationSystem = this.automationSystems.get(managed.workspace.rootPath)
     if (!automationSystem) return
@@ -11007,6 +11084,8 @@ export class SessionManager implements ISessionManager {
           if (event.usage.contextWindow) {
             managed.tokenUsage.contextWindow = event.usage.contextWindow
           }
+          // fork(PLAN-055): the final sample of the turn is a crossing candidate too
+          this.observeContextThresholds(managed)
         }
         break
 
@@ -11038,6 +11117,9 @@ export class SessionManager implements ISessionManager {
               contextWindow: event.usage.contextWindow,
             },
           }, workspaceId)
+
+          // fork(PLAN-055 / SUV-0071): same sample the indicator paints from
+          this.observeContextThresholds(managed)
         }
         break
 

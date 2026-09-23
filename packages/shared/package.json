@@ -49,6 +49,7 @@
     "./sources/types": "./src/sources/types.ts",
     "./skills": "./src/skills/index.ts",
     "./workspaces": "./src/workspaces/index.ts",
+    "./context-usage": "./src/context-usage/index.ts",
     "./headroom": "./src/headroom/index.ts",
     "./headroom/tool-output": "./src/headroom/tool-output.ts",
     "./memory": "./src/memory/index.ts",

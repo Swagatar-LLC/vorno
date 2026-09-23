@@ -19,6 +19,7 @@ export type {
   SessionMetadataWithPendingPlan,
   SessionHeader,
   SessionPersistentField,
+  ContextThresholdState,
 } from './types.ts';
 
 // Field constants

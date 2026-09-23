@@ -72,6 +72,7 @@ vorno-cli automation validate
 | `SessionStatusChange` | Session status changed | New status (e.g., `done`, `in_progress`) |
 | `SchedulerTick` | Runs every minute | Uses cron matching |
 | `WebhookReceived` | An inbound HTTP request hit a registered hook | Configurable via `matchField` (default: the whole body) |
+| `ContextThresholdReached` | A session's context usage first crossed a token-limit threshold (Settings → AI → Token limits) | The crossed level: `warn` or `danger` |
 
 > **Note:** `TodoStateChange` is a deprecated alias for `SessionStatusChange`. Existing configs using the old name will continue to work but will show a deprecation warning during validation.
 
@@ -540,6 +541,7 @@ These are automatically set by the automation system based on the triggering eve
 | `PermissionModeChange` | `$CRAFT_OLD_MODE`, `$CRAFT_NEW_MODE` | Previous and new permission mode |
 | `FlagChange` | `$CRAFT_IS_FLAGGED` | `true` or `false` |
 | `SessionStatusChange` | `$CRAFT_OLD_STATE`, `$CRAFT_NEW_STATE` | Previous and new status |
+| `ContextThresholdReached` | `$CRAFT_LEVEL`, `$CRAFT_FRACTION`, `$CRAFT_USED_TOKENS`, `$CRAFT_CONTEXT_WINDOW`, `$CRAFT_WARN_THRESHOLD`, `$CRAFT_DANGER_THRESHOLD`, `$CRAFT_MODEL`, `$CRAFT_PROVIDER_TYPE` | The crossed level (`warn`/`danger`), usage fraction, token counts, the thresholds in effect, and the session's model/provider |
 | `SchedulerTick` | `$CRAFT_LOCAL_TIME`, `$CRAFT_LOCAL_DATE` | Current time (`14:30`) and date (`2026-03-09`) |
 
 ### User-Defined Webhook Secrets (CRAFT_WH_*)

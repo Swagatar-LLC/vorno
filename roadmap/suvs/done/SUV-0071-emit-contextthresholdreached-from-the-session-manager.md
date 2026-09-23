@@ -1,7 +1,7 @@
 ---
 id: SUV-0071
 title: Emit ContextThresholdReached from the session manager
-status: in-progress
+status: done
 plan: PLAN-055
 direction: DIR-05
 owner: jh
@@ -42,20 +42,20 @@ thresholds, and emits a new `ContextThresholdReached` automation app event.
 
 ## Acceptance
 
-- [ ] `bun test packages/shared` covers `getMatchValue('ContextThresholdReached')`
+- [x] `bun test packages/shared` covers `getMatchValue('ContextThresholdReached')`
       and the moved `context-usage` module; the renderer's existing
       `context-usage*.test.ts` still pass unchanged.
-- [ ] A server-core test drives `usage_update` samples through the watcher and
+- [x] A server-core test drives `usage_update` samples through the watcher and
       shows exactly one `warn` and one `danger` crossing per session, none for a
       hidden / `taskSlug` / `triggeredBy` session, and none when the window is
       unknown.
-- [ ] The latch is written to the session header and a reloaded session does not
+- [x] The latch is written to the session header and a reloaded session does not
       re-emit.
-- [ ] `apps/electron/resources/docs/automations.md` lists the event and its
+- [x] `apps/electron/resources/docs/automations.md` lists the event and its
       `$CRAFT_LEVEL`, `$CRAFT_FRACTION`, `$CRAFT_USED_TOKENS`,
       `$CRAFT_CONTEXT_WINDOW` variables; renderer shows it as
       "Context Threshold Reached" under event-based automations.
-- [ ] Typecheck for `packages/core`, `packages/shared`, `packages/server-core`,
+- [x] Typecheck for `packages/core`, `packages/shared`, `packages/server-core`,
       and `apps/electron` is clean.
 
 ## Status log
@@ -65,3 +65,12 @@ thresholds, and emits a new `ContextThresholdReached` automation app event.
   scoped to `claude/*` branches), so the ids were allocated from the all-refs
   floor (`SUV-0070`) without a published claim.
 - `2026-09-23` — moved from planned to in-progress
+- `2026-09-23` — moved from in-progress to done: shared `context-usage` module
+  (renderer re-exports it), `contextThresholdState` persisted latch, host
+  watcher in `SessionManager.observeContextThresholds`, and the
+  `ContextThresholdReached` event across shared types, matcher, renderer
+  labels, and the automations guide. Verified: 9 new shared tests, 11 new
+  server-core tests, the renderer's 44 context-usage tests unchanged, 453
+  shared automations tests, 101 shared sessions tests, branding gate clean;
+  `packages/shared` and `packages/server-core` typecheck clean, `apps/electron`
+  typecheck unchanged (7 pre-existing errors, none in touched files).
