@@ -17,6 +17,7 @@ related-plans:
   - PLAN-045-roadmap-reduction-pass.md
   - PLAN-047-per-session-browser-isolation-and-lifecycle.md
   - PLAN-051-retire-memory-provider-workers-with-agent-lifecycles.md
+  - PLAN-055-auto-handoff-at-the-context-warning-threshold.md
 ---
 
 # Direction 5 — Durable Workflows & Headroom
