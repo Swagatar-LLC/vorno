@@ -12,6 +12,10 @@ import {
 } from './session-settings.ts';
 
 describe('createCraftSettingsManager', () => {
+  it('batches steering without changing follow-up defaults', () => {
+    expect(createCraftSettingsManager().getSteeringMode()).toBe('all');
+    expect(createCraftSettingsManager().getFollowUpMode()).toBe(SettingsManager.inMemory().getFollowUpMode());
+  });
   it('pins the agent-level auto-retry policy', () => {
     const settings = createCraftSettingsManager();
     expect(settings.getRetryEnabled()).toBe(true);

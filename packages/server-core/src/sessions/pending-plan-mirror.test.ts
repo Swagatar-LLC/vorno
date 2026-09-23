@@ -179,7 +179,12 @@ describe('pending plan execution mirror', () => {
   it('carries a dispatched flag, so recovery cannot double-submit the plan', async () => {
     const managed = seed()
     await sm.setPendingPlanExecution(SESSION_ID, PLAN_PATH)
-    await sm.markPendingPlanExecutionDispatched(SESSION_ID)
+    // Compaction first: upstream v0.13.4 made the dispatch claim refuse a record
+    // still marked `awaitingCompaction` (it is not executable yet), so the claim
+    // is only available once compaction has completed. Before that change the
+    // claim was unconditional and this test did not need the extra step.
+    await sm.markCompactionComplete(SESSION_ID)
+    expect(await sm.markPendingPlanExecutionDispatched(SESSION_ID)).toBe(true)
 
     await unrelatedPersist(managed)
 

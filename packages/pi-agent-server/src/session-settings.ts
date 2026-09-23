@@ -82,6 +82,8 @@ export function buildCraftPiSettings(purpose: CraftPiSessionPurpose = 'main'): P
     : CRAFT_PI_RETRY_SETTINGS;
 
   return {
+    // Deliver all steers pending at a turn boundary in one model call.
+    steeringMode: 'all',
     retry: {
       enabled: retry.enabled,
       maxRetries: retry.maxRetries,
