@@ -198,11 +198,20 @@ const SCHEDULER_RATE_LIMIT = 60;
  * would be silently dropped by the bus. Pinned by an event-bus test.
  */
 const WEBHOOK_RATE_LIMIT = 600;
+/**
+ * fork(PLAN-055): threshold crossings are latched per session BEFORE the bus
+ * admits them, so a drop here would be permanent for that session — the latch
+ * is what stops a re-emit. A session can emit at most two (warn, then danger),
+ * so this bounds the workspace at 60 sessions crossing per minute, far above
+ * anything interactive use produces. Pinned by an event-bus test.
+ */
+const CONTEXT_THRESHOLD_RATE_LIMIT = 120;
 const RATE_WINDOW_MS = 60_000; // 1 minute
 
 function getRateLimit(event: AutomationEvent): number {
   if (event === 'SchedulerTick') return SCHEDULER_RATE_LIMIT;
   if (event === 'WebhookReceived') return WEBHOOK_RATE_LIMIT;
+  if (event === 'ContextThresholdReached') return CONTEXT_THRESHOLD_RATE_LIMIT;
   return DEFAULT_RATE_LIMIT;
 }
 

@@ -78,8 +78,10 @@ vorno-cli automation validate
 > need an automation for: Settings → AI → Token limits → *Automatic handoff* (per workspace,
 > off by default). When enabled, the first `warn` crossing of an interactive session delivers
 > your handoff prompt into that session — skills mentioned as `[skill:slug]` or `@slug` are
-> enabled — through the same mid-turn path as the composer (the connection's steer/queue
-> setting; the running turn is never interrupted). Once the handoff turn completes, an optional
+> enabled — through the same mid-turn path as the composer, so it behaves exactly like typing a
+> message while the agent is working: with the connection's `queue` setting it waits for the
+> turn to end; with `steer` it lands at the next tool call, falling back to the composer's
+> redirect-and-replay if the backend cannot steer. Once the handoff turn completes, an optional
 > status is applied and the session can be archived. Hidden, Task, and automation-created
 > sessions are excluded from both the event and the handoff.
 

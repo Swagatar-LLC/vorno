@@ -237,6 +237,20 @@ describe('WorkspaceEventBus', () => {
       expect(handler).toHaveBeenCalledTimes(60);
     });
 
+    it('should allow ContextThresholdReached up to 120/min (fork PLAN-055: latched before emit)', async () => {
+      const handler = jest.fn();
+      bus.on('ContextThresholdReached', handler);
+
+      for (let i = 0; i < 125; i++) {
+        await bus.emit('ContextThresholdReached', {
+          workspaceId: 'test-workspace', timestamp: Date.now(), sessionId: `s${i}`,
+          level: 'warn', usedTokens: 65, contextWindow: 100, fraction: 0.65, warnThreshold: 0.6, dangerThreshold: 0.8,
+        });
+      }
+
+      expect(handler).toHaveBeenCalledTimes(120);
+    });
+
     it('should reset rate window after 60s', async () => {
       jest.useFakeTimers();
       try {

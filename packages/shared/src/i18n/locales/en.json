@@ -1006,7 +1006,7 @@
   "settings.ai.autoHandoff.archiveDesc": "After the handoff turn completes, archive this session. Archiving waits for the turn to finish.",
   "settings.ai.autoHandoff.archiveLabel": "Archive the session afterwards",
   "settings.ai.autoHandoff.cardTitle": "Automatic handoff · {{workspace}}",
-  "settings.ai.autoHandoff.enabledDesc": "When a session in this workspace first reaches its warning threshold, deliver the handoff prompt below without interrupting the running turn. Follows the connection's mid-stream setting (steer or queue).",
+  "settings.ai.autoHandoff.enabledDesc": "When a session in this workspace first reaches its warning threshold, deliver the handoff prompt below the same way a message typed mid-turn is delivered: queued for the next turn, or steered into the current one, per the connection's mid-stream setting.",
   "settings.ai.autoHandoff.enabledLabel": "Hand off automatically at the warning threshold",
   "settings.ai.autoHandoff.promptDesc": "Sent once per session. Mention skills as [skill:slug] or @slug to enable them for the handoff. Leave blank to use the built-in prompt shown as the placeholder.",
   "settings.ai.autoHandoff.promptLabel": "Handoff prompt",
