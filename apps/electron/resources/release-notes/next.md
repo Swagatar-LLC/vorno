@@ -9,6 +9,7 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Improvements
 
+- Settings → AI → Token limits gains an *Automatic handoff* card per workspace: enable it, edit the handoff prompt (with `[skill:slug]` or `@slug` mentions), choose a status to apply afterwards, and optionally archive the session once the handoff turn completes.
 ## Bug Fixes
 
 ## Breaking Changes
