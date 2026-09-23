@@ -1289,6 +1289,8 @@ To protect against runaway automations (e.g., an automation that indirectly trig
 | Event | Max fires / minute |
 |-------|--------------------|
 | `SchedulerTick` | 60 (1/sec) |
+| `WebhookReceived` | 600 (the per-hook receiver gate is the real limiter) |
+| `ContextThresholdReached` | 120 (at most two per session — `warn`, then `danger` — and the per-session latch is written before the bus is asked, so a drop here would be permanent) |
 | All others (`LabelAdd`, `FlagChange`, `PreToolUse`, etc.) | 10 |
 
 When a limit is hit, further events of that type are **silently dropped** for the remainder of the 60-second window. A warning is logged. The window resets automatically.

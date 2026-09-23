@@ -1,7 +1,7 @@
 ---
 id: PLAN-055
 title: Auto-handoff at the context warning threshold
-status: done
+status: documented
 direction: DIR-05
 owner: jh
 created: 2026-09-23
@@ -111,6 +111,22 @@ flowchart LR
 - [x] Tests added for the watcher, the event, the RPC validation, and the
       follow-through; release notes appended to `next.md`.
 
+## Follow-ups
+
+Candidates surfaced by the post-merge docs-hygiene review; none blocks the
+plan, each is a test-coverage gap rather than an acceptance gap.
+
+- Drive `completeAutoHandoff` through the real `onProcessingStopped` path
+  (queue-empty gating is currently asserted only by call placement).
+- Exercise a host-originated `sendMessage` for real: `midStreamBehavior`
+  steer vs queue and `skillSlugs` application are mocked in the current tests.
+- A renderer test for `WorkspaceAutoHandoffCard` (debounced merge, serialized
+  saves, unmount flush).
+- Reload `contextThresholdState` through `loadSession` rather than reading the
+  raw header line.
+- The `getModelContextWindow(model)` fallback when a session reports no
+  `contextWindow`.
+
 ## Status log
 
 - `2026-09-23` — created in `planned/`
@@ -127,3 +143,9 @@ flowchart LR
   card merges debounced saves against the latest state, serializes writes, and
   flushes a pending prompt edit on unmount; docs and release notes qualify the
   "never interrupted" claim to match the composer's steer fallback.
+- `2026-09-23` — moved from done to documented: shipped in v0.22.0-beta.4
+  (release run 24 green; `latest-mac.yml`, DMG and ZIP verified over HTTP).
+  Post-merge docs-hygiene review found all seven acceptance items covered and
+  four doc gaps, closed here. Docs touched: `packages/shared/CLAUDE.md`,
+  `apps/electron/resources/docs/automations.md`,
+  `roadmap/upstream/compatibility.md`.
