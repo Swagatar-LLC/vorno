@@ -1,5 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test'
 import { ClaudeAgent } from '../claude-agent.ts'
+import { PendingSteers } from '../backend/claude/pending-steers.ts'
 import { AbortReason } from '../backend/types.ts'
 
 describe('ClaudeAgent handoff interrupts', () => {
@@ -12,7 +13,9 @@ describe('ClaudeAgent handoff interrupts', () => {
 
     agent.currentQuery = { interrupt }
     agent.currentQueryAbortController = { abort }
-    agent.pendingSteerMessage = 'queued steer'
+    agent.pendingSteers = new PendingSteers()
+    agent.pendingSteers.begin()
+    agent.pendingSteers.enqueue({ message: 'queued steer', messageId: 'a' })
     agent.lastAbortReason = null
     agent.debug = debug
 
@@ -22,7 +25,7 @@ describe('ClaudeAgent handoff interrupts', () => {
     expect(interrupt).toHaveBeenCalledTimes(1)
     expect(abort).not.toHaveBeenCalled()
     expect(agent.lastAbortReason).toBe(AbortReason.AuthRequest)
-    expect(agent.pendingSteerMessage).toBeNull()
+    expect(agent.takePendingSteers()).toEqual([{ message: 'queued steer', messageId: 'a' }])
   })
 
   it('logs interrupt failures instead of falling back to AbortController', async () => {
@@ -36,7 +39,7 @@ describe('ClaudeAgent handoff interrupts', () => {
 
     agent.currentQuery = { interrupt }
     agent.currentQueryAbortController = { abort }
-    agent.pendingSteerMessage = null
+    agent.pendingSteers = new PendingSteers()
     agent.lastAbortReason = null
     agent.debug = debug
 
@@ -49,24 +52,9 @@ describe('ClaudeAgent handoff interrupts', () => {
   })
 })
 
-describe('ClaudeAgent undelivered steer', () => {
-  it('hands the steer back once and forgets it', () => {
-    // The session layer PULLS this at turn end, because it will never be told:
-    // `chat()` yields the notice from its `finally`, and the consumer returns on
-    // `complete`, which abandons the generator and discards it. Clearing on take
-    // is what stops the trailing yield — if anything is still draining — from
-    // promoting the same message a second time.
-    const agent = Object.create(ClaudeAgent.prototype) as any
-    agent.pendingSteerMessage = 'never delivered'
-
-    expect(agent.takeUndeliveredSteer()).toBe('never delivered')
-    expect(agent.pendingSteerMessage).toBeNull()
-    expect(agent.takeUndeliveredSteer()).toBeNull()
-  })
-
-  it('answers null when the steer was delivered', () => {
-    const agent = Object.create(ClaudeAgent.prototype) as any
-    agent.pendingSteerMessage = null
-    expect(agent.takeUndeliveredSteer()).toBeNull()
-  })
-})
+// The fork's single-slot undelivered-steer tests were retired with the
+// machinery they covered: the v0.13.4 merge adopted upstream's turn-scoped
+// `PendingSteers` queue, so `takeUndeliveredSteer`/`pendingSteerMessage` no
+// longer exist. `takePendingSteers` (pause + drain) is the replacement, and its
+// behavior — including recovery before `complete` and across handoffs — is
+// covered by `claude-steering.test.ts`.

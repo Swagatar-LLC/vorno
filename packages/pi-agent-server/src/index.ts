@@ -98,6 +98,8 @@ import { resolveSearchProvider } from './tools/search/resolve-provider.ts';
 import { createSearchTool } from './tools/search/create-search-tool.ts';
 import { allowCraftMetadataProperties, stripCraftMetadata } from './craft-metadata-schema.ts';
 import { applySystemPromptOverride } from './system-prompt-override.ts';
+import { readContextUsage, deferContextUsage } from './context-usage.ts';
+import type { PiCompactResult, PiContextUsagePayload } from '../../shared/src/agent/backend/pi/protocol.ts';
 import { adaptCredentialForPiSdk, type PiCredential } from './adapt-credential.ts';
 
 // ============================================================
@@ -180,7 +182,7 @@ type EnrichedToolExecutionStartEvent = Extract<AgentSessionEvent, { type: 'tool_
   toolMetadata?: ToolExecutionMetadata;
 };
 
-type OutboundAgentEvent = AgentSessionEvent | EnrichedToolExecutionStartEvent;
+type OutboundAgentEvent = (AgentSessionEvent | EnrichedToolExecutionStartEvent | { type: 'context_usage' }) & PiContextUsagePayload;
 
 /** Messages to main process (stdout) */
 interface OutboundReady { type: 'ready'; sessionId: string | null; callbackPort: number }
@@ -211,7 +213,7 @@ interface OutboundCompactResult {
   type: 'compact_result';
   id: string;
   success: boolean;
-  result?: { summary: string; firstKeptEntryId: string; tokensBefore: number };
+  result?: PiCompactResult;
   errorMessage?: string;
 }
 interface OutboundSetAutoCompactionResult {
@@ -251,6 +253,8 @@ type OutboundMessage =
 // ============================================================
 
 let piSession: AgentSession | null = null;
+// A stop must also cancel a manual compact still waiting for auto-compaction.
+let compactionEpoch = 0;
 let piModelRegistry: PiModelRegistry | null = null;
 let moduleCredentialStore: InMemoryCredentialStore | null = null;
 // Cached runtime build shared by the main session and ephemeral queryLlm
@@ -1216,6 +1220,11 @@ function handleSessionEvent(event: AgentSessionEvent): void {
     }
 
     if (msg?.role === 'assistant' && piSession) {
+      // The SDK's post-compaction usage gate reads the journal, which is only
+      // appended after this callback returns. Defer rather than report an old count.
+      deferContextUsage(piSession, () => piSession, (payload) => {
+        send({ type: 'event', event: { type: 'context_usage', ...payload } });
+      });
       // CRITICAL: do NOT read `getLeafId()` here.
       //
       // The Pi SDK fires `message_end` synchronously BEFORE calling
@@ -1319,6 +1328,12 @@ function handleSessionEvent(event: AgentSessionEvent): void {
         isError: !!event.isError,
       });
     }
+  }
+
+  // These boundaries already have committed SDK history; keep metadata inline
+  // so agent_end cannot close the host queue before occupancy reaches it.
+  if (piSession && (event.type === 'turn_end' || event.type === 'agent_end' || event.type === 'compaction_end')) {
+    forwardedEvent = { ...forwardedEvent, ...readContextUsage(piSession) };
   }
 
   // Forward all events to main process
@@ -1503,6 +1518,7 @@ function handleCancelEphemeralQuery(
 }
 
 async function handleAbort(): Promise<void> {
+  compactionEpoch++;
   if (piSession) {
     try {
       await piSession.abort();
@@ -1569,6 +1585,7 @@ async function handleEnsureSessionReady(msg: Extract<InboundMessage, { type: 'en
 }
 
 async function handleCompact(msg: Extract<InboundMessage, { type: 'compact' }>): Promise<void> {
+  const epoch = compactionEpoch;
   try {
     const session = await ensureSession();
     // Serialize manual /compact behind any in-flight auto-compaction. Public
@@ -1578,7 +1595,9 @@ async function handleCompact(msg: Extract<InboundMessage, { type: 'compact' }>):
     // before starting a manual one. waitForCompaction has its own timeout
     // fallback so we don't deadlock on a stuck subprocess.
     await waitForCompaction(session);
+    if (piSession !== session || epoch !== compactionEpoch) throw new Error('Compaction aborted or session replaced');
     const result = await session.compact(msg.customInstructions);
+    if (piSession !== session || epoch !== compactionEpoch) throw new Error('Compaction aborted or session replaced');
     send({
       type: 'compact_result',
       id: msg.id,
@@ -1587,6 +1606,8 @@ async function handleCompact(msg: Extract<InboundMessage, { type: 'compact' }>):
         summary: result.summary,
         firstKeptEntryId: result.firstKeptEntryId,
         tokensBefore: result.tokensBefore,
+        estimatedTokensAfter: result.estimatedTokensAfter,
+        ...readContextUsage(session),
       },
     });
   } catch (error) {

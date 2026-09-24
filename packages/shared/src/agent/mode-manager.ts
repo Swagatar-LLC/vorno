@@ -35,6 +35,7 @@ import {
   type PowerShellValidationResult,
   type PowerShellValidationReason,
 } from './powershell-validator.ts';
+import { sanitizePromptLine } from '../prompts/prompt-sanitize.ts';
 import {
   type PermissionMode,
   type ModeConfig,
@@ -2142,7 +2143,8 @@ export function formatSessionState(
 
   // Use canonical user-facing mode tokens to avoid terminology drift.
   const modeName = toCanonicalPermissionMode(diagnostics.permissionMode);
-  let result = `<session_state>\nsessionId: ${sessionId}\npermissionMode: ${modeName}`;
+  const sessionStateTags = ['session_state'] as const;
+  let result = `<session_state>\nsessionId: ${sanitizePromptLine(sessionId, sessionStateTags)}\npermissionMode: ${modeName}`;
 
   if (diagnostics.transitionDisplay) {
     result += `\nmodeTransition: ${diagnostics.transitionDisplay}`;
@@ -2164,12 +2166,12 @@ export function formatSessionState(
 
   // Always include plans folder path so agent knows where plans are stored
   if (options?.plansFolderPath) {
-    result += `\nplansFolderPath: ${options.plansFolderPath}`;
+    result += `\nplansFolderPath: ${sanitizePromptLine(options.plansFolderPath, sessionStateTags)}`;
   }
 
   // Include data folder path so agent knows where transform_data output goes
   if (options?.dataFolderPath) {
-    result += `\ndataFolderPath: ${options.dataFolderPath}`;
+    result += `\ndataFolderPath: ${sanitizePromptLine(options.dataFolderPath, sessionStateTags)}`;
   }
 
   result += '\n</session_state>';
