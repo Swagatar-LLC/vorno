@@ -892,8 +892,6 @@ interface ManagedSession {
   poolServer?: McpPoolServer
   // SDK session ID for conversation continuity
   sdkSessionId?: string
-  /** Accept & Compact state; persisted with the session header. */
-  pendingPlanExecution?: StoredSession['pendingPlanExecution']
   // Token usage for display
   tokenUsage?: {
     inputTokens: number

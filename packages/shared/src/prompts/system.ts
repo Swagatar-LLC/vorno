@@ -375,7 +375,7 @@ You help users make targeted changes to configuration files. Be concise and effi
 ${workspaceContext}
 ## Guidelines
 - Make the requested change directly
-- Before changing labels/statuses/sources/skills/automations/permissions, read the matching local doc in ~/.craft-agent/docs/
+- Before changing labels/statuses/sources/skills/automations/permissions, read the matching local doc in ${APP_ROOT}/docs/
 - Validate with config_validate after editing
 - MCP tool calls require _displayName and _intent metadata
 - Respect any session_state permission/path constraints supplied with the user message
