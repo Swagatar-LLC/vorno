@@ -31,6 +31,8 @@ export interface RawHistoryEntry {
   id: string
   ts: number
   ok: boolean
+  /** True when the record came from the UI's "Run test", not a real event. */
+  test?: boolean
   kind?: 'outcome' | 'missed' | 'config-diagnostic'
   reason?: string
   detail?: string
@@ -158,13 +160,17 @@ export function toExecutionEntries(
         // Session-action records nest it; without this the timeline row for a
         // session mutation has no session to deep-link to.
         sessionId: e.sessionId ?? e.sessionAction?.sessionId,
+        // "Test run — " keeps a Run test click from reading as a real dispatch
+        // in the timeline; before the marker existed the two were identical.
         actionSummary: isDiagnostic
           ? describeDiagnostic(e)
-          : e.sessionAction
-            ? describeSessionAction(e.sessionAction)
-            : e.webhook
-              ? `Webhook ${e.webhook.method} ${e.webhook.url}${e.webhook.attempts && e.webhook.attempts > 1 ? ` (${e.webhook.attempts} attempts)` : ''}`
-              : e.prompt,
+          : `${e.test ? 'Test run — ' : ''}${
+              e.sessionAction
+                ? describeSessionAction(e.sessionAction)
+                : e.webhook
+                  ? `Webhook ${e.webhook.method} ${e.webhook.url}${e.webhook.attempts && e.webhook.attempts > 1 ? ` (${e.webhook.attempts} attempts)` : ''}`
+                  : e.prompt ?? ''
+            }`,
         error: isDiagnostic || isSkip ? undefined : (e.webhook?.error ?? e.error),
         webhookDetails: e.webhook
           ? {

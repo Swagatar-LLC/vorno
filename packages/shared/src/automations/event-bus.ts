@@ -100,6 +100,33 @@ export interface WebhookReceivedPayload extends BaseEventPayload {
   body?: unknown;
 }
 
+/**
+ * fork(PLAN-055 / SUV-0071): an interactive session's context usage crossed a
+ * PLAN-003 threshold for the first time. Emitted once per `level` per session by
+ * `SessionManager`'s watcher (the latch is persisted on the session header).
+ * `fraction` is `usedTokens / contextWindow`; the thresholds are the resolved
+ * per-model / per-provider pair the level was judged against. Every field is a
+ * scalar so it rides into prompt/script env as `CRAFT_<KEY>` unchanged.
+ */
+export interface ContextThresholdReachedPayload extends BaseEventPayload {
+  /** Which boundary was crossed. `danger` implies `warn` was (or is now) reached too. */
+  level: 'warn' | 'danger';
+  /** Input tokens the next prompt would carry (post-compression, provider-reported). */
+  usedTokens: number;
+  /** Resolved context window the fraction was computed against. */
+  contextWindow: number;
+  /** `usedTokens / contextWindow`, unclamped. */
+  fraction: number;
+  /** The `warn` threshold in effect, as a fraction in (0, 1). */
+  warnThreshold: number;
+  /** The `danger` threshold in effect, as a fraction in (0, 1). */
+  dangerThreshold: number;
+  /** Effective model id, when known. */
+  model?: string;
+  /** `LlmConnection.providerType` of the session's connection, when known. */
+  providerType?: string;
+}
+
 // ============================================================================
 // Event Payload Map
 // ============================================================================
@@ -117,6 +144,7 @@ export interface EventPayloadMap {
   SessionStatusChange: SessionStatusChangePayload;
   SchedulerTick: SchedulerTickPayload;
   WebhookReceived: WebhookReceivedPayload; // fork(PLAN-014)
+  ContextThresholdReached: ContextThresholdReachedPayload; // fork(PLAN-055)
 
   // Agent events (generic payload)
   PreToolUse: GenericEventPayload;
@@ -170,11 +198,20 @@ const SCHEDULER_RATE_LIMIT = 60;
  * would be silently dropped by the bus. Pinned by an event-bus test.
  */
 const WEBHOOK_RATE_LIMIT = 600;
+/**
+ * fork(PLAN-055): threshold crossings are latched per session BEFORE the bus
+ * admits them, so a drop here would be permanent for that session — the latch
+ * is what stops a re-emit. A session can emit at most two (warn, then danger),
+ * so this bounds the workspace at 60 sessions crossing per minute, far above
+ * anything interactive use produces. Pinned by an event-bus test.
+ */
+const CONTEXT_THRESHOLD_RATE_LIMIT = 120;
 const RATE_WINDOW_MS = 60_000; // 1 minute
 
 function getRateLimit(event: AutomationEvent): number {
   if (event === 'SchedulerTick') return SCHEDULER_RATE_LIMIT;
   if (event === 'WebhookReceived') return WEBHOOK_RATE_LIMIT;
+  if (event === 'ContextThresholdReached') return CONTEXT_THRESHOLD_RATE_LIMIT;
   return DEFAULT_RATE_LIMIT;
 }
 

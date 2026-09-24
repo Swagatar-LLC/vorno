@@ -65,4 +65,28 @@ describe('/hooks route mounting (LEARNING-018)', () => {
     const res = await router(new Request('http://localhost:3847/hooks/ws/slug/tok', { method: 'GET' }));
     expect(res.status).not.toBe(202);
   });
+
+  // A non-POST hook URL used to fall through to the auth gate and answer
+  // `401 Missing Authorization header`, which misdescribes a route miss as a
+  // credential failure and cost a real debugging session.
+  test('GET /hooks answers 405 + Allow, never the auth gate 401', async () => {
+    const router = makeRouter(stubHandle({ status: 202, body: { eventId: 'e1' } }));
+    const res = await router(new Request('http://localhost:3847/hooks/ws/slug/tok', { method: 'GET' }));
+    expect(res.status).toBe(405);
+    expect(res.headers.get('Allow')).toBe('POST');
+  });
+
+  test('405 applies to every non-POST method on a hook path', async () => {
+    const router = makeRouter(stubHandle({ status: 202, body: { eventId: 'e1' } }));
+    for (const method of ['PUT', 'DELETE', 'PATCH', 'HEAD']) {
+      const res = await router(new Request('http://localhost:3847/hooks/ws/slug/tok', { method }));
+      expect(res.status).toBe(405);
+    }
+  });
+
+  test('a non-hook path is untouched by the 405 branch', async () => {
+    const router = makeRouter(stubHandle({ status: 202, body: { eventId: 'e1' } }));
+    const res = await router(new Request('http://localhost:3847/api/sessions', { method: 'GET' }));
+    expect(res.status).toBe(401);
+  });
 });

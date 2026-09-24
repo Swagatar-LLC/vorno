@@ -131,3 +131,30 @@ for (const key of ['idleAgentTtlMinutes', 'idleBrowserTtlMinutes'] as const) {
     }
   })
 }
+
+// fork(PLAN-055, SUV-0072): automatic handoff on the context warning threshold.
+describe('workspace settings: autoHandoff', () => {
+  it('is absent by default, round-trips, and normalizes on read', async () => {
+    const { get, update } = createHarness()
+    expect((await get(ctx(), WORKSPACE_ID) as { autoHandoff?: unknown }).autoHandoff).toBeUndefined()
+
+    await update(ctx(), WORKSPACE_ID, 'autoHandoff', { enabled: true, prompt: 'Hand off with [skill:handoff]', status: 'done', archive: true })
+    expect((await get(ctx(), WORKSPACE_ID) as { autoHandoff?: unknown }).autoHandoff)
+      .toEqual({ enabled: true, prompt: 'Hand off with [skill:handoff]', status: 'done', archive: true })
+
+    // A blank status means "leave unchanged" and reads back without the key.
+    await update(ctx(), WORKSPACE_ID, 'autoHandoff', { enabled: false, prompt: '', status: '', archive: false })
+    expect((await get(ctx(), WORKSPACE_ID) as { autoHandoff?: unknown }).autoHandoff)
+      .toEqual({ enabled: false, prompt: '', archive: false })
+  })
+
+  it('rejects wrongly typed fields and unknown status ids', async () => {
+    const { update } = createHarness()
+    await expect(update(ctx(), WORKSPACE_ID, 'autoHandoff', 'on')).rejects.toThrow('autoHandoff must be an object')
+    await expect(update(ctx(), WORKSPACE_ID, 'autoHandoff', { enabled: 'true' })).rejects.toThrow('autoHandoff.enabled must be a boolean')
+    await expect(update(ctx(), WORKSPACE_ID, 'autoHandoff', { archive: 'yes' })).rejects.toThrow('autoHandoff.archive must be a boolean')
+    await expect(update(ctx(), WORKSPACE_ID, 'autoHandoff', { prompt: 'x'.repeat(20_001) })).rejects.toThrow('autoHandoff.prompt must be at most 20000 characters')
+    await expect(update(ctx(), WORKSPACE_ID, 'autoHandoff', { status: 'not-a-status' }))
+      .rejects.toThrow('autoHandoff.status "not-a-status" is not a configured status in this workspace')
+  })
+})

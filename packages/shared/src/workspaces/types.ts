@@ -32,6 +32,8 @@ export interface LocalMcpConfig {
   enabled: boolean;
 }
 
+import type { AutoHandoffConfig } from '../context-usage/auto-handoff.ts';
+
 /**
  * Token-usage threshold pair for the context-window indicator (PLAN-003).
  *
@@ -81,6 +83,13 @@ export interface WorkspaceConfig {
      * Keyed by model ID. Takes precedence over the per-provider default.
      */
     tokenUsageModelOverrides?: Record<string, TokenUsageThresholds>;
+
+    /**
+     * Automatic handoff on the context warning threshold (fork: PLAN-055,
+     * SUV-0072). Off unless `enabled` is true. Read only through
+     * `normalizeAutoHandoffConfig()` from `@craft-agent/shared/context-usage`.
+     */
+    autoHandoff?: AutoHandoffConfig;
 
     /**
      * Minutes an idle session keeps its warm agent runtime before

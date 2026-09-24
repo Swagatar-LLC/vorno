@@ -53,6 +53,8 @@ export const SESSION_PERSISTENT_FIELDS = [
   'transferredSessionSummaryApplied',
   // Automation origin
   'triggeredBy',
+  // Context-threshold latch (fork: PLAN-055, SUV-0071)
+  'contextThresholdState',
   // Project binding (workspace-scoped grouping)
   'projectId',
   // Kanban: task/subtask hierarchy + board column
@@ -113,6 +115,35 @@ export type { StoredMessage } from '@craft-agent/core/types';
 /**
  * Session configuration (persisted metadata)
  */
+/**
+ * Per-session latch for the context-threshold watcher (fork: PLAN-055,
+ * SUV-0071/0072). Timestamps record the FIRST time the session's context usage
+ * was observed at or above each PLAN-003 threshold; the host emits
+ * `ContextThresholdReached` once per level and never again for that session,
+ * which is why this is persisted rather than kept in memory — a restart must
+ * not re-fire it. The auto-handoff fields are written by the SUV-0072 consumer.
+ */
+export interface ContextThresholdState {
+  /** ms timestamp of the first observed `warn` crossing. */
+  warnReachedAt?: number;
+  /** ms timestamp of the first observed `danger` crossing. */
+  dangerReachedAt?: number;
+  /** ms timestamp the auto-handoff prompt was delivered (SUV-0072). */
+  autoHandoffFiredAt?: number;
+  /** Id of the injected handoff user message, once the send was acked (SUV-0072). */
+  autoHandoffMessageId?: string;
+  /**
+   * ms timestamp of a handoff send that was refused before ack (SUV-0072). Only this
+   * marker re-arms a retry; a crossing that happened while the feature was off never
+   * fires retroactively when it is switched on later.
+   */
+  autoHandoffRefusedAt?: number;
+  /** True while a configured status/archive follow-through awaits turn completion (SUV-0072). */
+  autoHandoffPending?: boolean;
+  /** ms timestamp the follow-through (status/archive) was applied (SUV-0072). */
+  autoHandoffCompletedAt?: number;
+}
+
 export interface SessionConfig {
   id: string;
   /** SDK session ID (captured after first message) */
@@ -228,6 +259,8 @@ export interface SessionConfig {
   transferredSessionSummaryApplied?: boolean;
   /** Metadata for sessions created by automations */
   triggeredBy?: { automationName?: string; event?: string; timestamp?: number };
+  /** Context-threshold latch (fork: PLAN-055). See {@link ContextThresholdState}. */
+  contextThresholdState?: ContextThresholdState;
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */
@@ -359,6 +392,8 @@ export interface SessionHeader {
   transferredSessionSummaryApplied?: boolean;
   /** Metadata for sessions created by automations */
   triggeredBy?: { automationName?: string; event?: string; timestamp?: number };
+  /** Context-threshold latch (fork: PLAN-055). See {@link ContextThresholdState}. */
+  contextThresholdState?: ContextThresholdState;
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
   projectId?: string;
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task). */

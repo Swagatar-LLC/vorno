@@ -72,6 +72,18 @@ vorno-cli automation validate
 | `SessionStatusChange` | Session status changed | New status (e.g., `done`, `in_progress`) |
 | `SchedulerTick` | Runs every minute | Uses cron matching |
 | `WebhookReceived` | An inbound HTTP request hit a registered hook | Configurable via `matchField` (default: the whole body) |
+| `ContextThresholdReached` | A session's context usage first crossed a token-limit threshold (Settings → AI → Token limits) | The crossed level: `warn` or `danger` |
+
+> **Automatic handoff.** `ContextThresholdReached` also drives a built-in behavior you do not
+> need an automation for: Settings → AI → Token limits → *Automatic handoff* (per workspace,
+> off by default). When enabled, the first `warn` crossing of an interactive session delivers
+> your handoff prompt into that session — skills mentioned as `[skill:slug]` or `@slug` are
+> enabled — through the same mid-turn path as the composer, so it behaves exactly like typing a
+> message while the agent is working: with the connection's `queue` setting it waits for the
+> turn to end; with `steer` it lands at the next tool call, falling back to the composer's
+> redirect-and-replay if the backend cannot steer. Once the handoff turn completes, an optional
+> status is applied and the session can be archived. Hidden, Task, and automation-created
+> sessions are excluded from both the event and the handoff.
 
 > **Note:** `TodoStateChange` is a deprecated alias for `SessionStatusChange`. Existing configs using the old name will continue to work but will show a deprecation warning during validation.
 
@@ -540,6 +552,7 @@ These are automatically set by the automation system based on the triggering eve
 | `PermissionModeChange` | `$CRAFT_OLD_MODE`, `$CRAFT_NEW_MODE` | Previous and new permission mode |
 | `FlagChange` | `$CRAFT_IS_FLAGGED` | `true` or `false` |
 | `SessionStatusChange` | `$CRAFT_OLD_STATE`, `$CRAFT_NEW_STATE` | Previous and new status |
+| `ContextThresholdReached` | `$CRAFT_LEVEL`, `$CRAFT_FRACTION`, `$CRAFT_USED_TOKENS`, `$CRAFT_CONTEXT_WINDOW`, `$CRAFT_WARN_THRESHOLD`, `$CRAFT_DANGER_THRESHOLD`, `$CRAFT_MODEL`, `$CRAFT_PROVIDER_TYPE` | The crossed level (`warn`/`danger`), usage fraction, token counts, the thresholds in effect, and the session's model/provider |
 | `SchedulerTick` | `$CRAFT_LOCAL_TIME`, `$CRAFT_LOCAL_DATE` | Current time (`14:30`) and date (`2026-03-09`) |
 
 ### User-Defined Webhook Secrets (CRAFT_WH_*)
@@ -1276,6 +1289,8 @@ To protect against runaway automations (e.g., an automation that indirectly trig
 | Event | Max fires / minute |
 |-------|--------------------|
 | `SchedulerTick` | 60 (1/sec) |
+| `WebhookReceived` | 600 — a workspace-wide bus cap; each hook is additionally gated at the receiver, 60/min by default (`rateLimit.perMinute`, plus `burst`) |
+| `ContextThresholdReached` | 120 (at most two per session — `warn`, then `danger` — and the per-session latch is written before the bus is asked, so a drop here would be permanent) |
 | All others (`LabelAdd`, `FlagChange`, `PreToolUse`, etc.) | 10 |
 
 When a limit is hit, further events of that type are **silently dropped** for the remainder of the 60-second window. A warning is logged. The window resets automatically.

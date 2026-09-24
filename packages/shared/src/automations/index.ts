@@ -90,7 +90,7 @@ export { buildEnvFromSdkInput } from './sdk-bridge.ts';
 // Utilities
 // ============================================================================
 
-export { parsePromptReferences, buildScriptEnv, buildBaseScriptEnv, type ScriptEnvOptions } from './utils.ts';
+export { parsePromptReferences, buildScriptEnv, buildBaseScriptEnv, buildEnvFromPayload, expandEnvVars, type ScriptEnvOptions } from './utils.ts';
 
 // ============================================================================
 // Re-exports from sub-modules

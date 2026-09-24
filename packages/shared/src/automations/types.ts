@@ -23,7 +23,10 @@ export type AppEvent =
   | 'SchedulerTick'
   // fork(PLAN-014): inbound webhook tick with payload. Emitted on the
   // WorkspaceEventBus by the receiver in `webhook-ingest/`.
-  | 'WebhookReceived';
+  | 'WebhookReceived'
+  // fork(PLAN-055 / SUV-0071): an interactive session's context usage first
+  // crossed a PLAN-003 threshold. Emitted by SessionManager's watcher.
+  | 'ContextThresholdReached';
 
 /** Agent events - passed to Claude SDK */
 export type AgentEvent =
@@ -47,6 +50,7 @@ export const APP_EVENTS: AppEvent[] = [
   'LabelAdd', 'LabelRemove', 'LabelConfigChange',
   'PermissionModeChange', 'FlagChange', 'SessionStatusChange', 'SchedulerTick',
   'WebhookReceived', // fork(PLAN-014)
+  'ContextThresholdReached', // fork(PLAN-055)
 ];
 
 export const AGENT_EVENTS: AgentEvent[] = [

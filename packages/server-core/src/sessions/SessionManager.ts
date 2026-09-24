@@ -41,7 +41,7 @@ import {
 import type { ActiveSessionInfo, ContextUsageSnapshot, SessionProcessingStatus } from '@craft-agent/core/types'
 import type { HeadroomAdapter, HeadroomStatsReport } from '@craft-agent/core/types'
 import { HEADROOM_CONFIG_DEFAULTS } from '@craft-agent/core/types'
-import { loadWorkspaceConfig, loadEffectiveHeadroomConfig } from '@craft-agent/shared/workspaces'
+import { loadWorkspaceConfig, loadEffectiveHeadroomConfig, type WorkspaceConfig } from '@craft-agent/shared/workspaces'
 // Headroom retrieval for the session view's "view original" affordance (SUV-0026),
 // and the savings report the workspace/session views read (SUV-0027).
 import { createSessionHeadroomAdapter, buildHeadroomStatsReport } from '@craft-agent/shared/headroom'
@@ -101,7 +101,25 @@ import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlA
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
 import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
-import { getDefaultSummarizationModel } from '@craft-agent/shared/config/models'
+import { getDefaultSummarizationModel, getModelContextWindow } from '@craft-agent/shared/config/models'
+// fork(PLAN-055 / SUV-0071): host-side context-threshold watcher
+import {
+  computeContextUsage,
+  resolveThresholds,
+  thresholdsSettingsFromWorkspaceDefaults,
+  // fork(PLAN-055 / SUV-0072): built-in auto-handoff consumer
+  autoHandoffHasFollowThrough,
+  extractAutoHandoffSkillSlugs,
+  normalizeAutoHandoffConfig,
+  resolveAutoHandoffPrompt,
+} from '@craft-agent/shared/context-usage'
+import type { ContextThresholdState } from '@craft-agent/shared/sessions'
+import {
+  detectContextThresholdCrossings,
+  isContextThresholdEligible,
+  isContextThresholdSettled,
+  recordContextThresholdCrossings,
+} from './context-threshold-watch.ts'
 import type { SummarizeCallback } from '@craft-agent/shared/sources'
 import { type ThinkingLevel, DEFAULT_THINKING_LEVEL, normalizeThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
 import { evaluateAutoLabels } from '@craft-agent/shared/labels/auto'
@@ -1074,6 +1092,8 @@ interface ManagedSession {
   tokenRefreshManager: TokenRefreshManager
   // Metadata for sessions created by automations
   triggeredBy?: { automationName?: string; event?: string; timestamp?: number }
+  // fork(PLAN-055): persisted context-threshold latch (see ContextThresholdState)
+  contextThresholdState?: ContextThresholdState
   // Promise that resolves when the agent instance is ready (for title gen to await)
   agentReady?: Promise<void>
   agentReadyResolve?: () => void
@@ -2051,6 +2071,220 @@ export class SessionManager implements ISessionManager {
    * for user / agent / external writes — those genuinely have no automation ancestor, and
    * treating them as depth 0 is correct rather than merely convenient.
    */
+  /**
+   * fork(PLAN-055 / SUV-0071): the host-side context-threshold watcher.
+   *
+   * Called with the session's freshest `tokenUsage` after every `usage_update`
+   * and `complete`. Resolves the same `(providerType, model)` thresholds the
+   * renderer indicator resolves (PLAN-003, via `@craft-agent/shared/context-usage`)
+   * and the same denominator (session-reported window, else the model registry),
+   * so the level judged here is the level the user sees. On the FIRST crossing
+   * of a level it persists the latch and emits `ContextThresholdReached` on the
+   * workspace automation bus — once per level per session, restart-safe because
+   * the latch lives in the session header.
+   *
+   * Interactive sessions only (`isContextThresholdEligible`). Fire-and-forget:
+   * automation dispatch must never reenter or block the event loop that fed it.
+   */
+  observeContextThresholds(managed: ManagedSession): void {
+    const state = managed.contextThresholdState
+    // Fast path: both levels fired and no handoff send is awaiting a retry. A
+    // settled session whose handoff send was refused stays on the slow path so
+    // the explicit refusal marker can retry on a later sample (SUV-0072 review fix).
+    if (isContextThresholdSettled(state) && !state?.autoHandoffRefusedAt) return
+    if (!isContextThresholdEligible(managed)) return
+    const used = managed.tokenUsage?.inputTokens
+    if (!used || used <= 0) return
+
+    const wsConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+    const connection = resolveSessionConnection(managed.llmConnection, wsConfig?.defaults?.defaultLlmConnection)
+    const model = managed.model ?? wsConfig?.defaults?.model ?? connection?.defaultModel
+    const limit = managed.tokenUsage?.contextWindow ?? (model ? getModelContextWindow(model) : undefined)
+    const thresholds = resolveThresholds({
+      providerId: connection?.providerType,
+      modelId: model,
+      settings: thresholdsSettingsFromWorkspaceDefaults(wsConfig?.defaults),
+    })
+    const usage = computeContextUsage(used, limit, thresholds)
+    if (!usage.denominatorKnown) return
+    const crossings = detectContextThresholdCrossings(state, usage)
+    if (crossings.length === 0) {
+      // No new level. The ONLY way a handoff fires without a fresh crossing is a
+      // send that was refused earlier (`autoHandoffRefusedAt`): a session that
+      // crossed while the feature was off must not receive a handoff just
+      // because the setting was switched on afterwards.
+      if (state?.autoHandoffRefusedAt && !state.autoHandoffFiredAt) this.maybeFireAutoHandoff(managed, wsConfig)
+      return
+    }
+
+    const now = Date.now()
+    managed.contextThresholdState = recordContextThresholdCrossings(state, crossings, now)
+    this.persistSession(managed)
+
+    const automationSystem = this.automationSystems.get(managed.workspace.rootPath)
+    for (const level of crossings) {
+      sessionLog.info(
+        `Context threshold '${level}' reached for session ${managed.id}: ${usage.used}/${usage.limit} ` +
+          `(${Math.round(usage.fraction * 100)}%, warn ${thresholds.warn}, danger ${thresholds.danger})`,
+      )
+      automationSystem?.emit('ContextThresholdReached', {
+        sessionId: managed.id,
+        sessionName: managed.name,
+        workspaceId: managed.workspace.id,
+        timestamp: now,
+        labels: managed.labels,
+        level,
+        usedTokens: usage.used,
+        contextWindow: usage.limit,
+        fraction: usage.fraction,
+        warnThreshold: thresholds.warn,
+        dangerThreshold: thresholds.danger,
+        model,
+        providerType: connection?.providerType,
+      }).catch((error) => {
+        sessionLog.error(`[Automations] Failed to emit ContextThresholdReached for ${managed.id}:`, error)
+      })
+    }
+
+    // fork(PLAN-055 / SUV-0072): the built-in consumer. Any first crossing means
+    // `warn` has been reached (a straight-to-danger sample reports both levels).
+    this.maybeFireAutoHandoff(managed, wsConfig)
+  }
+
+  /**
+   * fork(PLAN-055 / SUV-0072): deliver the workspace's auto-handoff prompt once.
+   *
+   * Fires on the first threshold crossing of an eligible session when
+   * `defaults.autoHandoff.enabled` is set and the session has not fired before
+   * (persisted `autoHandoffFiredAt`). Delivery goes through `sendMessage`, the
+   * same path the composer uses mid-turn, so the connection's
+   * `midStreamBehavior` decides: steer lands at the next tool-call boundary,
+   * queue lands after the turn. Nothing here aborts a turn.
+   *
+   * Deferred with `setTimeout(0)` for the same reason automation actions are
+   * fire-and-forget: this is called from inside the agent event loop and must
+   * never reenter the mutator whose event is still on the stack. The latch is
+   * written synchronously BEFORE the deferral so a second sample arriving in
+   * the same tick cannot fire twice. Skill mentions (`[skill:slug]` or `@slug`)
+   * resolve against the workspace's skills exactly as automation prompts do.
+   */
+  private maybeFireAutoHandoff(managed: ManagedSession, wsConfig: WorkspaceConfig | null): void {
+    const config = normalizeAutoHandoffConfig(wsConfig?.defaults?.autoHandoff)
+    if (!config?.enabled) return
+    const state = managed.contextThresholdState ?? {}
+    if (state.autoHandoffFiredAt) return
+    if (!state.warnReachedAt && !state.dangerReachedAt) return
+
+    const prompt = resolveAutoHandoffPrompt(config)
+    let skillSlugs: string[] = []
+    try {
+      skillSlugs = extractAutoHandoffSkillSlugs(prompt, loadAllSkills(managed.workspace.rootPath).map(sk => sk.slug))
+    } catch (error) {
+      sessionLog.warn(`Auto-handoff: could not resolve skill mentions for ${managed.id}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
+    const { autoHandoffRefusedAt: _refused, ...armed } = state
+    managed.contextThresholdState = {
+      ...armed,
+      autoHandoffFiredAt: Date.now(),
+      autoHandoffPending: autoHandoffHasFollowThrough(config),
+    }
+    this.persistSession(managed)
+    sessionLog.info(
+      `Auto-handoff: delivering handoff prompt to session ${managed.id}` +
+        (skillSlugs.length ? ` with skills [${skillSlugs.join(', ')}]` : ''),
+    )
+
+    const sessionId = managed.id
+    setTimeout(() => {
+      void this.sendMessage(
+        sessionId,
+        prompt,
+        undefined,
+        undefined,
+        skillSlugs.length ? { skillSlugs } : undefined,
+        undefined,
+        undefined,
+        (messageId) => {
+          const current = this.sessions.get(sessionId)
+          if (!current) return
+          current.contextThresholdState = { ...(current.contextThresholdState ?? {}), autoHandoffMessageId: messageId }
+          this.persistSession(current)
+        },
+      ).catch((error) => {
+        sessionLog.error(`Auto-handoff: failed to deliver handoff prompt to ${sessionId}:`, error)
+        // The send was refused before the message was acked, so nothing reached
+        // the transcript. Re-arm with an EXPLICIT refusal marker: a durable
+        // `autoHandoffFiredAt` with no message behind it would silence every
+        // later sample and every restart, but silently clearing it would make
+        // "crossed while the feature was off" indistinguishable from "refused",
+        // and the former must never fire retroactively. `warnReachedAt` stays so
+        // the event is not re-emitted.
+        const current = this.sessions.get(sessionId)
+        if (!current?.contextThresholdState || current.contextThresholdState.autoHandoffMessageId) return
+        const { autoHandoffFiredAt: _fired, autoHandoffPending: _pending, ...rest } = current.contextThresholdState
+        current.contextThresholdState = { ...rest, autoHandoffRefusedAt: Date.now() }
+        this.persistSession(current)
+      })
+    }, 0)
+  }
+
+  /**
+   * fork(PLAN-055 / SUV-0072): apply the configured follow-through once the
+   * handoff turn has actually completed.
+   *
+   * Called from `onProcessingStopped` only when the message queue is empty, so a
+   * queued handoff (anthropic's default `midStreamBehavior`) is never mistaken
+   * for done while it is still waiting to run. Two further guards: the injected
+   * message must have been acked (`autoHandoffMessageId`) and an assistant
+   * message must follow it in the transcript — otherwise the crossing was
+   * detected on the very last sample of a turn and the deferred send has not
+   * happened yet; the next completion will pick it up. Only a `complete` stop
+   * counts: an interrupted or errored handoff turn leaves the follow-through
+   * pending for the next completed turn rather than archiving a half-done brief.
+   *
+   * The status is applied through the PLAN-031 choke point with a `host`
+   * origin — a human wrote this value into the workspace settings, which is the
+   * declared intent ADR-0021 asks for — so a closed-category status is allowed.
+   * Archive runs after status and only here, because the archive guard refuses
+   * mid-turn targets. Settings are re-read at this moment so an edit made while
+   * the handoff turn ran is honored.
+   */
+  private async completeAutoHandoff(managed: ManagedSession, reason: SessionCompletionEvent['reason']): Promise<void> {
+    const state = managed.contextThresholdState
+    if (!state?.autoHandoffPending) return
+    if (reason !== 'complete') return
+    if (!state.autoHandoffMessageId) return
+    const handoffIndex = managed.messages.findIndex(m => m.id === state.autoHandoffMessageId)
+    if (handoffIndex === -1) return
+    if (managed.messages[handoffIndex]?.isQueued) return
+    // A FINAL assistant message, not commentary between tool calls: an
+    // intermediate message followed by a `complete` with no final response is a
+    // half-finished handoff, and archiving it would strand the brief.
+    const answered = managed.messages.slice(handoffIndex + 1).some(m => m.role === 'assistant' && !m.isIntermediate)
+    if (!answered) return
+
+    const config = normalizeAutoHandoffConfig(loadWorkspaceConfig(managed.workspace.rootPath)?.defaults?.autoHandoff)
+    const status = config?.status?.trim()
+    const archive = config?.archive === true
+
+    // The pending marker clears only after every configured action has
+    // succeeded. Each is idempotent, so a status write that lands and an
+    // archive that fails leaves the marker pending and the next completed turn
+    // re-applies both — the alternative is a permanently skipped archive.
+    if (status) {
+      sessionLog.info(`Auto-handoff: setting status '${status}' on session ${managed.id} after handoff turn`)
+      await this.setSessionStatus(managed.id, status as SessionStatus, hostOrigin('auto-handoff: workspace setting'))
+    }
+    if (archive) {
+      sessionLog.info(`Auto-handoff: archiving session ${managed.id} after handoff turn`)
+      await this.archiveSession(managed.id)
+    }
+
+    managed.contextThresholdState = { ...managed.contextThresholdState, autoHandoffPending: false, autoHandoffCompletedAt: Date.now() }
+    this.persistSession(managed)
+  }
+
   private syncAutomationSessionMetadata(managed: ManagedSession, cause?: AutomationCause): void {
     const automationSystem = this.automationSystems.get(managed.workspace.rootPath)
     if (!automationSystem) return
@@ -8964,6 +9198,15 @@ export class SessionManager implements ISessionManager {
               : undefined,
             tokenUsage: managed.tokenUsage,
           })
+
+          // fork(PLAN-055 / SUV-0072): the handoff turn is over — apply status/archive.
+          // Awaited so the persist below records the cleared pending marker; errors
+          // must not break turn completion.
+          try {
+            await this.completeAutoHandoff(managed, reason)
+          } catch (error) {
+            sessionLog.error(`Auto-handoff follow-through failed for ${sessionId}:`, error)
+          }
         }
 
         // 6. Always persist
@@ -11042,6 +11285,8 @@ export class SessionManager implements ISessionManager {
           if (event.usage.contextWindow) {
             managed.tokenUsage.contextWindow = event.usage.contextWindow
           }
+          // fork(PLAN-055): the final sample of the turn is a crossing candidate too
+          this.observeContextThresholds(managed)
         }
         break
 
@@ -11074,6 +11319,9 @@ export class SessionManager implements ISessionManager {
               contextUsage: managed.tokenUsage.contextUsage,
             },
           }, workspaceId)
+
+          // fork(PLAN-055 / SUV-0071): same sample the indicator paints from
+          this.observeContextThresholds(managed)
         }
         break
 

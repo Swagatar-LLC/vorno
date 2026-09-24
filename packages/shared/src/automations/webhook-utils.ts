@@ -39,11 +39,14 @@ export function createWebhookHistoryEntry(opts: {
   attempts?: number;
   error?: string;
   responseBody?: string;
+  /** True when the run came from the UI's "Run test" rather than a real event. */
+  test?: boolean;
 }): Record<string, unknown> {
   return {
     id: opts.matcherId,
     ts: Date.now(),
     ok: opts.ok,
+    ...(opts.test ? { test: true } : {}),
     webhook: {
       method: opts.method ?? DEFAULT_WEBHOOK_METHOD,
       url: redactUrl(opts.url),
@@ -65,11 +68,20 @@ export function createPromptHistoryEntry(opts: {
   sessionId?: string;
   prompt?: string;
   error?: string;
+  /**
+   * True when the run came from the UI's "Run test" rather than a real event.
+   * A test run writes the same `{id, ts, ok, sessionId, prompt}` shape as a
+   * dispatch, so without this flag the history is the only record and it claims
+   * the automation fired. A `WebhookReceived` matcher showing `ok: true` then
+   * reads as "a webhook was delivered" when nothing was ever received.
+   */
+  test?: boolean;
 }): Record<string, unknown> {
   return {
     id: opts.matcherId,
     ts: Date.now(),
     ok: opts.ok,
+    ...(opts.test ? { test: true } : {}),
     ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
     ...(opts.prompt ? { prompt: opts.prompt.slice(0, HISTORY_FIELD_MAX_LENGTH) } : {}),
     ...(opts.error ? { error: opts.error.slice(0, HISTORY_FIELD_MAX_LENGTH) } : {}),
