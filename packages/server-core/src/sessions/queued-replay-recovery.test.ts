@@ -478,7 +478,7 @@ describe('a queued send crossing a process boundary', () => {
 
     // Accepted, not queued — and durably marked anyway. The mid-stream path
     // flushes before it acks, so this is already on disk.
-    const steered = (managed.messages as Array<{ content?: string; isQueued?: boolean }>)
+    const steered = (managed.messages as Array<{ id?: string; content?: string; isQueued?: boolean }>)
       .find(m => m.content === 'steer into the running turn')
     expect(steered?.isQueued).toBe(true)
     expect((managed.messageQueue as unknown[]).length).toBe(0)
@@ -505,7 +505,7 @@ describe('a queued send crossing a process boundary', () => {
     // THE POINT: the ACKed steer came back as a queued message to replay.
     const queue = revived.messageQueue as Array<{ messageId?: string }>
     expect(queue).toHaveLength(1)
-    expect(queue[0]!.messageId).toBe(steered!.id as unknown as string)
+    expect(queue[0]!.messageId).toBe(steered!.id!)
 
     await turn.endTurn()
     await quiesce(second, turn)

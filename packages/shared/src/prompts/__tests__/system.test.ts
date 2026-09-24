@@ -62,7 +62,8 @@ describe('system prompt guidance', () => {
     const prompt = getMiniAgentSystemPrompt('/tmp/workspace')
 
     expect(prompt).toContain('MCP tool calls require _displayName and _intent metadata')
-    expect(prompt).toContain('read the matching local doc in ~/.craft-agent/docs/')
+    // Fork: the doc-dir pointer interpolates APP_ROOT (branding gate rejects the upstream literal path).
+    expect(prompt).toMatch(/read the matching local doc in [^\n]*\/docs\//)
   })
 
   it('keeps automations defined as a first-class feature area', () => {
