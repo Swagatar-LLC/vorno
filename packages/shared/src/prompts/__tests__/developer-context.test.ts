@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,12 +7,18 @@ import {
   collectGitDeveloperContext,
   formatStableGitDeveloperContext,
   formatVolatileGitDeveloperContext,
+  __resetDeveloperContextCacheForTesting,
 } from '../developer-context.ts';
 import { getProjectContextFilesPrompt } from '../system.ts';
 
 const tempDirs: string[] = [];
 
+beforeEach(() => {
+  __resetDeveloperContextCacheForTesting();
+});
+
 afterEach(() => {
+  __resetDeveloperContextCacheForTesting();
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -52,6 +58,27 @@ describe('git developer context', () => {
     expect(block!).toContain('worktreeState: dirty');
     expect(block!).toContain('changedFilesSample:');
     expect(block!).toContain('packages/shared/changed.txt');
+  });
+
+  it('serves the volatile block from cache within the TTL and recollects after it', () => {
+    const { packageDir } = createGitFixture();
+    let clock = 1_000_000;
+    __resetDeveloperContextCacheForTesting(() => clock);
+
+    const first = formatVolatileGitDeveloperContext(packageDir);
+    expect(first).not.toBeNull();
+    expect(first!).not.toContain('packages/shared/changed.txt');
+
+    // A change inside the TTL is not observed — the cached block is returned.
+    writeFileSync(join(packageDir, 'changed.txt'), 'dirty');
+    clock += 500;
+    expect(formatVolatileGitDeveloperContext(packageDir)).toBe(first);
+
+    // Past the TTL the collector runs again and sees the change.
+    clock += 2_000;
+    const third = formatVolatileGitDeveloperContext(packageDir);
+    expect(third).not.toBe(first);
+    expect(third!).toContain('packages/shared/changed.txt');
   });
 
   it('lists root and selected-path context files relative to git context_root', () => {

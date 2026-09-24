@@ -12,6 +12,29 @@ const DEVELOPER_CONTEXT_TAGS = ['developer_context'] as const;
 const MAX_CHANGED_FILE_SAMPLE = 20;
 const GIT_TIMEOUT_MS = 700;
 
+// --- fork delta (Vorno) -------------------------------------------------
+// Upstream recollects the volatile block on every prompt build, which is four
+// to five synchronous `git` subprocesses (each capped at GIT_TIMEOUT_MS) on the
+// turn-submission path. On a slow repo or filesystem that is seconds of
+// blocking per turn. We keep upstream's API and behavior and only add a short
+// TTL cache in front of the volatile formatter, so a burst of prompt builds
+// pays for git once. The TTL is deliberately shorter than a human turn, so the
+// block still reflects the working tree the user is looking at.
+// Re-merge note: keep this wrapper; it touches no upstream function body.
+const VOLATILE_DEVELOPER_CONTEXT_TTL_MS = 2000;
+const VOLATILE_DEVELOPER_CONTEXT_MAX_KEYS = 32;
+
+let developerContextNow: () => number = () => Date.now();
+
+const volatileDeveloperContextCache = new Map<string, { value: string | null; at: number }>();
+
+/** Test hook: drop the volatile cache and (optionally) install a fake clock. */
+export function __resetDeveloperContextCacheForTesting(clock?: () => number): void {
+  volatileDeveloperContextCache.clear();
+  developerContextNow = clock ?? (() => Date.now());
+}
+// --- end fork delta -----------------------------------------------------
+
 export interface GitDeveloperContextIdentity {
   repoRoot: string;
   repoParent: string;
@@ -148,6 +171,23 @@ export function formatStableGitDeveloperContext(workingDirectory?: string): stri
 }
 
 export function formatVolatileGitDeveloperContext(workingDirectory?: string): string | null {
+  // fork delta (Vorno): short TTL cache — see VOLATILE_DEVELOPER_CONTEXT_TTL_MS.
+  const cacheKey = workingDirectory ?? '';
+  const now = developerContextNow();
+  const cached = volatileDeveloperContextCache.get(cacheKey);
+  if (cached && now - cached.at < VOLATILE_DEVELOPER_CONTEXT_TTL_MS) {
+    return cached.value;
+  }
+  const value = buildVolatileGitDeveloperContext(workingDirectory);
+  if (volatileDeveloperContextCache.size >= VOLATILE_DEVELOPER_CONTEXT_MAX_KEYS) {
+    const oldest = volatileDeveloperContextCache.keys().next();
+    if (!oldest.done) volatileDeveloperContextCache.delete(oldest.value);
+  }
+  volatileDeveloperContextCache.set(cacheKey, { value, at: now });
+  return value;
+}
+
+function buildVolatileGitDeveloperContext(workingDirectory?: string): string | null {
   const identity = collectGitDeveloperIdentity(workingDirectory, false);
   if (!identity) return null;
   const ctx = collectGitDeveloperStatus(identity.repoRoot);
