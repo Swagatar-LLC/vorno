@@ -87,11 +87,11 @@ describe('anthropicDriver.fetchModels', () => {
     expect(result.serverDefault).toBe('claude-sonnet-5');
   });
 
-  it('infers a 1M context window for a brand-new Opus not yet in the registry', async () => {
+  it('takes the context window from the API for a brand-new Opus not yet in the registry', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({
       data: [
-        { id: 'claude-opus-5-0-20260901', display_name: 'Claude Opus 5.0', created_at: '2026-09-01T00:00:00Z', type: 'model' },
-        { id: 'claude-sonnet-5-0-20260901', display_name: 'Claude Sonnet 5.0', created_at: '2026-09-01T00:00:00Z', type: 'model' },
+        { id: 'claude-opus-5-0-20260901', display_name: 'Claude Opus 5.0', created_at: '2026-09-01T00:00:00Z', type: 'model', max_input_tokens: 1_000_000 },
+        { id: 'claude-sonnet-5-0-20260901', display_name: 'Claude Sonnet 5.0', created_at: '2026-09-01T00:00:00Z', type: 'model', max_input_tokens: 200_000 },
       ],
       has_more: false,
       first_id: 'claude-opus-5-0-20260901',
@@ -110,7 +110,7 @@ describe('anthropicDriver.fetchModels', () => {
 
     const opus = result.models.find(m => m.id === 'claude-opus-5-0-20260901')!;
     const sonnet = result.models.find(m => m.id === 'claude-sonnet-5-0-20260901')!;
-    expect(opus.contextWindow).toBe(1_000_000); // would have been the flat 200k default before
+    expect(opus.contextWindow).toBe(1_000_000); // taken from max_input_tokens, not the flat 200k default
     expect(sonnet.contextWindow).toBe(200_000);
   });
 });
