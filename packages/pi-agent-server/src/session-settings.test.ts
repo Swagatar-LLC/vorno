@@ -23,6 +23,7 @@ describe('createCraftSettingsManager', () => {
       enabled: true,
       maxRetries: CRAFT_PI_RETRY_SETTINGS.maxRetries,
       baseDelayMs: CRAFT_PI_RETRY_SETTINGS.baseDelayMs,
+      maxAgentDelayMs: CRAFT_PI_RETRY_SETTINGS.maxAgentDelayMs,
     });
   });
 
@@ -43,6 +44,7 @@ describe('createCraftSettingsManager', () => {
       enabled: true,
       maxRetries: CRAFT_PI_EPHEMERAL_RETRY_SETTINGS.maxRetries,
       baseDelayMs: CRAFT_PI_EPHEMERAL_RETRY_SETTINGS.baseDelayMs,
+      maxAgentDelayMs: CRAFT_PI_EPHEMERAL_RETRY_SETTINGS.maxAgentDelayMs,
     });
     expect(settings.getProviderRetrySettings()).toMatchObject({
       maxRetries: CRAFT_PI_EPHEMERAL_RETRY_SETTINGS.provider.maxRetries,

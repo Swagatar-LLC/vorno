@@ -2,7 +2,7 @@ import type { ProviderDriver } from '../driver-types.ts';
 import type { ModelFetchResult } from '../../../../config/model-fetcher.ts';
 import { applyAnthropicRuntimeBootstrap } from '../runtime-resolver.ts';
 import { validateAnthropicConnection } from '../../../../config/llm-validation.ts';
-import { ANTHROPIC_MODELS, DEFAULT_MODEL, getModelById, getModelContextWindow, inferAnthropicContextWindow, normalizeDeprecatedModelId } from '../../../../config/models.ts';
+import { ANTHROPIC_MODELS, DEFAULT_MODEL, getModelById, getModelContextWindow, normalizeDeprecatedModelId } from '../../../../config/models.ts';
 
 export const anthropicDriver: ProviderDriver = {
   provider: 'anthropic',
@@ -60,12 +60,10 @@ export const anthropicDriver: ProviderDriver = {
       headers.authorization = `Bearer ${oauthAccessToken}`;
     }
 
-    const allRawModels: Array<{
-      id: string;
-      display_name: string;
-      created_at: string;
-      type: string;
-    }> = [];
+    // /v1/models also reports `max_input_tokens`; it is the authoritative context
+    // window for models that reach the picker before they reach MODEL_REGISTRY.
+    type RawModel = { id: string; display_name: string; created_at: string; type: string; max_input_tokens?: number };
+    const allRawModels: RawModel[] = [];
     let afterId: string | undefined;
 
     do {
@@ -88,7 +86,7 @@ export const anthropicDriver: ProviderDriver = {
       }
 
       const data = await response.json() as {
-        data: Array<{ id: string; display_name: string; created_at: string; type: string }>;
+        data: RawModel[];
         has_more: boolean;
         first_id: string;
         last_id: string;
@@ -136,11 +134,12 @@ export const anthropicDriver: ProviderDriver = {
           description: registryModel?.description ?? '',
           descriptionKey: registryModel?.descriptionKey,
           provider: 'anthropic' as const,
-          // /v1/models carries no context window — infer from family (Opus → 1M) so a
-          // new Opus drop isn't mis-sized at the flat 200k default.
-          contextWindow: getModelContextWindow(m.id) ?? inferAnthropicContextWindow(m.id),
+          // Registry metadata wins for known models; the API's max_input_tokens
+          // covers new models so they never silently run at 200K.
+          contextWindow: getModelContextWindow(m.id) ?? m.max_input_tokens ?? 200_000,
           supportsThinking: registryModel?.supportsThinking,
           supportsImages: registryModel?.supportsImages,
+          thinkingAlwaysOn: registryModel?.thinkingAlwaysOn,
         };
       });
 

@@ -1781,7 +1781,7 @@ export function isApiEndpointAllowed(
  */
 const ALWAYS_ALLOWED_TOOLS = new Set([
   'Read', 'Glob', 'Grep',           // File reading
-  'Task', 'TaskOutput',             // Agent orchestration
+  'Task',                           // Agent orchestration (TaskOutput was removed in Claude Code 2.1.269)
   'WebFetch', 'WebSearch',          // Web research
   'TodoWrite',                      // Task tracking
   'SubmitPlan',                     // Plan submission
