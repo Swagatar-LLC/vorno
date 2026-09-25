@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SettingsManager, type ExtensionAPI, type InlineExtension } from '@earendil-works/pi-coding-agent';
+import {
+  createAgentSession,
+  SessionManager,
+  SettingsManager,
+  type ExtensionAPI,
+  type InlineExtension,
+  type ModelRuntime,
+} from '@earendil-works/pi-coding-agent';
+import { createAssistantMessageEventStream, type AssistantMessage, type Model } from '@earendil-works/pi-ai';
 import {
   CRAFT_SYSTEM_PROMPT_EXTENSION_NAME,
   createCraftResourceLoader,
@@ -93,4 +101,71 @@ describe('createCraftResourceLoader', () => {
     expect(errors).toEqual([]);
     expect(extensions.some(ext => ext.path === `<inline:${CRAFT_SYSTEM_PROMPT_EXTENSION_NAME}>`)).toBe(true);
   });
+});
+
+describe('session-level prompt delivery', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * End-to-end check that the forced prompt actually reaches the provider request —
+   * the unit tests above only exercise the extension handler in isolation. Wires the
+   * real loader into a real `AgentSession` (per the pattern in steering-sdk.test.ts)
+   * and inspects the leading system message of the transcript each stream call
+   * receives, across two turns, to pin the "always returns the latest prompt" claim.
+   */
+  it('projects the forced prompt onto the request across turns and a set() mid-run', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'craft-pi-session-'));
+    dirs.push(root);
+    const override = createSystemPromptOverride();
+    const resourceLoader = await createCraftResourceLoader({
+      cwd: root,
+      agentDir: join(root, '.pi-agent'),
+      settingsManager: SettingsManager.inMemory(),
+      systemPromptOverride: override,
+    });
+
+    const model: Model<'openai-responses'> = {
+      id: 'offline-system-prompt-test', name: 'Offline', api: 'openai-responses', provider: 'openai',
+      baseUrl: 'https://invalid.test', reasoning: false, input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 4096,
+    };
+    const { session } = await createAgentSession({
+      cwd: root, model, settingsManager: SettingsManager.inMemory(),
+      sessionManager: SessionManager.inMemory(root), resourceLoader, tools: [],
+      modelRuntime: {
+        hasConfiguredAuth: () => true, getModel: () => model, getAvailableSnapshot: () => [model],
+        streamSimple: () => { throw new Error('Provider/network access is forbidden'); },
+      } as unknown as ModelRuntime,
+    });
+
+    const leadingSystemPrompts: (string | undefined)[] = [];
+    session.agent.streamFunction = (_model, context) => {
+      const lead = context.messages.find(m => m.role === 'system');
+      leadingSystemPrompts.push(typeof lead?.content === 'string' ? lead.content : undefined);
+      const stream = createAssistantMessageEventStream();
+      const message: AssistantMessage = {
+        role: 'assistant', content: [{ type: 'text', text: 'done' }], api: model.api, provider: model.provider,
+        model: model.id, timestamp: Date.now(), stopReason: 'stop',
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      };
+      stream.push({ type: 'start', partial: { ...message, content: [], stopReason: 'pending' } });
+      stream.push({ type: 'done', reason: 'stop', message });
+      return stream;
+    };
+
+    try {
+      override.set('CRAFT_PROMPT_V1');
+      await session.prompt('turn one');
+      override.set('CRAFT_PROMPT_V2');
+      await session.prompt('turn two');
+    } finally {
+      session.dispose();
+    }
+
+    expect(leadingSystemPrompts).toEqual(['CRAFT_PROMPT_V1', 'CRAFT_PROMPT_V2']);
+  }, 5000);
 });
