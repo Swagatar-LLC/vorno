@@ -17,6 +17,7 @@ related-plans:
   - PLAN-033-hermetic-config-dir-for-test-runs.md
   - PLAN-036-vorno-owned-oauth-redirect-relay.md
   - PLAN-037-session-query-predicate-surface.md
+  - PLAN-056-close-the-model-catalog-freshness-gap.md
   # The paused richer-progress / phase-1.5 orchestration plans are archived in
   # the private vorno-internal repo (see ADR-0006).
 ---
