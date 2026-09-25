@@ -1960,7 +1960,7 @@ Examples:
   vorno-cli run --provider openai --model gpt-4o "Summarize this repo"
   OPENAI_API_KEY=sk-... vorno-cli run --provider openai "Hello"
   GOOGLE_API_KEY=... vorno-cli run --provider google --model gemini-2.0-flash "Hello"
-  DEEPSEEK_API_KEY=sk-... vorno-cli run --provider deepseek --model deepseek-v4-flash "Hello"
+  DEEPSEEK_API_KEY=sk-... vorno-cli run --provider deepseek --model deepseek-flash "Hello"
   echo "Analyze this code" | vorno-cli run
   vorno-cli ping
   vorno-cli sessions

@@ -200,6 +200,14 @@ export function buildClaudeSubprocessEnv(
     // attempt to nest sessions. We must remove it for standalone server usage.
     delete env.CLAUDECODE;
 
+    // SDK 0.3.268 (Claude Code 2.1.268) stopped offering the task-tracking tools
+    // (TodoWrite and the Task* family) by default on Opus ≤4.7, Sonnet ≤4.6 and
+    // Haiku 4.5. Craft renders TodoWrite in the transcript regardless of model, so
+    // keep the tools available everywhere. No-op on models that still get them.
+    if (env.CLAUDE_CODE_ENABLE_TODO_TOOLS === undefined) {
+        env.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1';
+    }
+
     // Windows: point the SDK's Bash tool at the user-configured Git Bash if set.
     // The SDK otherwise falls back to a hardcoded Program Files search that misses
     // per-user installs (e.g. AppData\Local\Programs\Git) → "No bash shell found"

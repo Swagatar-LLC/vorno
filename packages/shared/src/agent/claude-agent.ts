@@ -159,8 +159,8 @@ export function resolveClaudeThinkingOptions(args: {
   const effort = THINKING_TO_EFFORT[thinkingLevel];
   const isHaiku = model.toLowerCase().includes('haiku');
   const supportsAdaptiveThinking = isClaude && !isHaiku;
-  // Mythos-class models (Fable 5 / Mythos 5) have adaptive thinking ALWAYS ON and
-  // reject `thinking: { type: 'disabled' }`. There's no way to turn thinking off;
+  // Always-on adaptive thinking models (Fable/Mythos, Opus 5.5) reject
+  // `thinking: { type: 'disabled' }`. There's no way to turn thinking off;
   // the lowest we can go is adaptive + 'low' effort.
   const adaptiveAlwaysOn = isAdaptiveThinkingAlwaysOnModel(model);
 
@@ -1260,6 +1260,14 @@ export class ClaudeAgent extends BaseAgent {
           : {
               type: 'preset' as const,
               preset: 'claude_code' as const,
+              // Record the rendered system prompt once per SDK session and reuse it on
+              // every later request and on resume (SDK ≥0.3.267 default, pinned here on
+              // purpose). Craft already pins the append's inputs per session (see the
+              // pinnedPreferencesPrompt drift notice) — a prompt that changes
+              // mid-conversation invalidates the cache prefix and, on Opus 5.5 / Fable,
+              // can invalidate earlier thinking blocks. Per-turn context travels on the
+              // user-message tail, never in this append.
+              snapshot: true,
               // Working directory included for monorepo context file discovery
               append: getSystemPrompt(
                 this.pinnedPreferencesPrompt ?? undefined,

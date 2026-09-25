@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { anthropicDriver } from './anthropic.ts';
-import { ANTHROPIC_MODELS, inferAnthropicContextWindow } from '../../../../config/models.ts';
+import { ANTHROPIC_MODELS } from '../../../../config/models.ts';
 
 const originalFetch = globalThis.fetch;
 
@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 describe('anthropicDriver.fetchModels', () => {
-  it('filters deprecated Opus 4.5 but keeps Opus 4.6, and prefers Opus 4.8 as default', async () => {
+  it('filters deprecated Opus 4.5, keeps Opus 4.6, prefers Opus 5.5 as default, and sizes unknown models from the API', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({
       data: [
         { id: 'claude-opus-4-6', display_name: 'Claude Opus 4.6', created_at: '2026-01-01T00:00:00Z', type: 'model' },
@@ -17,10 +17,13 @@ describe('anthropicDriver.fetchModels', () => {
         { id: 'claude-opus-4-7', display_name: 'Claude Opus 4.7', created_at: '2026-04-01T00:00:00Z', type: 'model' },
         { id: 'claude-opus-4-5-20251101', display_name: 'Claude Opus 4.5', created_at: '2025-11-01T00:00:00Z', type: 'model' },
         { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6', created_at: '2026-01-01T00:00:00Z', type: 'model' },
+        { id: 'claude-opus-5-5', display_name: 'Claude Opus 5.5', created_at: '2026-09-22T00:00:00Z', type: 'model', max_input_tokens: 1_000_000 },
+        // Not in MODEL_REGISTRY: metadata must come from the API response, not the 200K fallback.
+        { id: 'claude-zeta-9', display_name: 'Claude Zeta 9', created_at: '2026-12-01T00:00:00Z', type: 'model', max_input_tokens: 500_000 },
       ],
       has_more: false,
       first_id: 'claude-opus-4-6',
-      last_id: 'claude-sonnet-4-6',
+      last_id: 'claude-zeta-9',
     }), { status: 200 })) as unknown as typeof fetch;
 
     const result = await anthropicDriver.fetchModels!({
@@ -37,26 +40,58 @@ describe('anthropicDriver.fetchModels', () => {
       timeoutMs: 30_000,
     });
 
-    expect(result.serverDefault).toBe('claude-opus-4-8');
+    expect(result.serverDefault).toBe('claude-opus-5-5');
     expect(result.models.map(m => m.id)).toEqual([
       'claude-opus-4-6',
       'claude-opus-4-8',
       'claude-opus-4-7',
       'claude-sonnet-4-6',
+      'claude-opus-5-5',
+      'claude-zeta-9',
     ]);
+    const opus55 = result.models.find(m => m.id === 'claude-opus-5-5')!;
+    expect(opus55.name).toBe('Opus 5.5');
+    expect(opus55.contextWindow).toBe(1_000_000);
+    expect(opus55.thinkingAlwaysOn).toBe(true);
     const opus48 = result.models.find(m => m.id === 'claude-opus-4-8')!;
     expect(opus48.name).toBe('Opus 4.8');
     expect(opus48.contextWindow).toBe(1_000_000);
     const opus46 = result.models.find(m => m.id === 'claude-opus-4-6')!;
     expect(opus46.name).toBe('Opus 4.6');
     expect(opus46.contextWindow).toBe(200_000);
+    const zeta = result.models.find(m => m.id === 'claude-zeta-9')!;
+    expect(zeta.name).toBe('Claude Zeta 9');
+    expect(zeta.shortName).toBe('Zeta');
+    expect(zeta.contextWindow).toBe(500_000);
   });
 
-  it('infers a 1M context window for a brand-new Opus not yet in the registry', async () => {
+  it('falls back to the default when the server does not list the registry default', async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({
       data: [
-        { id: 'claude-opus-5-0-20260901', display_name: 'Claude Opus 5.0', created_at: '2026-09-01T00:00:00Z', type: 'model' },
-        { id: 'claude-sonnet-5-0-20260901', display_name: 'Claude Sonnet 5.0', created_at: '2026-09-01T00:00:00Z', type: 'model' },
+        { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5', created_at: '2026-03-01T00:00:00Z', type: 'model', max_input_tokens: 1_000_000 },
+        { id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5', created_at: '2025-10-01T00:00:00Z', type: 'model', max_input_tokens: 200_000 },
+      ],
+      has_more: false,
+      first_id: 'claude-sonnet-5',
+      last_id: 'claude-haiku-4-5-20251001',
+    }), { status: 200 })) as unknown as typeof fetch;
+
+    const result = await anthropicDriver.fetchModels!({
+      connection: { slug: 'anthropic', name: 'Anthropic', providerType: 'anthropic', authType: 'api_key', createdAt: Date.now() } as any,
+      credentials: { apiKey: 'sk-ant-test' },
+      hostRuntime: {} as any,
+      resolvedPaths: {} as any,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.serverDefault).toBe('claude-sonnet-5');
+  });
+
+  it('takes the context window from the API for a brand-new Opus not yet in the registry', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      data: [
+        { id: 'claude-opus-5-0-20260901', display_name: 'Claude Opus 5.0', created_at: '2026-09-01T00:00:00Z', type: 'model', max_input_tokens: 1_000_000 },
+        { id: 'claude-sonnet-5-0-20260901', display_name: 'Claude Sonnet 5.0', created_at: '2026-09-01T00:00:00Z', type: 'model', max_input_tokens: 200_000 },
       ],
       has_more: false,
       first_id: 'claude-opus-5-0-20260901',
@@ -75,18 +110,8 @@ describe('anthropicDriver.fetchModels', () => {
 
     const opus = result.models.find(m => m.id === 'claude-opus-5-0-20260901')!;
     const sonnet = result.models.find(m => m.id === 'claude-sonnet-5-0-20260901')!;
-    expect(opus.contextWindow).toBe(1_000_000); // would have been the flat 200k default before
+    expect(opus.contextWindow).toBe(1_000_000); // taken from max_input_tokens, not the flat 200k default
     expect(sonnet.contextWindow).toBe(200_000);
-  });
-});
-
-describe('inferAnthropicContextWindow', () => {
-  it('returns 1M for Opus (bare, dated, and Bedrock-native ids) and 200k otherwise', () => {
-    expect(inferAnthropicContextWindow('claude-opus-9-9-20270101')).toBe(1_000_000);
-    expect(inferAnthropicContextWindow('us.anthropic.claude-opus-4-8')).toBe(1_000_000);
-    expect(inferAnthropicContextWindow('claude-sonnet-9-0')).toBe(200_000);
-    expect(inferAnthropicContextWindow('claude-haiku-9-0')).toBe(200_000);
-    expect(inferAnthropicContextWindow('some-unknown-model')).toBe(200_000);
   });
 });
 
