@@ -42,6 +42,12 @@ export interface ResolveDecisionClientOptions {
   skipGates?: boolean;
   /** Use this key instead of looking one up (unsaved key typed into Settings). */
   apiKeyOverride?: string;
+  /**
+   * The base URL was edited but not saved (Settings → Test). A key stored for
+   * the provider was saved for the old URL, so refuse to send it to the new
+   * one; keyless local servers still resolve.
+   */
+  refuseStoredProviderKey?: boolean;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -97,6 +103,9 @@ export async function resolveDecisionClient(options: ResolveDecisionClientOption
     keySource = 'connection';
   } else {
     const key = await credentialManager.getDecisionApiKey(provider);
+    if (key && options.refuseStoredProviderKey) {
+      return fail({ kind: 'unconfigured', message: 'Decision model: the base URL changed. Re-enter the API key to test it' });
+    }
     if (key) {
       apiKey = key;
       keySource = 'provider';
@@ -110,7 +119,9 @@ export async function resolveDecisionClient(options: ResolveDecisionClientOption
 
   let endpoint: ResolvedDecisionEndpoint;
   try {
-    endpoint = resolveDecisionEndpoint(settings, provider);
+    // A reused connection key belongs to that connection's provider: never let a
+    // separate base URL redirect it (Greptile PR #230 finding 3).
+    endpoint = resolveDecisionEndpoint(settings, provider, { bindToPreset: keySource === 'connection' });
   } catch (error) {
     if (isDecisionError(error)) return fail(error.toFailure());
     throw error;

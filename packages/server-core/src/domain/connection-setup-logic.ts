@@ -116,6 +116,39 @@ export type SetupTestApiKeyResolution =
   | { ok: true; apiKey: string; source: 'input' | 'stored' }
   | { ok: false; error: string }
 
+/** What a setup test is about to call: the routing fields from the edit form. */
+export interface SetupTestTarget {
+  provider: 'anthropic' | 'pi'
+  baseUrl?: string
+  piAuthProvider?: string
+}
+
+/** The routing fields of the saved connection whose key the masked placeholder stands for. */
+export type StoredConnectionTarget = Pick<LlmConnection, 'providerType' | 'baseUrl' | 'piAuthProvider'>
+
+function normalizeSetupTestBaseUrl(baseUrl: string | undefined): string {
+  const trimmed = baseUrl?.trim() ?? ''
+  if (!trimmed) return ''
+  try {
+    return new URL(trimmed).href.replace(/\/+$/, '')
+  } catch {
+    return trimmed.replace(/\/+$/, '')
+  }
+}
+
+/**
+ * True when the edit form still points at the saved connection: same provider
+ * family, same piAuthProvider and same base URL (empty means the provider
+ * default on both sides). A stored key may only be tested against the
+ * endpoint it was saved for.
+ */
+export function setupTestMatchesStoredConnection(target: SetupTestTarget, stored: StoredConnectionTarget): boolean {
+  const storedFamily = stored.providerType === 'anthropic' ? 'anthropic' : 'pi'
+  if (target.provider !== storedFamily) return false
+  if ((target.piAuthProvider?.trim() || '') !== (stored.piAuthProvider?.trim() || '')) return false
+  return normalizeSetupTestBaseUrl(target.baseUrl) === normalizeSetupTestBaseUrl(stored.baseUrl)
+}
+
 /**
  * Decide which API key a setup test should use.
  *
@@ -123,17 +156,28 @@ export type SetupTestApiKeyResolution =
  * leaves it untouched and clicks Test, the placeholder arrives here. Testing
  * with the bullets always failed authentication (OSS #1048), so resolve it to
  * the stored credential by connection slug, and ask for the key when that is
- * not possible. Pure apart from the injected store lookup.
+ * not possible. The stored key is only used when the form still targets the
+ * saved connection's provider and endpoint; an edited endpoint or provider
+ * needs the key re-entered, so a test never sends a saved key to a server the
+ * user did not save it for. Pure apart from the injected store lookups.
  */
 export async function resolveSetupTestApiKey(
-  input: { apiKey: string | undefined; connectionSlug?: string; allowEmptyApiKey: boolean },
+  input: { apiKey: string | undefined; connectionSlug?: string; allowEmptyApiKey: boolean; target: SetupTestTarget },
   getStoredApiKey: (slug: string) => Promise<string | null>,
+  getStoredConnection: (slug: string) => StoredConnectionTarget | null | undefined,
 ): Promise<SetupTestApiKeyResolution> {
   const trimmed = input.apiKey?.trim() ?? ''
 
   if (isMaskedApiKey(trimmed)) {
     if (!input.connectionSlug) {
       return { ok: false, error: 'Re-enter the API key to test this connection.' }
+    }
+    const connection = getStoredConnection(input.connectionSlug)
+    if (!connection) {
+      return { ok: false, error: 'Re-enter the API key to test this connection.' }
+    }
+    if (!setupTestMatchesStoredConnection(input.target, connection)) {
+      return { ok: false, error: 'The endpoint or provider changed. Re-enter the API key to test it.' }
     }
     const stored = await getStoredApiKey(input.connectionSlug)
     if (!stored) {

@@ -13,6 +13,10 @@
  *   3. writes a decision record (feature `decide_tool`) — digest only, never
  *      the state.
  *
+ * Session-log lines use `toDecisionAuditFailure` (kind + status, fixed text):
+ * the agent gets provider detail in its tool result, but the log never does,
+ * because a validating gateway may echo the state in its error body.
+ *
  * Nothing here grants authority: the result is advice for the agent.
  */
 
@@ -20,6 +24,7 @@ import type { DecisionToolCallbacks, DecisionToolRequest, DecisionToolResult } f
 import {
   getDecisionRecorder,
   resolveDecisionClient,
+  toDecisionAuditFailure,
   toDecisionFailure,
   type DecisionClientResolution,
   type DecisionRecorder,
@@ -66,9 +71,8 @@ export function buildDecisionToolCallbacks(deps: DecisionToolCallbacksDeps): Dec
         resolution = await resolveCached()
       } catch (error) {
         // Fail closed even when settings/credential access itself blows up.
-        const failure = toDecisionFailure(error)
-        deps.log?.(`[decide] resolver failed: ${failure.message}`)
-        return { ok: false, error: failure }
+        deps.log?.(`[decide] resolver failed: ${formatAuditFailure(error)}`)
+        return { ok: false, error: toDecisionFailure(error) }
       }
       if (!resolution.ok) {
         deps.log?.(`[decide] unavailable: ${resolution.failure.kind} — ${resolution.failure.message}`)
@@ -115,9 +119,14 @@ export function buildDecisionToolCallbacks(deps: DecisionToolCallbacksDeps): Dec
           sessionId: deps.sessionId,
           meta: request.meta,
         })
-        deps.log?.(`[decide] failed: ${failure.kind} — ${failure.message}`)
+        deps.log?.(`[decide] failed: ${formatAuditFailure(error)}`)
         return { ok: false, error: failure }
       }
     },
   }
+}
+
+function formatAuditFailure(error: unknown): string {
+  const audit = toDecisionAuditFailure(error)
+  return audit.status !== undefined ? `${audit.kind} (HTTP ${audit.status})` : audit.kind
 }

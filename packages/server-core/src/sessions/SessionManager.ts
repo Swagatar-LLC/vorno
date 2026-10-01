@@ -1296,20 +1296,24 @@ export function claimAutoRetryPending(
 }
 
 /**
- * Most-recent non-empty user message content, for the source-activation auto-retry
- * fallback (bugfix/session-continuation). The per-turn capture
- * (`getCurrentTurnUserMessage`) can come back empty — an empty/attachment-only turn,
- * or a capture that raced turn teardown — which used to strand the session: the
- * activation force-aborted the turn but nothing was re-sent. Falling back to the last
- * persisted user message keeps the turn continuing, while preserving the "no bogus
- * empty resend" intent (returns '' only when there is genuinely nothing to resend).
+ * Content of the user message that owns the current turn, for the source-activation
+ * auto-retry fallback (bugfix/session-continuation). The per-turn capture
+ * (`getCurrentTurnUserMessage`) can come back empty (a capture that raced turn
+ * teardown), which used to strand the session: the activation force-aborted the turn
+ * but nothing was re-sent. Falling back to the persisted turn message keeps it going.
+ *
+ * Only the turn's OWN message qualifies. The newest user message that is not
+ * `isQueued` is the one that started the turn: mid-stream sends (queued follow-ups
+ * and provisionally-durable steers) are pushed with `isQueued` set. If that message
+ * has no text (an attachment-only turn) this returns '' rather than walking back to
+ * an earlier, unrelated text turn, which would replay a request the user never made
+ * in this turn (PR #230 review, finding 4).
  */
 export function lastUserMessageContent(messages: Message[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
-    if (m.role === 'user' && typeof m.content === 'string' && m.content.trim()) {
-      return m.content
-    }
+    if (m.role !== 'user' || m.isQueued === true) continue
+    return typeof m.content === 'string' && m.content.trim() ? m.content : ''
   }
   return ''
 }
@@ -11235,9 +11239,10 @@ export class SessionManager implements ISessionManager {
         if (!managed) break
 
         // The captured original message can be empty — an empty/attachment-only turn,
-        // or a per-turn capture that raced turn teardown. Fall back to the last
-        // persisted user message so an activation that force-aborted the turn still
-        // continues; skip only when there is genuinely nothing to resend (preserves
+        // or a per-turn capture that raced turn teardown. Fall back to the persisted
+        // message that started THIS turn so an activation that force-aborted it still
+        // continues. Never walk back past it: an attachment-only turn has no text to
+        // resend, and an earlier turn's text is unrelated, so skip instead (preserves
         // the "no bogus empty resend" intent). See bugfix/session-continuation.
         const capturedMessage = event.originalMessage ?? ''
         const resendMessage = capturedMessage.trim()

@@ -165,6 +165,12 @@ export function mergeDecisionLayerSettings(
   return next;
 }
 
+/** Compare two optional base URLs, ignoring surrounding space and trailing slashes. */
+export function sameDecisionBaseUrl(a: string | undefined, b: string | undefined): boolean {
+  const clean = (value: string | undefined) => (value ?? '').trim().replace(/\/+$/, '');
+  return clean(a) === clean(b);
+}
+
 export interface ResolvedDecisionEndpoint {
   provider: DecisionProviderId;
   preset: DecisionProviderPreset;
@@ -174,15 +180,28 @@ export interface ResolvedDecisionEndpoint {
   extraHeaders: Record<string, string>;
 }
 
+export interface ResolveDecisionEndpointOptions {
+  /**
+   * Ignore `settings.baseUrl` and use the provider preset's base URL. Set when
+   * the key is reused from an LLM connection: that key belongs to the
+   * connection's provider, so a separate base URL must not redirect it.
+   */
+  bindToPreset?: boolean;
+}
+
 /**
  * Turn settings into a concrete endpoint. `providerOverride` is used when the
  * key comes from an LLM connection (the connection decides the provider).
  * Throws `DecisionError('unconfigured')` for `custom` without a base URL.
  */
-export function resolveDecisionEndpoint(settings: DecisionLayerSettings, providerOverride?: DecisionProviderId): ResolvedDecisionEndpoint {
+export function resolveDecisionEndpoint(
+  settings: DecisionLayerSettings,
+  providerOverride?: DecisionProviderId,
+  options: ResolveDecisionEndpointOptions = {},
+): ResolvedDecisionEndpoint {
   const provider = providerOverride ?? settings.provider;
   const preset = DECISION_PROVIDER_PRESETS[provider];
-  const baseUrl = settings.baseUrl ?? preset.baseUrl;
+  const baseUrl = options.bindToPreset ? preset.baseUrl : (settings.baseUrl ?? preset.baseUrl);
   if (!baseUrl) {
     throw new DecisionError('unconfigured', 'Decision model: a base URL is required for the custom provider');
   }

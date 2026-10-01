@@ -8,7 +8,7 @@ import { DECISION_PROVIDER_IDS, toDecisionFailure, type DecisionFailure, type De
 import { DECISION_PROVIDER_PRESETS, decisionProviderForConnection } from './providers.ts';
 import { getDecisionRecorder } from './records.ts';
 import { resolveDecisionClient } from './resolve.ts';
-import { normalizeDecisionLayerSettings, type DecisionLayerSettings, type DecisionLayerSettingsPatch } from './settings.ts';
+import { normalizeDecisionLayerSettings, sameDecisionBaseUrl, type DecisionLayerSettings, type DecisionLayerSettingsPatch } from './settings.ts';
 
 export interface DecisionProviderPresetSummary {
   id: DecisionProviderId;
@@ -120,6 +120,8 @@ export async function testDecisionConnection(options: DecisionTestOptions = {}):
     credentialManager: options.credentialManager,
     skipGates: true,
     apiKeyOverride: options.apiKey,
+    // An unsaved base URL edit must not receive the key saved for the old one.
+    refuseStoredProviderKey: !sameDecisionBaseUrl(settings.baseUrl, stored.baseUrl),
     fetch: options.fetch,
   });
   if (!resolution.ok) return { ok: false, failure: resolution.failure };

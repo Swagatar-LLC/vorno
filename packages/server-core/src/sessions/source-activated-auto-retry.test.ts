@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { SessionManager, createManagedSession, claimAutoRetryPending } from './SessionManager.ts'
+import { SessionManager, createManagedSession, claimAutoRetryPending, lastUserMessageContent } from './SessionManager.ts'
 
 // Regression test for craft-agents-oss#804.
 //
@@ -60,6 +60,26 @@ describe('claimAutoRetryPending', () => {
 
     expect(claimAutoRetryPending(host, 'never mind', 1000)).toBe('send')
     expect(host.autoRetryPending).toBeDefined()
+  })
+})
+
+describe('lastUserMessageContent', () => {
+  it('returns the turn message text', () => {
+    expect(lastUserMessageContent([{ id: 'u', role: 'user', content: 'hi', timestamp: 1 }] as never)).toBe('hi')
+  })
+
+  it('returns empty for an attachment-only newest turn instead of an older text turn', () => {
+    expect(lastUserMessageContent([
+      { id: 'u1', role: 'user', content: 'old request', timestamp: 1 },
+      { id: 'u2', role: 'user', content: '  ', timestamp: 2 },
+    ] as never)).toBe('')
+  })
+
+  it('skips queued user messages', () => {
+    expect(lastUserMessageContent([
+      { id: 'u1', role: 'user', content: 'turn text', timestamp: 1 },
+      { id: 'u2', role: 'user', content: 'queued', timestamp: 2, isQueued: true },
+    ] as never)).toBe('turn text')
   })
 })
 
@@ -180,6 +200,51 @@ describe('source_activated auto-retry', () => {
     await new Promise(r => setTimeout(r, 150))
 
     expect(calls).toEqual(['summarize my latest doc\n\n[craft-my-space activated]'])
+  })
+
+  it('attachment-only current turn after a prior text turn — never replays the earlier text', async () => {
+    // PR #230 review, finding 4: the fallback used to walk back past the empty
+    // attachment-only turn to an older text turn and resend that unrelated request.
+    const sessionId = 'attachment-only-after-text'
+    const managed = buildSession(sessionId)
+    const calls = spyOnSendMessage(sessionId)
+
+    managed.messages.push(
+      { id: 'u1', role: 'user', content: 'delete the staging branch', timestamp: 1 } as never,
+      { id: 'a1', role: 'assistant', content: 'Done.', timestamp: 2 } as never,
+      {
+        id: 'u2',
+        role: 'user',
+        content: '',
+        timestamp: 3,
+        attachments: [{ type: 'image', name: 'shot.png' }],
+      } as never,
+    )
+
+    await fireSourceActivated(sessionId, 'github', '')
+    await new Promise(r => setTimeout(r, 150))
+
+    expect(calls).toEqual([])
+    expect(managed.autoRetryPending).toBeUndefined()
+    expect(managed.autoRetryTimer).toBeUndefined()
+  })
+
+  it('empty capture ignores queued mid-stream follow-ups — resends the turn that activated', async () => {
+    // A follow-up sent during the turn is pushed with isQueued; it is not the
+    // activating turn and must not be resent with the activation suffix.
+    const sessionId = 'queued-followup-not-turn'
+    buildSession(sessionId)
+    const managed = (sm as unknown as { sessions: Map<string, { messages: unknown[] }> }).sessions.get(sessionId)!
+    managed.messages.push(
+      { id: 'u1', role: 'user', content: 'list my repos', timestamp: 1 } as never,
+      { id: 'u2', role: 'user', content: 'then open the newest', timestamp: 2, isQueued: true } as never,
+    )
+    const calls = spyOnSendMessage(sessionId)
+
+    await fireSourceActivated(sessionId, 'github', '')
+    await new Promise(r => setTimeout(r, 150))
+
+    expect(calls).toEqual(['list my repos\n\n[github activated]'])
   })
 
   it('legitimate user message preempts retry — skipped when follow-up arrived', async () => {

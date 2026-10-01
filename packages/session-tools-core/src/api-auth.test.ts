@@ -147,6 +147,54 @@ describe('buildApiAuthHeaders', () => {
   });
 });
 
+describe('buildApiAuthHeaders refuses what source_test refuses (headerNames sources)', () => {
+  const MULTI = { type: 'header' as const, headerNames: ['DD-API-KEY', 'DD-APPLICATION-KEY'] };
+  const authKeys = (h: Record<string, string>) => Object.keys(h).filter((k) => k !== 'Content-Type');
+
+  test('an incomplete JSON header map sends no auth headers', () => {
+    const partial = JSON.stringify({ 'DD-API-KEY': 'api-secret' });
+    // The same stored value source_test rejects: parsing leaves it as the raw string
+    expect(parseStoredApiCredential(partial, { authType: 'header', headerNames: MULTI.headerNames })).toBe(partial);
+    const h = buildApiAuthHeaders(MULTI, partial);
+    expect(authKeys(h)).toEqual([]);
+    expect(Object.values(h).some((v) => v.includes('api-secret'))).toBe(false);
+    expect(describeApiAuth(MULTI, partial)).toBe('no auth header (credential does not cover the configured headerNames)');
+  });
+
+  test('an incomplete header map object sends no auth headers', () => {
+    expect(authKeys(buildApiAuthHeaders(MULTI, { 'DD-API-KEY': 'api' }))).toEqual([]);
+  });
+
+  test('a map with mismatched header names sends none of them', () => {
+    const mismatched = JSON.stringify({ 'DD-API-KEY': 'api', 'X-Wrong-Name': 'mismatch-secret' });
+    for (const cred of [mismatched, JSON.parse(mismatched) as Record<string, string>]) {
+      const h = buildApiAuthHeaders(MULTI, cred);
+      expect(authKeys(h)).toEqual([]);
+      expect(Object.values(h).some((v) => v.includes('mismatch-secret'))).toBe(false);
+    }
+  });
+
+  test('a plain string is refused when the source requires a header map', () => {
+    expect(authKeys(buildApiAuthHeaders(MULTI, 'lone-value'))).toEqual([]);
+    expect(authKeys(buildApiAuthHeaders({ type: 'header', headerName: 'A', headerNames: ['B'] }, 'lone-value'))).toEqual([]);
+  });
+
+  test('a complete header map still sends every configured header, as JSON or object', () => {
+    for (const cred of [DATADOG, JSON.stringify(DATADOG)]) {
+      const h = buildApiAuthHeaders(MULTI, cred);
+      expect(h['DD-API-KEY']).toBe('api');
+      expect(h['DD-APPLICATION-KEY']).toBe('app');
+    }
+    expect(describeApiAuth(MULTI, JSON.stringify(DATADOG))).toBe('headers DD-API-KEY, DD-APPLICATION-KEY');
+  });
+
+  test('a lone headerNames entry equal to headerName stays single-header auth', () => {
+    const spec = { type: 'header' as const, headerName: 'X-Key', headerNames: ['X-Key'] };
+    expect(buildApiAuthHeaders(spec, 'v')['X-Key']).toBe('v');
+    expect(buildApiAuthHeaders(spec, JSON.stringify({ 'X-Key': 'v' }))['X-Key']).toBe('v');
+  });
+});
+
 describe('appendQueryAuth', () => {
   test('adds the credential as a query parameter for query auth only', () => {
     expect(appendQueryAuth('https://a.test/v1', { type: 'query', queryParam: 'key' }, 'k 1')).toBe('https://a.test/v1?key=k%201');

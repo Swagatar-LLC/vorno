@@ -63,11 +63,13 @@ export function registerDecisionsHandlers(server: RpcServer, _deps: HandlerDeps)
 
   // Local servers (Laya, custom): GET {baseUrl}/health so the Settings card can say whether
   // the server is up and which checkpoints it loaded. Never throws; no key is sent.
-  server.handle(RPC_CHANNELS.decisions.PROBE_SERVER, async (_ctx, options?: { baseUrl?: string }) => {
+  // Only the saved base URL is probed. These handlers are also registered on the
+  // headless server (LOCAL_ONLY_CHANNELS only routes the Electron client), so a
+  // caller-supplied URL would make the host fetch any address. `options.baseUrl`
+  // stays in the wire signature for compatibility and is ignored.
+  server.handle(RPC_CHANNELS.decisions.PROBE_SERVER, async (_ctx, _options?: { baseUrl?: string }) => {
     const { probeConfiguredDecisionServer } = await import('@craft-agent/shared/decisions')
-    return probeConfiguredDecisionServer(undefined, {
-      baseUrlOverride: typeof options?.baseUrl === 'string' ? options.baseUrl : undefined,
-    })
+    return probeConfiguredDecisionServer()
   })
 
   server.handle(RPC_CHANNELS.decisions.TEST, async (_ctx, options?: { settings?: Record<string, unknown>; apiKey?: string }) => {

@@ -60,12 +60,36 @@ describe('probeDecisionServer', () => {
 });
 
 describe('probeConfiguredDecisionServer', () => {
-  it('uses the preset base URL for laya, the settings base URL otherwise, and an explicit override first', async () => {
+  it('uses the preset base URL for laya and the saved base URL otherwise', async () => {
     const { fetch, urls } = stub(() => new Response('{}', { status: 200 }));
     await probeConfiguredDecisionServer(normalizeDecisionLayerSettings({ provider: 'laya' }), { fetch });
     await probeConfiguredDecisionServer(normalizeDecisionLayerSettings({ provider: 'custom', baseUrl: 'http://box:8080' }), { fetch });
-    await probeConfiguredDecisionServer(normalizeDecisionLayerSettings({ provider: 'laya' }), { fetch, baseUrlOverride: 'http://127.0.0.1:9001' });
+    await probeConfiguredDecisionServer(normalizeDecisionLayerSettings({ provider: 'laya', baseUrl: 'http://127.0.0.1:9001' }), { fetch });
     expect(urls).toEqual(['http://127.0.0.1:8000/health', 'http://box:8080/health', 'http://127.0.0.1:9001/health']);
+  });
+
+  // Greptile PR #230 finding 2: the probe must not fetch caller-chosen URLs.
+  it('ignores a caller-supplied URL and never probes hosted presets or reused connections', async () => {
+    const { fetch, urls } = stub(() => new Response('{}', { status: 200 }));
+    await probeConfiguredDecisionServer(
+      normalizeDecisionLayerSettings({ provider: 'laya' }),
+      { fetch, baseUrlOverride: 'http://169.254.169.254' } as Parameters<typeof probeConfiguredDecisionServer>[1],
+    );
+    const hosted = await probeConfiguredDecisionServer(normalizeDecisionLayerSettings({ provider: 'typesafe', baseUrl: 'http://10.0.0.1' }), { fetch });
+    const reused = await probeConfiguredDecisionServer(normalizeDecisionLayerSettings({ provider: 'laya', connectionSlug: 'or' }), { fetch });
+    expect(urls).toEqual(['http://127.0.0.1:8000/health']);
+    expect(hosted.reachable).toBe(false);
+    expect(reused.reachable).toBe(false);
+  });
+
+  it('does not follow redirects', async () => {
+    let init: RequestInit | undefined;
+    const fetchImpl = (async (_input: string | URL | Request, options?: RequestInit) => {
+      init = options;
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+    await probeConfiguredDecisionServer(normalizeDecisionLayerSettings({ provider: 'laya' }), { fetch: fetchImpl });
+    expect(init?.redirect).toBe('manual');
   });
 
   it('reports a missing base URL for custom without probing', async () => {

@@ -165,12 +165,54 @@ export function buildAuthorizationHeader(authScheme: string | undefined, token: 
 }
 
 /**
+ * Header names a header-auth source requires as a map: more than one
+ * configured name, or a single one that differs from `headerName`. A lone
+ * `headerNames` entry equal to `headerName` is plain single-header auth.
+ * `source_test` refuses a credential that does not cover these.
+ */
+export function requiredHeaderMapNames(auth: Pick<ApiAuthSpec, 'headerName' | 'headerNames'>): string[] {
+  const names = auth.headerNames?.filter(Boolean) ?? [];
+  if (names.length > 1 || (names.length === 1 && names[0] !== auth.headerName)) return names;
+  return [];
+}
+
+/**
+ * Headers a header-auth credential puts on the wire, or null for none.
+ *
+ * When the source requires a header map, the credential goes through
+ * `parseStoredApiCredential` (the policy `source_test` applies) and must be a
+ * map covering every required name. A partial map, a map with other names, or
+ * a plain string sends no auth header, so runtime calls and `source_test`
+ * agree. Otherwise: a header map is sent as is, a JSON-serialized map is
+ * unwrapped rather than sent verbatim, and a bare value goes under
+ * `headerName` (default `x-api-key`).
+ */
+function resolveHeaderAuth(auth: ApiAuthSpec, credential: ApiCredential): Record<string, string> | null {
+  const required = requiredHeaderMapNames(auth);
+  if (required.length > 0) {
+    const parsed = typeof credential === 'string'
+      ? parseStoredApiCredential(credential, { authType: 'header', headerName: auth.headerName, headerNames: auth.headerNames })
+      : credential;
+    if (!isMultiHeaderCredential(parsed)) return null;
+    return required.every((name) => name in parsed) ? parsed : null;
+  }
+  const headerMap = isMultiHeaderCredential(credential)
+    ? credential
+    : typeof credential === 'string'
+      ? parseJsonHeaderMap(credential)
+      : null;
+  if (headerMap) return headerMap;
+  if (typeof credential === 'string' && credential) return { [auth.headerName || 'x-api-key']: credential };
+  return null;
+}
+
+/**
  * Request headers for an API source: JSON content type, default headers, auth.
  *
- * Header auth accepts a header map, a bare value, or a JSON-serialized header
- * map that escaped parsing upstream; the last case is unwrapped rather than
- * sent verbatim. Basic auth accepts the parsed credential or an already
- * encoded string.
+ * Header auth follows `resolveHeaderAuth`: a header map, a bare value, or a
+ * JSON-serialized header map (unwrapped rather than sent verbatim); a source
+ * with `headerNames` gets its headers only from a complete map. Basic auth
+ * accepts the parsed credential or an already encoded string.
  */
 export function buildApiAuthHeaders(
   auth: ApiAuthSpec | undefined,
@@ -195,16 +237,8 @@ export function buildApiAuthHeaders(
   }
 
   if (auth.type === 'header') {
-    const headerMap = isMultiHeaderCredential(credential)
-      ? credential
-      : typeof credential === 'string'
-        ? parseJsonHeaderMap(credential)
-        : null;
-    if (headerMap) {
-      Object.assign(headers, headerMap);
-    } else if (typeof credential === 'string' && credential) {
-      headers[auth.headerName || 'x-api-key'] = credential;
-    }
+    const authHeaders = resolveHeaderAuth(auth, credential);
+    if (authHeaders) Object.assign(headers, authHeaders);
     return headers;
   }
 
@@ -238,11 +272,8 @@ export function describeApiAuth(auth: ApiAuthSpec | undefined, credential: ApiCr
   }
   if (auth.type === 'query') return `query parameter "${auth.queryParam || 'api_key'}"`;
 
-  const headerMap = isMultiHeaderCredential(credential)
-    ? credential
-    : typeof credential === 'string'
-      ? parseJsonHeaderMap(credential)
-      : null;
-  const names = headerMap ? Object.keys(headerMap) : [auth.headerName || 'x-api-key'];
+  const resolved = resolveHeaderAuth(auth, credential);
+  if (!resolved) return 'no auth header (credential does not cover the configured headerNames)';
+  const names = Object.keys(resolved);
   return names.length === 1 ? `header ${names[0]}` : `headers ${names.join(', ')}`;
 }

@@ -52,7 +52,8 @@ export async function probeDecisionServer(
   }
 
   try {
-    const response = await fetchImpl(url, { method: 'GET', signal: AbortSignal.timeout(options.timeoutMs ?? DECISION_PROBE_TIMEOUT_MS) });
+    // No redirects: the probe reports on the configured server only.
+    const response = await fetchImpl(url, { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(options.timeoutMs ?? DECISION_PROBE_TIMEOUT_MS) });
     const latencyMs = Math.round(performance.now() - startedAt);
     const probe: DecisionServerProbe = { provider, baseUrl, url, reachable: true, status: response.status, latencyMs };
     if (response.ok) {
@@ -84,13 +85,21 @@ export async function probeDecisionServer(
   }
 }
 
-/** Probe the server the current settings point at (a local preset or a custom base URL). */
+/**
+ * Probe the server the saved settings point at (a local preset or a custom base
+ * URL). Callers cannot supply a URL: over RPC this runs on the host, so a
+ * caller-chosen URL would let any client make the host fetch arbitrary
+ * addresses (Greptile PR #230 finding 2). Hosted presets are not probed.
+ */
 export async function probeConfiguredDecisionServer(
   settings: DecisionLayerSettings = getDecisionLayerSettings(),
-  options: { fetch?: typeof globalThis.fetch; timeoutMs?: number; baseUrlOverride?: string } = {},
+  options: { fetch?: typeof globalThis.fetch; timeoutMs?: number } = {},
 ): Promise<DecisionServerProbe> {
   const preset = DECISION_PROVIDER_PRESETS[settings.provider];
-  const baseUrl = options.baseUrlOverride?.trim() || settings.baseUrl || preset.baseUrl;
+  if (!preset.local || settings.connectionSlug) {
+    return { provider: settings.provider, baseUrl: '', url: '', reachable: false, message: 'Only local decision servers are probed', latencyMs: 0 };
+  }
+  const baseUrl = settings.baseUrl || preset.baseUrl;
   if (!baseUrl) {
     return { provider: settings.provider, baseUrl: '', url: '', reachable: false, message: 'No base URL configured', latencyMs: 0 };
   }

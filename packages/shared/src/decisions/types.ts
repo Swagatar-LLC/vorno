@@ -219,6 +219,31 @@ export function toDecisionFailure(error: unknown, options?: { includeDetail?: bo
   return { kind: 'unavailable', message: error instanceof Error ? error.message : 'Unknown decision error' };
 }
 
+/** Fixed, value-free text per failure kind, for anything persisted (records, session logs). */
+export const DECISION_AUDIT_FAILURE_MESSAGES: Readonly<Record<DecisionFailureKind, string>> = {
+  disabled: 'Decision model disabled',
+  unconfigured: 'Decision model not configured',
+  timeout: 'Decision call timed out',
+  auth: 'Decision provider rejected the credentials',
+  rate_limited: 'Decision provider rate limit reached',
+  invalid_request: 'Decision request rejected',
+  unavailable: 'Decision model unavailable',
+};
+
+/**
+ * DecisionFailure for audit records and session logs: kind and HTTP status
+ * only, with a fixed message. Provider `detail` is dropped, and so is the
+ * error message itself, because messages name agent-supplied question and
+ * option keys and wrap raw exception text. Agents and users still get the
+ * full `toDecisionFailure()` result.
+ */
+export function toDecisionAuditFailure(error: unknown): DecisionFailure {
+  const kind: DecisionFailureKind = isDecisionError(error) ? error.kind : 'unavailable';
+  const status = isDecisionError(error) ? error.status : undefined;
+  const message = DECISION_AUDIT_FAILURE_MESSAGES[kind] ?? DECISION_AUDIT_FAILURE_MESSAGES.unavailable;
+  return status !== undefined ? { kind, message, status } : { kind, message };
+}
+
 // ============================================================
 // Limits
 // ============================================================

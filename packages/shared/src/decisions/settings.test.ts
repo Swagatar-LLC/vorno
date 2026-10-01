@@ -5,6 +5,7 @@ import {
   mergeDecisionLayerSettings,
   normalizeDecisionLayerSettings,
   resolveDecisionEndpoint,
+  sameDecisionBaseUrl,
 } from './settings.ts';
 import { buildSystemOneEndpoint, decisionProviderForConnection, DECISION_PROVIDER_PRESETS } from './providers.ts';
 import { DecisionError, DECISION_MAX_DEADLINE_MS, DECISION_MIN_DEADLINE_MS } from './types.ts';
@@ -101,6 +102,21 @@ describe('resolveDecisionEndpoint', () => {
     expect(resolved.model).toBe('jev-1.12.0');
     const custom = resolveDecisionEndpoint(normalizeDecisionLayerSettings({ provider: 'custom', baseUrl: 'http://localhost:8080/v1/systemone/' }));
     expect(custom.endpoint).toBe('http://localhost:8080/v1/systemone');
+  });
+
+  // Greptile PR #230 finding 3: a reused connection key must reach only its provider.
+  it('binds a reused connection key to the provider preset, ignoring a separate base URL', () => {
+    const settings = normalizeDecisionLayerSettings({ provider: 'openrouter', connectionSlug: 'or', baseUrl: 'https://attacker.example' });
+    const bound = resolveDecisionEndpoint(settings, 'openrouter', { bindToPreset: true });
+    expect(bound.baseUrl).toBe(DECISION_PROVIDER_PRESETS.openrouter.baseUrl);
+    expect(bound.endpoint).toBe('https://openrouter.ai/api/v1/systemone');
+    expect(resolveDecisionEndpoint(settings, 'openrouter').baseUrl).toBe('https://attacker.example');
+  });
+
+  it('compares base URLs ignoring space and trailing slashes', () => {
+    expect(sameDecisionBaseUrl(' http://127.0.0.1:8000/ ', 'http://127.0.0.1:8000')).toBe(true);
+    expect(sameDecisionBaseUrl(undefined, '')).toBe(true);
+    expect(sameDecisionBaseUrl('http://127.0.0.1:8000', 'http://127.0.0.1:9000')).toBe(false);
   });
 
   it('fails closed for custom without a base URL or with an invalid one', () => {

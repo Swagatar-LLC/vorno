@@ -1140,11 +1140,11 @@ export default function AiSettingsPage() {
   const decisionUsesLocalProvider = !!decisionPreset?.local && !decisionUsesConnection
   const decisionUsesCustomProvider = decisionStatus?.settings.provider === 'custom' && !decisionUsesConnection
 
-  const probeDecisionServer = useCallback(async (baseUrl?: string) => {
+  const probeDecisionServer = useCallback(async () => {
     if (typeof window.electronAPI?.probeDecisionServer !== 'function') return
     setDecisionProbing(true)
     try {
-      setDecisionProbe(await window.electronAPI.probeDecisionServer(baseUrl ? { baseUrl } : undefined))
+      setDecisionProbe(await window.electronAPI.probeDecisionServer())
     } catch (error) {
       console.error('Failed to probe decision server:', error)
       setDecisionProbe(null)
@@ -1510,7 +1510,7 @@ export default function AiSettingsPage() {
                         )}
                         <Button
                           size="sm"
-                          onClick={() => { void probeDecisionServer(decisionBaseUrlDraft.trim() || undefined) }}
+                          onClick={() => { void probeDecisionServer() }}
                           disabled={decisionProbing}
                           className="bg-background shadow-minimal text-foreground hover:bg-foreground/5 rounded-lg"
                         >

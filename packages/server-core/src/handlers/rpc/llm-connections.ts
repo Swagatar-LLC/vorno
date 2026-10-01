@@ -333,10 +333,12 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
     const allowEmptyApiKey = !setupTestRequiresApiKey(baseUrl)
 
     // The edit form echoes the stored key back as the GET_API_KEY placeholder;
-    // resolve it to the real credential instead of testing the bullets (OSS #1048).
+    // resolve it to the real credential instead of testing the bullets (OSS #1048),
+    // but only while the form still targets the saved connection's endpoint.
     const keyResolution = await resolveSetupTestApiKey(
-      { apiKey, connectionSlug, allowEmptyApiKey },
+      { apiKey, connectionSlug, allowEmptyApiKey, target: { provider, baseUrl, piAuthProvider } },
       (slug) => getCredentialManager().getLlmApiKey(slug),
+      (slug) => getLlmConnection(slug),
     )
     if (!keyResolution.ok) {
       return { success: false, error: keyResolution.error }
