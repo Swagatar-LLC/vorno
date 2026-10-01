@@ -13,6 +13,7 @@ import {
 import { FEATURE_FLAGS } from '../../../feature-flags.ts';
 import { isPagesEnabled } from '../../../pages/capability.ts';
 import { DOC_REFS } from '../../../docs/index.ts';
+import { isDecisionFeatureActive } from '../../../decisions/resolve.ts';
 
 export type SessionToolProxyDef = JsonSchemaToolDef;
 
@@ -27,5 +28,8 @@ export function getSessionToolProxyDefs(workspaceRootPath?: string): SessionTool
     // than deferring to the system prompt's documentation table, so it stays
     // correct if the tool defs are ever read without that prompt.
     docsDir: DOC_REFS.docsDir,
+    // Same gate as the Claude path (session-scoped-tools.ts): advertise `decide`
+    // only while the decision layer is on.
+    includeDecide: isDecisionFeatureActive('decideTool'),
   });
 }

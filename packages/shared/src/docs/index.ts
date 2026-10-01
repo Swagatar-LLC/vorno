@@ -180,6 +180,7 @@ export const DOC_REFS = {
   markdownPreview: `${APP_ROOT}/docs/markdown-preview.md`,
   llmTool: `${APP_ROOT}/docs/llm-tool.md`,
   browserTools: `${APP_ROOT}/docs/browser-tools.md`,
+  decisions: `${APP_ROOT}/docs/decisions.md`,
   craftCli: `${APP_ROOT}/docs/vorno-cli.md`,
   docsDir: `${APP_ROOT}/docs/`,
   // Directory, not per-service files. There are ~16 service guides and the system

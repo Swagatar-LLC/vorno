@@ -96,3 +96,7 @@ export type {
   WritePageDataArgs,
   DeletePageArgs,
 } from './pages.ts';
+
+// Decision model
+export { handleDecide } from './decide.ts';
+export type { DecideArgs } from './decide.ts';
