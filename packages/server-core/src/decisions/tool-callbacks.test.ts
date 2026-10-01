@@ -30,12 +30,13 @@ describe('decision tool callbacks', () => {
     const callbacks = buildDecisionToolCallbacks({
       sessionId: 's1',
       log: m => logs.push(m),
-      resolveClient: async () => ({ ok: false, failure: { kind: 'unconfigured', message: 'no key' } }),
+      resolveClient: async () => ({ ok: false, failure: { kind: 'unconfigured', message: 'private connection name has no key' } }),
       recorder: new DecisionRecorder({ path: join(mkdtempSync(join(tmpdir(), 'craft-decide-')), 'd.jsonl') }),
     })
     const result = await callbacks.decide({ state: 'x', questions: QUESTIONS })
-    expect(result).toEqual({ ok: false, error: { kind: 'unconfigured', message: 'no key' } })
+    expect(result).toEqual({ ok: false, error: { kind: 'unconfigured', message: 'private connection name has no key' } })
     expect(logs[0]).toContain('unconfigured')
+    expect(logs.join(' ')).not.toContain('private connection name')
   })
 
   it('runs the decision and records it with the session id and meta', async () => {

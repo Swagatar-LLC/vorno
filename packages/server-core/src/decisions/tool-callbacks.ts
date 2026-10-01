@@ -75,7 +75,7 @@ export function buildDecisionToolCallbacks(deps: DecisionToolCallbacksDeps): Dec
         return { ok: false, error: toDecisionFailure(error) }
       }
       if (!resolution.ok) {
-        deps.log?.(`[decide] unavailable: ${resolution.failure.kind} — ${resolution.failure.message}`)
+        deps.log?.(`[decide] unavailable: ${resolution.failure.kind}`)
         return { ok: false, error: resolution.failure }
       }
 
