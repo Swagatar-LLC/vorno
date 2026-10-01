@@ -30,6 +30,40 @@ const SLACK_CLIENT_SECRET = process.env.SLACK_OAUTH_CLIENT_SECRET || '';
 
 // Slack OAuth endpoints
 const SLACK_AUTH_URL = 'https://slack.com/oauth/v2/authorize';
+
+/**
+ * The Slack-specific relay redirect URI (fork: the branded
+ * SLACK_OAUTH_RELAY_CALLBACK_URL, never a hardcoded upstream host). Slack
+ * requires HTTPS, so the relay worker redirects it to the desktop callback
+ * server (`http://localhost:<port>/callback`). Desktop flows keep using this
+ * one rather than the generic relay (OSS #1068).
+ */
+export const SLACK_LEGACY_RELAY_CALLBACK_URL = SLACK_OAUTH_RELAY_CALLBACK_URL;
+
+/** Redirect URI for a desktop flow whose callback server listens on `port`. */
+export function slackLegacyRelayRedirectUri(port: number): string {
+  return `${SLACK_LEGACY_RELAY_CALLBACK_URL}?port=${port}`;
+}
+
+/**
+ * Port of a desktop callback target the legacy Slack relay can serve, or
+ * undefined. The relay redirects to `http://localhost:<port>/callback`, so the
+ * target must be a loopback URL with an explicit port and exactly that path;
+ * anything else (WebUI HTTPS callbacks, other paths) needs the generic relay.
+ */
+export function slackLegacyRelayPortForReturnTo(returnTo: string | undefined): number | undefined {
+  if (!returnTo) return undefined;
+  let url: URL;
+  try {
+    url = new URL(returnTo);
+  } catch {
+    return undefined;
+  }
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  if (url.protocol !== 'http:' || !loopback || url.pathname !== '/callback' || !url.port) return undefined;
+  const port = Number(url.port);
+  return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : undefined;
+}
 const SLACK_TOKEN_URL = 'https://slack.com/api/oauth.v2.access';
 
 /**
@@ -265,9 +299,9 @@ export function prepareSlackOAuth(options: PrepareSlackOAuthOptions): PreparedOA
   const userScopes = getSlackScopes(options);
   const state = generateState();
 
-  // Slack requires HTTPS → use Cloudflare relay when using callbackPort
+  // Slack requires HTTPS → use the registered Cloudflare relay when using callbackPort
   const redirectUri = options.callbackUrl
-    ?? `${SLACK_OAUTH_RELAY_CALLBACK_URL}?port=${options.callbackPort}`;
+    ?? slackLegacyRelayRedirectUri(options.callbackPort!);
 
   const authUrl = new URL(SLACK_AUTH_URL);
   authUrl.searchParams.set('client_id', SLACK_CLIENT_ID);

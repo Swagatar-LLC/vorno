@@ -35,7 +35,9 @@ export async function handleConfigValidate(
   args: ConfigValidateArgs
 ): Promise<ToolResult> {
   const { target, sourceSlug } = args;
-  const craftAgentRoot = join(homedir(), '.craft-agent');
+  // Same rule as shared config/paths.ts resolveConfigDir(); this package cannot import it.
+  const override = process.env.CRAFT_CONFIG_DIR;
+  const craftAgentRoot = override?.trim() ? override : join(homedir(), '.vorno-agent');
 
   // If full validators available (Claude), use them
   if (ctx.validators) {
