@@ -1,24 +1,24 @@
-# Pending Release Notes
+# Pending release notes
 
-This file accumulates release notes for the next unreleased version. PRs that add user-visible behavior should append a bullet to the relevant section here. Versioned files (`X.Y.Z.md`) are owned by the release skill — never create them in feature commits. The in-app loader only reads `X.Y.Z.md` files, so this file is never shown to users.
+This file collects entries for the next Vorno release. Versioned files belong to the release workflow.
 
 ## Features
 
-## Improvements
-
-## Bug Fixes
-
-## Breaking Changes
-
-## Improvements
-
-- Added opt-in decision-model controls for Guarded permissions, turn outcomes, adaptive thinking, mid-turn message handling, titles, suggestions, large results and automation conditions. They remain off by default. Remote decision settings now address the host that runs the selected workspace, across that host's workspaces. (from upstream v0.14.0)
+- Added opt-in decision-model controls for Guarded permissions, turn outcomes, adaptive thinking, mid-turn message handling, titles, suggestions, large results and automation conditions. They remain off by default. (from upstream v0.14.0)
 - Added decision-assisted task verdicts and repair selection, semantic label rules, and decision usage reporting. (from upstream v0.14.0)
+
+## Improvements
+
+- **Remote decision settings follow the executing host.** Settings and keys apply across that host's workspaces. Authenticated host administration is not workspace-isolated. See ADR-0034. [#232](https://github.com/Swagatar-LLC/vorno/pull/232), `abba04a4`.
+- Large Claude MCP results now pass through a pre-model guard. Removed redundant summarization of the displayed result copy. (from upstream v0.14.0)
 
 ## Bug fixes
 
 - Tightened read-only command detection, remembered permission scopes and spawned-session permission ceilings. (from upstream v0.14.0)
-- Preserved queued-message crash recovery across decision-driven steering and merged continuations. Automation history distinguishes skipped conditions from executions.
-- Large Claude MCP results now pass through a pre-model guard. Removed redundant summarization of the displayed result copy; existing Headroom event compression and retrieval remain unchanged. (from upstream v0.14.0)
+- **Queued messages retain crash recovery.** Decision-driven steering and merged continuations preserve durable replay markers. Automation history distinguishes skipped conditions from executions. [#232](https://github.com/Swagatar-LLC/vorno/pull/232), `abba04a4`, `9b1e4669`.
+- **Guarded writes check real paths.** Symlink escapes prompt before outside-project writes. Disabling the feature during a risk check restores Ask permissions. Failure-handler sessions retain matcher identity and chain depth, and late title/label decisions discard results after shutdown. [#232](https://github.com/Swagatar-LLC/vorno/pull/232), `a0ff3f51`.
+- **Semantic labels trigger automations.** New semantic labels notify the existing metadata differ. The full-server Docker install also retains the workspace manifests required by its frozen lockfile. [#232](https://github.com/Swagatar-LLC/vorno/pull/232), `5e3d26c3`.
 
-- Guarded file writes now resolve symlinks before allowing project-local writes, and fall back to Ask if the feature turns off during a risk check. Automation failure-handler sessions retain their matcher identity and chain depth. Late title and semantic-label decisions no longer write after shutdown.
+## Known limitations
+
+- Headroom compression and retrieval still apply to the host-side tool-result copy. Claude model-input Headroom compression is separate follow-up work; displayed compression statistics do not establish model-input or billing savings.
