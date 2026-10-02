@@ -19,8 +19,8 @@
  */
 
 import { homedir } from 'node:os';
-import { isAbsolute, relative, resolve } from 'node:path';
-import { getPermissionModeDiagnostics, isReadOnlyBashCommandWithConfig, shouldAllowToolInMode } from '../mode-manager.ts';
+import { resolve } from 'node:path';
+import { getPermissionModeDiagnostics, isPathWithinDirectory, isReadOnlyBashCommandWithConfig, resolveEffectivePermissionMode, shouldAllowToolInMode } from '../mode-manager.ts';
 import { permissionsConfigCache, type PermissionsContext } from '../permissions-config.ts';
 import { evaluateApiEndpointPolicy } from '../source-policy.ts';
 import { runPreToolUseChecks, type PreToolUseCheckResult, type PreToolUseInput } from './pre-tool-use.ts';
@@ -72,9 +72,7 @@ const FILE_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])
 const BOOKKEEPING_SESSION_TOOLS = new Set(['mcp__session__set_session_status', 'mcp__session__set_session_labels']);
 
 function isInside(base: string | undefined, target: string): boolean {
-  if (!base) return false;
-  const rel = relative(resolve(base), target);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  return !!base && isPathWithinDirectory(target, base);
 }
 
 /** Absolute target of a file write (`~` expanded, relative to the working directory). */
@@ -195,8 +193,8 @@ export async function applyGuardedModeCheck(
 
   // The turn stopped while the check thought: nothing should run, and a prompt now would be a ghost.
   if (options.signal?.aborted) return { type: 'block', reason: 'The turn was stopped.' };
-  // The mode changed meanwhile: decide under the current mode instead of returning a Guarded-mode allow.
-  if (getPermissionModeDiagnostics(ctx.sessionId).permissionMode !== 'guarded') return runPreToolUseChecks(ctx);
+  // A mode or feature change must use current effective permissions, including the Ask fallback.
+  if (resolveEffectivePermissionMode(getPermissionModeDiagnostics(ctx.sessionId).permissionMode) !== 'guarded') return runPreToolUseChecks(ctx);
   if (risks.length === 0) return result;
 
   const reason = risks.map(risk => RISK_LABELS[risk]).join(', ');

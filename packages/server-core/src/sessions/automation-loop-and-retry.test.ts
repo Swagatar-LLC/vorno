@@ -79,6 +79,42 @@ describe('automation loop guard', () => {
     expect(entry.skipped).toContain('loop guard')
   })
 
+  it('keeps onFailure identity and parent depth without enrolling it in history', async () => {
+    sessionWith('failed', { automationId: 'packing', depth: 2 })
+    let input: Record<string, unknown> | undefined
+    ;(sm as any).executePromptAutomation = async (value: Record<string, unknown>) => { input = value; return { sessionId: 'recovery' } }
+    ;(sm as any).fireAutomationOnFailure('ws-test', tmpRoot, {
+      ...pending('user'), onFailure: [{ type: 'prompt', prompt: 'recover' }],
+    }, { automationId: 'packing', failureKind: 'outcome', sessionId: 'failed' })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(input).toMatchObject({ automationId: 'packing', chainDepth: 3, waitForCompletion: false })
+    sessionWith('recovery', { automationId: input!.automationId, depth: input!.chainDepth })
+    expect((sm as any).automationLoopGuard(pending('recovery')).run).toBe(false)
+    expect(existsSync(join(tmpRoot, 'automations-history.jsonl'))).toBe(false)
+  })
+
+  it('preserves origin depth when dispatch failed before a session was created', async () => {
+    sessionWith('origin', { automationId: 'other', depth: 1 })
+    let input: Record<string, unknown> | undefined
+    ;(sm as any).executePromptAutomation = async (value: Record<string, unknown>) => { input = value; return { sessionId: 'recovery' } }
+    ;(sm as any).fireAutomationOnFailure('ws-test', tmpRoot, {
+      ...pending('origin'), onFailure: [{ type: 'prompt', prompt: 'recover' }],
+    }, { automationId: 'packing', failureKind: 'dispatch' })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(input).toMatchObject({ automationId: 'packing', chainDepth: 3 })
+  })
+
+  it('does not reset the chain cap through an onFailure prompt', async () => {
+    sessionWith('deep', { automationId: 'packing', depth: MAX_AUTOMATION_CHAIN_DEPTH })
+    let created = 0
+    ;(sm as any).executePromptAutomation = async () => { created++; return { sessionId: 'unexpected' } }
+    ;(sm as any).fireAutomationOnFailure('ws-test', tmpRoot, {
+      ...pending('deep'), onFailure: [{ type: 'prompt', prompt: 'recover' }],
+    }, { automationId: 'packing', failureKind: 'outcome', sessionId: 'deep' })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(created).toBe(0)
+  })
+
   it('records the automation id and chain depth on the session it creates', async () => {
     sessionWith('user-session')
     let input: Record<string, unknown> | undefined

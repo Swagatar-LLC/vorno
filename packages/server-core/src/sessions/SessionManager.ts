@@ -1906,7 +1906,7 @@ export class SessionManager implements ISessionManager {
         existingEntries: [...labelsAtDispatch],
         log: (line) => sessionLog.info(line),
       })
-      if (matches.length === 0) return
+      if (this.shuttingDown || matches.length === 0) return
       if (this.sessions.get(managed.id) !== managed) return
       // Present at dispatch → either still present (dedupe) or removed by the user since (respect it).
       const fresh = matches.filter(m => !labelsAtDispatch.has(autoLabelMatchToEntry(m)))
@@ -2016,12 +2016,7 @@ export class SessionManager implements ISessionManager {
     }
   }
 
-  /**
-   * Run the prompt actions an automation event produced. Each prompt starts as soon as its own
-   * `semanticCondition` (decision model) is judged, so prompts without one never wait on another
-   * matcher's check. A matcher is judged once per batch, so its prompt actions all run or are all
-   * skipped. Every outcome is written to the automation history.
-   */
+  /** Upstream test-compatibility shim; the fork executor owns dispatch and ordered history. */
   private async runReadyPrompts(workspaceId: string, workspaceRootPath: string, readyPrompts: PendingPrompt[]): Promise<void> {
     return this.handleAutomationPromptsReady(workspaceId, workspaceRootPath, readyPrompts)
   }
@@ -2032,7 +2027,9 @@ export class SessionManager implements ISessionManager {
    */
   private async generateTitleUnlessSmallTalk(managed: ManagedSession, message: string): Promise<void> {
     try {
-      if (await isSmallTalk(message, { sessionId: managed.id, log: (line) => sessionLog.info(line) })) {
+      const smallTalk = await isSmallTalk(message, { sessionId: managed.id, log: (line) => sessionLog.info(line) })
+      if (this.shuttingDown) return
+      if (smallTalk) {
         managed.titleDeferred = true
         sessionLog.info(`[smart-titles] Small talk in session ${managed.id}: waiting for a request to title`)
         return
@@ -2056,7 +2053,7 @@ export class SessionManager implements ISessionManager {
       if (userMessages.length < TITLE_DRIFT_RECENT_MESSAGES || userMessages.length - checkedAt < TITLE_DRIFT_RECENT_MESSAGES) return
       managed.titleCheckedAtUserCount = userMessages.length
       const drifted = await titleNoLongerFits(managed.name, userMessages, { sessionId: managed.id, log: (line) => sessionLog.info(line) })
-      if (!drifted || managed.name !== managed.autoTitle || managed.isProcessing || this.sessions.get(managed.id) !== managed) return
+      if (this.shuttingDown || !drifted || managed.name !== managed.autoTitle || managed.isProcessing || this.sessions.get(managed.id) !== managed) return
       sessionLog.info(`[smart-titles] Title of session ${managed.id} no longer fits, refreshing`)
       await this.refreshTitle(managed.id, { onlyIfName: managed.name })
     } catch (e) {
@@ -7744,6 +7741,7 @@ export class SessionManager implements ISessionManager {
 
     try {
       const title = await agent.regenerateTitle(userMessages, assistantResponse, titleOptions)
+      if (this.shuttingDown) return { success: false, error: 'Shutting down' }
       sessionLog.info(`refreshTitle: regenerateTitle returned: ${title ? `"${title}"` : 'null'}`)
       if (title && options?.onlyIfName !== undefined && managed.name !== options.onlyIfName) {
         sessionLog.info(`refreshTitle: session ${sessionId} was renamed meanwhile, keeping "${managed.name}"`)
@@ -12388,7 +12386,7 @@ export class SessionManager implements ISessionManager {
       prompts.map(async (pending) => {
         const guard = this.automationLoopGuard(pending)
         const verdict = guard.run ? await checkCondition(pending) : guard
-        if (!verdict.run) {
+        if (!guard.run || !verdict.run) {
           if (pending.matcherId) {
             await appendAutomationHistoryEntry(workspaceRootPath, createPromptHistoryEntry({
               matcherId: pending.matcherId, ok: true, prompt: pending.prompt,
@@ -12397,8 +12395,6 @@ export class SessionManager implements ISessionManager {
           }
           return undefined
         }
-        // guard.run is established independently of the optional semantic decision.
-        if (!guard.run) return undefined
         return this.executePromptAutomation({
           workspaceId,
           workspaceRootPath,
@@ -12503,11 +12499,18 @@ export class SessionManager implements ISessionManager {
   private fireAutomationOnFailure(
     workspaceId: string,
     workspaceRootPath: string,
-    pending: { onFailure?: (AutomationPromptAction | import('@craft-agent/shared/automations').WebhookAction)[]; automationName?: string; permissionMode?: PermissionMode; labels?: string[] },
+    pending: { onFailure?: (AutomationPromptAction | import('@craft-agent/shared/automations').WebhookAction)[]; automationName?: string; permissionMode?: PermissionMode; labels?: string[]; eventPayload?: Record<string, unknown> },
     context: { automationId: string; failureKind: 'dispatch' | 'outcome' | 'missed'; sessionId?: string; errorCount?: number; error?: string },
   ): void {
     const onFailure = pending.onFailure
     if (!onFailure || onFailure.length === 0) return
+    const failed = context.sessionId ? this.sessions.get(context.sessionId) : undefined
+    const originId = pending.eventPayload?.sessionId
+    const origin = typeof originId === 'string' ? this.sessions.get(originId) : undefined
+    // A rejected dispatch may not have a session yet; count its attempted level
+    // from the triggering session instead of resetting the chain to one.
+    const failureDepth = failed?.triggeredBy?.depth ?? ((origin?.triggeredBy?.depth ?? 0) + 1)
+    const chainDepth = failureDepth + 1
 
     void runOnFailureActions({
       onFailure,
@@ -12515,7 +12518,12 @@ export class SessionManager implements ISessionManager {
       workspaceRootPath,
       context,
       runPrompt: async (action: AutomationPromptAction) => {
-        // No matcherId ⇒ no history record ⇒ no outcome/onFailure recursion.
+        if (chainDepth > MAX_AUTOMATION_CHAIN_DEPTH) {
+          sessionLog.warn('[Automations] onFailure prompt skipped at the chain depth cap')
+          return
+        }
+        // Identity is still required by the event loop guard. This direct call
+        // writes no history, so it does not enroll onFailure in reconciliation.
         await this.executePromptAutomation({
           workspaceId,
           workspaceRootPath,
@@ -12527,6 +12535,8 @@ export class SessionManager implements ISessionManager {
           thinkingLevel: action.thinkingLevel,
           fastMode: action.fastMode,
           automationName: pending.automationName ? `${pending.automationName} (onFailure)` : 'Automation onFailure',
+          automationId: context.automationId,
+          chainDepth,
           // Fire-and-forget: don't block failure handling on the full turn.
           waitForCompletion: false,
         })

@@ -14,7 +14,7 @@
 /// <reference path="../types/incr-regex-package.d.ts" />
 
 import { homedir } from 'os';
-import { existsSync, realpathSync } from 'fs';
+import { existsSync, lstatSync, realpathSync } from 'fs';
 import { debug } from '../utils/debug.ts';
 import { CONFIG_DIR_NAME } from '../config/paths.ts';
 
@@ -211,36 +211,42 @@ function isWithin(base: string, target: string): boolean {
  * Uses path.relative semantics to avoid sibling-prefix bypasses and then
  * re-validates using real paths to prevent symlink escapes.
  */
-function isPathWithinDirectory(targetPath: string, baseDir: string): boolean {
-  const expandedTarget = expandHome(targetPath);
-  const expandedBase = expandHome(baseDir);
+export function isPathWithinDirectory(targetPath: string, baseDir: string): boolean {
+  try {
+    const expandedTarget = expandHome(targetPath);
+    const expandedBase = expandHome(baseDir);
 
-  const resolvedTarget = resolve(expandedTarget);
-  const resolvedBase = resolve(expandedBase);
-  if (!isWithin(resolvedBase, resolvedTarget)) {
-    return false;
-  }
-
-  const realBase = existsSync(resolvedBase) ? realpathSync.native(resolvedBase) : resolvedBase;
-
-  if (existsSync(resolvedTarget)) {
-    const realTarget = realpathSync.native(resolvedTarget);
-    return isWithin(realBase, realTarget);
-  }
-
-  // Target may be a new file path. Validate using nearest existing ancestor
-  // to prevent symlink escapes while still allowing legitimate new files.
-  let current = dirname(resolvedTarget);
-  while (true) {
-    if (existsSync(current)) {
-      const realCurrent = realpathSync.native(current);
-      return isWithin(realBase, realCurrent);
-    }
-    const parent = dirname(current);
-    if (parent === current) {
+    const resolvedTarget = resolve(expandedTarget);
+    const resolvedBase = resolve(expandedBase);
+    if (!isWithin(resolvedBase, resolvedTarget)) {
       return false;
     }
-    current = parent;
+
+    const realBase = lstatSync(resolvedBase, { throwIfNoEntry: false }) ? realpathSync.native(resolvedBase) : resolvedBase;
+
+    if (lstatSync(resolvedTarget, { throwIfNoEntry: false })) {
+      const realTarget = realpathSync.native(resolvedTarget);
+      return isWithin(realBase, realTarget);
+    }
+
+    // Target may be a new file path. Validate using nearest existing ancestor
+    // to prevent symlink escapes while still allowing legitimate new files.
+    let current = dirname(resolvedTarget);
+    while (true) {
+      if (lstatSync(current, { throwIfNoEntry: false })) {
+        const realCurrent = realpathSync.native(current);
+        return isWithin(realBase, realCurrent);
+      }
+      const parent = dirname(current);
+      if (parent === current) {
+        return false;
+      }
+      current = parent;
+    }
+  } catch {
+    // lstat sees dangling/cyclic symlinks that existsSync hides. If realpath
+    // cannot resolve them (or access fails), containment is not established.
+    return false;
   }
 }
 

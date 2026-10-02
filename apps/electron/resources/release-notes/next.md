@@ -20,3 +20,5 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 - Tightened read-only command detection, remembered permission scopes and spawned-session permission ceilings. (from upstream v0.14.0)
 - Preserved queued-message crash recovery across decision-driven steering and merged continuations. Automation history distinguishes skipped conditions from executions.
 - Large Claude MCP results now pass through a pre-model guard. Removed redundant summarization of the displayed result copy; existing Headroom event compression and retrieval remain unchanged. (from upstream v0.14.0)
+
+- Guarded file writes now resolve symlinks before allowing project-local writes, and fall back to Ask if the feature turns off during a risk check. Automation failure-handler sessions retain their matcher identity and chain depth. Late title and semantic-label decisions no longer write after shutdown.

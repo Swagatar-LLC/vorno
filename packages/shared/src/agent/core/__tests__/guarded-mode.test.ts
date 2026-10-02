@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cleanupModeState, initializeModeState, setGuardedModeActiveResolver } from '../../mode-manager.ts';
@@ -17,6 +17,7 @@ beforeEach(() => {
   configDir = mkdtempSync(join(tmpdir(), 'guard-config-'));
   workspaceRootPath = mkdtempSync(join(tmpdir(), 'guard-workspace-'));
   mkdirSync(join(configDir, 'permissions'), { recursive: true });
+  mkdirSync(join(workspaceRootPath, 'project'));
   writeFileSync(join(configDir, 'permissions', 'default.json'), JSON.stringify({
     version: '2026-09-27',
     allowedBashPatterns: [{ pattern: '^ls\\b', comment: 'list' }],
@@ -49,7 +50,7 @@ function ctx(toolName: string, input: Record<string, unknown>): PreToolUseInput 
     permissionMode: 'guarded',
     workspaceRootPath,
     workspaceId: 'ws',
-    workingDirectory: '/repo',
+    workingDirectory: join(workspaceRootPath, 'project'),
     activeSourceSlugs: ['github'],
     allSourceSlugs: ['github'],
     hasSourceActivation: false,
@@ -69,12 +70,13 @@ describe('getGuardedModeCall', () => {
 
   it('asks, without the model, before a file write outside the project and its session folders', () => {
     const plans = join(workspaceRootPath, 'plans');
+    mkdirSync(plans);
     const withFolders = { ...ctx('Write', {}), plansFolderPath: plans };
-    expect(getGuardedModeCall('Write', { file_path: '/repo/src/a.ts' }, withFolders)).toBeNull();
+    expect(getGuardedModeCall('Write', { file_path: join(workspaceRootPath, 'project/src/a.ts') }, withFolders)).toBeNull();
     expect(getGuardedModeCall('Edit', { file_path: 'src/a.ts' }, withFolders)).toBeNull();
     expect(getGuardedModeCall('Write', { file_path: join(plans, 'p.md') }, withFolders)).toBeNull();
     expect(getGuardedModeCall('Write', { file_path: '~/.ssh/config' }, withFolders)).toMatchObject({ promptType: 'file_write', alwaysAsk: 'outside_workspace' });
-    expect(getGuardedModeCall('MultiEdit', { file_path: '/repo/../other/x.ts' }, withFolders)).toMatchObject({ command: '/other/x.ts' });
+    expect(getGuardedModeCall('MultiEdit', { file_path: '../other/x.ts' }, withFolders)).toMatchObject({ command: join(workspaceRootPath, 'other/x.ts') });
   });
 
   it('judges session tools that Explore blocks, but not session bookkeeping', () => {
@@ -84,7 +86,7 @@ describe('getGuardedModeCall', () => {
 
   it('describes writes, MCP mutations and non-GET API calls', () => {
     expect(getGuardedModeCall('Bash', { command: 'git push --force' }, ctx('Bash', {}))).toMatchObject({
-      promptType: 'bash', command: 'git push --force', workingDirectory: '/repo',
+      promptType: 'bash', command: 'git push --force', workingDirectory: join(workspaceRootPath, 'project'),
     });
     expect(getGuardedModeCall('mcp__github__create_issue', { title: 't' }, ctx('mcp__github__create_issue', {}))).toMatchObject({
       promptType: 'mcp_mutation', command: 'mcp__github__create_issue', arguments: { title: 't' },
@@ -116,6 +118,40 @@ describe('applyGuardedModeCheck', () => {
     const result = await applyGuardedModeCheck(allow, ctx('Write', { file_path: '/etc/hosts', content: 'x' }), counting);
     expect(result).toMatchObject({ type: 'prompt', promptType: 'file_write', command: '/etc/hosts' });
     expect(calls).toBe(0);
+  });
+
+  it('prompts for symlink escapes and dangling or unresolvable targets without a model call', async () => {
+    const project = join(workspaceRootPath, 'project');
+    const outside = join(workspaceRootPath, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'existing'), 'private');
+    symlinkSync(outside, join(project, 'link'), 'dir');
+    symlinkSync(join(outside, 'not-created'), join(project, 'dangling'));
+    symlinkSync(join(project, 'loop'), join(project, 'loop'));
+    let calls = 0;
+    const counting = guardOf(async () => { calls++; return { risks: [] }; });
+    for (const [tool, field, path] of [
+      ['Write', 'file_path', 'link/new'],
+      ['Edit', 'file_path', 'link/existing'],
+      ['MultiEdit', 'file_path', 'dangling'],
+      ['NotebookEdit', 'notebook_path', 'loop/new.ipynb'],
+    ]) {
+      expect(await applyGuardedModeCheck(allow, ctx(tool!, { [field!]: join(project, path!) }), counting))
+        .toMatchObject({ type: 'prompt', promptType: 'file_write' });
+    }
+    expect(calls).toBe(0);
+    // Real containment still allows legitimate symlinks and new nested files.
+    mkdirSync(join(project, 'inside'));
+    symlinkSync(join(project, 'inside'), join(project, 'inside-link'), 'dir');
+    expect(getGuardedModeCall('Write', { file_path: 'inside-link/new/deep' }, ctx('Write', {}))).toBeNull();
+  });
+
+  it('falls back to Ask if the feature turns off while the risk check awaits', async () => {
+    const disabling = guardOf(async () => {
+      setGuardedModeActiveResolver(() => false);
+      return null;
+    });
+    expect(await applyGuardedModeCheck(allow, pushCtx(), disabling)).toMatchObject({ type: 'prompt' });
   });
 
   it('behaves as Ask while its check cannot run (feature or decision layer off)', async () => {

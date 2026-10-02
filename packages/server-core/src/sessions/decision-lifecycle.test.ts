@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { saveSession } from '../../../shared/src/sessions/storage.ts'
 import * as backendFactory from '../../../shared/src/agent/backend/factory.ts'
 import * as midTurnMessages from '../decisions/mid-turn-messages.ts'
+import * as smartTitles from '../decisions/smart-titles.ts'
+import * as semanticLabels from '../decisions/semantic-labels.ts'
 import * as suggestions from '../decisions/suggestions.ts'
 import { SessionManager, createManagedSession, isInQueuedContinuation } from './SessionManager.ts'
 
@@ -290,6 +292,53 @@ describe('decision points in the session lifecycle', () => {
     await tick()
     expect(replays.at(-1)).toBe('C\n\nD')
     expect(managed.replayMergedIds?.get('c')).toEqual(['c', 'd'])
+  })
+
+  it('discards title regeneration after the shutdown freeze', async () => {
+    const managed = await session('shutdown-title')
+    managed.autoTitle = managed.name
+    managed.messages.push({ id: 'u', role: 'user', content: 'a request', timestamp: 1 } as any)
+    let answer!: (value: string) => void
+    managed.agent = { regenerateTitle: () => new Promise<string>(resolve => { answer = resolve }) } as any
+    let persisted = 0
+    ;(sm as any).persistSession = () => { persisted++ }
+    const title = managed.name
+    const refresh = sm.refreshTitle(managed.id)
+    await waitFor(() => !!answer, 'regeneration')
+    ;(sm as any).shuttingDown = true
+    answer('Late title')
+    expect((await refresh).success).toBe(false)
+    expect(managed.name).toBe(title)
+    expect(managed.autoTitle).toBe(title)
+    expect(persisted).toBe(0)
+  })
+
+  it('discards title drift and semantic labels when shutdown wins their awaits', async () => {
+    const managed = await session('shutdown-decisions')
+    managed.autoTitle = managed.name
+    managed.labels = []
+    managed.messages = Array.from({ length: 4 }, (_, i) => ({ id: `u${i}`, role: 'user', content: 'request', timestamp: i }))
+    let drift!: (value: boolean) => void
+    let smallTalk!: (value: boolean) => void
+    let labels!: (value: Awaited<ReturnType<typeof semanticLabels.evaluateSemanticLabelsForMessage>>) => void
+    spyOn(smartTitles, 'isSmallTalk').mockImplementation(() => new Promise(resolve => { smallTalk = resolve }))
+    spyOn(smartTitles, 'titleNoLongerFits').mockImplementation(() => new Promise(resolve => { drift = resolve }))
+    spyOn(semanticLabels, 'evaluateSemanticLabelsForMessage').mockImplementation(() => new Promise(resolve => { labels = resolve }))
+    let mutations = 0
+    ;(sm as any).refreshTitle = async () => { mutations++ }
+    ;(sm as any).applyAutoLabelMatches = () => { mutations++ }
+    const smallTalkWork = (sm as any).generateTitleUnlessSmallTalk(managed, 'hello')
+    const titleWork = (sm as any).refreshTitleIfDrifted(managed)
+    const labelWork = (sm as any).applySemanticAutoLabels(managed, 'request', [])
+    await waitFor(() => !!drift && !!labels && !!smallTalk, 'decision requests')
+    ;(sm as any).shuttingDown = true
+    drift(true)
+    smallTalk(true)
+    labels([{ labelId: 'late-label', value: '', matchedText: 'request' }])
+    await Promise.all([titleWork, labelWork, smallTalkWork])
+    expect(mutations).toBe(0)
+    expect(managed.titleDeferred).not.toBe(true)
+    expect(managed.labels).toEqual([])
   })
 
   it('keeps a title the user set while an automatic refresh was generating', async () => {
