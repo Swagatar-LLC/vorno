@@ -396,6 +396,27 @@ describe('a queued send crossing a process boundary', () => {
     expectNoLeakedWork(second)
   }, 30000)
 
+  it('clears every merged continuation marker only when the replay owns a turn', async () => {
+    const sm = new SessionManager()
+    const messages = [
+      { id: 'first', role: 'user', content: 'first half', timestamp: 1, isQueued: true, queuedSkillSlugs: [SKILL_SLUG] },
+      { id: 'second', role: 'user', content: 'second half', timestamp: 2, isQueued: true, queuedSkillSlugs: [SKILL_SLUG] },
+    ]
+    const managed = seed(sm, 'merged_markers', {
+      messages,
+      replayMergedIds: new Map([['first', ['first', 'second']]]),
+    })
+    const turn = fakeTurnBoundary(sm)
+    await sm.sendMessage('merged_markers', 'first half\n\nsecond half', undefined, undefined, undefined, 'first').catch(() => {})
+    await turn.settled()
+    expect(messages.map(m => m.isQueued)).toEqual([false, false])
+    for (const message of messages) expect(message.queuedSkillSlugs).toBeUndefined()
+    expect(managed.lastSentMessageIds).toEqual(['first', 'second'])
+    await turn.closePending()
+    await quiesce(sm, turn)
+    expectNoLeakedWork(sm)
+  })
+
   it('enables the same source on a LIVE send as on a replayed one, and drops a path-like slug', async () => {
     // Live and restart have to agree, and they did not: the slugs were
     // normalized where they were persisted, so the replay was validated while

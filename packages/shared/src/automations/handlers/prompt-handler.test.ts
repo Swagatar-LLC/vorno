@@ -62,7 +62,8 @@ describe('PromptHandler', () => {
         eventPayload: { label: 'bug', sessionId: 's-1' },
       });
       expect(prompts[1]!.semanticCondition).toBeUndefined();
-      expect(prompts[1]!.eventPayload).toBeUndefined();
+      // Loop prevention needs event lineage even without a semantic condition.
+      expect(prompts[1]!.eventPayload).toMatchObject({ sessionId: 's-1', label: 'bug' });
 
       handler.dispose();
     });

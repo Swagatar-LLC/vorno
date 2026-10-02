@@ -342,3 +342,10 @@ originals retrievable through the adapter.
   general shape being corrected: an unsatisfied *declared* edge halts
   advancement even when the edge is factually discharged, because folder status
   is the only thing the edge reads.
+
+
+## 2026-10-02 verification correction
+
+The Claude call site above runs after the SDK emits the result. Its helper tests prove compression of the host event and retrieval handles, not replacement of the SDK's model input. The earlier model-context wording and acceptance inference overstate that evidence. Actual model-input compression remains an unmet part of this goal for Claude.
+
+Jeff approved preserving event compression in the next beta, removing redundant post-result summarization, and tracking model-side integration separately. The upstream PostToolUse large-MCP-output guard remains a distinct pre-model control. A future completion claim requires a test of the SDK hook return or outbound model payload, not only an adapted event. See the [October 2 compatibility audit](../../upstream/compatibility.md).

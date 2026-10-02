@@ -1,3 +1,4 @@
+import { hashDecisionIdentifier } from '@craft-agent/shared/decisions/records'
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -178,10 +179,10 @@ describe('suggestion follow-ups', () => {
       suggestionFollowUp(ignored.trace!, new Set())
 
       expect(await followUps()).toEqual([
-        { result: 'hint_used', option: 'skill:balaton-weekend' },
-        { result: 'held_back_used', option: 'source:google-calendar' },
-        { result: 'none_used', option: 'source:google-calendar' },
-        { result: 'hint_unused', option: 'skill:balaton-weekend' },
+        { result: 'hint_used', option: hashDecisionIdentifier('skill:balaton-weekend') },
+        { result: 'held_back_used', option: hashDecisionIdentifier('source:google-calendar') },
+        { result: 'none_used', option: hashDecisionIdentifier('source:google-calendar') },
+        { result: 'hint_unused', option: hashDecisionIdentifier('skill:balaton-weekend') },
       ])
     })
   })

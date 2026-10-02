@@ -170,7 +170,7 @@ function hashKeys(map: Record<string, number>, keep?: RegExp): Record<string, nu
   return out;
 }
 
-const META_KEYS = new Set(['batch', 'index', 'total', 'items', 'threshold', 'confidence', 'repair', 'of', 'matches']);
+const META_KEYS = new Set(['batch', 'index', 'total', 'items', 'threshold', 'confidence', 'repair', 'of', 'matches', 'level', 'rules', 'questions']);
 
 /** Keep finite numbers and booleans under fixed operational key names; drop everything else. */
 export function sanitizeDecisionMeta(meta: Record<string, unknown>): Record<string, number | boolean> {
@@ -197,6 +197,17 @@ const AUDIT_TAGS = new Set([
 function auditTag(tag: string): string {
   if (AUDIT_TAGS.has(tag)) return tag;
   return tag.startsWith('hint:') ? `hint:${hashDecisionIdentifier(tag.slice(5))}` : hashDecisionIdentifier(tag);
+}
+
+/** Fixed operational values only; unknown text never enters the audit. */
+function sanitizeDecisionDetail(detail: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = sanitizeDecisionMeta(detail);
+  if (typeof detail.option === 'string') out.option = hashDecisionIdentifier(detail.option);
+  if (typeof detail.sessionLevel === 'string' && ['off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(detail.sessionLevel)) out.sessionLevel = detail.sessionLevel;
+  if (typeof detail.configured === 'string' && ['steer', 'queue'].includes(detail.configured)) out.configured = detail.configured;
+  if (typeof detail.reason === 'string' && ['no_answer', 'low_confidence', 'no_candidates', 'none'].includes(detail.reason)) out.reason = detail.reason;
+  if (Array.isArray(detail.risks)) out.risks = detail.risks.filter(risk => ['irreversible', 'outside_workspace', 'external'].includes(risk));
+  return out;
 }
 
 export function summarizeDecisionAnswers(answers: Record<string, DecisionAnswer>): Record<string, DecisionRecordAnswer> {
@@ -289,7 +300,7 @@ export class DecisionRecorder {
       ...(decision.sessionId ? { sessionId: decision.sessionId } : {}),
       action: auditTag(outcome.action),
       changed: outcome.changed,
-      ...(outcome.detail && Object.keys(outcome.detail).length > 0 ? { detail: sanitizeDecisionMeta(outcome.detail) } : {}),
+      ...(outcome.detail && Object.keys(outcome.detail).length > 0 ? { detail: sanitizeDecisionDetail(outcome.detail) } : {}),
     };
     await this.append(line);
   }
@@ -304,7 +315,7 @@ export class DecisionRecorder {
       feature: decision.feature,
       ...(decision.sessionId ? { sessionId: decision.sessionId } : {}),
       result: auditTag(followUp.result),
-      ...(followUp.detail && Object.keys(followUp.detail).length > 0 ? { detail: sanitizeDecisionMeta(followUp.detail) } : {}),
+      ...(followUp.detail && Object.keys(followUp.detail).length > 0 ? { detail: sanitizeDecisionDetail(followUp.detail) } : {}),
     };
     await this.append(line);
   }

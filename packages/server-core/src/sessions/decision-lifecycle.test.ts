@@ -77,6 +77,39 @@ describe('decision points in the session lifecycle', () => {
       expect(managed.messages.find(m => m.content === 'wait, use tabs not spaces')?.isQueued).toBe(false)
     })
 
+    it('keeps a promoted recoverable steer durable until backend settlement', async () => {
+      const managed = await session('promoted-durable')
+      managed.isProcessing = true
+      const { agent } = liveAgent({ canSteer: () => true })
+      agent.takePendingSteers = () => []
+      managed.agent = agent
+      // ponytail: private test seam replaces only decisions and settlement; real send/queue code runs.
+      const host = sm as unknown as {
+        decisionFeatureActive(feature: string): boolean
+        markQueuedContinuation(): Promise<void>
+        decideMidTurnDelivery(): Promise<'steer'>
+        recoverPendingSteers(m: typeof managed): void
+      }
+      host.decisionFeatureActive = feature => feature === 'midTurnMessages'
+      host.markQueuedContinuation = async () => {}
+      let decide!: (value: 'steer') => void
+      host.decideMidTurnDelivery = () => new Promise(resolve => { decide = resolve })
+      await sm.sendMessage(managed.id, 'correct that')
+      const payload = managed.messageQueue[0]!
+      const message = managed.messages.find(m => m.id === payload.messageId)!
+      expect(message.isQueued).toBe(true)
+      decide('steer')
+      await tick()
+      expect(managed.messageQueue).toHaveLength(0)
+      expect(managed.acceptedSteers?.get(message.id)).toBe(payload)
+      expect(message.isQueued).toBe(true)
+      expect(message.queuedSkillSlugs).toBeUndefined()
+      host.recoverPendingSteers(managed)
+      expect(message.isQueued).toBe(false)
+      expect(message.queuedSkillSlugs).toBeUndefined()
+      expect(managed.acceptedSteers?.size).toBe(0)
+    })
+
     it('never steers when the backend cannot take a steer right now, or the turn has ended', async () => {
       spyOn(backendFactory, 'resolveSessionConnection').mockReturnValue({ providerType: 'anthropic', midStreamBehavior: 'queue' } as any)
       const managed = await session('steer-guard')

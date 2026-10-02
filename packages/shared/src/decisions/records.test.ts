@@ -179,7 +179,7 @@ describe('decision records', () => {
     expect(JSON.stringify(summary)).not.toContain('Cosmetic');
   });
 
-  it('writes outcome lines keyed to the decision id, redacting detail by key name', async () => {
+  it('writes outcome lines keyed to the decision id, hashing identifiers and dropping unknown detail', async () => {
     const recorder = new DecisionRecorder({ path: join(dir, 'decisions.jsonl') });
     const decision = await recorder.record({ feature: 'decide_tool', provider: 'typesafe', model: 'jev-1.13.0', questions: QUESTIONS, result: RESULT, sessionId: 'sess-1' });
     expect(decision.id).toMatch(/^[0-9a-f-]{36}$/);
@@ -188,7 +188,19 @@ describe('decision records', () => {
 
     const lines = readFileSync(recorder.path, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(lines).toHaveLength(2);
-    expect(lines[1]).toMatchObject({ kind: 'outcome', decisionId: decision.id, feature: 'decide_tool', sessionId: 'sess-1', action: 'hint:source:gmail', changed: true, detail: { level: 2, token: '[REDACTED]' } });
+    expect(lines[1]).toMatchObject({ kind: 'outcome', decisionId: decision.id, feature: 'decide_tool', sessionId: 'sess-1', action: `hint:${hashDecisionIdentifier('source:gmail')}`, changed: true, detail: { level: 2 } });
+  });
+
+  it('never persists free-form outcome or follow-up text under innocent keys', async () => {
+    const recorder = new DecisionRecorder({ path: join(dir, 'private-outcomes.jsonl') });
+    const decision = await recorder.record({ feature: 'decide_tool', provider: 'typesafe', model: 'jev-1.13.0', questions: QUESTIONS, result: RESULT });
+    const secret = 'private-calendar-and-api-key';
+    await recorder.recordOutcome(decision, { action: secret, changed: true, detail: { note: secret, confidence: 0.9, reason: secret } });
+    await recorder.recordFollowUp(decision, { result: secret, detail: { option: secret, innocent: secret } });
+    const text = readFileSync(recorder.path, 'utf8');
+    expect(text).not.toContain(secret);
+    expect(text).toContain(hashDecisionIdentifier(secret));
+    expect(text).toContain('"confidence":0.9');
   });
 
   it('keeps test runs out of the real log', () => {

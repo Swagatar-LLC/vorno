@@ -87,7 +87,8 @@ describe('decision outcome records', () => {
 
     const { decisions, outcomes } = await lines()
     expect(decisions.map(d => [d.feature, d.sessionId])).toEqual([['large_results', 'big'], ['automation_condition', 'auto']])
-    expect(decisions[1]!.meta).toMatchObject({ matcherId: 'm1' })
+    expect(decisions[1]!.meta).toBeUndefined()
+    expect(JSON.stringify(decisions[1])).not.toContain('m1')
     expect(outcomes.map(o => [o.action, o.changed])).toEqual([['skip_summary', true], ['skip', true]])
   })
 

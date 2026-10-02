@@ -1,3 +1,4 @@
+import { hashDecisionIdentifier } from '@craft-agent/shared/decisions/records'
 import { describe, it, expect } from 'bun:test'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -51,8 +52,10 @@ describe('task verdict decider', () => {
     await recorder.append({ t: 'x', feature: 'settings_test', provider: 'typesafe', model: 'm', ok: true, questions: {}, state: null })
     const record = JSON.parse(readFileSync(recorder.path, 'utf8').trim().split('\n')[0]!)
     expect(record.feature).toBe('task_verdict')
-    expect(record.meta).toEqual({ slug: 'weekly', runId: 'r7', questions: 1 })
-    expect(record.answers.verdict.choice).toBe('pass')
+    expect(record.meta).toEqual({ questions: 1 })
+    expect(JSON.stringify(record)).not.toContain('weekly')
+    expect(JSON.stringify(record)).not.toContain('r7')
+    expect(record.answers[hashDecisionIdentifier('verdict')].choice).toBe(hashDecisionIdentifier('pass'))
   })
 
   it('returns null and records the failure when the provider errors', async () => {

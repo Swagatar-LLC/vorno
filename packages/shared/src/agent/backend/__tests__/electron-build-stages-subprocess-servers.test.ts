@@ -1,23 +1,8 @@
 /**
- * Regression guard for VOR-47 — "piServerPath not configured. Cannot spawn Pi
- * subprocess."
- *
- * Root cause: the prod/packaged Electron build (`electron:build`, used by
- * electron:start / electron:prod / build-dmg.sh / electron:dist:mac) never built
- * or staged the pi-agent-server (and session-mcp-server) subprocess bundles.
- * `resolveServerPath` (runtime-resolver.ts) therefore returned undefined and
- * `PiAgent.spawnSubprocess` threw. Only `electron:dev` built them, so the bug
- * was invisible in dev and only surfaced with a Pi (pi/pi_compat) connection in
- * a prod/packaged build.
- *
- * The staging helpers (`buildMcpServers` / `copyPiAgentServer` /
- * `copySessionServer`) existed in scripts/build/common.ts but had NO caller on
- * the electron path — dead code. The fix wires them in via
- * `scripts/electron-build-subprocess.ts`, invoked by `electron:build`.
- *
- * This test asserts the wiring stays in place — both the pipeline step and the
- * three helper invocations — so the staging step cannot silently go dead again.
- * It reads source/config only (no build side effects).
+ * VOR-47: prod/packaged Electron must build and stage the Pi subprocess.
+ * v0.14.0 retires the old session-MCP helper. Check both the caller and current
+ * helper exports so an upstream rename cannot leave a green stale-name test.
+ * The full electron:build gate executes these helpers separately.
  */
 import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -41,16 +26,19 @@ describe('VOR-47: electron:build stages subprocess servers', () => {
     );
   });
 
-  it('the orchestration script builds AND stages both subprocess servers', () => {
+  it('the orchestration script builds and stages the Pi subprocess using live exports', () => {
     const src = readFileSync(
       join(REPO_ROOT, 'scripts', 'electron-build-subprocess.ts'),
       'utf-8',
     );
-    // Builds pi-agent-server + session-mcp-server into packages/*/dist
+    // Builds pi-agent-server into packages/pi-agent-server/dist
     // (covers non-packaged prod-mode walk-up).
-    expect(src).toContain('buildMcpServers(');
+    expect(src).toContain('buildSubprocessServers(');
     // Stages into apps/electron/resources/* (covers packaged .app/.dmg builds).
     expect(src).toContain('copyPiAgentServer(');
-    expect(src).toContain('copySessionServer(');
+    expect(src).not.toContain('copySessionServer');
+    const common = readFileSync(join(REPO_ROOT, 'scripts/build/common.ts'), 'utf-8');
+    expect(common).toContain('export function buildSubprocessServers(');
+    expect(common).toContain('export function copyPiAgentServer(');
   });
 });
