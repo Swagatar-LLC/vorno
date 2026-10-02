@@ -294,6 +294,25 @@ describe('decision points in the session lifecycle', () => {
     expect(managed.replayMergedIds?.get('c')).toEqual(['c', 'd'])
   })
 
+  it('notifies automations with a complete snapshot when semantic labels arrive', async () => {
+    const managed = await session('semantic-notify')
+    managed.labels = ['existing']
+    const snapshots: unknown[] = []
+    ;(sm as any).automationSystems.set(tmpRoot, {
+      updateSessionMetadata: async (id: string, next: unknown) => { snapshots.push({ id, next }) },
+    })
+    spyOn(semanticLabels, 'evaluateSemanticLabelsForMessage').mockResolvedValue([
+      { labelId: 'new-label', value: '', matchedText: 'request', via: 'semantic' },
+    ])
+    await (sm as any).applySemanticAutoLabels(managed, 'request', [])
+    expect(snapshots).toEqual([{ id: managed.id, next: {
+      permissionMode: managed.permissionMode, labels: ['existing', 'new-label'],
+      isFlagged: managed.isFlagged, sessionStatus: managed.sessionStatus, sessionName: managed.name,
+    } }])
+    await (sm as any).applySemanticAutoLabels(managed, 'request again', [])
+    expect(snapshots).toHaveLength(1)
+  })
+
   it('discards title regeneration after the shutdown freeze', async () => {
     const managed = await session('shutdown-title')
     managed.autoTitle = managed.name

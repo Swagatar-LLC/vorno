@@ -1884,6 +1884,7 @@ export class SessionManager implements ISessionManager {
     if (newEntries.length === 0) return
     managed.labels = [...existingLabels, ...newEntries]
     this.persistSession(managed)
+    this.syncAutomationSessionMetadata(managed)
     this.sendEvent({
       type: 'labels_changed',
       sessionId: managed.id,

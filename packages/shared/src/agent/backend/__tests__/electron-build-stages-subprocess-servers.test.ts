@@ -15,6 +15,12 @@ describe('VOR-47: electron:build stages subprocess servers', () => {
     scripts: Record<string, string>;
   };
 
+  it('copies the retained session-MCP workspace manifest before the frozen Docker install', () => {
+    const docker = readFileSync(join(REPO_ROOT, 'Dockerfile.server'), 'utf-8');
+    expect(docker.split('RUN bun install --frozen-lockfile')[0])
+      .toContain('COPY packages/session-mcp-server/package.json packages/session-mcp-server/');
+  });
+
   it('electron:build runs the subprocess staging step', () => {
     expect(pkg.scripts['electron:build']).toContain('electron:build:subprocess');
   });
