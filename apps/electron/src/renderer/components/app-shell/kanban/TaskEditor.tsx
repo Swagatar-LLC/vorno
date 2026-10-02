@@ -20,7 +20,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import type { KanbanModelProviderGroup, TaskEditorTarget } from './types'
-import { uid, buildSpec, specToSubtasks, canDependOn, quickAddNodeId, quickAddChildToSubtask, DEFAULT_REPAIR_ATTEMPTS, MAX_REPAIR_ATTEMPTS_CAP, type EditorSubtask, type TaskPermissionMode } from './task-spec-form'
+import { uid, buildSpec, specToSubtasks, canDependOn, quickAddNodeId, quickAddChildToSubtask, DEFAULT_REPAIR_ATTEMPTS, MAX_REPAIR_ATTEMPTS_CAP, type EditorSubtask, type TaskPermissionMode, isTaskPermissionMode } from './task-spec-form'
 import { resolveNodeStatePill } from './node-state-pill'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import { SkillAvatar } from '@/components/ui/skill-avatar'
@@ -625,7 +625,7 @@ export function TaskEditor({
           // Fall back to the session's actual mode so saving a bound tile can't silently escalate it.
           setOrchConnection(spec.defaults?.llmConnection)
           if (spec.defaults?.permissionMode) setPermissionMode(spec.defaults.permissionMode)
-          else if (sessionMeta?.permissionMode) setPermissionMode(sessionMeta.permissionMode as TaskPermissionMode)
+          else if (isTaskPermissionMode(sessionMeta?.permissionMode)) setPermissionMode(sessionMeta.permissionMode)
           const nodes = spec.nodes ?? []
           setSubtasks([
             ...specToSubtasks(nodes),
@@ -639,7 +639,7 @@ export function TaskEditor({
       // saving it as a task neither drops its project nor silently changes its permission mode.
       setProjectId(sessionProjectId)
       setBoundProjectId(sessionProjectId)
-      if (sessionMeta?.permissionMode) setPermissionMode(sessionMeta.permissionMode as TaskPermissionMode)
+      if (isTaskPermissionMode(sessionMeta?.permissionMode)) setPermissionMode(sessionMeta.permissionMode)
       setSubtasks(collectQuickAddRows(new Set()))
     }
     return () => {
@@ -1286,6 +1286,11 @@ function ResultsPanel({
                 </span>
               )}
             </div>
+            {verdict.via === 'decision' && (
+              <p className="mt-0.5 text-[11px] text-foreground/45">
+                {t('tasks.verdictInferred', { confidence: Math.round((verdict.confidence ?? 0) * 100) })}
+              </p>
+            )}
             {verdict.reason && <p className="mt-0.5 text-[12px] leading-relaxed text-foreground/65">{verdict.reason}</p>}
             {verdict.nodes && verdict.nodes.length > 0 && (
               <p className="mt-1 text-[11px] text-foreground/45">{t('tasks.repairNodes', { nodes: verdict.nodes.join(', ') })}</p>

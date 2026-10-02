@@ -132,6 +132,7 @@ export type { ExportResourcesOptions, ExportResult, ResourceImportMode, Resource
 import type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxySettings } from '@craft-agent/shared/config';
 export type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, NetworkProxySettings };
 import type {
+  DecisionLayerFeature,
   DecisionLayerSettings,
   DecisionLayerSettingsPatch,
   DecisionLayerStatus,
@@ -139,7 +140,7 @@ import type {
   DecisionServerProbe,
   DecisionTestResult,
 } from '@craft-agent/shared/decisions';
-export type { DecisionLayerSettings, DecisionLayerSettingsPatch, DecisionLayerStatus, DecisionProviderId, DecisionServerProbe, DecisionTestResult };
+export type { DecisionLayerFeature, DecisionLayerSettings, DecisionLayerSettingsPatch, DecisionLayerStatus, DecisionProviderId, DecisionServerProbe, DecisionTestResult };
 
 // =============================================================================
 // GUI-only types (not used by server/handler code)
@@ -915,7 +916,7 @@ export interface ElectronAPI {
   // RTK token optimization
   getRtkEnabled(): Promise<boolean>
   setRtkEnabled(enabled: boolean): Promise<void>
-  getRtkStatus(opts?: { forceRecheck?: boolean }): Promise<{ installed: boolean; path: string | null; version: string | null }>
+  getRtkStatus(opts?: { forceRecheck?: boolean }): Promise<{ installed: boolean; path: string | null; version: string | null; outdated: boolean; minSafeVersion: string; foundPath: string | null; updateCommand: string }>
   getRtkGain(): Promise<{ totalCommands: number; totalInput: number; totalOutput: number; totalSaved: number; avgSavingsPct: number; totalTimeMs: number; avgTimeMs: number } | null>
 
   // Decision model (Jev / TypeSafe System One) — opt-in decision layer
@@ -1066,7 +1067,7 @@ export interface ElectronAPI {
   // fork(PLAN-030): `config-diagnostic` records report a rule that can never
   // fire (carrying `reason`/`detail`/`event`), as opposed to one that fired and
   // failed. Rendered as `blocked`; see `renderer/lib/automation-history.ts`.
-  getAutomationHistory(workspaceId: string, automationId: string, limit?: number): Promise<Array<{ id: string; ts: number; ok: boolean; kind?: 'outcome' | 'missed' | 'config-diagnostic'; reason?: string; detail?: string; event?: string; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; sessionAction?: { type?: string; outcome?: string; event?: string; depth?: number; reason?: string; detail?: string; sessionId?: string }; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }>>
+  getAutomationHistory(workspaceId: string, automationId: string, limit?: number): Promise<Array<{ id: string; ts: number; ok: boolean; kind?: 'outcome' | 'missed' | 'config-diagnostic'; reason?: string; detail?: string; event?: string; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; skipped?: string; sessionAction?: { type?: string; outcome?: string; event?: string; depth?: number; reason?: string; detail?: string; sessionId?: string }; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }>>
   getAutomationLastExecuted(workspaceId: string): Promise<Record<string, number>>
   replayAutomation(workspaceId: string, automationId: string, eventName: string): Promise<{ results: Array<{ type: string; url: string; statusCode: number; success: boolean; error?: string; duration: number }> }>
 

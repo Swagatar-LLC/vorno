@@ -1,32 +1,12 @@
 /**
- * The session loop's tool-result ingest step (fork: PLAN-040 / SUV-0023).
- *
- * Every tool result the backend produces passes through here on its way into
- * session context. Two things happen, in this order, and the order is the whole
- * design:
- *
- * 1. **The large-result guard** (`guardLargeResult`) — unchanged, pre-existing
- *    behaviour. Binary payloads are extracted to disk, oversized text is saved
- *    and summarized, and what comes back is a much smaller stand-in message.
- * 2. **Headroom compression** — applied to *whatever text is actually about to
- *    enter context*, i.e. the guard's replacement when it fired and the raw
- *    result when it did not.
- *
- * Compressing after the guard rather than before it is deliberate. The guard's
- * output is the thing the model will read, so it is the thing worth measuring
- * and shrinking; compressing the pre-guard text would spend a service call on
- * content that is about to be replaced by a file reference anyway. It also means
- * the dominant case — the many results that sit *below* the guard's threshold
- * and today enter context verbatim — is exactly the case compression now covers.
- *
- * Extracted from `claude-agent.ts` so that this step is callable, and therefore
- * testable, on its own. The loop's inline copy was a block that could only be
- * exercised by driving an entire SDK turn; the tests for this SUV run the real
- * function with a real adapter instead of simulating what it does.
- *
- * Returning `null` for "nothing changed" preserves the loop's control flow
- * precisely: the caller falls through to its remaining per-event handlers, which
- * is what it did before when the guard declined.
+ * Prepare the host's tool-result event for persistence and display.
+ * The large-result guard saves binary/oversized payloads, then Headroom compresses
+ * the resulting event text and supplies retrieval handles. In Claude this runs
+ * AFTER SDK ingestion, so changing this event does not shrink the model's input.
+ * Claude's PostToolUse MCP guard owns its actual pre-model replacement and must
+ * not be duplicated with a summarizer on this event path. Model-side Headroom
+ * integration remains separate work under the accepted SUV-0023 goal.
+ * Returning null leaves the host event unchanged.
  */
 
 import type { AgentEvent, HeadroomAdapter } from '@craft-agent/core/types';
@@ -54,10 +34,10 @@ export interface ToolResultContextDeps {
 }
 
 /**
- * Prepare one tool result for session context.
+ * Prepare one host tool-result event.
  *
  * @returns The replacement event to yield, or `null` when the result should
- *   enter context exactly as it arrived.
+ *   remain exactly as it arrived.
  */
 export async function prepareToolResultForContext(
   event: ToolResultEvent,
@@ -95,6 +75,6 @@ export async function prepareToolResultForContext(
 
   // No compression was accepted. The result is the guard's, or the original —
   // and in the latter case the event is returned unchanged by being not
-  // returned at all, so the disabled path produces byte-identical context.
+  // returned at all, so the disabled path produces byte-identical host events.
   return guarded === null ? null : { ...event, result: guarded };
 }

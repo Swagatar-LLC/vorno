@@ -9,7 +9,7 @@
 
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
-import { join, relative } from 'path';
+import { basename, join, relative } from 'path';
 import { debug } from './debug.ts';
 import {
   looksLikeBinary,
@@ -504,6 +504,39 @@ export function formatLargeResponseMessage(opts: FormatOptions): string {
 // High-level Pipeline (orchestrates save + summarize + format)
 // ============================================================
 
+/**
+ * Optional host hook deciding whether a large result needs a summary at all
+ * (decision model, toggle `largeResults`). `false` skips the summarization call
+ * and keeps the saved file + preview; `true` or `null` summarizes as usual.
+ * Registered once per process by the host (the Pi subprocess registers one
+ * that asks the main process); unset means "always summarize".
+ */
+export type LargeResultSummaryGate = (input: {
+  text: string;
+  context: SummarizationContext;
+  estimatedTokens: number;
+  /** Session the result belongs to (for the decision record). */
+  sessionId?: string;
+}) => Promise<boolean | null>;
+
+let largeResultSummaryGate: LargeResultSummaryGate | null = null;
+
+/** Install (or clear with `null`) the process-wide summary gate. */
+export function setLargeResultSummaryGate(gate: LargeResultSummaryGate | null): void {
+  largeResultSummaryGate = gate;
+}
+
+/** Ask the installed gate; `null` without one or when it fails. Also answers for the Pi subprocess. */
+export async function askLargeResultSummaryGate(input: Parameters<LargeResultSummaryGate>[0]): Promise<boolean | null> {
+  if (!largeResultSummaryGate) return null;
+  try {
+    return await largeResultSummaryGate(input);
+  } catch (error) {
+    debug('large-response', `Summary gate failed, summarizing: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
 export interface HandleLargeResponseOptions {
   /** Full response text */
   text: string;
@@ -649,9 +682,10 @@ export async function handleLargeResponse(
 
   const { absolutePath, relativePath } = saveResult;
 
-  // 2. Try summarization if within limits and callback provided
+  // 2. Try summarization if within limits and callback provided (and the host's gate does not
+  //    judge the preview + saved file to be enough)
   let summary: string | undefined;
-  if (summarize && estimatedTokens <= MAX_SUMMARIZATION_INPUT) {
+  if (summarize && estimatedTokens <= MAX_SUMMARIZATION_INPUT && (await askLargeResultSummaryGate({ text, context, estimatedTokens, sessionId: basename(sessionPath) })) !== false) {
     try {
       const prompt = buildSummarizationPrompt(text, context);
       const result = await summarize(prompt);

@@ -76,6 +76,9 @@ export function createPromptHistoryEntry(opts: {
    * reads as "a webhook was delivered" when nothing was ever received.
    */
   test?: boolean;
+
+  /** Why the run was skipped (e.g. its semantic condition was not met); not an error. */
+  skipped?: string;
 }): Record<string, unknown> {
   return {
     id: opts.matcherId,
@@ -85,6 +88,7 @@ export function createPromptHistoryEntry(opts: {
     ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
     ...(opts.prompt ? { prompt: opts.prompt.slice(0, HISTORY_FIELD_MAX_LENGTH) } : {}),
     ...(opts.error ? { error: opts.error.slice(0, HISTORY_FIELD_MAX_LENGTH) } : {}),
+    ...(opts.skipped ? { skipped: opts.skipped.slice(0, HISTORY_FIELD_MAX_LENGTH) } : {}),
   };
 }
 

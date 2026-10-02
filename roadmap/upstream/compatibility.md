@@ -101,3 +101,18 @@ Verification covers protocol registration/routing, capability combinations, conf
 
 
 PR #230 review follow-up: `LOCAL_ONLY_CHANNELS` selects the Electron transport; it is not a server authorization boundary. The headless host registers decision settings handlers under its existing authenticated host-administration trust model. Health probes now use only saved local/custom configuration, ignore per-call URL overrides, and do not follow redirects. Reused connection keys bind to canonical decision-provider endpoints; testing an edited endpoint with a masked/stored key requires explicit key entry. Decision audit identifiers are hashed and persisted failures exclude provider detail. Attachment-only activation cannot replay earlier text. These repairs do not rename or remove wire channels.
+
+
+## 2026-10-02: upstream v0.14.0
+
+Pinned upstream `73bd9c2a` adds the `guarded` permission mode and optional decision-driven conversation, automation and task behavior. Existing modes, channel names and message envelopes remain valid. New fields and outcome records are additive. The decision layer and new automatic feature toggles remain default-off.
+
+All seven `decisions:*` channels now use `REMOTE_ELIGIBLE`, deliberately superseding the routing posture in the October 1 audit. [ADR-0034](../decisions/0034-decision-settings-follow-the-executing-host.md) records Jeff's approval: settings and keys belong to the executing host, and authenticated access administers that host across its workspaces. `LOCAL_ONLY_CHANNELS` remains transport metadata, never a server authorization boundary. Existing fork-only local channels remain local.
+
+PR #230's credential/endpoint binding, saved-URL probe, redirect refusal for probes and audit privacy remain intact. New outcome/follow-up audit records retain closed operational tags and numeric metadata, hash dynamic identifiers, and discard unknown text. Guarded is an Execute baseline with optional additional prompts, not a replacement for host authorization. Pages retains its own grants, capability, origin, gesture and cleanup rules; its authority type can represent Guarded without bypassing admission.
+
+Fork lifecycle invariants remain: Page callback guards cannot cross an await before acceptance; promoted recoverable steers retain durable provisional markers through backend settlement; merged continuation replay clears all represented message markers only after turn admission; queue-empty completion and explicit auto-handoff status take precedence over decision classification. Automation action-event causation and prompt-session generation depth remain separate guards, with one prompt dispatch/history executor.
+
+### Headroom scope
+
+Jeff approved the scoped beta on October 2. Claude's Headroom event path remains, including retrieval handles, but its post-SDK event compression is not model-input compression. The redundant post-result summarizer is removed while upstream's actual pre-model MCP large-output guard remains. True model-side Headroom integration remains separate work under SUV-0023's accepted goal; this audit does not declare that goal fulfilled by event compression. Private analysis: `vorno-internal:learnings/LEARNING-092-trace-sdk-input-before-claiming-context-compression.md`, commit `cf1faae`.

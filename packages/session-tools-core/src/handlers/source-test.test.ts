@@ -748,6 +748,34 @@ describe('source_test basic-auth header (regression for #824)', () => {
     return h?.['Authorization'];
   }
 
+  it('marked authenticated but no usable credential → auth error, not "connected"', async () => {
+    // Regression: the unauthenticated probe got 401 and passed as "reachable", leaving a
+    // source with a missing key green while every api_ call failed.
+    writeBasicAuthSource('missing-cred');
+    const cred = makeCredentialManager({ cachedToken: null, refreshedToken: null });
+    const ctx = createCtx(tempDir, { credentialManager: cred.manager });
+
+    const result = await handleSourceTest(ctx, { sourceSlug: 'missing-cred', autoEnable: false });
+    const text = result.content[0]?.text ?? '';
+
+    expect(text).toContain('no usable credential');
+    // Tried once here; the Authentication step may try again.
+    expect(cred.refreshCalls).toBeGreaterThanOrEqual(1);
+    const persisted = JSON.parse(readFileSync(join(tempDir, 'sources', 'missing-cred', 'config.json'), 'utf-8')) as SourceConfig;
+    expect(persisted.connectionStatus).toBe('error');
+  });
+
+  it('an expired but refreshable credential is refreshed and the request authenticated', async () => {
+    writeBasicAuthSource('refreshable');
+    const cred = makeCredentialManager({ cachedToken: null, refreshedToken: JSON.stringify({ username: 'u', password: 'p' }) });
+    const ctx = createCtx(tempDir, { credentialManager: cred.manager });
+
+    await handleSourceTest(ctx, { sourceSlug: 'refreshable', autoEnable: false });
+
+    expect(cred.refreshCalls).toBeGreaterThanOrEqual(1);
+    expect(authHeader()).toBe(`Basic ${Buffer.from('u:p').toString('base64')}`);
+  });
+
   it('JSON {username,password} token → base64-encoded header', async () => {
     writeBasicAuthSource('json-basic');
     const cred = makeCredentialManager({

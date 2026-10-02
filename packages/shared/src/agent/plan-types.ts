@@ -210,7 +210,7 @@ export function addRefinementEntry(
 // Permission Mode UI Messages (single source of truth)
 // ============================================
 // Permission modes control tool execution behavior.
-// User can cycle via SHIFT+TAB: Safe → Ask → Allow All → Safe
+// User can cycle via SHIFT+TAB through the workspace's cyclable modes (default Safe → Ask → Allow All).
 
 import type { PermissionMode } from './mode-manager.ts';
 import { PERMISSION_MODE_CONFIG } from './mode-types.ts';
@@ -219,6 +219,7 @@ import { PERMISSION_MODE_CONFIG } from './mode-types.ts';
 export const PERMISSION_MODE_MESSAGES: Record<PermissionMode, string> = {
   'safe': `${PERMISSION_MODE_CONFIG['safe'].displayName} mode active. Read-only exploration enabled.`,
   'ask': `${PERMISSION_MODE_CONFIG['ask'].displayName} mode active. Prompts for dangerous operations.`,
+  'guarded': `${PERMISSION_MODE_CONFIG['guarded'].displayName} mode active. Operations run without prompts unless the decision model flags one as risky.`,
   'allow-all': `${PERMISSION_MODE_CONFIG['allow-all'].displayName} mode active. All operations permitted.`,
 };
 
@@ -226,5 +227,6 @@ export const PERMISSION_MODE_MESSAGES: Record<PermissionMode, string> = {
 export const PERMISSION_MODE_PROMPTS: Record<PermissionMode, string> = {
   'safe': `The user has switched to ${PERMISSION_MODE_CONFIG['safe'].displayName} mode (read-only). You can read files, search, and explore the codebase, but write operations (Bash, Write, Edit, API calls) are blocked. Focus on understanding and explaining rather than making changes.`,
   'ask': `The user has switched to ${PERMISSION_MODE_CONFIG['ask'].displayName} mode. Most operations are allowed, but dangerous bash commands will prompt for user approval. You have access to write operations.`,
+  'guarded': `The user has switched to ${PERMISSION_MODE_CONFIG['guarded'].displayName} mode. Operations run without prompts, like ${PERMISSION_MODE_CONFIG['allow-all'].displayName}, except that a command or tool call the decision model judges hard to undo, reaching outside the project, or reaching other people or services asks the user first. A denied call means the user declined it.`,
   'allow-all': `The user has switched to ${PERMISSION_MODE_CONFIG['allow-all'].displayName} mode. All operations are permitted without prompts. Use with care.`,
 };

@@ -12,8 +12,12 @@
 export interface AutoLabelMatch {
   /** Label ID to apply */
   labelId: string
-  /** Normalized value ready for storage (already formatted per valueType) */
+  /** Normalized value ready for storage (already formatted per valueType); empty for plain labels */
   value: string
-  /** The original text in the message that triggered this match */
+  /** The original text in the message that triggered this match (regex), or the question asked (semantic) */
   matchedText: string
+  /** Which rule kind produced the match */
+  via?: 'regex' | 'semantic'
+  /** Semantic rules only: the "yes" probability the decision model returned */
+  probability?: number
 }

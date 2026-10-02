@@ -21,6 +21,11 @@ export class PendingSteers {
     ++this.generation; // Invalidate hooks suspended in permission/source awaits.
   }
 
+  /** Whether enqueue() would accept a steer now (a turn is running). */
+  isAccepting(): boolean {
+    return this.active;
+  }
+
   enqueue(message: PendingSteer): boolean {
     if (!this.active) return false;
     this.pending.push(message);

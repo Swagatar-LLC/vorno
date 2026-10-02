@@ -590,6 +590,13 @@ export interface TypedError {
 export type PermissionRequestType = 'bash' | 'file_write' | 'mcp_mutation' | 'api_mutation' | 'admin_approval';
 
 /**
+ * What a permission prompt's action does, as judged by the decision model
+ * (opt-in, `riskBadges`). Informational badges only: they never change the
+ * prompt or its outcome.
+ */
+export type PermissionRisk = 'deletes' | 'sends' | 'publishes' | 'credentials' | 'system' | 'spends';
+
+/**
  * Permission request from agent (e.g., bash command approval)
  */
 export interface PermissionRequest {
@@ -612,6 +619,10 @@ export interface PermissionRequest {
   commandHash?: string;
   /** Approval validity window */
   approvalTtlSeconds?: number;
+  /** Decision-model risk badges (opt-in); absent when the feature is off or unsure */
+  risks?: PermissionRisk[];
+  /** `false` when "Always Allow" would remember nothing (e.g. Guarded-mode prompts): the button is hidden */
+  canRemember?: boolean;
 }
 
 /**
@@ -674,10 +685,10 @@ export type AgentEvent =
   | { type: 'typed_error'; error: TypedError }
   | { type: 'complete'; usage?: AgentEventUsage }
   | { type: 'working_directory_changed'; workingDirectory: string }
-  | { type: 'task_backgrounded'; toolUseId: string; taskId: string; intent?: string; turnId?: string; kind?: 'workflow'; workflowId?: string }
+  | { type: 'task_backgrounded'; toolUseId: string; taskId: string; intent?: string; turnId?: string; kind?: 'workflow' | 'task'; workflowId?: string }
   | { type: 'shell_backgrounded'; toolUseId: string; shellId: string; intent?: string; command?: string; turnId?: string }
   | { type: 'task_progress'; toolUseId: string; elapsedSeconds: number; turnId?: string }
-  | { type: 'task_completed'; taskId: string; status: 'completed' | 'failed' | 'stopped'; outputFile?: string; summary?: string; turnId?: string }
+  | { type: 'task_completed'; taskId: string; status: 'completed' | 'failed' | 'stopped'; outputFile?: string; summary?: string; turnId?: string; toolUseId?: string; /** The session's own agent started it (a top-level tool call), not a subagent. */ launchedHere?: boolean }
   | { type: 'workflow_agent_completed'; workflowId: string; agentId: string; turnId?: string }
   | { type: 'shell_killed'; shellId: string; turnId?: string }
   | { type: 'source_activated'; sourceSlug: string; originalMessage: string }

@@ -221,10 +221,16 @@ function handleBackgroundTaskEvent(
     // Background tasks return immediately with agentId/shell_id/backgroundTaskId,
     // we should only remove when the task actually completes
     const result = typeof evt.result === 'string' ? evt.result : JSON.stringify(evt.result)
+    // Older and current CLI wordings of "this task now runs in the background".
     const isBackgroundingResult = result && (
       /agentId:\s*[a-zA-Z0-9_-]+/.test(result) ||
       /shell_id:\s*[a-zA-Z0-9_-]+/.test(result) ||
-      /"backgroundTaskId":\s*"[a-zA-Z0-9_-]+"/.test(result)
+      /"backgroundTaskId":\s*"[a-zA-Z0-9_-]+"/.test(result) ||
+      /running in background with ID:\s*[a-zA-Z0-9_-]+/i.test(result) ||
+      /backgrounded by user with ID:\s*[a-zA-Z0-9_-]+/i.test(result) ||
+      /moved to the background \(ID:\s*[a-zA-Z0-9_-]+\)/i.test(result) ||
+      /"resultType":\s*"task"/.test(result) ||
+      /Monitor started \(task\s+[a-zA-Z0-9_-]+/.test(result)
     )
     if (!isBackgroundingResult) {
       const currentTasks = store.get(backgroundTasksAtom)
@@ -451,6 +457,7 @@ export default function App() {
         ...current,
         permissionMode: state.permissionMode,
         permissionModeVersion: state.modeVersion,
+        previousPermissionMode: state.previousPermissionMode,
       })
       return next
     })
@@ -887,6 +894,7 @@ export default function App() {
             if (typeof effect.modeVersion === 'number' && effect.changedAt && effect.changedBy) {
               applyPermissionModeState(effect.sessionId, {
                 permissionMode: effect.permissionMode,
+                previousPermissionMode: effect.previousPermissionMode,
                 modeVersion: effect.modeVersion,
                 changedAt: effect.changedAt,
                 changedBy: effect.changedBy,

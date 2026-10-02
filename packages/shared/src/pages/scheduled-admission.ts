@@ -211,7 +211,7 @@ export async function admitScheduledPageRefresh(
  *
  * A corrupt value therefore refuses; a missing one does not.
  */
-function safeLoadWorkspace(workspaceRootPath: string): { id: string; permissionMode: 'safe' | 'ask' | 'allow-all' } {
+function safeLoadWorkspace(workspaceRootPath: string): { id: string; permissionMode: PageActionAuthority['permissionMode'] } {
   let id = 'unknown';
   try {
     id = loadWorkspaceConfig(workspaceRootPath)?.id ?? 'unknown';

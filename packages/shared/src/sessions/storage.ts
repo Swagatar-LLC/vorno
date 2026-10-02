@@ -838,7 +838,9 @@ export async function clearPendingPlanExecution(
   sessionId: string
 ): Promise<void> {
   const session = loadSession(workspaceRootPath, sessionId);
-  if (!session) return;
+  // Nothing pending (the common case: this runs on every user message): no rewrite. Rewriting the
+  // whole file here raced concurrent sends on the shared .tmp path and could revert newer writes.
+  if (!session?.pendingPlanExecution) return;
 
   delete session.pendingPlanExecution;
   await saveSession(session);

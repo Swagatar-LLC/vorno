@@ -7,7 +7,8 @@
  * reported to a file nobody reads and to a `console.warn` nobody watches.
  */
 
-import { describe, it, expect } from 'bun:test'
+import { describe, it, expect, spyOn } from 'bun:test'
+import { i18n } from '@craft-agent/shared/i18n'
 import { toExecutionEntries, isDispatchRecord, describeSessionAction, type RawHistoryEntry } from '../automation-history'
 
 const dispatch: RawHistoryEntry = { id: 'a', ts: 1000, ok: true, prompt: 'do the thing' }
@@ -25,6 +26,19 @@ const diagnostic: RawHistoryEntry = {
 }
 
 describe('toExecutionEntries', () => {
+  it('shows semantic skips without counting them as executions', () => {
+    const skipped = { ...dispatch, skipped: 'condition not met' }
+    expect(isDispatchRecord(skipped)).toBe(false)
+    const translate = spyOn(i18n, 't').mockReturnValue('Skipped: condition not met')
+    try {
+      const entries = toExecutionEntries([skipped], 'LabelAdd')
+      expect(entries).toHaveLength(1)
+      expect(entries[0]!.status).toBe('skipped')
+      expect(entries[0]!.actionSummary).toContain('condition not met')
+      expect(translate).toHaveBeenCalledWith('automations.skippedSummary', { reason: 'condition not met' })
+    } finally { translate.mockRestore() }
+  })
+
   it('surfaces config diagnostics — the whole point of writing them', () => {
     const entries = toExecutionEntries([diagnostic], 'LabelAdd')
     expect(entries).toHaveLength(1)

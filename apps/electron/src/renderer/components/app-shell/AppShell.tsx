@@ -96,6 +96,9 @@ import { useSetAtom } from "jotai"
 import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSource, LoadedSkill, PermissionMode, SourceFilter, AutomationFilter } from "../../../shared/types"
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
+import { DECISION_SETTINGS_CHANGED_EVENT, guardedModeAvailableAtom } from "@/atoms/permission-modes"
+import { DEFAULT_PERMISSION_MODES } from "@craft-agent/shared/agent/modes"
+import { RtkUpdatePrompt } from "@/components/RtkUpdateDialog"
 import { skillsAtom } from "@/atoms/skills"
 import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
 import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuses } from "@/config/session-status-config"
@@ -1008,6 +1011,34 @@ function AppShellContent({
     return () => window.removeEventListener('artifacts:flag-changed', onFlag)
   }, [activeWorkspaceId])
 
+  // Guarded permission mode is offered while the decision layer and its `guardedMode` feature
+  // are on, on the server this workspace talks to. Refreshed on workspace switch and when the AI
+  // settings page saves decision model settings.
+  const guardedModeAvailable = useAtomValue(guardedModeAvailableAtom)
+  const setGuardedModeAvailable = useSetAtom(guardedModeAvailableAtom)
+  React.useEffect(() => {
+    if (!activeWorkspaceId || typeof window.electronAPI?.getDecisionLayerStatus !== 'function') return
+    let cancelled = false
+    const refresh = () => {
+      window.electronAPI.getDecisionLayerStatus().then((status) => {
+        // Offered only when the check can actually run: switched on and a key (or keyless provider) to call it with.
+        const { settings } = status
+        const preset = status.presets.find(p => p.id === settings.provider)
+        const hasKey = !!settings.connectionSlug || status.providersWithKey.includes(settings.provider) || preset?.requiresKey === false
+        if (!cancelled) setGuardedModeAvailable(settings.enabled && settings.features.guardedMode === true && hasKey)
+      }).catch((err) => {
+        console.error('[AppShell] Failed to load decision model status:', err)
+        if (!cancelled) setGuardedModeAvailable(false)
+      })
+    }
+    refresh()
+    window.addEventListener(DECISION_SETTINGS_CHANGED_EVENT, refresh)
+    return () => {
+      cancelled = true
+      window.removeEventListener(DECISION_SETTINGS_CHANGED_EVENT, refresh)
+    }
+  }, [activeWorkspaceId, setGuardedModeAvailable])
+
   // Reset UI state when workspace changes
   // This prevents stale search queries, focused items, and filter state from persisting
   const previousWorkspaceRef = React.useRef<string | null>(null)
@@ -1237,8 +1268,13 @@ function AppShellContent({
     if (effectiveSessionId) {
       const currentOptions = contextValue.sessionOptions.get(effectiveSessionId)
       const currentMode = currentOptions?.permissionMode ?? 'ask'
-      // Cycle through enabled permission modes
-      const modes = enabledModes.length >= 2 ? enabledModes : ['safe', 'ask', 'allow-all'] as PermissionMode[]
+      // Cycle through enabled permission modes. An unavailable Guarded behaves as Ask, so it
+      // stands in as Ask (never re-adding Execute the user left out of the cycle).
+      const base = enabledModes.length >= 2 ? enabledModes : DEFAULT_PERMISSION_MODES
+      const listed = base
+        .map(mode => (mode === 'guarded' && !guardedModeAvailable ? 'ask' : mode))
+        .filter((mode, index, all) => all.indexOf(mode) === index)
+      const modes = listed.length >= 2 ? listed : (['safe', 'ask'] as PermissionMode[])
       const currentIndex = modes.indexOf(currentMode)
       // If current mode not in enabled list, jump to first enabled mode
       const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % modes.length
@@ -4018,6 +4054,8 @@ function AppShellContent({
           Mounted here so they survive context-menu / dropdown close. */}
       <MessagingDialogHost />
 
+      {/* Asks to update rtk when Token Optimization is on but the installed rtk corrupts output */}
+      <RtkUpdatePrompt workspaceId={activeWorkspaceId} />
     </AppShellProvider>
   )
 }

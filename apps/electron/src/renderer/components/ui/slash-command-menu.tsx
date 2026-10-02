@@ -4,7 +4,7 @@ import { Command as CommandPrimitive } from 'cmdk'
 import { Check, Minimize2 } from 'lucide-react'
 import { Icon_Folder } from '@craft-agent/ui'
 import { cn } from '@/lib/utils'
-import { PERMISSION_MODE_CONFIG, PERMISSION_MODE_ORDER, type PermissionMode } from '@craft-agent/shared/agent/modes'
+import { DEFAULT_PERMISSION_MODES, PERMISSION_MODE_CONFIG, PERMISSION_MODE_ORDER, isPermissionMode, type PermissionMode } from '@craft-agent/shared/agent/modes'
 
 // ============================================================================
 // Types
@@ -56,7 +56,7 @@ interface PermissionModeIconProps {
 }
 
 function PermissionModeIcon({ mode, className }: PermissionModeIconProps) {
-  const config = PERMISSION_MODE_CONFIG[mode]
+  const config = PERMISSION_MODE_CONFIG[mode] ?? PERMISSION_MODE_CONFIG.ask
   return (
     <svg
       viewBox="0 0 24 24"
@@ -79,16 +79,23 @@ function PermissionModeIcon({ mode, className }: PermissionModeIconProps) {
 // Icon size constant
 const MENU_ICON_SIZE = 'h-3.5 w-3.5'
 
-// Generate permission mode commands from centralized config
-const permissionModeCommands: SlashCommand[] = PERMISSION_MODE_ORDER.map(mode => {
-  const config = PERMISSION_MODE_CONFIG[mode]
-  return {
+// Permission mode commands from centralized config, one per mode
+const PERMISSION_MODE_COMMANDS = new Map<PermissionMode, SlashCommand>(PERMISSION_MODE_ORDER.map(mode => {
+  const config = PERMISSION_MODE_CONFIG[mode] ?? PERMISSION_MODE_CONFIG.ask
+  return [mode, {
     id: mode,
     label: config.displayName,
     description: config.description,
     icon: <PermissionModeIcon mode={mode} className={MENU_ICON_SIZE} />,
-  }
-})
+  }]
+}))
+
+/** Commands for the modes a picker offers (see `useAvailablePermissionModes`), in the given order. */
+export function permissionModeCommandsFor(modes: readonly PermissionMode[]): SlashCommand[] {
+  return modes.flatMap(mode => PERMISSION_MODE_COMMANDS.get(mode) ?? [])
+}
+
+const permissionModeCommands = permissionModeCommandsFor(DEFAULT_PERMISSION_MODES)
 
 const compactCommand: SlashCommand = {
   id: 'compact',
@@ -162,11 +169,9 @@ function flattenSections(sections: SlashSection[]): (SlashCommand | SlashFolderI
 // Shared: Command Item Content
 // ============================================================================
 
-const MODE_COMMAND_IDS = new Set<string>(['safe', 'ask', 'allow-all'])
-
 function CommandItemContent({ command, isActive }: { command: SlashCommand; isActive: boolean }) {
   const { t } = useTranslation()
-  const label = MODE_COMMAND_IDS.has(command.id) ? t(`mode.${command.id}`, command.label) : command.label
+  const label = isPermissionMode(command.id) ? t(`mode.${command.id}`, command.label) : command.label
   return (
     <>
       <div className="shrink-0 text-muted-foreground">{command.icon}</div>
@@ -529,6 +534,8 @@ function getFolderName(path: string): string {
 export interface UseInlineSlashCommandOptions {
   /** Ref to input element (textarea or RichTextInput handle) */
   inputRef: React.RefObject<SlashCommandInputElement | null>
+  /** Permission modes to offer (defaults to Explore, Ask, Execute) */
+  modes?: readonly PermissionMode[]
   onSelectCommand: (commandId: SlashCommandId) => void
   onSelectFolder: (path: string) => void
   activeCommands?: SlashCommandId[]
@@ -550,6 +557,7 @@ export interface UseInlineSlashCommandReturn {
 
 export function useInlineSlashCommand({
   inputRef,
+  modes = DEFAULT_PERMISSION_MODES,
   onSelectCommand,
   onSelectFolder,
   activeCommands = [],
@@ -571,7 +579,7 @@ export function useInlineSlashCommand({
     result.push({
       id: 'modes',
       label: 'Modes',
-      items: permissionModeCommands,
+      items: permissionModeCommandsFor(modes),
     })
 
     // Commands section
@@ -604,7 +612,7 @@ export function useInlineSlashCommand({
     }
 
     return result
-  }, [recentFolders, homeDir])
+  }, [modes, recentFolders, homeDir])
 
   const handleInputChange = React.useCallback((value: string, cursorPosition: number) => {
     // Store current state for handleSelect

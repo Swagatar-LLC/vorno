@@ -89,7 +89,7 @@ import {
 } from './custom-endpoint-models.ts';
 
 // Direct source imports from shared (bundled by bun build)
-import { handleLargeResponse, estimateTokens, tokenLimitFor } from '../../shared/src/utils/large-response.ts';
+import { handleLargeResponse, estimateTokens, tokenLimitFor, setLargeResultSummaryGate } from '../../shared/src/utils/large-response.ts';
 import { getSessionPlansPath, getSessionPath } from '../../shared/src/sessions/storage.ts';
 import { buildCallLlmRequest } from '../../shared/src/agent/llm-tool.ts';
 import type { LLMQueryRequest, LLMQueryResult } from '../../shared/src/agent/llm-tool.ts';
@@ -106,7 +106,8 @@ import {
 } from './system-prompt-override.ts';
 import { readContextUsage, deferContextUsage } from './context-usage.ts';
 import { waitForCompaction, MANUAL_COMPACT_WAIT_MS, PROMPT_COMPACT_WAIT_MS } from './compaction-wait.ts';
-import type { PiCompactResult, PiContextUsagePayload } from '../../shared/src/agent/backend/pi/protocol.ts';
+import type { PiCompactResult, PiContextUsagePayload, PiLargeResultGateRequest, PiLargeResultGateResponse } from '../../shared/src/agent/backend/pi/protocol.ts';
+import { createLargeResultGateClient } from './large-result-gate.ts';
 import { adaptCredentialForPiSdk, type PiCredential } from './adapt-credential.ts';
 
 // ============================================================
@@ -157,6 +158,7 @@ type InboundMessage =
   | { type: 'register_tools'; tools: ProxyToolDef[] }
   | { type: 'tool_execute_response'; requestId: string; result: { content: string; isError: boolean } }
   | { type: 'pre_tool_use_response'; requestId: string; action: 'allow' | 'block' | 'modify'; input?: Record<string, unknown>; reason?: string }
+  | PiLargeResultGateResponse
   | { type: 'abort' }
   | { type: 'mini_completion'; id: string; prompt: string }
   | { type: 'llm_query'; id: string; request: LLMQueryRequest }
@@ -253,6 +255,7 @@ type OutboundMessage =
   | OutboundSetAutoCompactionResult
   | OutboundRuntimeConfigUpdateResult
   | OutboundSessionIdUpdate
+  | PiLargeResultGateRequest
   | OutboundError;
 
 // ============================================================
@@ -332,6 +335,11 @@ function debugLog(message: string): void {
   // Write debug messages to stderr so they don't interfere with JSONL protocol
   process.stderr.write(`[pi-server] ${message}\n`);
 }
+
+// Large tool results (decision model, toggle `largeResults`): handleLargeResponse asks the
+// main process whether a summary is needed before summarizing.
+const largeResultGate = createLargeResultGateClient(send);
+setLargeResultSummaryGate(largeResultGate.gate);
 
 /** Find the most recent .jsonl session file in a directory. */
 function findMostRecentSessionFile(sessionDir: string): string | null {
@@ -1798,6 +1806,10 @@ async function processMessage(msg: InboundMessage): Promise<void> {
 
     case 'pre_tool_use_response':
       handlePreToolUseResponse(msg);
+      break;
+
+    case 'large_result_gate_response':
+      largeResultGate.handleResponse(msg.requestId, msg.summarize);
       break;
 
     case 'abort':

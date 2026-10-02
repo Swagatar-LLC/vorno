@@ -842,6 +842,33 @@ root. Records come in four kinds, distinguished by an optional `kind` field:
 - Test runs (the **Test** button) and `onFailure`-spawned sessions produce **no**
   outcome records.
 
+### Semantic Condition (requires the Decision Model)
+
+`conditions` can only compare fields. `semanticCondition` asks a yes/no question that the decision model (Jev, Settings > AI > Decision model, toggle "Automation conditions") answers before a prompt action starts a session:
+
+```json
+{
+  "matcher": "^needs-triage$",
+  "semanticCondition": {
+    "question": "Is the user reporting a bug or crash, rather than asking a question?",
+    "threshold": 0.6
+  },
+  "actions": [{ "type": "prompt", "prompt": "Triage the bug in session $CRAFT_SESSION_NAME" }]
+}
+```
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `question` | string | **Required.** The yes/no question, in English (max 500 characters). |
+| `threshold` | number | "Yes" probability needed to run, `0 < threshold <= 1`. Default `0.5`. |
+
+- The model sees the event (name, automation name, payload fields) and, for session events, the session's name, labels, status and its latest user and assistant messages (1,500 characters each).
+- Below the threshold the run is skipped and the automation history records it as skipped, not failed.
+- A matcher is judged once per event: all of its prompt actions run, or all are skipped.
+- **Inert without the decision model:** when it is off, unavailable or fails, the automation runs as it would without the condition.
+- **Loop guard:** an automation never runs for an event about a session it created itself (its own prompt matching a label rule would otherwise re-trigger it forever), and a chain of automation-created sessions triggering further automations stops at 3 sessions deep. Such runs are recorded as skipped.
+- It applies to prompt actions only; webhook and script actions are not gated.
+
 ## Permission Mode
 
 The `permissionMode` field controls the permission level of sessions created by prompt actions.

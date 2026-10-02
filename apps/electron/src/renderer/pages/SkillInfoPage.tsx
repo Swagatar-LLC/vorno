@@ -240,6 +240,13 @@ export default function SkillInfoPage({ skillSlug, workspaceId, workingDirectory
                           <span className="text-foreground/80">{t('skillInfo.askToEditDesc')}</span>
                         </td>
                       </tr>
+                      <tr className="border-b border-border/30">
+                        <td className="px-3 py-2 font-medium text-muted-foreground">{t('mode.guarded')}</td>
+                        <td className="px-3 py-2 flex items-center gap-2">
+                          <Minus className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <span className="text-foreground/80">{t('skillInfo.guardedDesc')}</span>
+                        </td>
+                      </tr>
                       <tr>
                         <td className="px-3 py-2 font-medium text-muted-foreground">{t('skillInfo.auto')}</td>
                         <td className="px-3 py-2 flex items-center gap-2">

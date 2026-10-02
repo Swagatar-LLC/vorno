@@ -203,7 +203,7 @@ export const SpawnSessionSchema = z.object({
   llmConnection: z.string().optional().describe('Connection slug (e.g., "anthropic-api", "codex")'),
   model: z.string().optional().describe('Model ID override'),
   enabledSourceSlugs: z.array(z.string()).optional().describe('Source slugs to enable in the new session'),
-  permissionMode: z.enum(['safe', 'ask', 'allow-all']).optional().describe('Permission mode for the new session'),
+  permissionMode: z.enum(['safe', 'ask', 'guarded', 'allow-all']).optional().describe('Permission mode for the new session. Never looser than the spawning session\'s current mode (safe < ask < guarded < allow-all); a looser value is lowered to it.'),
   thinkingLevel: z.enum(['off', 'low', 'medium', 'high', 'xhigh', 'max']).optional()
     .describe('Reasoning level for the new session. Silently ignored on non-reasoning models (e.g. gpt-4o, gemini-2.5-flash). Omit to inherit the workspace default.'),
   labels: z.array(z.string()).optional().describe('Labels for the new session'),
@@ -649,6 +649,8 @@ Status meanings:
 - completed / failed / stopped: a terminal notification was received.
 - orphaned: the turn that launched the task ended before it finished, so it was terminated with that turn's subprocess.
 
+kind is agent, workflow, shell (a background Bash command) or task (Monitor, MCP...). untracked: true marks a completion for a task this session's agent did not launch (typically a subagent's own background command). Tasks without startTime have an unknown start.
+
 Never guess or claim "the app restarted" — report exactly what this tool returns. Omit sessionId for the current session.`,
 
   send_agent_message: `Send a message to another session. The message is delivered with your session ID so the target can reply back.
@@ -694,7 +696,7 @@ export interface RegistrySessionToolDef extends SessionToolDefBase {
   handler: SessionToolHandler;
 }
 
-/** Tool executed by backend-specific adapters (Pi/Claude/session-mcp-server). */
+/** Tool executed by backend-specific adapters (Pi/Claude). */
 export interface BackendSessionToolDef extends SessionToolDefBase {
   executionMode: 'backend';
   handler: null;
@@ -769,7 +771,7 @@ export interface SessionToolFilterOptions {
  * Return session tools with optional feature filtering.
  *
  * Callers should use this helper instead of filtering ad hoc so tool visibility
- * stays consistent across Claude, Pi, and session-mcp-server backends.
+ * stays consistent across the Claude and Pi backends.
  */
 export function getSessionToolDefs(options?: SessionToolFilterOptions): SessionToolDef[] {
   const includeDeveloperFeedback = options?.includeDeveloperFeedback ?? true;
@@ -854,7 +856,7 @@ export function getSessionSafeBlockedToolNames(options?: SessionToolNameOptions)
 /** Set of session tool names for quick membership checks. */
 export const SESSION_TOOL_NAMES = new Set(SESSION_TOOL_DEFS.map(d => d.name));
 
-/** Session tool names that must be handled by backend-specific adapters (Pi/Claude/session-mcp-server). */
+/** Session tool names that must be handled by backend-specific adapters (Pi/Claude). */
 export const SESSION_BACKEND_TOOL_NAMES = new Set(
   SESSION_TOOL_DEFS.filter(d => d.executionMode === 'backend').map(d => d.name)
 );

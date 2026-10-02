@@ -74,3 +74,37 @@ export function validateAutoLabelRule(pattern: string, flags?: string): AutoLabe
     warnings,
   }
 }
+
+/** Longest question a semantic rule may ask (the message itself is the state; the question is instructions). */
+export const SEMANTIC_RULE_MAX_QUESTION_CHARS = 500
+
+/**
+ * Validate a semantic (decision-model) auto-label rule: a non-empty question,
+ * a threshold in (0, 1] when given, and a string value when given.
+ */
+export function validateSemanticAutoLabelRule(rule: { semantic?: unknown; threshold?: unknown; value?: unknown }): AutoLabelValidationResult {
+  const errors: string[] = []
+  const warnings: string[] = []
+
+  if (typeof rule.semantic !== 'string' || !rule.semantic.trim()) {
+    errors.push('Semantic rule needs a non-empty "semantic" question, e.g. "Is the user asking about billing?"')
+  } else if (rule.semantic.length > SEMANTIC_RULE_MAX_QUESTION_CHARS) {
+    errors.push(`Semantic question is too long (${rule.semantic.length} > ${SEMANTIC_RULE_MAX_QUESTION_CHARS} characters)`)
+  } else if (!/\?\s*$/.test(rule.semantic.trim()) && !/^(is|are|does|do|did|has|have|was|were|should|can|could|will|would)\b/i.test(rule.semantic.trim())) {
+    warnings.push('Semantic rules work best as a yes/no question ("Is the user asking about billing?")')
+  }
+
+  if (rule.threshold !== undefined) {
+    if (typeof rule.threshold !== 'number' || !Number.isFinite(rule.threshold) || rule.threshold <= 0 || rule.threshold > 1) {
+      errors.push('Semantic rule threshold must be a number greater than 0 and at most 1 (default 0.9)')
+    } else if (rule.threshold < 0.5) {
+      warnings.push('A threshold below 0.5 applies the label when the model leans "no" — probably not intended')
+    }
+  }
+
+  if (rule.value !== undefined && typeof rule.value !== 'string') {
+    errors.push('Semantic rule value must be a string')
+  }
+
+  return { valid: errors.length === 0, errors, warnings }
+}

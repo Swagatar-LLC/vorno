@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DecisionRecorder, buildDecisionRecord, hashDecisionIdentifier, sanitizeDecisionMeta, summarizeDecisionAnswers } from './records.ts';
+import { DEFAULT_DECISIONS_LOG_PATH, defaultDecisionsLogPath, DecisionRecorder, buildDecisionRecord, hashDecisionIdentifier, sanitizeDecisionMeta, summarizeDecisionAnswers } from './records.ts';
 import { DecisionError, type DecisionQuestion, type DecisionResult } from './types.ts';
 
 const STATE_TEXT = 'The customer asked for a refund and mentioned their card number 4111 1111 1111 1111';
@@ -177,5 +177,35 @@ describe('decision records', () => {
     });
     expect(summary[hashDecisionIdentifier('sev')]).toEqual({ type: 'score', score: 1.2, confidence: 0.6, probabilities: { '0': 0.1, '1': 0.6, '2': 0.3 } });
     expect(JSON.stringify(summary)).not.toContain('Cosmetic');
+  });
+
+  it('writes outcome lines keyed to the decision id, hashing identifiers and dropping unknown detail', async () => {
+    const recorder = new DecisionRecorder({ path: join(dir, 'decisions.jsonl') });
+    const decision = await recorder.record({ feature: 'decide_tool', provider: 'typesafe', model: 'jev-1.13.0', questions: QUESTIONS, result: RESULT, sessionId: 'sess-1' });
+    expect(decision.id).toMatch(/^[0-9a-f-]{36}$/);
+    await recorder.recordOutcome(decision, { action: 'hint:source:gmail', changed: true, detail: { level: 2, token: 'secret' } });
+    await recorder.recordOutcome({ feature: 'decide_tool' }, { action: 'ignored', changed: false }); // no id: nothing to join to
+
+    const lines = readFileSync(recorder.path, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toMatchObject({ kind: 'outcome', decisionId: decision.id, feature: 'decide_tool', sessionId: 'sess-1', action: `hint:${hashDecisionIdentifier('source:gmail')}`, changed: true, detail: { level: 2 } });
+  });
+
+  it('never persists free-form outcome or follow-up text under innocent keys', async () => {
+    const recorder = new DecisionRecorder({ path: join(dir, 'private-outcomes.jsonl') });
+    const decision = await recorder.record({ feature: 'decide_tool', provider: 'typesafe', model: 'jev-1.13.0', questions: QUESTIONS, result: RESULT });
+    const secret = 'private-calendar-and-api-key';
+    await recorder.recordOutcome(decision, { action: secret, changed: true, detail: { note: secret, confidence: 0.9, reason: secret } });
+    await recorder.recordFollowUp(decision, { result: secret, detail: { option: secret, innocent: secret } });
+    const text = readFileSync(recorder.path, 'utf8');
+    expect(text).not.toContain(secret);
+    expect(text).toContain(hashDecisionIdentifier(secret));
+    expect(text).toContain('"confidence":0.9');
+  });
+
+  it('keeps test runs out of the real log', () => {
+    expect(defaultDecisionsLogPath({ NODE_ENV: 'test' })).not.toBe(DEFAULT_DECISIONS_LOG_PATH);
+    expect(defaultDecisionsLogPath({ NODE_ENV: 'test' }).startsWith(tmpdir())).toBe(true);
+    expect(defaultDecisionsLogPath({ NODE_ENV: 'production' })).toBe(DEFAULT_DECISIONS_LOG_PATH);
   });
 });

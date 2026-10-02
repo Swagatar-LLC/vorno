@@ -8,7 +8,7 @@
 
 import { useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { CheckCircle2, XCircle, ShieldAlert, ChevronDown, Copy, Check } from 'lucide-react'
+import { CheckCircle2, XCircle, ShieldAlert, CircleSlash, ChevronDown, Copy, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useNavigation } from '@/contexts/NavigationContext'
 import { type ExecutionEntry, type ExecutionStatus } from './types'
@@ -22,6 +22,7 @@ const statusConfig: Record<ExecutionStatus, { icon: React.ElementType; classes: 
   success: { icon: CheckCircle2, classes: 'text-success' },
   error:   { icon: XCircle,      classes: 'text-destructive' },
   blocked: { icon: ShieldAlert,   classes: 'text-warning' },
+  skipped: { icon: CircleSlash,   classes: 'text-muted-foreground' },
 }
 
 function formatStatusCode(code: number, t: (key: string) => string): string {

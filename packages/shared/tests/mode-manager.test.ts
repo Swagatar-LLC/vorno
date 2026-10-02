@@ -607,11 +607,64 @@ describe('isReadOnlyBashCommand (full integration)', () => {
       'find . -name "*.log" -delete',
       'find /tmp -name "*.log" -exec cat {} \\; -exec rm {} \\;',
       'find . -type f -exec chmod 777 {} +',
+      // sed: in-place edits, writes, program execution, uninspectable scripts
+      "sed -n -i 's/a/b/' file.txt",
+      "sed -ni 's/a/b/' file.txt",
+      "sed -n --in-place=.bak 's/a/b/' file.txt",
+      "sed -n 'w /tmp/copy.txt' file.txt",
+      "sed -n '/secret/w /tmp/secrets.txt' file.txt",
+      "sed -n 's/a/b/w /tmp/out.txt' file.txt",
+      "sed -n 's/.*/date/e' file.txt",
+      "sed -n '1e rm -rf ~' file.txt",
+      "sed -n -e 'p' -e 'w /tmp/x' file.txt",
+      'sed -n -f script.sed file.txt',
+      // sort: output files and helper programs
+      'sort -o sorted.txt input.txt',
+      'sort -uo sorted.txt input.txt',
+      'sort --output=sorted.txt input.txt',
+      'sort --compress-program=sh input.txt',
+      // gh api: non-GET methods and implicit POSTs
+      'gh api -X DELETE repos/o/r/git/refs/heads/main',
+      'gh api -XDELETE repos/o/r/git/refs/heads/main',
+      'gh api -iX PATCH repos/o/r',
+      'gh api --method=POST repos/o/r/issues',
+      'gh api repos/o/r/issues -f title=x',
+      'gh api repos/o/r/issues --raw-field title=x',
+      'gh api repos/o/r/issues --input body.json',
+      "gh api -H 'X-HTTP-Method-Override: DELETE' repos/o/r",
+      "gh api -H 'X-HTTP-Method: DELETE' repos/o/r",
+      "gh api graphql -f query='mutation { addStar(input: {starrableId: \"x\"}) { clientMutationId } }'",
+      'gh api graphql -F query=@mutation.graphql',
     ];
 
     for (const cmd of dangerousArgCommands) {
       it(`should block dangerous argument: ${cmd}`, () => {
         expect(isReadOnlyBashCommandWithConfig(cmd, TEST_MODE_CONFIG)).toBe(false);
+      });
+    }
+  });
+
+  describe('sed, sort and gh api read-only forms (should be allowed)', () => {
+    const safeCommands = [
+      "sed -n '1,10p' file.txt",
+      "sed -n '/start/,/end/p' file.txt",
+      "sed -n 's/.*version=\\(.*\\)/\\1/p' package.txt",
+      "sed -n -e '1p' -e '$p' file.txt",
+      "sed -n ':a;N;$!ba;s/\\n/ /g;p' file.txt",
+      "sed -n 'y/abc/xyz/;p' file.txt",
+      'sort file.txt',
+      'sort -t, -k2,2n file.csv',
+      'sort -u -r file.txt',
+      'gh api repos/o/r',
+      'gh api --method GET repos/o/r/issues -f state=open',
+      'gh api -X GET search/issues -f q=bug',
+      'gh api repos/o/r/pulls --paginate -q ".[].title"',
+      "gh api graphql -f query='{ viewer { login } }'",
+    ];
+
+    for (const cmd of safeCommands) {
+      it(`should allow: ${cmd}`, () => {
+        expect(isReadOnlyBashCommandWithConfig(cmd, TEST_MODE_CONFIG)).toBe(true);
       });
     }
   });

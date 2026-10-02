@@ -39,7 +39,17 @@ export type RunLogEntry =
   | { t: string; kind: 'node-finished'; nodeId: string; sessionId: string; state: NodeRunState; reason?: string }
   | { t: string; kind: 'node-retry'; nodeId: string; attempt: number; reason: string }
   | { t: string; kind: 'run-paused' | 'run-resumed' | 'run-stopped' | 'run-completed' | 'run-failed' | 'run-verifying' }
-  | { t: string; kind: 'verdict'; result: 'pass' | 'fail' | 'unparsed'; reason?: string; nodes?: string[] }
+  | {
+      t: string;
+      kind: 'verdict';
+      result: 'pass' | 'fail' | 'unparsed';
+      reason?: string;
+      nodes?: string[];
+      /** How the verdict was read: from the VERDICT line (default) or classified by the decision model. */
+      via?: 'parsed' | 'decision';
+      /** Decision-model classifications only: confidence of the winning option. */
+      confidence?: number;
+    }
   // fork: PLAN-040 / SUV-0024. Emitted only when the Headroom boundary actually compressed a node's
   // output on its way into a downstream node's context. `handles` are the opaque retrieval handles
   // the boundary issued for the content it extracted — redeemable via `HeadroomAdapter.retrieve` —

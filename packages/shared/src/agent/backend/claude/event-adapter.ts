@@ -71,6 +71,12 @@ interface AssistantUsage {
   cache_creation_input_tokens: number;
 }
 
+/** SDK keep-alive progress for a long-running tool: `<tool_use_id>-heartbeat-<n>` under that tool. */
+export function isToolHeartbeat(progress: { tool_use_id: string; parent_tool_use_id: string | null }): boolean {
+  return /-heartbeat-\d+$/.test(progress.tool_use_id)
+    && (!progress.parent_tool_use_id || progress.tool_use_id.startsWith(`${progress.parent_tool_use_id}-heartbeat-`));
+}
+
 export class ClaudeEventAdapter extends BaseEventAdapter {
   // Per-turn state (reset on each startTurn)
   private toolIndex = new ToolIndex();
@@ -81,6 +87,13 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
   private manualCompactionBoundarySeen = false;
 
   // Session-persistent state (survives across turns)
+  /**
+   * Tool calls made by the session's own agent (top-level, no parent tool use), and the tasks they
+   * started. Background-task completions are attributed through these: a subagent's own background
+   * work is not the session's to report. Bounded; oldest entries drop first.
+   */
+  private topLevelToolUseIds = new Set<string>();
+  private mainAgentTasks = new Map<string, { toolUseId: string; taskType?: string; description?: string; announced?: boolean }>();
   private lastAssistantUsage: AssistantUsage | null = null;
   private cachedContextWindow?: number;
   private contextUsage?: ContextUsageSnapshot;
@@ -110,6 +123,16 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
   // ============================================================
   // Public API
   // ============================================================
+
+  /**
+   * Whether a background task was started by the session's own agent: its starting tool call (from
+   * the notification, or remembered from task_started) was a top-level one. False for a subagent's
+   * own tasks and for anything this adapter never saw start.
+   */
+  wasLaunchedByMainAgent(taskId: string, toolUseId?: string): boolean {
+    if (toolUseId) return this.topLevelToolUseIds.has(toolUseId);
+    return this.mainAgentTasks.has(taskId);
+  }
 
   /** Called only for our explicit /compact command, after startTurn(). */
   expectManualCompaction(): void {
@@ -305,6 +328,7 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
 
     // Stateless tool start extraction
     const sdkParentId = (message as any).parent_tool_use_id;
+    if (sdkParentId == null) this.rememberTopLevelToolUses(content as ContentBlock[]);
     const toolStartEvents = extractToolStarts(
       content as ContentBlock[],
       sdkParentId,
@@ -455,8 +479,11 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
       });
     }
 
-    // Emit tool_start for tools discovered through progress events
-    if (!this.emittedToolStarts.has(progress.tool_use_id)) {
+    // Emit tool_start for tools discovered through progress events. Not for heartbeats: the SDK
+    // sends one every 30 s for a long-running tool (`<tool_use_id>-heartbeat-<n>`, parent = that
+    // tool) with nothing but elapsed time, and a tool_start for each would add a row that never
+    // finishes ("Running …").
+    if (!this.emittedToolStarts.has(progress.tool_use_id) && !isToolHeartbeat(progress)) {
       const progressBlocks: ContentBlock[] = [{
         type: 'tool_use' as const,
         id: progress.tool_use_id,
@@ -578,16 +605,72 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
         return;
       }
       if (classification.kind === 'valid') {
+        const { taskId, toolUseId } = classification.notification;
         events.push({
           type: 'task_completed',
-          taskId: classification.notification.taskId,
+          taskId,
           status: classification.notification.status,
           outputFile: classification.notification.outputFile,
           summary: classification.notification.summary,
           turnId: this.currentTurnId || undefined,
+          ...(toolUseId ? { toolUseId } : {}),
+          launchedHere: this.wasLaunchedByMainAgent(taskId, toolUseId),
         });
       }
+    } else if (msg.subtype === 'task_started') {
+      // Remember the session's own tasks (structured, unlike tool-result text) and announce a
+      // background one; a foreground task is announced if it later moves to the background.
+      if (typeof msg.task_id === 'string' && typeof msg.tool_use_id === 'string' && this.topLevelToolUseIds.has(msg.tool_use_id)) {
+        this.mainAgentTasks.set(msg.task_id, {
+          toolUseId: msg.tool_use_id,
+          ...(typeof msg.task_type === 'string' ? { taskType: msg.task_type } : {}),
+          ...(typeof msg.description === 'string' && msg.description ? { description: msg.description } : {}),
+        });
+        trimOldest(this.mainAgentTasks, 500);
+        if (msg.is_backgrounded === true) this.pushBackgroundedTask(msg.task_id, events);
+      }
+    } else if (msg.subtype === 'task_updated') {
+      if (typeof msg.task_id === 'string' && msg.patch?.is_backgrounded === true) this.pushBackgroundedTask(msg.task_id, events);
     }
+  }
+
+  /** Remember top-level tool calls so later task events can be attributed to the session's agent. */
+  private rememberTopLevelToolUses(content: ContentBlock[]): void {
+    for (const block of content) {
+      if (block.type === 'tool_use' && typeof (block as { id?: unknown }).id === 'string') {
+        this.topLevelToolUseIds.add((block as { id: string }).id);
+      }
+    }
+    trimOldest(this.topLevelToolUseIds, 2000);
+  }
+
+  /**
+   * Announce one of the session's own tasks as backgrounded, once. Agents and workflows are
+   * detected from their tool result (which carries the workflow id); everything else (Bash,
+   * Monitor, MCP tasks...) is announced from here.
+   */
+  private pushBackgroundedTask(taskId: string, events: AgentEvent[]): void {
+    const task = this.mainAgentTasks.get(taskId);
+    if (!task || task.announced) return;
+    task.announced = true;
+    if (task.taskType === 'local_agent' || task.taskType === 'local_workflow') return;
+    const input = this.toolIndex.getInput(task.toolUseId);
+    const intent = task.description
+      ?? (typeof input?._intent === 'string' ? input._intent : undefined)
+      ?? (typeof input?.description === 'string' ? input.description : undefined);
+    const turnId = this.currentTurnId || undefined;
+    if (task.taskType === 'local_bash') {
+      events.push({
+        type: 'shell_backgrounded',
+        toolUseId: task.toolUseId,
+        shellId: taskId,
+        turnId,
+        ...(intent ? { intent } : {}),
+        ...(typeof input?.command === 'string' ? { command: input.command } : {}),
+      });
+      return;
+    }
+    events.push({ type: 'task_backgrounded', toolUseId: task.toolUseId, taskId, turnId, kind: 'task', ...(intent ? { intent } : {}) });
   }
 
   private adaptAuthStatus(message: SDKMessage, events: AgentEvent[]): void {
@@ -598,5 +681,13 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
         message: `Auth error: ${msg.error}. Try running /auth to re-authenticate.`,
       });
     }
+  }
+}
+
+/** Drop the oldest entries (insertion order) beyond `max`. */
+function trimOldest(collection: Set<string> | Map<string, unknown>, max: number): void {
+  for (const key of collection.keys()) {
+    if (collection.size <= max) return;
+    collection.delete(key);
   }
 }

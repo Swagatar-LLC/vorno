@@ -25,8 +25,9 @@ import { Spinner } from '@craft-agent/ui'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import type { PermissionMode, WorkspaceSettings, LoadedSource } from '../../../shared/types'
 import { useDirectoryPicker } from '@/hooks/useDirectoryPicker'
+import { useAvailablePermissionModes } from '@/hooks/useAvailablePermissionModes'
 import { ServerDirectoryBrowser } from '@/components/ServerDirectoryBrowser'
-import { PERMISSION_MODE_CONFIG } from '@craft-agent/shared/agent/mode-types'
+import { PERMISSION_MODE_CONFIG, PERMISSION_MODE_ORDER } from '@craft-agent/shared/agent/mode-types'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import { SourceAvatar } from '@/components/ui/source-avatar'
 import { Badge } from '@/components/ui/badge'
@@ -116,6 +117,9 @@ export default function WorkspaceSettingsPage() {
   // Mode cycling state
   const [enabledModes, setEnabledModes] = useState<PermissionMode[]>(['safe', 'ask', 'allow-all'])
   const [modeCyclingError, setModeCyclingError] = useState<string | null>(null)
+  // Guarded is offered only while its decision-model feature is on (or already chosen here)
+  const defaultModeOptions = useAvailablePermissionModes(permissionMode)
+  const cyclingModeOptions = useAvailablePermissionModes(enabledModes.includes('guarded') ? 'guarded' : undefined)
 
   // Load workspace settings when active workspace changes
   useEffect(() => {
@@ -513,9 +517,8 @@ export default function WorkspaceSettingsPage() {
       if (!window.electronAPI) return
 
       // Calculate what the new modes would be
-      const newModes = checked
-        ? [...enabledModes, mode]
-        : enabledModes.filter((m) => m !== mode)
+      // Keep the cycle in strictness order (Explore → Ask → Guarded → Execute)
+      const newModes = PERMISSION_MODE_ORDER.filter((m) => (m === mode ? checked : enabledModes.includes(m)))
 
       // Validate: at least 2 modes required
       if (newModes.length < 2) {
@@ -652,11 +655,15 @@ export default function WorkspaceSettingsPage() {
                   description={t("settings.workspace.defaultModeDesc")}
                   value={permissionMode}
                   onValueChange={(v) => handlePermissionModeChange(v as PermissionMode)}
-                  options={[
-                    { value: 'safe', label: t("mode.explore"), description: t("mode.exploreDesc") },
-                    { value: 'ask', label: t("mode.ask"), description: t("mode.askDesc") },
-                    { value: 'allow-all', label: t("mode.execute"), description: t("mode.executeDesc") },
-                  ]}
+                  options={defaultModeOptions.map((m) => {
+                    const option: Record<PermissionMode, { label: string; description: string }> = {
+                      'safe': { label: t("mode.explore"), description: t("mode.exploreDesc") },
+                      'ask': { label: t("mode.ask"), description: t("mode.askDesc") },
+                      'guarded': { label: t("mode.guarded"), description: t("mode.guardedDesc") },
+                      'allow-all': { label: t("mode.execute"), description: t("mode.executeDesc") },
+                    }
+                    return { value: m, ...option[m] }
+                  })}
                 />
               </SettingsCard>
             </SettingsSection>
@@ -667,10 +674,11 @@ export default function WorkspaceSettingsPage() {
               description={t("settings.workspace.modeCyclingDesc")}
             >
               <SettingsCard>
-                {(['safe', 'ask', 'allow-all'] as const).map((m) => {
-                  const modeTranslations: Record<string, { label: string; desc: string }> = {
+                {cyclingModeOptions.map((m) => {
+                  const modeTranslations: Record<PermissionMode, { label: string; desc: string }> = {
                     'safe': { label: t("mode.explore"), desc: t("mode.exploreFullDesc") },
                     'ask': { label: t("mode.askToEdit"), desc: t("mode.askFullDesc") },
+                    'guarded': { label: t("mode.guarded"), desc: t("mode.guardedFullDesc") },
                     'allow-all': { label: t("mode.execute"), desc: t("mode.executeFullDesc") },
                   }
                   const isEnabled = enabledModes.includes(m)

@@ -159,7 +159,7 @@ export interface SessionConfig {
   lastMessageAt?: number;
   /** Whether this session is flagged */
   isFlagged?: boolean;
-  /** Permission mode for this session ('safe', 'ask', 'allow-all') */
+  /** Permission mode for this session ('safe', 'ask', 'guarded', 'allow-all') */
   permissionMode?: PermissionMode;
   /** Previous permission mode (used to preserve modeTransition context across restarts) */
   previousPermissionMode?: PermissionMode;
@@ -258,7 +258,15 @@ export interface SessionConfig {
   /** Whether the transferred-session summary has already been injected. */
   transferredSessionSummaryApplied?: boolean;
   /** Metadata for sessions created by automations */
-  triggeredBy?: { automationName?: string; event?: string; timestamp?: number };
+  triggeredBy?: {
+    automationName?: string;
+    /** Matcher id of the automation that created the session (loop guard: it never re-triggers itself). */
+    automationId?: string;
+    event?: string;
+    timestamp?: number;
+    /** 1 for a session an automation created from a user event; +1 per automation-created hop. */
+    depth?: number;
+  };
   /** Context-threshold latch (fork: PLAN-055). See {@link ContextThresholdState}. */
   contextThresholdState?: ContextThresholdState;
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */
@@ -329,7 +337,7 @@ export interface SessionHeader {
   lastMessageAt?: number;
   /** Whether this session is flagged */
   isFlagged?: boolean;
-  /** Permission mode for this session ('safe', 'ask', 'allow-all') */
+  /** Permission mode for this session ('safe', 'ask', 'guarded', 'allow-all') */
   permissionMode?: PermissionMode;
   /** Previous permission mode (used to preserve modeTransition context across restarts) */
   previousPermissionMode?: PermissionMode;
@@ -391,7 +399,15 @@ export interface SessionHeader {
   /** Whether the transferred-session summary has already been injected. */
   transferredSessionSummaryApplied?: boolean;
   /** Metadata for sessions created by automations */
-  triggeredBy?: { automationName?: string; event?: string; timestamp?: number };
+  triggeredBy?: {
+    automationName?: string;
+    /** Matcher id of the automation that created the session (loop guard: it never re-triggers itself). */
+    automationId?: string;
+    event?: string;
+    timestamp?: number;
+    /** 1 for a session an automation created from a user event; +1 per automation-created hop. */
+    depth?: number;
+  };
   /** Context-threshold latch (fork: PLAN-055). See {@link ContextThresholdState}. */
   contextThresholdState?: ContextThresholdState;
   /** Workspace-scoped project id this session belongs to (undefined = unbound). */

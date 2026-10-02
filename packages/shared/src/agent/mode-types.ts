@@ -19,19 +19,71 @@ import { z } from 'zod';
  * UI-facing canonical names are:
  * - explore  -> safe
  * - ask      -> ask
+ * - guarded  -> guarded
  * - execute  -> allow-all
+ *
+ * `guarded` runs like Execute, except that a call the decision model flags as
+ * risky becomes a permission prompt (`core/guarded-mode.ts`). It is offered only
+ * while the decision layer's `guardedMode` feature is on; without an answer from
+ * the model a call runs as it would in Execute. Execute itself never asks the
+ * model.
  */
-export type PermissionMode = 'safe' | 'ask' | 'allow-all';
+export type PermissionMode = 'safe' | 'ask' | 'guarded' | 'allow-all';
 
 /**
  * Canonical mode names used in user-facing/session-state surfaces.
  */
-export type PermissionModeCanonical = 'explore' | 'ask' | 'execute';
+export type PermissionModeCanonical = 'explore' | 'ask' | 'guarded' | 'execute';
 
 /**
- * Order of modes for cycling with SHIFT+TAB
+ * Every mode, strictest → loosest (what `clampPermissionMode` compares).
+ * UI lists and SHIFT+TAB cycling use {@link availablePermissionModes}, which
+ * leaves out `guarded` unless its feature is on.
  */
-export const PERMISSION_MODE_ORDER: PermissionMode[] = ['safe', 'ask', 'allow-all'];
+export const PERMISSION_MODE_ORDER: PermissionMode[] = ['safe', 'ask', 'guarded', 'allow-all'];
+
+/** Modes offered without the Guarded mode feature (and the default cycle). */
+export const DEFAULT_PERMISSION_MODES: PermissionMode[] = ['safe', 'ask', 'allow-all'];
+
+/**
+ * Modes a picker offers, in {@link PERMISSION_MODE_ORDER}. `guarded` is included
+ * while its feature is available, or when it is the current mode (so a session
+ * left in Guarded mode still shows where it is and can switch away).
+ */
+export function availablePermissionModes(guardedAvailable: boolean, current?: PermissionMode): PermissionMode[] {
+  return PERMISSION_MODE_ORDER.filter(mode => mode !== 'guarded' || guardedAvailable || current === 'guarded');
+}
+
+/**
+ * Modes that run tool calls without Ask-mode prompts: Execute, and Guarded
+ * (whose only prompts come from the decision model's risk check).
+ */
+export function isAutonomousPermissionMode(mode: PermissionMode): boolean {
+  return mode === 'allow-all' || mode === 'guarded';
+}
+
+/**
+ * Mode to run an approved plan in when leaving Explore: back to Guarded if the
+ * session came from Guarded (its risk check keeps applying), otherwise Execute.
+ */
+export function planExecutionMode(previous: PermissionMode | undefined): PermissionMode {
+  return previous === 'guarded' ? 'guarded' : 'allow-all';
+}
+
+/** Type guard for values that arrive untyped (RPC payloads, stored files). */
+export function isPermissionMode(value: unknown): value is PermissionMode {
+  return typeof value === 'string' && (PERMISSION_MODE_ORDER as readonly string[]).includes(value);
+}
+
+/**
+ * `requested`, lowered to `ceiling` when it is looser (safe < ask < guarded < allow-all).
+ * Keeps a mode chosen by the model (e.g. `spawn_session`) from exceeding the
+ * mode of the session that asked for it.
+ */
+export function clampPermissionMode(requested: PermissionMode | undefined, ceiling: PermissionMode): PermissionMode {
+  if (!requested) return ceiling;
+  return PERMISSION_MODE_ORDER.indexOf(requested) > PERMISSION_MODE_ORDER.indexOf(ceiling) ? ceiling : requested;
+}
 
 /**
  * Internal -> canonical mapping.
@@ -39,6 +91,7 @@ export const PERMISSION_MODE_ORDER: PermissionMode[] = ['safe', 'ask', 'allow-al
 export const PERMISSION_MODE_TO_CANONICAL: Record<PermissionMode, PermissionModeCanonical> = {
   safe: 'explore',
   ask: 'ask',
+  guarded: 'guarded',
   'allow-all': 'execute',
 };
 
@@ -48,6 +101,7 @@ export const PERMISSION_MODE_TO_CANONICAL: Record<PermissionMode, PermissionMode
 export const CANONICAL_TO_PERMISSION_MODE: Record<PermissionModeCanonical, PermissionMode> = {
   explore: 'safe',
   ask: 'ask',
+  guarded: 'guarded',
   execute: 'allow-all',
 };
 
@@ -61,7 +115,7 @@ export function toCanonicalPermissionMode(mode: PermissionMode): PermissionModeC
 /**
  * Parse user-facing mode names into internal mode keys.
  *
- * Accepts canonical values (explore/ask/execute) and legacy aliases
+ * Accepts canonical values (explore/ask/guarded/execute) and legacy aliases
  * (safe/allow-all, ask-to-edit) for backward compatibility.
  */
 export function parsePermissionMode(mode: string): PermissionMode | null {
@@ -70,6 +124,7 @@ export function parsePermissionMode(mode: string): PermissionMode | null {
   if (normalized === 'safe') return 'safe';
   if (normalized === 'ask') return 'ask';
   if (normalized === 'allow-all') return 'allow-all';
+  if (normalized === 'guarded') return 'guarded';
 
   if (normalized === 'explore') return 'safe';
   if (normalized === 'execute') return 'allow-all';
@@ -237,6 +292,12 @@ export interface ModeConfig {
   blockedCommandHints?: CompiledBlockedCommandHint[];
   /** Read-only MCP patterns (tools matching these are allowed) */
   readOnlyMcpPatterns: RegExp[];
+  /**
+   * Read verbs from the app defaults ("get", "list", ...), matched as whole words
+   * of the tool's own name with a write-verb veto (mcp-tool-names.ts), not as
+   * substrings of `mcp__<source>__<tool>`.
+   */
+  readOnlyMcpVerbs?: string[];
   /** Fine-grained API endpoint rules (method + path pattern) */
   allowedApiEndpoints: CompiledApiEndpointRule[];
   /** File paths allowed for writes in Explore mode (glob patterns) */
@@ -277,6 +338,7 @@ export const SAFE_MODE_CONFIG: ModeConfig = {
   readOnlyBashPatterns: [],
   blockedCommandHints: [],
   readOnlyMcpPatterns: [],
+  readOnlyMcpVerbs: [],
   allowedApiEndpoints: [],
   displayName: 'Explore',
   shortcutHint: 'SHIFT+TAB',
@@ -323,6 +385,18 @@ export const PERMISSION_MODE_CONFIG: Record<PermissionMode, {
       text: 'text-info',
       bg: 'bg-info',
       border: 'border-info',
+    },
+  },
+  'guarded': {
+    displayName: 'Guarded',
+    shortName: 'Guarded',
+    description: 'Automatic execution; risky actions ask first.',
+    // Shield-check icon from Lucide
+    svgPath: 'M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z M9 12l2 2 4-4',
+    colorClass: {
+      text: 'text-success',
+      bg: 'bg-success',
+      border: 'border-success',
     },
   },
   'allow-all': {

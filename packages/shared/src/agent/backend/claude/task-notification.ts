@@ -4,6 +4,8 @@ export type ClaudeTaskStatus = typeof VALID_TASK_STATUSES[number];
 
 export interface ClaudeTaskNotification {
   taskId: string;
+  /** The tool call that started the task, when the SDK reports it. */
+  toolUseId?: string;
   status: ClaudeTaskStatus;
   outputFile?: string;
   summary?: string;
@@ -25,6 +27,7 @@ export function classifyClaudeTaskNotification(
     type?: unknown;
     subtype?: unknown;
     task_id?: unknown;
+    tool_use_id?: unknown;
     status?: unknown;
     output_file?: unknown;
     summary?: unknown;
@@ -52,6 +55,7 @@ export function classifyClaudeTaskNotification(
     kind: 'valid',
     notification: {
       taskId: candidate.task_id,
+      ...(typeof candidate.tool_use_id === 'string' && candidate.tool_use_id ? { toolUseId: candidate.tool_use_id } : {}),
       status,
       ...(outputFile ? { outputFile } : {}),
       ...(summary ? { summary } : {}),

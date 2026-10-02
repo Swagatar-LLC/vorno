@@ -12,16 +12,16 @@ import {
 import { cn } from '@/lib/utils'
 import {
   PERMISSION_MODE_CONFIG,
-  PERMISSION_MODE_ORDER,
   type PermissionMode,
 } from '@craft-agent/shared/agent/modes'
+import { useAvailablePermissionModes } from '@/hooks/useAvailablePermissionModes'
 
 // ============================================================================
 // Mode Icon (same SVG pattern as ActiveOptionBadges.PermissionModeIcon)
 // ============================================================================
 
 function ModeIcon({ mode, className }: { mode: PermissionMode; className?: string }) {
-  const config = PERMISSION_MODE_CONFIG[mode]
+  const config = PERMISSION_MODE_CONFIG[mode] ?? PERMISSION_MODE_CONFIG.ask
   return (
     <svg
       viewBox="0 0 24 24"
@@ -50,6 +50,10 @@ const MODE_STYLES: Record<PermissionMode, { className: string; shadowVar: string
     className: 'bg-info/10 text-info',
     shadowVar: 'var(--info-rgb)',
   },
+  guarded: {
+    className: 'bg-success/10 text-success',
+    shadowVar: 'var(--success-rgb)',
+  },
   'allow-all': {
     className: 'bg-accent/5 text-accent',
     shadowVar: 'var(--accent-rgb)',
@@ -61,6 +65,7 @@ const MODE_STYLES: Record<PermissionMode, { className: string; shadowVar: string
 const MODE_LABEL_KEYS: Record<PermissionMode, { name: string; short: string; desc: string }> = {
   'safe': { name: 'mode.explore', short: 'mode.exploreShort', desc: 'mode.exploreFullDesc' },
   'ask': { name: 'mode.askToEdit', short: 'mode.askToEditShort', desc: 'mode.askFullDesc' },
+  'guarded': { name: 'mode.guarded', short: 'mode.guardedShort', desc: 'mode.guardedFullDesc' },
   'allow-all': { name: 'mode.execute', short: 'mode.executeShort', desc: 'mode.executeFullDesc' },
 }
 
@@ -92,22 +97,26 @@ export function CompactPermissionModeSelector({
     setOpen(false)
   }, [onPermissionModeChange])
 
-  const style = MODE_STYLES[optimisticMode]
+  // A mode this build does not know (newer server) renders as Ask instead of crashing the input
+  const shownMode: PermissionMode = optimisticMode in MODE_STYLES ? optimisticMode : 'ask'
+  const style = MODE_STYLES[shownMode]
+  // Guarded is listed only while its decision-model feature is on (or it is the current mode)
+  const modes = useAvailablePermissionModes(optimisticMode)
 
   return (
     <Drawer open={open} onOpenChange={setOpen}>
       <DrawerTrigger asChild>
         <button
           type="button"
-          aria-label={`${t('mode.permissionMode')}: ${t(MODE_LABEL_KEYS[optimisticMode].name)}`}
+          aria-label={`${t('mode.permissionMode')}: ${t(MODE_LABEL_KEYS[shownMode].name)}`}
           className={cn(
             "h-7 pl-2 pr-2.5 text-xs font-medium rounded-[6px] flex items-center gap-1.5 shadow-tinted outline-none select-none shrink-0",
             style.className,
           )}
           style={{ '--shadow-color': style.shadowVar } as React.CSSProperties}
         >
-          <ModeIcon mode={optimisticMode} className="h-3.5 w-3.5" />
-          <span>{t(MODE_LABEL_KEYS[optimisticMode].short)}</span>
+          <ModeIcon mode={shownMode} className="h-3.5 w-3.5" />
+          <span>{t(MODE_LABEL_KEYS[shownMode].short)}</span>
         </button>
       </DrawerTrigger>
 
@@ -117,7 +126,7 @@ export function CompactPermissionModeSelector({
         </DrawerHeader>
 
         <div className="px-4 pb-6 flex flex-col gap-1">
-          {PERMISSION_MODE_ORDER.map((mode) => {
+          {modes.map((mode) => {
             const isSelected = mode === optimisticMode
             return (
               <DrawerClose asChild key={mode}>

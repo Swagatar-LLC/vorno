@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createLabel, ensureLabelsExist, ensureTaskLabel, ensureTaskItemLabel } from '../crud.ts';
+import { createLabel, ensureLabelsExist, ensureTaskLabel, ensureTaskItemLabel, generateLabelSlug } from '../crud.ts';
 import { loadLabelConfig, saveLabelConfig } from '../storage.ts';
 import { flattenLabels } from '../tree.ts';
 
@@ -170,3 +170,14 @@ describe('ensureTaskLabel / ensureTaskItemLabel', () => {
     expect(item.name).toBe('TASK-fix-login-1');
   });
 });
+
+describe('generateLabelSlug', () => {
+  it('never ends in a hyphen after the 30-char cut and folds accents', () => {
+    const long = generateLabelSlug('TASK-powershell-fejlesztési-képzés-1')
+    expect(long.length).toBeLessThanOrEqual(30)
+    expect(long).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/)
+    expect(long.startsWith('task-powershell-fejlesztesi')).toBe(true)
+    expect(generateLabelSlug('  Café & Crème  ')).toBe('cafe-creme')
+    expect(generateLabelSlug('TASK-craft-agents-pages-feature-1')).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/)
+  })
+})

@@ -12,9 +12,11 @@ import { DecisionError, DECISION_MAX_DEADLINE_MS, DECISION_MIN_DEADLINE_MS } fro
 import { accountToCredentialId, credentialIdToAccount } from '../credentials/types.ts';
 
 describe('normalizeDecisionLayerSettings', () => {
-  it('is off by default with every feature toggle on', () => {
+  it('is off by default; invoked features default on, harness features off', () => {
     expect(normalizeDecisionLayerSettings(undefined)).toEqual(DEFAULT_DECISION_LAYER_SETTINGS);
     expect(normalizeDecisionLayerSettings(null)).toEqual(DEFAULT_DECISION_LAYER_SETTINGS);
+    expect(DEFAULT_DECISION_LAYER_SETTINGS.features.decideTool).toBe(true);
+    expect(DEFAULT_DECISION_LAYER_SETTINGS.features.turnOutcome).toBe(false);
     expect(DEFAULT_DECISION_LAYER_SETTINGS.enabled).toBe(false);
   });
 
@@ -34,7 +36,7 @@ describe('normalizeDecisionLayerSettings', () => {
     expect(settings.baseUrl).toBe('https://jev.local');
     expect(settings.model).toBeUndefined();
     expect(settings.deadlineMs).toBe(DECISION_MIN_DEADLINE_MS);
-    expect(settings.features).toEqual({ decideTool: false, taskVerdicts: true, semanticLabels: true });
+    expect(settings.features).toEqual({ ...DEFAULT_DECISION_LAYER_SETTINGS.features, decideTool: false });
     expect(normalizeDecisionLayerSettings({ deadlineMs: 10 ** 9 }).deadlineMs).toBe(DECISION_MAX_DEADLINE_MS);
   });
 });

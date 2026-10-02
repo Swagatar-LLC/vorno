@@ -264,6 +264,34 @@ Extracted values are normalized based on the label's `valueType`:
 - **Validation**: Patterns are validated at config-save time (invalid regex and ReDoS patterns are rejected)
 - **Error handling**: Invalid regex patterns are skipped at runtime (logged as warnings)
 
+### Semantic Rules (requires the Decision Model)
+
+A semantic rule is a yes/no question instead of a regex. The decision model (Jev, Settings > AI > Decision model) answers it for every user message, and the label is applied when the "yes" probability reaches the threshold. Regex cannot express "this message is about billing"; a semantic rule can.
+
+```json
+{
+  "id": "billing",
+  "name": "Billing",
+  "autoRules": [
+    { "semantic": "Is the user asking about billing, invoices or charges?", "threshold": 0.9 }
+  ]
+}
+```
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `semantic` | string | **Required.** The yes/no question, in English. Keep it specific. |
+| `threshold` | number | "Yes" probability needed to apply the label, `0 < threshold <= 1`. Default `0.9`. |
+| `value` | string | Fixed value for valued labels (`area::mobile-app`). Omitted → the plain label id is applied. |
+| `description` | string | Human-readable note. |
+
+- **Inert without the decision model**: when the user has not enabled it (or disabled the `semanticLabels` feature toggle), semantic rules are validated and stored but never evaluated.
+- **Off the critical path**: regex rules run before the turn starts; semantic rules run in the background and their labels appear a moment later. Messages shorter than 20 characters ("ok", "thanks") are skipped, and so are rules whose label the session already has (no model call); a label the user removed while the judgment was in flight is not re-added. System-generated messages (source-activation retries, background nudges) are never evaluated.
+- **Exactly one kind per rule**: a rule carries either `pattern` or `semantic`, never both (validation rejects hybrids).
+- **Automations**: a semantic match fires `LabelAdd` automations like any other label change. That is why the default threshold is high — lower it only for labels that trigger nothing important.
+- **Privacy**: the message (code blocks stripped, cut to 8k characters) is sent to the configured decision provider; every call is recorded in `~/.craft-agent/logs/decisions.jsonl` without the text.
+- **CLI**: `craft-agent label auto-rule-add <id> --semantic "Is …?" [--threshold 0.9] [--value "…"]`
+
 ### Full Example
 
 A workspace that auto-tags Linear issues, deadlines, contacts, and budgets:

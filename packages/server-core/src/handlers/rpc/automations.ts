@@ -17,7 +17,7 @@ const HISTORY_FILE = 'automations-history.jsonl'
 // boundary the renderer's history view reads through. It was already flowing at runtime
 // (the parse keeps unknown keys) while being invisible to types — which is how a record
 // ends up written, transported, and then silently unrenderable.
-interface HistoryEntry { id: string; ts: number; ok: boolean; test?: boolean; kind?: 'outcome' | 'missed' | 'config-diagnostic'; reason?: string; detail?: string; event?: string; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; sessionAction?: { type?: string; outcome?: string; event?: string; depth?: number; reason?: string; detail?: string; sessionId?: string }; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }
+interface HistoryEntry { id: string; ts: number; ok: boolean; test?: boolean; kind?: 'outcome' | 'missed' | 'config-diagnostic'; reason?: string; detail?: string; event?: string; errorCount?: number; expectedTs?: number; sessionId?: string; prompt?: string; error?: string; skipped?: string; sessionAction?: { type?: string; outcome?: string; event?: string; depth?: number; reason?: string; detail?: string; sessionId?: string }; webhook?: { method: string; url: string; statusCode: number; durationMs: number; attempts?: number; error?: string; responseBody?: string } }
 
 // Per-workspace config mutex: serializes read-modify-write cycles on automations.json
 // to prevent concurrent IPC calls from clobbering each other's changes.
@@ -429,7 +429,7 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
           // fork(PLAN-017): only true executions (dispatch/webhook — no `kind`
           // field) count as "last executed". Outcome/missed reconciliation
           // records must not advance the last-executed timestamp.
-          if (entry.kind !== undefined) continue
+          if (entry.kind !== undefined || entry.skipped) continue
           if (entry.id && entry.ts) result[entry.id] = entry.ts
         } catch { /* skip malformed lines */ }
       }

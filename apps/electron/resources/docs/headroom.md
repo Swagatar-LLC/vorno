@@ -1,7 +1,12 @@
 # Headroom — Context Compression
 
-Headroom is an optional integration that compresses the context Vorno sends to a
-model, so long sessions and long workflow runs cost fewer tokens.
+Headroom is an optional integration for compressing stored/displayed tool results
+and workflow context. In Claude sessions, tool-result compression runs after the
+SDK has ingested the result. It does not currently reduce the text sent to the
+Claude model. Pre-model Headroom integration is separate follow-up work.
+
+The Claude MCP large-output guard is a separate pre-model mechanism. Headroom
+compression badges and retrieval handles describe the host-side result copy.
 
 **Headroom is off by default, in every workspace.** Nothing on this page happens
 until you turn it on, and turning it on sends nothing off your machine — see
@@ -119,8 +124,10 @@ Two guarantees worth knowing:
 
 ## The savings report
 
-**Headroom savings** reports what compression actually saved. It appears in two
-places, showing the same figures at different scopes:
+**Headroom savings** reports the proxy's compression statistics. These figures
+do not prove a reduction in model input or billed tokens. In particular,
+Claude host-event compression occurs after SDK ingestion. The report appears in
+two places, showing the same figures at different scopes:
 
 - **Workspace Settings → Headroom savings** — the whole workspace.
 - **The session info panel** — that session's own slice under **This session**,
@@ -153,12 +160,13 @@ Vorno benchmarked Headroom on real local workloads before choosing the defaults.
 Two measured results are worth setting your expectations by, because they explain
 why the feature ships off:
 
-- **In agent sessions, compression currently has no effect.** Vorno only accepts a
+- **The agent-session benchmark accepted no compressed outputs.** Vorno only accepts a
   compressed tool output if the proxy hands back a retrieval handle for the
   original. The pinned proxy issued zero handles across all 240 measured
   compression calls, so **0 of 48** tool outputs were accepted and every one
   passed through uncompressed. You are unlikely to see the compression badge
-  described above until that changes upstream.
+  described above until that changes upstream. Even with working retrieval handles,
+  Claude event compression does not yet change SDK model input.
 - **In workflow runs, compression is currently irreversible.** The Conductor path
   accepts compressed node context without requiring a handle, so what it
   compresses cannot be recovered. The best measured whole-corpus saving was

@@ -8,14 +8,17 @@
  * - 'safe': Read-only exploration mode (blocks writes, never prompts)
  * - 'ask': Ask for permission on dangerous operations (default interactive behavior)
  * - 'allow-all': Skip all permission checks (everything allowed)
+ * - 'guarded': Like 'allow-all', plus the decision model's risk check (core/guarded-mode.ts)
  */
 
 /// <reference path="../types/incr-regex-package.d.ts" />
 
 import { homedir } from 'os';
-import { existsSync, realpathSync } from 'fs';
+import { existsSync, lstatSync, realpathSync } from 'fs';
 import { debug } from '../utils/debug.ts';
 import { CONFIG_DIR_NAME } from '../config/paths.ts';
+
+import { isReadOnlyMcpToolName } from './mcp-tool-names.ts';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 import { getSessionSafeAllowedToolNames } from '@craft-agent/session-tools-core';
 import { FEATURE_FLAGS } from '../feature-flags.ts';
@@ -44,6 +47,12 @@ import {
   type CompiledBlockedCommandHint,
   type MismatchAnalysis,
   PERMISSION_MODE_ORDER,
+  DEFAULT_PERMISSION_MODES,
+  availablePermissionModes,
+  isAutonomousPermissionMode,
+  isPermissionMode,
+  planExecutionMode,
+  clampPermissionMode,
   PERMISSION_MODE_CONFIG,
   SAFE_MODE_CONFIG,
   type PermissionModeCanonical,
@@ -65,6 +74,12 @@ export {
   type CompiledBlockedCommandHint,
   type MismatchAnalysis,
   PERMISSION_MODE_ORDER,
+  DEFAULT_PERMISSION_MODES,
+  availablePermissionModes,
+  isAutonomousPermissionMode,
+  isPermissionMode,
+  planExecutionMode,
+  clampPermissionMode,
   PERMISSION_MODE_CONFIG,
   SAFE_MODE_CONFIG,
   toCanonicalPermissionMode,
@@ -196,36 +211,42 @@ function isWithin(base: string, target: string): boolean {
  * Uses path.relative semantics to avoid sibling-prefix bypasses and then
  * re-validates using real paths to prevent symlink escapes.
  */
-function isPathWithinDirectory(targetPath: string, baseDir: string): boolean {
-  const expandedTarget = expandHome(targetPath);
-  const expandedBase = expandHome(baseDir);
+export function isPathWithinDirectory(targetPath: string, baseDir: string): boolean {
+  try {
+    const expandedTarget = expandHome(targetPath);
+    const expandedBase = expandHome(baseDir);
 
-  const resolvedTarget = resolve(expandedTarget);
-  const resolvedBase = resolve(expandedBase);
-  if (!isWithin(resolvedBase, resolvedTarget)) {
-    return false;
-  }
-
-  const realBase = existsSync(resolvedBase) ? realpathSync.native(resolvedBase) : resolvedBase;
-
-  if (existsSync(resolvedTarget)) {
-    const realTarget = realpathSync.native(resolvedTarget);
-    return isWithin(realBase, realTarget);
-  }
-
-  // Target may be a new file path. Validate using nearest existing ancestor
-  // to prevent symlink escapes while still allowing legitimate new files.
-  let current = dirname(resolvedTarget);
-  while (true) {
-    if (existsSync(current)) {
-      const realCurrent = realpathSync.native(current);
-      return isWithin(realBase, realCurrent);
-    }
-    const parent = dirname(current);
-    if (parent === current) {
+    const resolvedTarget = resolve(expandedTarget);
+    const resolvedBase = resolve(expandedBase);
+    if (!isWithin(resolvedBase, resolvedTarget)) {
       return false;
     }
-    current = parent;
+
+    const realBase = lstatSync(resolvedBase, { throwIfNoEntry: false }) ? realpathSync.native(resolvedBase) : resolvedBase;
+
+    if (lstatSync(resolvedTarget, { throwIfNoEntry: false })) {
+      const realTarget = realpathSync.native(resolvedTarget);
+      return isWithin(realBase, realTarget);
+    }
+
+    // Target may be a new file path. Validate using nearest existing ancestor
+    // to prevent symlink escapes while still allowing legitimate new files.
+    let current = dirname(resolvedTarget);
+    while (true) {
+      if (lstatSync(current, { throwIfNoEntry: false })) {
+        const realCurrent = realpathSync.native(current);
+        return isWithin(realBase, realCurrent);
+      }
+      const parent = dirname(current);
+      if (parent === current) {
+        return false;
+      }
+      current = parent;
+    }
+  } catch {
+    // lstat sees dangling/cyclic symlinks that existsSync hides. If realpath
+    // cannot resolve them (or access fails), containment is not established.
+    return false;
   }
 }
 
@@ -415,10 +436,40 @@ export function consumeUserModeSignal(sessionId: string): void {
   modeManager.consumeUserModeSignal(sessionId);
 }
 
+// ============================================================
+// Guarded mode availability
+// ============================================================
+
+/**
+ * Whether Guarded mode's risk check can run (decision layer on + `guardedMode` feature).
+ * The host installs it (`SessionManager.initialize`); until then Guarded is treated as Ask.
+ */
+let guardedModeActiveResolver: () => boolean = () => false;
+
+/** Install (or reset with `null`) how Guarded mode learns whether its check can run. */
+export function setGuardedModeActiveResolver(resolver: (() => boolean) | null): void {
+  guardedModeActiveResolver = resolver ?? (() => false);
+}
+
+/**
+ * The mode permission checks apply. Guarded promises "risky actions ask first"; when its
+ * check cannot run at all (feature or decision layer off), it keeps that promise by
+ * behaving as Ask instead of silently running as Execute. A one-off missing answer while
+ * the check is on still runs the call (the model only ever adds prompts).
+ */
+export function resolveEffectivePermissionMode(mode: PermissionMode): PermissionMode {
+  if (mode !== 'guarded') return mode;
+  try {
+    return guardedModeActiveResolver() ? 'guarded' : 'ask';
+  } catch {
+    return 'ask';
+  }
+}
+
 /**
  * Cycle to the next permission mode (for SHIFT+TAB)
  * @param sessionId - The session to cycle mode for
- * @param enabledModes - Optional list of enabled modes to cycle through (defaults to all 3)
+ * @param enabledModes - Optional list of enabled modes to cycle through (defaults to Explore, Ask, Execute)
  * Returns the new mode
  */
 export function cyclePermissionMode(
@@ -426,8 +477,8 @@ export function cyclePermissionMode(
   enabledModes?: PermissionMode[]
 ): PermissionMode {
   const currentMode = getPermissionMode(sessionId);
-  // Use provided modes or default to all modes
-  const modes = enabledModes && enabledModes.length >= 2 ? enabledModes : PERMISSION_MODE_ORDER;
+  // Use provided modes or default to the three base modes (Guarded only when listed)
+  const modes = enabledModes && enabledModes.length >= 2 ? enabledModes : DEFAULT_PERMISSION_MODES;
   const currentIndex = modes.indexOf(currentMode);
 
   // If current mode not in enabled list, jump to first enabled mode
@@ -1732,7 +1783,8 @@ export function getPathHint(targetPath: string, plansFolderPath: string, dataFol
  * Check if an MCP tool is read-only using the given config
  */
 function isReadOnlyMcpToolWithConfig(toolName: string, config: ToolCheckConfig): boolean {
-  return config.readOnlyMcpPatterns.some(pattern => pattern.test(toolName));
+  return isReadOnlyMcpToolName(toolName, config.readOnlyMcpVerbs ?? [])
+    || config.readOnlyMcpPatterns.some(pattern => pattern.test(toolName));
 }
 
 /**
@@ -1813,7 +1865,7 @@ export type ToolCheckResult =
  * Returns different results based on the permission mode:
  * - 'safe': Block writes entirely (no prompting)
  * - 'ask': Allow but may require permission for dangerous operations
- * - 'allow-all': Allow everything
+ * - 'guarded' / 'allow-all': Allow everything
  */
 export function shouldAllowToolInMode(
   toolName: string,
@@ -1836,8 +1888,9 @@ export function shouldAllowToolInMode(
     config = SAFE_MODE_CONFIG;
   }
 
-  // In 'allow-all' mode, all tools are allowed (no restrictions)
-  if (mode === 'allow-all') {
+  // In 'allow-all' and 'guarded' mode, all tools are allowed (no restrictions;
+  // Guarded's risk check runs after the pre-tool-use pipeline, see core/guarded-mode.ts)
+  if (isAutonomousPermissionMode(mode)) {
     return { allowed: true };
   }
 

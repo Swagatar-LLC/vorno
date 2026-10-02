@@ -17,10 +17,17 @@
  * booleans under fixed operational key names.
  *
  * Writes are fire-and-forget: a failed append is logged and never fails the call.
+ *
+ * The same file carries outcome lines (`kind: 'outcome'`): what a decision point did
+ * with an answer (thinking level chosen, hint shown, status moved, ...), and follow-up
+ * lines (`kind: 'followup'`): what turned out later (the suggested source was used, ...),
+ * both keyed by the decision record's `id`. Decision lines have no `kind`. `usage.ts`
+ * joins them.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { CONFIG_DIR } from '../config/paths.ts';
 import { createLogger } from '../utils/debug.ts';
@@ -56,6 +63,8 @@ export interface DecisionRecordAnswer {
 }
 
 export interface DecisionRecord {
+  /** Record id; outcome lines point at it. Absent in records written before outcomes existed. */
+  id?: string;
   /** ISO timestamp. */
   t: string;
   feature: DecisionFeature;
@@ -76,6 +85,58 @@ export interface DecisionRecord {
   sessionId?: string;
   /** Caller context (e.g. item count, thresholds): finite numbers and booleans only. */
   meta?: Record<string, number | boolean>;
+}
+
+/** What a decision point did with an answer. Option keys and numbers only, like decision records. */
+export interface DecisionOutcome {
+  /** Short action tag, e.g. `thinking:medium`, `hint:source:gmail`, `status:needs-review`, `none`. */
+  action: string;
+  /** `true` when the answer changed behaviour compared to running without the decision layer. */
+  changed: boolean;
+  /** Numbers or keys that explain the action (level, threshold, ...). Only fixed numeric/boolean fields are persisted. */
+  detail?: Record<string, unknown>;
+}
+
+export interface DecisionOutcomeRecord extends DecisionOutcome {
+  kind: 'outcome';
+  /** ISO timestamp. */
+  t: string;
+  /** `id` of the decision record this outcome belongs to. */
+  decisionId: string;
+  feature: DecisionFeature;
+  sessionId?: string;
+}
+
+/**
+ * What happened after a decision point acted, when that is only known later (e.g. whether the
+ * agent used the suggested source). Option keys and numbers only.
+ */
+export interface DecisionFollowUp {
+  /** Short tag, e.g. `hint_used`, `held_back_used`. */
+  result: string;
+  /** Numbers or keys that explain the result. Only fixed numeric/boolean fields are persisted. */
+  detail?: Record<string, unknown>;
+}
+
+export interface DecisionFollowUpRecord extends DecisionFollowUp {
+  kind: 'followup';
+  /** ISO timestamp. */
+  t: string;
+  /** `id` of the decision record this follow-up belongs to. */
+  decisionId: string;
+  feature: DecisionFeature;
+  sessionId?: string;
+}
+
+/** One line of decisions.jsonl. */
+export type DecisionLogLine = DecisionRecord | DecisionOutcomeRecord | DecisionFollowUpRecord;
+
+export function isDecisionOutcomeRecord(line: DecisionLogLine): line is DecisionOutcomeRecord {
+  return (line as DecisionOutcomeRecord).kind === 'outcome';
+}
+
+export function isDecisionFollowUpRecord(line: DecisionLogLine): line is DecisionFollowUpRecord {
+  return (line as DecisionFollowUpRecord).kind === 'followup';
 }
 
 export interface DecisionRecordInput {
@@ -109,7 +170,7 @@ function hashKeys(map: Record<string, number>, keep?: RegExp): Record<string, nu
   return out;
 }
 
-const META_KEYS = new Set(['batch', 'index', 'total', 'items', 'threshold']);
+const META_KEYS = new Set(['batch', 'index', 'total', 'items', 'threshold', 'confidence', 'repair', 'of', 'matches', 'level', 'rules', 'questions']);
 
 /** Keep finite numbers and booleans under fixed operational key names; drop everything else. */
 export function sanitizeDecisionMeta(meta: Record<string, unknown>): Record<string, number | boolean> {
@@ -118,6 +179,34 @@ export function sanitizeDecisionMeta(meta: Record<string, unknown>): Record<stri
     if (!META_KEYS.has(key)) continue;
     if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) out[key] = value;
   }
+  return out;
+}
+
+// Only host-defined operational tags may remain plaintext. Source/skill identifiers
+// and unknown tags are hashed, like question and choice keys in decision records.
+const AUDIT_TAGS = new Set([
+  'none', 'scoped', 'whole_dag', 'run', 'skip', 'finished', 'needs_input', 'blocked',
+  'unsure', 'title_now', 'defer_title', 'keep_title', 'refresh_title', 'badges',
+  'labels', 'prompt', 'allow', 'keep', 'steer', 'queue', 'default', 'separate',
+  'merge', 'skip_summary', 'summarize', 'hint_used', 'hint_unused',
+  'held_back_used', 'held_back_unused', 'none_used', 'none_unused',
+  'thinking:off', 'thinking:low', 'thinking:medium', 'thinking:high',
+  'thinking:xhigh', 'thinking:max', 'status:needs-review',
+]);
+
+function auditTag(tag: string): string {
+  if (AUDIT_TAGS.has(tag)) return tag;
+  return tag.startsWith('hint:') ? `hint:${hashDecisionIdentifier(tag.slice(5))}` : hashDecisionIdentifier(tag);
+}
+
+/** Fixed operational values only; unknown text never enters the audit. */
+function sanitizeDecisionDetail(detail: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = sanitizeDecisionMeta(detail);
+  if (typeof detail.option === 'string') out.option = hashDecisionIdentifier(detail.option);
+  if (typeof detail.sessionLevel === 'string' && ['off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(detail.sessionLevel)) out.sessionLevel = detail.sessionLevel;
+  if (typeof detail.configured === 'string' && ['steer', 'queue'].includes(detail.configured)) out.configured = detail.configured;
+  if (typeof detail.reason === 'string' && ['no_answer', 'low_confidence', 'no_candidates', 'none'].includes(detail.reason)) out.reason = detail.reason;
+  if (Array.isArray(detail.risks)) out.risks = detail.risks.filter(risk => ['irreversible', 'outside_workspace', 'external'].includes(risk));
   return out;
 }
 
@@ -150,6 +239,7 @@ export function buildDecisionRecord(input: DecisionRecordInput): DecisionRecord 
   for (const [key, question] of Object.entries(input.questions)) questions[hashDecisionIdentifier(key)] = question.type;
 
   const record: DecisionRecord = {
+    id: randomUUID(),
     t: new Date().toISOString(),
     feature: input.feature,
     provider: input.provider,
@@ -199,8 +289,39 @@ export class DecisionRecorder {
     return record;
   }
 
-  /** Append a prebuilt record. Never throws. */
-  async append(record: DecisionRecord): Promise<void> {
+  /** Append what a decision point did with the answer of `decision`. Never throws. */
+  async recordOutcome(decision: Pick<DecisionRecord, 'id' | 'feature' | 'sessionId'>, outcome: DecisionOutcome): Promise<void> {
+    if (!decision.id) return;
+    const line: DecisionOutcomeRecord = {
+      kind: 'outcome',
+      t: new Date().toISOString(),
+      decisionId: decision.id,
+      feature: decision.feature,
+      ...(decision.sessionId ? { sessionId: decision.sessionId } : {}),
+      action: auditTag(outcome.action),
+      changed: outcome.changed,
+      ...(outcome.detail && Object.keys(outcome.detail).length > 0 ? { detail: sanitizeDecisionDetail(outcome.detail) } : {}),
+    };
+    await this.append(line);
+  }
+
+  /** Append what later turned out about the answer of `decision`. Never throws. */
+  async recordFollowUp(decision: Pick<DecisionRecord, 'id' | 'feature' | 'sessionId'>, followUp: DecisionFollowUp): Promise<void> {
+    if (!decision.id) return;
+    const line: DecisionFollowUpRecord = {
+      kind: 'followup',
+      t: new Date().toISOString(),
+      decisionId: decision.id,
+      feature: decision.feature,
+      ...(decision.sessionId ? { sessionId: decision.sessionId } : {}),
+      result: auditTag(followUp.result),
+      ...(followUp.detail && Object.keys(followUp.detail).length > 0 ? { detail: sanitizeDecisionDetail(followUp.detail) } : {}),
+    };
+    await this.append(line);
+  }
+
+  /** Append a prebuilt line. Never throws. */
+  async append(record: DecisionLogLine): Promise<void> {
     const run = this.queue.then(async () => {
       await mkdir(dirname(this.path), { recursive: true });
       await this.rotateIfNeeded();
@@ -213,6 +334,11 @@ export class DecisionRecorder {
     } catch (error) {
       log.warn(`Failed to write decision record: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /** Resolves once every write queued so far has finished (fire-and-forget callers, tests). */
+  flush(): Promise<void> {
+    return this.queue;
   }
 
   private async rotateIfNeeded(): Promise<void> {
@@ -230,8 +356,17 @@ export class DecisionRecorder {
 
 let defaultRecorder: DecisionRecorder | null = null;
 
+/**
+ * Where the process-wide recorder writes. Under `bun test` (NODE_ENV=test) that is a
+ * per-process temp file, so tests that do not pass their own recorder never append
+ * stub decisions to the user's real log (they did: most of a real log was test runs).
+ */
+export function defaultDecisionsLogPath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.NODE_ENV === 'test' ? join(tmpdir(), `craft-decisions-test-${process.pid}.jsonl`) : DEFAULT_DECISIONS_LOG_PATH;
+}
+
 /** Process-wide recorder writing to the default log path. */
 export function getDecisionRecorder(): DecisionRecorder {
-  if (!defaultRecorder) defaultRecorder = new DecisionRecorder();
+  if (!defaultRecorder) defaultRecorder = new DecisionRecorder({ path: defaultDecisionsLogPath() });
   return defaultRecorder;
 }

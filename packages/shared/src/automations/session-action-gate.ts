@@ -60,8 +60,8 @@ export function checkStatusAction(
 
 /**
  * How permissive each mode is. Derived from `PERMISSION_MODE_ORDER`
- * (`['safe', 'ask', 'allow-all']`), which is already ordered least → most permissive for
- * SHIFT+TAB cycling — reading the rank off it means a fourth mode cannot be added to the
+ * (`['safe', 'ask', 'guarded', 'allow-all']`), which is already ordered least → most permissive for
+ * SHIFT+TAB cycling — reading the rank off it means a new mode cannot be added to the
  * product without also landing in this comparison.
  */
 function permissiveness(mode: PermissionMode): number {
