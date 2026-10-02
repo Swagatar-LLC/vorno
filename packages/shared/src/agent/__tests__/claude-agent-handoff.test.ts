@@ -50,6 +50,61 @@ describe('ClaudeAgent handoff interrupts', () => {
     expect(abort).not.toHaveBeenCalled()
     expect(debug).toHaveBeenCalledWith('Claude handoff interrupt failed: interrupt failed')
   })
+
+  // Interrupting while SubmitPlan or an auth tool was still running made the SDK store the call
+  // as "The user doesn't want to proceed with this tool use", and the agent later told the user
+  // they had declined a sign-in nobody was asked about.
+  describe('asked from inside the handing-off tool', () => {
+    function handingOff() {
+      const interrupt = mock(async () => {})
+      const agent = Object.create(ClaudeAgent.prototype) as any
+      agent.currentQuery = { interrupt }
+      agent.currentQueryAbortController = { abort: mock(() => {}) }
+      agent.pendingSteers = new PendingSteers()
+      agent.debug = () => {}
+      agent.beginToolHandoff()  // what the onPlanSubmitted / onAuthRequest tool callbacks do
+      return { agent, interrupt }
+    }
+    const result = (toolName: string) => ({ type: 'tool_result', toolUseId: 't', toolName, result: 'ok' })
+
+    it('interrupts once the tool result is in, not before', () => {
+      const { agent, interrupt } = handingOff()
+      agent.interruptForHandoff(AbortReason.AuthRequest)
+      expect(interrupt).not.toHaveBeenCalled()
+      expect(agent.lastAbortReason).toBe(AbortReason.AuthRequest)
+
+      agent.releaseToolHandoffOn(result('Bash'))
+      expect(interrupt).not.toHaveBeenCalled()
+      agent.releaseToolHandoffOn(result('mcp__session__source_oauth_trigger'))
+      expect(interrupt).toHaveBeenCalledTimes(1)
+      agent.releaseToolHandoffOn(result('mcp__session__source_oauth_trigger'))
+      expect(interrupt).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not interrupt when the host never asked for it', () => {
+      const { agent, interrupt } = handingOff()
+      agent.releaseToolHandoffOn(result('mcp__session__SubmitPlan'))
+      expect(interrupt).not.toHaveBeenCalled()
+      expect(agent.toolHandoff).toBeNull()
+    })
+
+    it('interrupts anyway when the result does not arrive in time', async () => {
+      const { agent, interrupt } = handingOff()
+      agent.handoffResultWaitMs = 5
+      agent.interruptForHandoff(AbortReason.PlanSubmitted)
+      await new Promise(resolve => setTimeout(resolve, 30))
+      expect(interrupt).toHaveBeenCalledTimes(1)
+    })
+
+    it('drops the deferred interrupt when the turn is force-stopped', () => {
+      const { agent, interrupt } = handingOff()
+      agent.interruptForHandoff(AbortReason.PlanSubmitted)
+      agent.forceAbort(AbortReason.UserStop)
+      agent.releaseToolHandoffOn(result('mcp__session__SubmitPlan'))
+      expect(interrupt).not.toHaveBeenCalled()
+      expect(agent.toolHandoff).toBeNull()
+    })
+  })
 })
 
 // The fork's single-slot undelivered-steer tests were retired with the

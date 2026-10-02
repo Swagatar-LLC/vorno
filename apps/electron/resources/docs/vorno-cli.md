@@ -35,6 +35,7 @@ Manage workspace labels stored under `labels/`.
 - `vorno-cli label reorder [--parent <id|root>] <ordered-id-1> <ordered-id-2> ...`
 - `vorno-cli label auto-rule-list <id>`
 - `vorno-cli label auto-rule-add <id> --pattern "<regex>" [--flags "gi"] [--value-template "$1"] [--description "..."]`
+- `vorno-cli label auto-rule-add <id> --semantic "<yes/no question>" [--threshold 0.9] [--value "..."] [--description "..."]` (requires the decision model in Settings > AI)
 - `vorno-cli label auto-rule-remove <id> --index <n>`
 - `vorno-cli label auto-rule-clear <id>`
 - `vorno-cli label auto-rule-validate <id>`
@@ -393,3 +394,5 @@ Exit codes:
 - `0` success
 - `1` execution/internal failure
 - `2` usage/validation/input failure
+
+Automation fields without dedicated flags, including `conditions`, `semanticCondition` and `telegramTopic`, go in `--json`. The CLI validates the complete configuration before writing.

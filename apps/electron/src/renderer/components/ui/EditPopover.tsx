@@ -452,9 +452,11 @@ const EDIT_CONFIGS: Record<EditContextKey, (location: string) => EditConfig> = {
       label: 'Auto-Apply Rules',
       filePath: `${location}/labels/config.json`,
       context:
-        'The user wants to edit auto-apply rules (regex patterns that auto-tag sessions). ' +
+        'The user wants to edit auto-apply rules (rules that auto-tag sessions from user messages). ' +
         'Rules live inside the autoRules array on individual labels in labels/config.json. ' +
-        'Each rule has: pattern (regex with capture groups), flags (default "gi"), valueTemplate ($1/$2 substitution), description. ' +
+        'A regex rule has: pattern (regex with capture groups), flags (default "gi"), valueTemplate ($1/$2 substitution), description. ' +
+        'A semantic rule has: semantic (a yes/no question for the decision model, e.g. "Is the user asking about billing?"), threshold (0-1, default 0.9), optional value, description — ' +
+        'semantic rules only work when the user enabled the decision model in Settings > AI, and they fire label automations, so keep the threshold high. ' +
         'Multiple rules on the same label = multiple ways to trigger. The "g" flag is always enforced. ' +
         'Avoid catastrophic backtracking patterns (e.g., (a+)+). ' +
         'Read ~/.craft-agent/docs/labels.md for full format reference. ' +

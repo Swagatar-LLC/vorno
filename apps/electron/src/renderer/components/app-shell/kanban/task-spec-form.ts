@@ -64,6 +64,11 @@ export const slugify = (s: string): string =>
 /** Permission modes are fixed (safe|ask|allow-all); mirrored here to avoid a shared Node import in the renderer. */
 export type TaskPermissionMode = 'safe' | 'ask' | 'allow-all'
 
+/** Tasks run unattended, so they take no Guarded mode (nobody would answer its prompts). */
+export function isTaskPermissionMode(mode: unknown): mode is TaskPermissionMode {
+  return mode === 'safe' || mode === 'ask' || mode === 'allow-all'
+}
+
 export interface EditorSubtask {
   uid: string
   // Original node id from a generated/loaded spec, preserved across the editor round-trip so

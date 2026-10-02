@@ -15,6 +15,7 @@ mock.module('../../config/preferences.ts', () => ({
 import {
   getDateTimeContext,
   getMiniAgentSystemPrompt,
+  getPermissionModesSection,
   getSystemPrompt,
   getWorkingDirectoryContext,
   formatProjectContextForPrompt,
@@ -54,8 +55,15 @@ describe('system prompt guidance', () => {
 
     expect(prompt).toContain('If permissionMode is **Explore**')
     expect(prompt).toContain('For edits outside those folders, write a plan file there, call `SubmitPlan`, then stop for user approval.')
-    expect(prompt).toContain('If permissionMode is **Ask to Edit** or **Execute**')
     expect(prompt).toContain('Use `SubmitPlan` only when the user asks for a plan or the change is broad/risky.')
+    expect(prompt).toContain('If permissionMode is **Ask to Edit**, **Guarded** or **Execute**')
+  })
+
+  it('always lists Guarded mode (the prompt is snapshotted per session) and keeps Execute prompt-free', () => {
+    const section = getPermissionModesSection()
+    expect(section).toContain('| **Guarded** | Autonomous execution; a call the decision model judges risky')
+    expect(section).toContain('While the decision model is off it behaves like Ask to Edit.')
+    expect(section).toContain('| **Execute** | Full autonomous execution. No prompts. |')
   })
 
   it('includes required MCP metadata guidance in the mini-agent prompt', () => {

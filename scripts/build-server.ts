@@ -54,7 +54,7 @@ import {
   UV_VERSION,
   downloadBun,
   downloadUv,
-  buildMcpServers,
+  buildSubprocessServers,
   getPlatformKey,
 } from './build/common';
 
@@ -163,22 +163,6 @@ function assembleResources(config: ServerBuildConfig): void {
     }
   }
 
-  // MCP servers
-  console.log('  Copying MCP servers...');
-  for (const server of ['session-mcp-server', 'bridge-mcp-server']) {
-    const src = join(srcResources, server);
-    if (existsSync(src)) {
-      cpSync(src, join(destResources, server), { recursive: true });
-    }
-  }
-
-  // Also copy session-mcp-server from packages/ build output (dev path fallback)
-  const sessionServerDist = join(config.rootDir, 'packages', 'session-mcp-server', 'dist', 'index.js');
-  if (existsSync(sessionServerDist)) {
-    const destSessionServer = join(destResources, 'session-mcp-server');
-    mkdirSync(destSessionServer, { recursive: true });
-    copyFileSync(sessionServerDist, join(destSessionServer, 'index.js'));
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +343,7 @@ function copyProductionDeps(config: ServerBuildConfig): void {
   // messaging-whatsapp-worker is intentionally OMITTED: Baileys and its transitive deps
   // are bundled directly into packages/messaging-whatsapp-worker/dist/worker.cjs by
   // scripts/build-wa-worker.ts — pulling them into node_modules would duplicate the tree.
-  const SERVER_PACKAGES = ['server', 'server-core', 'shared', 'core', 'session-tools-core', 'session-mcp-server', 'messaging-gateway'];
+  const SERVER_PACKAGES = ['server', 'server-core', 'shared', 'core', 'session-tools-core', 'messaging-gateway'];
 
   const allImports = new Set<string>();
   for (const pkg of SERVER_PACKAGES) {
@@ -459,7 +443,6 @@ function copyWorkspacePackages(config: ServerBuildConfig): void {
     'shared',
     'core',
     'session-tools-core',
-    'session-mcp-server',
     'messaging-gateway',
     'messaging-whatsapp-worker',
   ];
@@ -490,7 +473,7 @@ function copyWorkspacePackages(config: ServerBuildConfig): void {
       cpSync(srcDir, join(dest, 'src'), { recursive: true });
     }
 
-    // Copy dist/ directory if present (built artifacts like session-mcp-server)
+    // Copy dist/ directory if present (built artifacts like the WhatsApp worker)
     const distDir = join(src, 'dist');
     if (existsSync(distDir)) {
       cpSync(distDir, join(dest, 'dist'), { recursive: true });
@@ -842,8 +825,8 @@ async function main(): Promise<void> {
   console.log(`\n[3/8] Downloading uv ${UV_VERSION}...`);
   await downloadUvForServer(config);
 
-  // Step 4: Build MCP servers
-  console.log('\n[4/8] Building MCP servers...');
+  // Step 4: Build the Pi agent server subprocess
+  console.log('\n[4/8] Building the Pi agent server...');
   const buildConfig: BuildConfig = {
     platform,
     arch,
@@ -853,7 +836,7 @@ async function main(): Promise<void> {
     rootDir,
     electronDir,
   };
-  buildMcpServers(buildConfig);
+  buildSubprocessServers(buildConfig);
 
   // Build the WhatsApp worker bundle. Must happen before copyWorkspacePackages
   // so dist/worker.cjs exists when we copy the messaging-whatsapp-worker package.

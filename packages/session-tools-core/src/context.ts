@@ -301,7 +301,6 @@ export interface SessionToolContext {
   /**
    * Update user preferences. Injected by each backend:
    * - Claude: calls updatePreferences() from config/preferences.ts
-   * - Codex/session-mcp-server: writes directly to preferences.json
    * - Pi: calls updatePreferences() from config/preferences.ts
    */
   updatePreferences?(updates: Record<string, unknown>): void;
@@ -792,13 +791,20 @@ export interface SendAgentMessageResult {
 export interface BackgroundTaskInfo {
   taskId: string;
   intent?: string;
+  /** What the session's agent launched: a background agent, a Workflow, a Bash command, or another task. */
+  kind?: 'agent' | 'workflow' | 'shell' | 'task';
   status: 'running' | 'completed' | 'failed' | 'stopped' | 'orphaned';
-  /** ms timestamp when the task was backgrounded */
-  startTime: number;
-  /** seconds elapsed since start (derived at query time) */
-  elapsedSeconds: number;
+  /** ms timestamp when the task was backgrounded (absent for untracked tasks) */
+  startTime?: number;
+  /** seconds elapsed since start, derived at query time (absent for untracked tasks) */
+  elapsedSeconds?: number;
   /** ms timestamp when the task reached a terminal/orphaned status, if any */
   completedAt?: number;
+  /**
+   * A completion seen for a task this session's agent did not launch (typically a subagent's
+   * own background task); its start time is unknown.
+   */
+  untracked?: boolean;
 }
 
 // ============================================================

@@ -278,8 +278,10 @@ export function extractToolResults(
         parentToolUseId: sdkParentToolUseId ?? undefined,
       });
 
-      // Detect background tasks/shells from results
-      if (entry) {
+      // Detect background tasks/shells from results. Only the session's own agent: a subagent's
+      // background task (a sidechain result, with a parent tool use) belongs to that subagent,
+      // which the SDK notifies itself; tracking it here produced phantom completion prompts.
+      if (entry && sdkParentToolUseId === null) {
         const bgEvents = detectBackgroundEvents(toolUseId, entry, resultStr, isError, turnId);
         events.push(...bgEvents);
       }

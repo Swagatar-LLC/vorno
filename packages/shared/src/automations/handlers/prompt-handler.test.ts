@@ -36,6 +36,38 @@ describe('PromptHandler', () => {
     bus.dispose();
   });
 
+  describe('semantic conditions', () => {
+    it('passes the matcher\'s semantic condition with the event it is judged against', async () => {
+      const onPromptsReady = jest.fn();
+      const configProvider = createMockConfigProvider({
+        LabelAdd: [{
+          matcher: 'bug',
+          semanticCondition: { question: 'Is the user reporting a crash?', threshold: 0.6 },
+          actions: [{ type: 'prompt', prompt: 'Triage it' }],
+        }, {
+          matcher: 'bug',
+          actions: [{ type: 'prompt', prompt: 'No condition' }],
+        }],
+      });
+
+      const handler = new PromptHandler(createOptions({ onPromptsReady }), configProvider);
+      handler.subscribe(bus);
+      await bus.emit('LabelAdd', { workspaceId: 'test-workspace', timestamp: 1, label: 'bug', sessionId: 's-1' });
+
+      const prompts: PendingPrompt[] = onPromptsReady.mock.calls[0]![0];
+      expect(prompts[0]).toMatchObject({
+        prompt: 'Triage it',
+        semanticCondition: { question: 'Is the user reporting a crash?', threshold: 0.6 },
+        event: 'LabelAdd',
+        eventPayload: { label: 'bug', sessionId: 's-1' },
+      });
+      expect(prompts[1]!.semanticCondition).toBeUndefined();
+      expect(prompts[1]!.eventPayload).toBeUndefined();
+
+      handler.dispose();
+    });
+  });
+
   describe('matcher matching for app events', () => {
     it('should process prompt actions for matching LabelAdd event', async () => {
       const onPromptsReady = jest.fn();

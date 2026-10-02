@@ -762,6 +762,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
                 fastMode={sessionOpts.fastMode}
                 onFastModeChange={(enabled) => setOption('fastMode', enabled)}
                 permissionMode={sessionOpts.permissionMode}
+                previousPermissionMode={sessionOpts.previousPermissionMode}
                 onPermissionModeChange={setPermissionMode}
                 enabledModes={enabledModes}
                 inputValue={inputValue}
@@ -841,6 +842,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
             fastMode={sessionOpts.fastMode}
             onFastModeChange={(enabled) => setOption('fastMode', enabled)}
             permissionMode={sessionOpts.permissionMode}
+            previousPermissionMode={sessionOpts.previousPermissionMode}
             onPermissionModeChange={setPermissionMode}
             enabledModes={enabledModes}
             inputValue={inputValue}

@@ -307,7 +307,7 @@ export interface PageActionAuthority {
   workspaceId: string;
   origin: PageActionOrigin;
   /** Workspace permission mode as resolved at invocation time */
-  permissionMode: 'safe' | 'ask' | 'allow-all';
+  permissionMode: 'safe' | 'ask' | 'guarded' | 'allow-all';
 }
 
 /** Result returned to the page (never contains credentials) */

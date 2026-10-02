@@ -53,10 +53,13 @@ export function evaluateApiEndpointPolicy(
 export function evaluateMcpToolPolicy(
   proxyToolName: string,
   input: Record<string, unknown>,
-  options?: { plansFolderPath?: string },
+  options?: { plansFolderPath?: string; permissionsContext?: PermissionsContext },
 ): SourceActionPolicyDecision {
+  // Without a permissions context only the built-in fallback applies, which has no
+  // read-only MCP patterns: every tool counts as a mutation.
   const safeModeResult = shouldAllowToolInMode(proxyToolName, input, 'safe', {
     plansFolderPath: options?.plansFolderPath,
+    permissionsContext: options?.permissionsContext,
   });
 
   if (safeModeResult.allowed) {

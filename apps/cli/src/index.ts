@@ -706,6 +706,8 @@ async function cmdRun(args: CliArgs): Promise<void> {
     const session = (await client.invoke('sessions:create', workspaceId, {
       permissionMode: args.mode || 'allow-all',
       enabledSourceSlugs: args.sources.length > 0 ? args.sources : undefined,
+      // `craft run` cannot answer permission prompts (sendAndStream ignores them).
+      unattended: true,
     })) as { id: string }
     sessionId = session.id
 

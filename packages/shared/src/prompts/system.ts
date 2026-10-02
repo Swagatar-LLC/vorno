@@ -1,6 +1,7 @@
 import { BRAND_NAME, DOCS_URL, GIT_COAUTHOR, PRODUCT_NAME_SINGULAR } from '../branding.ts';
 import { formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
-import { getBrowserToolEnabled } from '../config/storage.ts';
+import { getBrowserToolEnabled, getRtkEnabled } from '../config/storage.ts';
+import { getRtkPath } from '../agent/core/rtk-detector.ts';
 import { debug } from '../utils/debug.ts';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { dirname, join, relative, basename, resolve } from 'path';
@@ -586,6 +587,37 @@ function getCraftAgentEnvironmentMarker(): string {
  * @param backendName - Backend name for "powered by X" text (default: 'Claude Code')
  * @param includeCoAuthoredBy - Whether to include the Co-Authored-By git trailer instruction (default: true)
  */
+/**
+ * Permission modes table and per-mode rules. Guarded is always listed: Claude snapshots the
+ * system prompt, so a session switched to Guarded after it started must still find the row.
+ * Execute's row always promises no prompts, because Execute never consults the decision model.
+ */
+export function getPermissionModesSection(): string {
+  return `## Permission Modes
+
+| Mode | Description |
+|------|-------------|
+| **${PERMISSION_MODE_CONFIG['safe'].displayName}** | Read-only exploration. Writes are limited to \`plansFolderPath\` and \`dataFolderPath\`. |
+| **${PERMISSION_MODE_CONFIG['ask'].displayName}** | Prompts before edits. Read operations run freely. |
+| **${PERMISSION_MODE_CONFIG['guarded'].displayName}** | Autonomous execution; a call the decision model judges risky (hard to undo, outside the project, reaching other people or services) asks the user first. While the decision model is off it behaves like ${PERMISSION_MODE_CONFIG['ask'].displayName}. |
+| **${PERMISSION_MODE_CONFIG['allow-all'].displayName}** | Full autonomous execution. No prompts. |
+
+Current mode and writable planning/data folders are in \`<session_state>\`.
+
+If permissionMode is **${PERMISSION_MODE_CONFIG['safe'].displayName}**:
+- Read/search freely.
+- Write only to the exact \`plansFolderPath\` / \`dataFolderPath\` from \`<session_state>\`.
+- For edits outside those folders, write a plan file there, call \`SubmitPlan\`, then stop for user approval.
+
+If permissionMode is **${PERMISSION_MODE_CONFIG['ask'].displayName}**, **${PERMISSION_MODE_CONFIG['guarded'].displayName}** or **${PERMISSION_MODE_CONFIG['allow-all'].displayName}**:
+- Proceed according to that mode and the user's latest request.
+- Use \`SubmitPlan\` only when the user asks for a plan or the change is broad/risky.
+
+Mode switching is normal. Apply the latest \`<session_state>\` immediately; \`modeChangeUserSignal\` means the user manually changed mode for this turn.
+
+**Path rule:** In Explore mode, do not write to \`.copilot-config/\`, \`session-state/\`, the session root, or arbitrary workspace paths. Use only the exact folders from \`<session_state>\`.`;
+}
+
 function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string = 'Claude Code', includeCoAuthoredBy: boolean = true): string {
   // Default to ${APP_ROOT}/workspaces/{id} if no path provided
   const workspacePath = workspaceRootPath || `${APP_ROOT}/workspaces/{id}`;
@@ -598,6 +630,9 @@ function getCraftAssistantPrompt(workspaceRootPath?: string, backendName: string
 
   // Environment marker for SDK JSONL detection
   const environmentMarker = getCraftAgentEnvironmentMarker();
+
+  // rtk rewrites Bash commands behind the agent's back; say so, and how to get raw output.
+  const rtkActive = getRtkEnabled() && getRtkPath() !== null;
 
   // Decision layer (Jev): Settings switch + feature toggle, evaluated per prompt build.
   const decideToolActive = isDecisionFeatureActive('decideTool');
@@ -728,28 +763,7 @@ When creating git commits, include ${PRODUCT_NAME_SINGULAR} as a co-author:
 \`\`\`
 Co-Authored-By: ${GIT_COAUTHOR}
 \`\`\`
-` : ''}## Permission Modes
-
-| Mode | Description |
-|------|-------------|
-| **${PERMISSION_MODE_CONFIG['safe'].displayName}** | Read-only exploration. Writes are limited to \`plansFolderPath\` and \`dataFolderPath\`. |
-| **${PERMISSION_MODE_CONFIG['ask'].displayName}** | Prompts before edits. Read operations run freely. |
-| **${PERMISSION_MODE_CONFIG['allow-all'].displayName}** | Full autonomous execution. No prompts. |
-
-Current mode and writable planning/data folders are in \`<session_state>\`.
-
-If permissionMode is **${PERMISSION_MODE_CONFIG['safe'].displayName}**:
-- Read/search freely.
-- Write only to the exact \`plansFolderPath\` / \`dataFolderPath\` from \`<session_state>\`.
-- For edits outside those folders, write a plan file there, call \`SubmitPlan\`, then stop for user approval.
-
-If permissionMode is **${PERMISSION_MODE_CONFIG['ask'].displayName}** or **${PERMISSION_MODE_CONFIG['allow-all'].displayName}**:
-- Proceed according to that mode and the user's latest request.
-- Use \`SubmitPlan\` only when the user asks for a plan or the change is broad/risky.
-
-Mode switching is normal. Apply the latest \`<session_state>\` immediately; \`modeChangeUserSignal\` means the user manually changed mode for this turn.
-
-**Path rule:** In Explore mode, do not write to \`.copilot-config/\`, \`session-state/\`, the session root, or arbitrary workspace paths. Use only the exact folders from \`<session_state>\`.
+` : ''}${getPermissionModesSection()}
 ${backendName === 'Codex' ? `
 ### Planning tools (Codex)
 - **update_plan** — Live task tracking within a turn/session (statuses: pending/in_progress/completed). Does not pause execution or request approval.
@@ -938,7 +952,9 @@ Each preview supports either \`"src": "/absolute/path"\` or an \`items\` array f
 Built-in document CLIs are available via Bash: \`markitdown\`, \`pdf-tool\`, \`xlsx-tool\`, \`docx-tool\`, \`pptx-tool\`, \`img-tool\`, \`doc-diff\`, \`ical-tool\`.
 
 Prefer \`markitdown\` as the universal converter when Read cannot handle a binary document. All tools support \`--help\`; most support \`-o <file>\` for output.
-
+${rtkActive ? `
+Bash output of common commands (grep, ls, git, test runners) is compacted by rtk: lines may be grouped, trimmed or summarized. When you need exact output, prefix the command with \`command\` or run the binary by path (\`/usr/bin/grep\`).
+` : ''}
 ## Tool Metadata
 
 All MCP tools require two metadata fields (schema-enforced):

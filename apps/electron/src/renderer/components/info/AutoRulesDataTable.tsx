@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils'
 import { useTheme } from '@/hooks/useTheme'
 import { toast } from 'sonner'
 import type { LabelConfig, AutoLabelRule } from '@craft-agent/shared/labels'
+import { isSemanticAutoLabelRule, DEFAULT_SEMANTIC_RULE_THRESHOLD } from '@craft-agent/shared/labels'
 
 /**
  * Flattened auto-rule row: associates a rule with its parent label
@@ -104,10 +105,18 @@ function getColumns(t: TFunction): ColumnDef<AutoRuleRow>[] {
     {
       id: 'pattern',
       header: ({ column }) => <SortableHeader column={column} title={t("table.pattern")} />,
-      accessorFn: (row) => row.rule.pattern,
+      // Semantic rules (decision model) show their yes/no question where regex rules show the pattern.
+      accessorFn: (row) => (isSemanticAutoLabelRule(row.rule) ? row.rule.semantic : row.rule.pattern),
       cell: ({ row }) => (
-        <div className="p-1.5 pl-2.5">
-          <PatternBadge pattern={row.original.rule.pattern} />
+        <div className="p-1.5 pl-2.5 flex items-center gap-1.5 min-w-0">
+          {isSemanticAutoLabelRule(row.original.rule) ? (
+            <>
+              <Info_Badge color="muted" className="whitespace-nowrap shrink-0">{t("table.semanticRule")}</Info_Badge>
+              <span className="text-sm truncate" title={row.original.rule.semantic}>{row.original.rule.semantic}</span>
+            </>
+          ) : (
+            <PatternBadge pattern={row.original.rule.pattern} />
+          )}
         </div>
       ),
       minSize: 120,
@@ -115,11 +124,14 @@ function getColumns(t: TFunction): ColumnDef<AutoRuleRow>[] {
     {
       id: 'flags',
       header: () => <span className="p-1.5 pl-2.5">{t("table.flags")}</span>,
-      accessorFn: (row) => row.rule.flags ?? 'gi',
+      // Semantic rules have no flags; the column carries their threshold instead.
+      accessorFn: (row) => (isSemanticAutoLabelRule(row.rule) ? `≥ ${(row.rule.threshold ?? DEFAULT_SEMANTIC_RULE_THRESHOLD).toFixed(2)}` : row.rule.flags ?? 'gi'),
       cell: ({ row }) => (
         <div className="p-1.5 pl-2.5">
           <span className="text-xs text-muted-foreground font-mono">
-            {row.original.rule.flags ?? 'gi'}
+            {isSemanticAutoLabelRule(row.original.rule)
+              ? `≥ ${(row.original.rule.threshold ?? DEFAULT_SEMANTIC_RULE_THRESHOLD).toFixed(2)}`
+              : row.original.rule.flags ?? 'gi'}
           </span>
         </div>
       ),
@@ -128,18 +140,22 @@ function getColumns(t: TFunction): ColumnDef<AutoRuleRow>[] {
     {
       id: 'template',
       header: () => <span className="p-1.5 pl-2.5">{t("table.template")}</span>,
-      accessorFn: (row) => row.rule.valueTemplate ?? '',
-      cell: ({ row }) => (
-        <div className="p-1.5 pl-2.5">
-          {row.original.rule.valueTemplate ? (
-            <Info_Badge color="muted" className="font-mono whitespace-nowrap">
-              {row.original.rule.valueTemplate}
-            </Info_Badge>
-          ) : (
-            <span className="text-muted-foreground/50 text-sm">—</span>
-          )}
-        </div>
-      ),
+      accessorFn: (row) => (isSemanticAutoLabelRule(row.rule) ? row.rule.value ?? '' : row.rule.valueTemplate ?? ''),
+      cell: ({ row }) => {
+        const rule = row.original.rule
+        const text = isSemanticAutoLabelRule(rule) ? rule.value : rule.valueTemplate
+        return (
+          <div className="p-1.5 pl-2.5">
+            {text ? (
+              <Info_Badge color="muted" className="font-mono whitespace-nowrap">
+                {text}
+              </Info_Badge>
+            ) : (
+              <span className="text-muted-foreground/50 text-sm">—</span>
+            )}
+          </div>
+        )
+      },
       minSize: 80,
     },
     {

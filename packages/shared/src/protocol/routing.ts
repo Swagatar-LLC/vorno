@@ -207,15 +207,6 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.updater.GET_FEED_CONFIG,
   RPC_CHANNELS.updater.SET_FEED_CONFIG,
 
-  // decisions — Jev decision-layer opt-in (app-level settings + provider keys)
-  RPC_CHANNELS.decisions.GET_SETTINGS,
-  RPC_CHANNELS.decisions.SET_SETTINGS,
-  RPC_CHANNELS.decisions.GET_STATUS,
-  RPC_CHANNELS.decisions.SET_API_KEY,
-  RPC_CHANNELS.decisions.DELETE_API_KEY,
-  RPC_CHANNELS.decisions.TEST,
-  RPC_CHANNELS.decisions.PROBE_SERVER,
-
   // tools — local tool settings
   RPC_CHANNELS.tools.GET_BROWSER_TOOL_ENABLED,
   RPC_CHANNELS.tools.SET_BROWSER_TOOL_ENABLED,
@@ -387,6 +378,16 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.settings.TEST_LLM_CONNECTION_SETUP,
   RPC_CHANNELS.settings.GET_DEFAULT_THINKING_LEVEL,
   RPC_CHANNELS.settings.SET_DEFAULT_THINKING_LEVEL,
+
+  // decisions — the decision layer's settings and keys live on the server whose sessions ask the
+  // model (it can reuse that server's LLM connections); the Laya probe tests what that server reaches
+  RPC_CHANNELS.decisions.GET_SETTINGS,
+  RPC_CHANNELS.decisions.SET_SETTINGS,
+  RPC_CHANNELS.decisions.GET_STATUS,
+  RPC_CHANNELS.decisions.SET_API_KEY,
+  RPC_CHANNELS.decisions.DELETE_API_KEY,
+  RPC_CHANNELS.decisions.TEST,
+  RPC_CHANNELS.decisions.PROBE_SERVER,
 
   // pi — provider config on workspace server
   RPC_CHANNELS.pi.GET_API_KEY_PROVIDERS,

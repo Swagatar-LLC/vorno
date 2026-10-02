@@ -6,6 +6,7 @@ import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
 import { perf } from '@craft-agent/shared/utils'
 import { USER_ORIGIN } from '@craft-agent/shared/statuses'
 import { isValidThinkingLevel, THINKING_LEVEL_IDS } from '@craft-agent/shared/agent/thinking-levels'
+import { isPermissionMode, PERMISSION_MODE_ORDER } from '@craft-agent/shared/agent/modes'
 
 const VALID_THINKING_LEVELS_LIST = THINKING_LEVEL_IDS.map(id => `'${id}'`).join(', ')
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
@@ -329,6 +330,10 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
         // Track which session user is actively viewing (for unread state machine)
         return sessionManager.setActiveViewingSession(sessionId, command.workspaceId)
       case 'setPermissionMode':
+        // An unknown mode would fall through to Explore's checks in shouldAllowToolInMode.
+        if (!isPermissionMode(command.mode)) {
+          throw new Error(`Invalid permission mode: ${String(command.mode)}. Valid values: ${PERMISSION_MODE_ORDER.join(', ')}`)
+        }
         return sessionManager.setSessionPermissionMode(sessionId, command.mode)
       case 'setThinkingLevel':
         // Validate thinking level before passing to session manager

@@ -171,6 +171,8 @@ interface ChatDisplayProps {
   // Advanced options
   /** Current permission mode */
   permissionMode?: PermissionMode
+  /** Mode before the last change (plan approval returns to Guarded from it) */
+  previousPermissionMode?: PermissionMode
   onPermissionModeChange?: (mode: PermissionMode) => void
   /** Enabled permission modes for Shift+Tab cycling */
   enabledModes?: PermissionMode[]
@@ -476,6 +478,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
   onFastModeChange,
   // Advanced options
   permissionMode = 'ask',
+  previousPermissionMode,
   onPermissionModeChange,
   enabledModes,
   // Input value preservation
@@ -2071,6 +2074,7 @@ export const ChatDisplay = React.forwardRef<ChatDisplayHandle, ChatDisplayProps>
             onSessionStatusChange={onSessionStatusChange}
             inputProps={{
               placeholder,
+              previousPermissionMode,
               disabled: isInputDisabled,
               isProcessing: session.isProcessing,
               onAnimatedHeightChange: handleAnimatedHeightChange,

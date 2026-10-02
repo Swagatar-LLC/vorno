@@ -24,6 +24,7 @@
  * is the reason Phase 2a's `skipped:*` refusals do not repeat Phase 0's write-only defect.
  */
 
+import { i18n } from '@craft-agent/shared/i18n'
 import type { ExecutionEntry, AutomationTrigger } from '@/components/automations/types'
 
 /** The raw record shape returned by the GET_HISTORY RPC. */
@@ -40,6 +41,7 @@ export interface RawHistoryEntry {
   sessionId?: string
   prompt?: string
   error?: string
+  skipped?: string
   /** fork(PLAN-030): a session-mutation action's recorded effect. */
   sessionAction?: {
     type?: string
@@ -76,7 +78,7 @@ function describeDiagnostic(entry: RawHistoryEntry): string {
 
 /** True for records that represent an actual fire — i.e. that count as a run. */
 export function isDispatchRecord(entry: RawHistoryEntry): boolean {
-  return entry.kind === undefined
+  return entry.kind === undefined && !entry.skipped
 }
 
 /** Why a session action was refused before it ever reached an executor. */
@@ -135,7 +137,7 @@ export function toExecutionEntries(
   fallbackEvent: AutomationTrigger,
 ): ExecutionEntry[] {
   return entries
-    .filter((e) => isDispatchRecord(e) || e.kind === 'config-diagnostic')
+    .filter((e) => isDispatchRecord(e) || (e.kind === undefined && !!e.skipped) || e.kind === 'config-diagnostic')
     .map((e) => {
       const isDiagnostic = e.kind === 'config-diagnostic'
       // A guard refusal is a fire that mutated nothing, so it shares the diagnostic's
@@ -154,7 +156,7 @@ export function toExecutionEntries(
         // `blocked` (not `error`) — nothing was attempted and nothing failed;
         // the rule is structurally unable to run. Rendered with the warning
         // treatment rather than the failure one.
-        status: isDiagnostic || isSkip ? ('blocked' as const) : e.ok ? ('success' as const) : ('error' as const),
+        status: e.skipped ? ('skipped' as const) : isDiagnostic || isSkip ? ('blocked' as const) : e.ok ? ('success' as const) : ('error' as const),
         duration: e.webhook?.durationMs ?? 0,
         timestamp: e.ts,
         // Session-action records nest it; without this the timeline row for a
@@ -162,7 +164,9 @@ export function toExecutionEntries(
         sessionId: e.sessionId ?? e.sessionAction?.sessionId,
         // "Test run — " keeps a Run test click from reading as a real dispatch
         // in the timeline; before the marker existed the two were identical.
-        actionSummary: isDiagnostic
+        actionSummary: e.skipped
+          ? i18n.t('automations.skippedSummary', { reason: e.skipped })
+          : isDiagnostic
           ? describeDiagnostic(e)
           : `${e.test ? 'Test run — ' : ''}${
               e.sessionAction

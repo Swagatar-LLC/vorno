@@ -63,6 +63,7 @@ export {
   sourceExists,
   // Parsing utilities
   parseGuideMarkdown,
+  extractTagline,
 } from './storage.ts';
 
 // Credential Manager (unified credential operations)

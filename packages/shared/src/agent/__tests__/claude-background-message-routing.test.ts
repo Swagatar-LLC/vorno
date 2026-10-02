@@ -41,12 +41,24 @@ describe('Claude between-turn background message routing', () => {
     expect(onBackgroundEvent).toHaveBeenCalledWith({
       type: 'task_completed',
       taskId: 'agent-123',
+      launchedHere: false,
       status: 'failed',
       outputFile: '/tmp/output.txt',
       summary: 'failed cleanly',
     })
     expect(warnSpy).not.toHaveBeenCalled()
     expect(debug).not.toHaveBeenCalled()
+  })
+
+  it('marks a completion as launchedHere when its tool call was the agent\'s own', () => {
+    const { agent, onBackgroundEvent } = createHarness()
+    ;(agent as unknown as { eventAdapter: { wasLaunchedByMainAgent: (taskId: string, toolUseId?: string) => boolean } }).eventAdapter = {
+      wasLaunchedByMainAgent: (_taskId, toolUseId) => toolUseId === 'toolu_own',
+    }
+
+    agent.routeBackgroundMessage({ type: 'system', subtype: 'task_notification', task_id: 'b1', tool_use_id: 'toolu_own', status: 'completed', output_file: '/tmp/b1' })
+
+    expect(onBackgroundEvent).toHaveBeenCalledWith(expect.objectContaining({ taskId: 'b1', toolUseId: 'toolu_own', launchedHere: true }))
   })
 
   it('warns only when a task notification is missing its task id', () => {

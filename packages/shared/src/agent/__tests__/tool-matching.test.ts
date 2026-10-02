@@ -788,6 +788,20 @@ describe('extractToolResults', () => {
     })
   })
 
+  it("ignores a subagent's background Shell and background Agent (sidechain results belong to the subagent)", () => {
+    toolIndex.register('toolu_sub_bash', 'Bash', { command: 'bun test', description: 'Run tests' })
+    toolIndex.register('toolu_sub_agent', 'Agent', { description: 'Nested', run_in_background: true })
+
+    const blocks: ContentBlock[] = [
+      makeToolResultBlock('toolu_sub_bash', 'shell_id: shell_sub'),
+      makeToolResultBlock('toolu_sub_agent', 'Async agent launched. agentId: nested1 output_file: /tmp/x'),
+    ]
+
+    const events = extractToolResults(blocks, 'toolu_parent_task', undefined, toolIndex)
+
+    expect(events.map(e => e.type)).toEqual(['tool_result', 'tool_result'])
+  })
+
   it('parseWorkflowIdFromTranscriptPath extracts wf ids and ignores non-workflow paths', () => {
     expect(parseWorkflowIdFromTranscriptPath(
       '/x/.claude/projects/p/s/subagents/workflows/wf_ec253af1-05a/agent-a7cd.jsonl',

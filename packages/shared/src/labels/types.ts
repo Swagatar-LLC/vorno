@@ -19,15 +19,15 @@
 import type { EntityColor } from '../colors/types.ts'
 
 /**
- * Auto-label rule: regex pattern that scans user messages and automatically
- * applies labels with extracted values.
+ * Regex auto-label rule: scans user messages and automatically applies the
+ * label with extracted values.
  *
  * Uses capture groups ($1, $2, etc.) in the pattern and substitutes them
  * into the valueTemplate. Rules are evaluated in order. Multiple rules on
  * the same label means multiple ways to trigger it (e.g., URL regex + bare
  * key regex for issue IDs).
  */
-export interface AutoLabelRule {
+export interface RegexAutoLabelRule {
   /** Regex pattern with capture groups for value extraction */
   pattern: string
   /** Regex flags (default: 'gi' for global, case-insensitive). 'g' is always enforced. */
@@ -37,6 +37,42 @@ export interface AutoLabelRule {
   /** Human-readable description of what this rule matches */
   description?: string
 }
+
+/**
+ * Semantic auto-label rule: a yes/no question the decision model (Jev) answers
+ * about the user message; the label is applied when the "yes" probability
+ * reaches `threshold`. Only evaluated when the user enabled the decision model
+ * (Settings > AI) — otherwise the rule is inert. Because label changes can fire
+ * automations, the default threshold is deliberately high.
+ */
+export interface SemanticAutoLabelRule {
+  /** The yes/no question, e.g. "Is the user asking about billing or invoices?" (English works best) */
+  semantic: string
+  /** Probability of "yes" required to apply the label; 0 < threshold <= 1 (default 0.9) */
+  threshold?: number
+  /** Fixed value for valued labels (e.g. "billing"); omitted → the plain label id is applied */
+  value?: string
+  /** Human-readable description of what this rule catches */
+  description?: string
+}
+
+export type AutoLabelRule = RegexAutoLabelRule | SemanticAutoLabelRule
+
+/**
+ * Mutually exclusive guards. Config validation rejects rules carrying both
+ * fields; if one slips through anyway, the regex half wins everywhere (it did
+ * before semantic rules existed), so a hybrid rule never fires twice.
+ */
+export function isRegexAutoLabelRule(rule: AutoLabelRule): rule is RegexAutoLabelRule {
+  return typeof (rule as RegexAutoLabelRule).pattern === 'string'
+}
+
+export function isSemanticAutoLabelRule(rule: AutoLabelRule): rule is SemanticAutoLabelRule {
+  return !isRegexAutoLabelRule(rule) && typeof (rule as SemanticAutoLabelRule).semantic === 'string'
+}
+
+/** Default "yes" probability for semantic rules — high because LabelAdd automations may fire. */
+export const DEFAULT_SEMANTIC_RULE_THRESHOLD = 0.9
 
 /**
  * Label configuration (stored in labels/config.json).

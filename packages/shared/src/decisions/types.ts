@@ -161,7 +161,8 @@ export interface DecisionResult {
 export type DecisionFailureKind =
   | 'disabled'        // master switch or feature toggle off
   | 'unconfigured'    // no key / no base URL / unknown connection
-  | 'timeout'         // deadline exceeded or aborted
+  | 'timeout'         // deadline exceeded
+  | 'cancelled'       // the caller aborted (Stop, a superseded turn)
   | 'auth'            // 401 / 403
   | 'rate_limited'    // 429
   | 'invalid_request' // 400 / 422 or client-side validation
@@ -224,6 +225,7 @@ export const DECISION_AUDIT_FAILURE_MESSAGES: Readonly<Record<DecisionFailureKin
   disabled: 'Decision model disabled',
   unconfigured: 'Decision model not configured',
   timeout: 'Decision call timed out',
+  cancelled: 'Decision call cancelled',
   auth: 'Decision provider rejected the credentials',
   rate_limited: 'Decision provider rate limit reached',
   invalid_request: 'Decision request rejected',

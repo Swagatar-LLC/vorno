@@ -374,7 +374,7 @@ export class SystemOneClient {
   private networkError(error: unknown, deadlineMs: number, callerSignal: AbortSignal | undefined, state: DecisionStateDigest): DecisionError {
     const name = error instanceof Error ? error.name : '';
     if (callerSignal?.aborted) {
-      return new DecisionError('timeout', 'Decision call was cancelled', { cause: error, state });
+      return new DecisionError('cancelled', 'Decision call was cancelled', { cause: error, state });
     }
     if (name === 'TimeoutError' || name === 'AbortError') {
       return new DecisionError('timeout', `Decision model did not answer within ${deadlineMs} ms`, { cause: error, state });
