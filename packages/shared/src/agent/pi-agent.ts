@@ -43,7 +43,7 @@ import type { Workspace } from '../config/storage.ts';
 // Event adapter
 import { PiEventAdapter } from './backend/pi/event-adapter.ts';
 import type { PiCompactResult, PiLargeResultGateRequest, PiLargeResultGateResponse } from './backend/pi/protocol.ts';
-import { askLargeResultSummaryGate } from '../utils/large-response.ts';
+import { askLargeResultFilter } from '../utils/large-response.ts';
 import { EventQueue } from './backend/event-queue.ts';
 
 // System prompt for Craft Agent context
@@ -906,15 +906,16 @@ export class PiAgent extends BaseAgent {
     }
   }
 
-  /** Answer the subprocess with the large-result gate installed in this process (`null` without one). */
+  /** Answer the subprocess with the large-result filter installed in this process (`null` without one). */
   private async handleLargeResultGateRequest(msg: PiLargeResultGateRequest): Promise<void> {
-    const summarize = await askLargeResultSummaryGate({
+    const excerpt = await askLargeResultFilter({
       text: msg.text,
       context: { toolName: msg.toolName, intent: msg.intent },
-      estimatedTokens: msg.estimatedTokens,
+      budgetChars: msg.budgetChars,
+      filePath: msg.filePath,
       sessionId: this.config.session?.id,
     });
-    const response: PiLargeResultGateResponse = { type: 'large_result_gate_response', requestId: msg.requestId, summarize };
+    const response: PiLargeResultGateResponse = { type: 'large_result_gate_response', requestId: msg.requestId, excerpt };
     this.send({ ...response });
   }
 
@@ -1463,6 +1464,7 @@ export class PiAgent extends BaseAgent {
   private async handleToolExecuteRequest(request: {
     requestId: string;
     toolName: string;
+    toolCallId?: string;
     args: Record<string, unknown>;
   }): Promise<void> {
     // Prerequisite check: block source tools until guide.md is read
@@ -1477,7 +1479,9 @@ export class PiAgent extends BaseAgent {
     }
 
     try {
-      const result = await this.routeToolCall(request.toolName, request.args);
+      // The approved args no longer carry `_intent`; the pre-tool-use bridge kept it by call id.
+      const intent = request.toolCallId ? this.preToolMetadataByCallId.get(request.toolCallId)?.intent : undefined;
+      const result = await this.routeToolCall(request.toolName, request.args, intent);
       this.send({
         type: 'tool_execute_response',
         requestId: request.requestId,
@@ -1507,7 +1511,8 @@ export class PiAgent extends BaseAgent {
    */
   private async routeToolCall(
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    intent?: string,
   ): Promise<{ content: string; isError: boolean }> {
     // Session-scoped tools — strip mcp__session__ prefix added by the Pi SDK
     // registration (tools are registered as mcp__session__SubmitPlan, etc.)
@@ -1521,7 +1526,7 @@ export class PiAgent extends BaseAgent {
 
     // MCP source tools — route through centralized pool
     if (this.mcpPool?.isProxyTool(toolName)) {
-      return this.mcpPool.callTool(toolName, args);
+      return this.mcpPool.callTool(toolName, args, { intent });
     }
 
     // Unknown tool
