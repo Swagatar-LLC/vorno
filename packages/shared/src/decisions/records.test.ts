@@ -110,6 +110,14 @@ describe('decision records', () => {
     expect(record.meta).toBeUndefined();
   });
 
+  it('records cold starts only as a top-level boolean and keeps arbitrary meta out', () => {
+    const input = { feature: 'x', provider: 'custom' as const, model: 'm', questions: QUESTIONS, result: RESULT };
+    expect(buildDecisionRecord({ ...input, coldStart: true, meta: { coldStart: true } })).toMatchObject({ coldStart: true });
+    expect(buildDecisionRecord({ ...input, coldStart: true, meta: { coldStart: true } }).meta).toBeUndefined();
+    expect(buildDecisionRecord({ ...input, coldStart: false }).coldStart).toBeUndefined();
+    expect(buildDecisionRecord(input).coldStart).toBeUndefined();
+  });
+
   it('omits responseModel when the server did not name the model', () => {
     const record = buildDecisionRecord({ feature: 'x', provider: 'custom', model: 'm', questions: QUESTIONS, result: { ...RESULT, modelReported: false } });
     expect(record.responseModel).toBeUndefined();

@@ -85,6 +85,8 @@ export interface DecisionRecord {
   sessionId?: string;
   /** Caller context (e.g. item count, thresholds): finite numbers and booleans only. */
   meta?: Record<string, number | boolean>;
+  /** Whether the provider used the longer cold-start deadline. */
+  coldStart?: boolean;
 }
 
 /** What a decision point did with an answer. Option keys and numbers only, like decision records. */
@@ -151,6 +153,7 @@ export interface DecisionRecordInput {
   latencyMs?: number;
   sessionId?: string;
   meta?: Record<string, unknown>;
+  coldStart?: boolean;
 }
 
 /**
@@ -170,7 +173,7 @@ function hashKeys(map: Record<string, number>, keep?: RegExp): Record<string, nu
   return out;
 }
 
-const META_KEYS = new Set(['batch', 'index', 'total', 'items', 'threshold', 'confidence', 'repair', 'of', 'matches', 'level', 'rules', 'questions']);
+const META_KEYS = new Set(['batch', 'index', 'total', 'items', 'threshold', 'confidence', 'repair', 'of', 'matches', 'level', 'rules', 'questions', 'p']);
 
 /** Keep finite numbers and booleans under fixed operational key names; drop everything else. */
 export function sanitizeDecisionMeta(meta: Record<string, unknown>): Record<string, number | boolean> {
@@ -188,7 +191,8 @@ const AUDIT_TAGS = new Set([
   'none', 'scoped', 'whole_dag', 'run', 'skip', 'finished', 'needs_input', 'blocked',
   'unsure', 'title_now', 'defer_title', 'keep_title', 'refresh_title', 'badges',
   'labels', 'prompt', 'allow', 'keep', 'steer', 'queue', 'default', 'separate',
-  'merge', 'skip_summary', 'summarize', 'hint_used', 'hint_unused',
+  'merge', 'skip_summary', 'summarize', 'filter', 'file_read', 'file_not_read',
+  'corrected', 'accepted', 'hint_used', 'hint_unused',
   'held_back_used', 'held_back_unused', 'none_used', 'none_unused',
   'thinking:off', 'thinking:low', 'thinking:medium', 'thinking:high',
   'thinking:xhigh', 'thinking:max', 'status:needs-review',
@@ -205,7 +209,10 @@ function sanitizeDecisionDetail(detail: Record<string, unknown>): Record<string,
   if (typeof detail.option === 'string') out.option = hashDecisionIdentifier(detail.option);
   if (typeof detail.sessionLevel === 'string' && ['off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(detail.sessionLevel)) out.sessionLevel = detail.sessionLevel;
   if (typeof detail.configured === 'string' && ['steer', 'queue'].includes(detail.configured)) out.configured = detail.configured;
-  if (typeof detail.reason === 'string' && ['no_answer', 'low_confidence', 'no_candidates', 'none'].includes(detail.reason)) out.reason = detail.reason;
+  if (typeof detail.reason === 'string' && [
+    'no_answer', 'low_confidence', 'no_candidates', 'none',
+    'none_relevant', 'nearly_all_relevant', 'over_budget', 'consequential_floor',
+  ].includes(detail.reason)) out.reason = detail.reason;
   if (Array.isArray(detail.risks)) out.risks = detail.risks.filter(risk => ['irreversible', 'outside_workspace', 'external'].includes(risk));
   return out;
 }
@@ -267,6 +274,7 @@ export function buildDecisionRecord(input: DecisionRecordInput): DecisionRecord 
     const meta = sanitizeDecisionMeta(input.meta);
     if (Object.keys(meta).length > 0) record.meta = meta;
   }
+  if (input.coldStart === true) record.coldStart = true;
 
   return record;
 }
@@ -349,9 +357,13 @@ export class DecisionRecorder {
       return; // no file yet
     }
     if (size <= this.maxBytes) return;
-    const previous = this.path.endsWith('.jsonl') ? `${this.path.slice(0, -'.jsonl'.length)}.prev.jsonl` : `${this.path}.prev`;
-    await rename(this.path, previous);
+    await rename(this.path, previousDecisionsLogPath(this.path));
   }
+}
+
+/** Where the previous decision log is kept after rotation. */
+export function previousDecisionsLogPath(path: string): string {
+  return path.endsWith('.jsonl') ? `${path.slice(0, -'.jsonl'.length)}.prev.jsonl` : `${path}.prev`;
 }
 
 let defaultRecorder: DecisionRecorder | null = null;
