@@ -1958,7 +1958,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null }): void {
-    const instance = this.instances.get(id)
+    const target = this.instances.get(id)
+    // A pop-up is held through its opener: binding one binds the whole chain
+    // from its top-level window, which is what getBoundForSession looks up.
+    // Binding only the pop-up would leave the opener unbound after turn-end
+    // unbinding, and the next lookup would miss the chain entirely.
+    const instance = target ? this.rootInstanceOf(target) : undefined
     if (instance) {
       if (instance.window.isDestroyed()) {
         // Never bind a session to a dead window — the very next command would
@@ -1979,8 +1984,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       this.emitStateChange(instance)
       // A window's pop-ups belong to whoever holds the window.
       for (const popup of this.descendantPopupsOf(instance)) {
-        if (popup.boundSessionId === sessionId) continue
-        this.bindSession(popup.id, sessionId, options)
+        if (popup.window.isDestroyed()) continue
+        popup.boundSessionId = sessionId
+        popup.ownerType = 'session'
+        popup.ownerSessionId = sessionId
+        popup.lastActivityAt = Date.now()
+        if (options?.workspaceId !== undefined) popup.workspaceId = options.workspaceId
+        this.emitStateChange(popup)
       }
     }
   }
@@ -4199,7 +4209,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       themeColor: instance.themeColor,
       workspaceId: instance.workspaceId,
       parentInstanceId: instance.parentInstanceId,
+      activePopupId: this.liveActivePopupIdOf(instance),
     }
+  }
+
+  /** resolveCommandTarget's choice for a top-level window, without clearing stale state. */
+  private liveActivePopupIdOf(instance: BrowserInstance): string | null {
+    if (instance.parentInstanceId || !instance.activePopupId) return null
+    const popup = this.instances.get(instance.activePopupId)
+    if (!popup || popup.window.isDestroyed() || this.rootInstanceOf(popup) !== instance) return null
+    return popup.id
   }
 
   private emitStateChange(instance: BrowserInstance): void {

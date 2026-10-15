@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
+import type { BrowserInstanceInfo } from '../browser-pane-manager'
 
 const createdWindows: any[] = []
 const partitionSessions = new Map<string, any>()
@@ -2094,6 +2095,59 @@ describe('BrowserPaneManager page pop-ups as child instances', () => {
     expect(manager.createForSession('sess-a')).toBe(popupId)
     const popup = manager.listInstances().find((w) => w.id === popupId)!
     expect(popup.boundSessionId).toBe('sess-a')
+  })
+
+  it('focusing a pop-up after turn-end unbind rebinds its opener so remote commands stay on the pop-up', async () => {
+    const req = { v: 1, workspaceId: 'ws-r', sessionId: 'sess-r1' }
+    const openerId = await (manager as any).dispatchCapability({ ...req, method: 'createForSession', args: ['sess-r1'] })
+    const { popupId: firstId } = openPopupFrom(openerId, 'https://example.com/first')
+    const { popupId: nestedId } = openPopupFrom(firstId, 'https://example.com/nested')
+
+    // ponytail: dispatchCapability is private; this cast exercises the actual
+    // remote dispatcher without adding a production-only testing API.
+    await (manager as any).dispatchCapability({ ...req, method: 'unbindAllForSession', args: ['sess-r1'] })
+    expect(manager.listInstances().every((w) => w.boundSessionId === null)).toBe(true)
+
+    // SessionManager's focus command: bindSession on the selected pop-up, then focus.
+    await (manager as any).dispatchCapability({ ...req, method: 'bindSession', args: [nestedId, 'sess-r1'] })
+    await (manager as any).dispatchCapability({ ...req, method: 'focus', args: [nestedId] })
+
+    const list = await (manager as any).dispatchCapability({ ...req, method: 'listInstances', args: [] }) as BrowserInstanceInfo[]
+    for (const id of [openerId, firstId, nestedId]) {
+      expect(list.find((w) => w.id === id)!.boundSessionId).toBe('sess-r1')
+    }
+    // Remote createForSession runs with allowReuseManual:false; it must find the
+    // rebound opener and resolve to the focused pop-up, not open a new window.
+    const target = await (manager as any).dispatchCapability({ ...req, method: 'createForSession', args: ['sess-r1'] })
+    expect(target).toBe(nestedId)
+    expect(manager.listInstances()).toHaveLength(3)
+  })
+
+  it('reports the live selected pop-up on the opener, locally and over remote listInstances', async () => {
+    const openerId = manager.createForSession('sess-a', { workspaceId: 'ws-1' })
+    const { popupId, popupWindow } = openPopupFrom(openerId)
+    const opener = () => manager.listInstances().find((w) => w.id === openerId)!
+
+    expect(opener().activePopupId).toBeNull()
+    manager.focus(popupId)
+    expect(opener().activePopupId).toBe(popupId)
+    expect(manager.listInstances().find((w) => w.id === popupId)!.activePopupId).toBeNull()
+
+    popupWindow.isDestroyed = mock(() => true)
+    expect(opener().activePopupId).toBeNull()
+
+    manager.focus(openerId)
+    expect(opener().activePopupId).toBeNull()
+  })
+
+  it('carries the selected pop-up over remote listInstances', async () => {
+    const req = { v: 1, workspaceId: 'ws-r', sessionId: 'sess-r1' }
+    const openerId = await (manager as any).dispatchCapability({ ...req, method: 'createForSession', args: ['sess-r1'] })
+    const { popupId } = openPopupFrom(openerId)
+    await (manager as any).dispatchCapability({ ...req, method: 'focus', args: [popupId] })
+
+    const remote = await (manager as any).dispatchCapability({ ...req, method: 'listInstances', args: [] }) as BrowserInstanceInfo[]
+    expect(remote.find((w) => w.id === openerId)!.activePopupId).toBe(popupId)
   })
 
   it('never hands a pop-up to another session', async () => {

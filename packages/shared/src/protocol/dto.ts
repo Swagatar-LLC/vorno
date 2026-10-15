@@ -1011,6 +1011,12 @@ export interface BrowserInstanceInfo {
    * session ownership. Missing/null means a top-level browser window.
    */
   parentInstanceId?: string | null
+  /**
+   * On a top-level window: the id of the live pop-up the session last focused,
+   * which is where session-resolved commands go. Read-only. Missing/null means
+   * commands target the window itself.
+   */
+  activePopupId?: string | null
 }
 
 export interface DeepLinkNavigation {

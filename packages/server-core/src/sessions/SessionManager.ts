@@ -233,7 +233,7 @@ import { buildGuardedModeCheck } from '../decisions/guarded-mode'
 import { assessPermissionRisks } from '../decisions/permission-risks'
 import { checkAutomationCondition } from '../decisions/automation-condition'
 import { validateArchiveTarget } from './archive-guards'
-import { isBrowserWindowVisibleToSession } from './browser-popup-visibility'
+import { isBrowserWindowVisibleToSession, pickImplicitLifecycleTarget } from './browser-popup-visibility'
 import { shareApiBase } from './share-target'
 
 // Import from server-core domain utilities
@@ -5894,8 +5894,15 @@ export class SessionManager implements ISessionManager {
             return { windows, target: validated.target }
           }
 
-          const fallbackTarget = windows.find((w) => w.boundSessionId === sid)
-            ?? windows.find((w) => w.ownerSessionId === sid)
+          // close/hide act on the session's selected pop-up, like other
+          // session-resolved commands; release always acts on the window.
+          const picked: { target?: (typeof windows)[number]; reason?: string } = command === 'release'
+            ? { target: windows.find((w) => w.boundSessionId === sid) ?? windows.find((w) => w.ownerSessionId === sid) }
+            : pickImplicitLifecycleTarget(windows, sid)
+          if (picked.reason) {
+            return { windows, reason: picked.reason }
+          }
+          const fallbackTarget = picked.target
 
           if (!fallbackTarget) {
             return { windows, reason: `No ${command} target is currently associated with this session. Use "windows", then "${command} <id>".` }
