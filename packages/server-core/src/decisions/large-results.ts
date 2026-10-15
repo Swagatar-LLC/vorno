@@ -13,7 +13,7 @@
 
 import { basename } from 'node:path'
 import type { LargeResultFilter } from '@craft-agent/shared/utils'
-import type { DecisionResult } from '@craft-agent/shared/decisions'
+import { DECISION_MAX_DEADLINE_MS, type DecisionResult } from '@craft-agent/shared/decisions'
 import { openDecisionPoint, recordDecisionFollowUp, recordDecisionOutcome, type DecisionPointDeps } from './decision-point'
 import { scoreRelevance } from './relevance'
 
@@ -32,6 +32,12 @@ const MAX_PIECE_CHARS = 12_000
 export const LARGE_RESULT_MIN_PARTS = 4
 /** More than this share of the parts relevant: filtering would not help. */
 export const LARGE_RESULT_MAX_KEPT_SHARE = 0.9
+/**
+ * One deadline for all of a result's calls. The Pi subprocess stops waiting after
+ * `LARGE_RESULT_GATE_TIMEOUT_MS` (this plus 5 s), so the filter gives up first and never
+ * records an excerpt the agent did not get.
+ */
+export const LARGE_RESULT_FILTER_DEADLINE_MS = DECISION_MAX_DEADLINE_MS
 
 const chunk = (text: string, size: number): string[] => {
   if (text.length <= size) return [text]
@@ -106,6 +112,8 @@ export function splitLargeResult(text: string, partChars: number = LARGE_RESULT_
   ))
 }
 
+const omitted = (count: number) => `[… ${count} part${count === 1 ? '' : 's'} left out, see the saved file …]`
+
 export type LargeResultChoice = { kept: number[] } | { reason: 'none_relevant' | 'nearly_all_relevant' | 'over_budget' }
 
 /**
@@ -119,18 +127,20 @@ export function chooseRelevantParts(parts: readonly string[], scores: readonly n
     .filter(({ score, index }) => index > 0 && score >= LARGE_RESULT_KEEP_AT)
   if (relevant.length === 0) return { reason: 'none_relevant' }
   if (relevant.length > LARGE_RESULT_MAX_KEPT_SHARE * (parts.length - 1)) return { reason: 'nearly_all_relevant' }
+  // `formatExcerpt` adds a newline per part and, per kept part, at most one more gap
+  // marker (it splits a gap in two). Count both so the excerpt stays within budget.
+  const marker = omitted(parts.length).length + 1
+  const cost = (index: number) => parts[index]!.length + 1 + marker
   const kept = [0]
-  let used = parts[0]!.length
+  let used = parts[0]!.length + marker
   for (const { index } of relevant.sort((a, b) => b.score - a.score)) {
-    if (used + parts[index]!.length > budgetChars) continue
+    if (used + cost(index) > budgetChars) continue
     kept.push(index)
-    used += parts[index]!.length
+    used += cost(index)
   }
   if (kept.length === 1) return { reason: 'over_budget' }
   return { kept: kept.sort((a, b) => a - b) }
 }
-
-const omitted = (count: number) => `[… ${count} part${count === 1 ? '' : 's'} left out, see the saved file …]`
 
 /** The kept parts in order, with each gap marked. */
 export function formatExcerpt(parts: readonly string[], kept: readonly number[]): string {
@@ -149,14 +159,14 @@ export function formatExcerpt(parts: readonly string[], kept: readonly number[])
 const openExcerpts = new Map<string, { result: DecisionResult; fileName: string }[]>()
 
 /** Host filter for `setLargeResultFilter`. Never throws. */
-export function buildLargeResultFilter(deps: DecisionPointDeps = {}): LargeResultFilter {
+export function buildLargeResultFilter(deps: DecisionPointDeps = {}, deadlineMs: number = LARGE_RESULT_FILTER_DEADLINE_MS): LargeResultFilter {
   return async ({ text, context, budgetChars, filePath, sessionId }) => {
     if (!context.intent) return null
     const parts = splitLargeResult(text)
     if (parts.length < LARGE_RESULT_MIN_PARTS) return null
     const decide = await openDecisionPoint({ ...deps, feature: 'largeResults', record: 'large_results', sessionId })
     if (!decide) return null
-    const scored = await scoreRelevance(decide, context.intent, parts, { tool: context.toolName })
+    const scored = await scoreRelevance(decide, context.intent, parts, { tool: context.toolName }, AbortSignal.timeout(deadlineMs))
     if (!scored) return null
     const choice = chooseRelevantParts(parts, scored.scores, budgetChars)
     // One outcome per result, on its first call.

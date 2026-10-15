@@ -45,25 +45,31 @@ export function packRelevanceCalls(parts: readonly string[], maxChars: number = 
   return calls
 }
 
-/** `null` when any call gave no answer: a partial view would drop parts it never judged. */
+/**
+ * `null` when any call gave no answer: a partial view would drop parts it never judged.
+ * `signal` bounds the whole scoring: once it aborts, calls in flight are cancelled and no
+ * further wave starts.
+ */
 export async function scoreRelevance(
   decide: DecisionPointFn,
   goal: string,
   parts: readonly string[],
   meta: Record<string, unknown> = {},
+  signal?: AbortSignal,
 ): Promise<RelevanceScores | null> {
   const calls = packRelevanceCalls(parts)
   const results: (DecisionResult | null)[] = []
   for (let start = 0; start < calls.length; start += RELEVANCE_MAX_PARALLEL_CALLS) {
+    if (signal?.aborted) return null
     const wave = calls.slice(start, start + RELEVANCE_MAX_PARALLEL_CALLS)
     results.push(...await Promise.all(wave.map((indexes, offset) => {
       const questions: Record<string, DecisionQuestion> = {}
       for (const index of indexes) {
         questions[`p${index}`] = { type: 'noul', instructions: `Does this part of a tool result contain information needed to accomplish the goal?\n\nPart:\n${parts[index]}` }
       }
-      return decide({ state: { goal: goal.slice(0, RELEVANCE_MAX_GOAL_CHARS) }, questions }, { ...meta, call: start + offset + 1, calls: calls.length, parts: indexes.length })
+      return decide({ state: { goal: goal.slice(0, RELEVANCE_MAX_GOAL_CHARS) }, questions }, { ...meta, call: start + offset + 1, calls: calls.length, parts: indexes.length }, signal)
     })))
-    if (results.some(result => !result)) return null
+    if (signal?.aborted || results.some(result => !result)) return null
   }
 
   const scores = parts.map((_, index) => {

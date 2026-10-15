@@ -32,4 +32,18 @@ describe('relevance scoring', () => {
     const flaky = async (request: DecisionRequest) => (n++ === 1 ? null : result(Object.fromEntries(Object.keys(request.questions).map(key => [key, { type: 'noul' as const, noul: 0.5 }]))))
     expect(await scoreRelevance(flaky, 'g', Array.from({ length: 100 }, () => 'p'))).toBeNull()
   })
+
+  it('stops at the shared deadline: cancels calls in flight and starts no further wave', async () => {
+    const controller = new AbortController()
+    const signals: (AbortSignal | undefined)[] = []
+    const decide = async (_request: DecisionRequest, _meta?: Record<string, unknown>, signal?: AbortSignal) => {
+      signals.push(signal)
+      controller.abort()
+      return null
+    }
+    // 600 parts: 10 calls, two waves of at most 8.
+    expect(await scoreRelevance(decide, 'g', Array.from({ length: 600 }, () => 'p'), {}, controller.signal)).toBeNull()
+    expect(signals).toHaveLength(8)
+    expect(signals.every(signal => signal === controller.signal)).toBe(true)
+  })
 })

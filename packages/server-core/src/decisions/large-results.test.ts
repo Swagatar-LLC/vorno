@@ -90,7 +90,17 @@ describe('chooseRelevantParts', () => {
   })
   it('over budget, keeps the most relevant parts that fit', () => {
     const big = ['h', 'aaaa', 'bbbb', 'cccc', 'dddd', 'eeee']
-    expect(chooseRelevantParts(big, [0, 0.6, 0.95, 0.7, 0, 0], 9)).toEqual({ kept: [0, 2, 3] })
+    // Each part costs its text, a newline, and room for one gap marker.
+    const marker = '[… 6 parts left out, see the saved file …]'.length + 1
+    expect(chooseRelevantParts(big, [0, 0.6, 0.95, 0.7, 0, 0], 1 + marker + 2 * (5 + marker))).toEqual({ kept: [0, 2, 3] })
+  })
+  it('counts gap markers and newlines against the budget for scattered matches', () => {
+    const scattered = ['head', ...Array.from({ length: 99 }, (_, i) => `${i}`.padEnd(1_000, '.'))]
+    const scores = scattered.map((_, i) => (i % 3 === 1 ? 0.9 : 0))
+    const choice = chooseRelevantParts(scattered, scores, 24_000)
+    if (!('kept' in choice)) throw new Error('expected a cut')
+    expect(choice.kept.length).toBeGreaterThan(10)
+    expect(formatExcerpt(scattered, choice.kept).length).toBeLessThanOrEqual(24_000)
   })
   it('marks every gap', () => {
     expect(formatExcerpt(parts, [0, 3])).toBe('head\n[… 2 parts left out, see the saved file …]\nc\n[… 2 parts left out, see the saved file …]')
@@ -152,5 +162,20 @@ describe('large result filter (decision model)', () => {
     expect(await off(input('x'))).toBeNull()
     const failing = buildLargeResultFilter({ resolveClient: scoringParts(() => { throw new Error('boom') }), recorder })
     expect(await failing(input('x'))).toBeNull()
+  })
+
+  it('gives up when all calls together pass one deadline, and records no outcome', async () => {
+    const settings = normalizeDecisionLayerSettings({ enabled: true, provider: 'openrouter', features: { largeResults: true } })
+    const endpoint = resolveDecisionEndpoint(settings)
+    let aborted = 0
+    const hanging = (async (_url: string, init: RequestInit) => new Promise((_, reject) => {
+      init.signal?.addEventListener('abort', () => { aborted++; reject(init.signal!.reason) })
+    })) as unknown as typeof fetch
+    const client = new SystemOneClient({ baseUrl: endpoint.baseUrl, apiKey: 'k', model: endpoint.model, fetch: hanging })
+    const slow = buildLargeResultFilter({ resolveClient: async () => ({ ok: true, value: { client, settings: { ...settings, deadlineMs: 60_000 }, provider: 'openrouter', endpoint, keySource: 'provider' } }), recorder }, 50)
+    expect(await slow(input('When did the NHL tab launch move?'))).toBeNull()
+    expect(aborted).toBeGreaterThan(0)
+    await recorder.flush()
+    expect((await readDecisionLog(recorder.path)).filter(isDecisionOutcomeRecord)).toEqual([])
   })
 })
