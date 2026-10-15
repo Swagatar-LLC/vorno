@@ -236,6 +236,24 @@ describe('decision points in the session lifecycle', () => {
     expect(managed.suggestionTrace).toBeUndefined()
   })
 
+  it('keeps the suggestion follow-up open while an auth retry re-sends the request', async () => {
+    const managed = await session('suggestion-auth-retry')
+    const followUps: Array<{ used: string[] }> = []
+    spyOn(suggestions, 'suggestionFollowUp').mockImplementation((_trace, used) => { followUps.push({ used: [...used] }) })
+    const calendar = { kind: 'source' as const, slug: 'google-calendar', name: 'Google Calendar', description: 'Calendar', path: '/ws/sources/google-calendar' }
+    managed.suggestionTrace = { trace: { result: {} as never, choice: calendar, hinted: false, candidates: [calendar] }, used: new Set() }
+
+    // The failed attempt's chat loop stops while the resend is still scheduled.
+    managed.authRetryInProgress = true
+    await (sm as any).onProcessingStopped(managed.id, 'interrupted')
+    expect(followUps).toEqual([])
+    expect(managed.suggestionTrace).toBeDefined()
+
+    managed.authRetryInProgress = false
+    await (sm as any).onProcessingStopped(managed.id, 'complete')
+    expect(followUps).toEqual([{ used: [] }])
+  })
+
   it('does not start a turn that was stopped during the pre-turn checks', async () => {
     const managed = await session('stop-before-start')
     const chats: string[] = []

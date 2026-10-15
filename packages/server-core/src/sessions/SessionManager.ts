@@ -9445,6 +9445,8 @@ export class SessionManager implements ISessionManager {
           sessionLog.info(`[auth-retry] Retry completed for session ${sessionId}`)
         } else {
           managed.authRetryInProgress = false
+          this.finishSuggestionTrace(managed)
+          finishLargeResultExcerpts(managed.id)
         }
       } catch (retryError) {
         managed.authRetryInProgress = false
@@ -9712,7 +9714,8 @@ export class SessionManager implements ISessionManager {
         // 1. Cleanup state
         this.setProcessing(managed, false, finalization)
         managed.stopRequested = false  // Reset for next turn
-        if (!managed.autoRetryTimer && managed.pendingActivationResend === undefined) {
+        // A retry still to come continues this request: its own stop closes these.
+        if (!managed.autoRetryTimer && managed.pendingActivationResend === undefined && !managed.authRetryInProgress) {
           this.finishSuggestionTrace(managed)
           finishLargeResultExcerpts(managed.id)
         }
