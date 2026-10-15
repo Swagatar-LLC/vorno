@@ -1123,3 +1123,94 @@ describe('browser_tool error serialization (SUV-0043)', () => {
     expect(result.content[0].text).toContain('Unserializable')
   })
 })
+
+describe('browser_tool page pop-ups', () => {
+  const opener = {
+    id: 'browser-1',
+    title: 'Search',
+    url: 'https://example.com',
+    isVisible: true,
+    ownerType: 'session' as const,
+    ownerSessionId: 'test-session',
+    boundSessionId: 'test-session',
+    agentControlActive: true,
+    parentInstanceId: null as string | null,
+  }
+  const popup = {
+    ...opener,
+    id: 'browser-1-popup-1',
+    title: 'Image',
+    url: 'https://example.com/image',
+    agentControlActive: false,
+    parentInstanceId: 'browser-1',
+  }
+
+  function setup(opensPopupOn: 'click' | 'clickAt' | 'sendKey' | 'none') {
+    const mockFns = createMockFns()
+    let windows: Array<typeof opener> = [opener]
+    mockFns.listWindows = async () => windows
+    const open = async () => { windows = [opener, popup] }
+    if (opensPopupOn === 'click') mockFns.click = open
+    if (opensPopupOn === 'clickAt') mockFns.clickAt = open
+    if (opensPopupOn === 'sendKey') mockFns.sendKey = open
+    const tools = createBrowserTools({ sessionId: 'test-session', getBrowserPaneFns: () => mockFns })
+    return { tools, mockFns }
+  }
+
+  it('click result names the pop-up it opened', async () => {
+    const { tools } = setup('click')
+    const result = await executeTool(tools, 'browser_tool', { command: 'click @e1' })
+    expect(result.content[0].text).toContain('Popup opened: browser-1-popup-1 https://example.com/image')
+    expect(result.content[0].text).toContain('focus browser-1-popup-1')
+  })
+
+  it('click-at and key results name the pop-up they opened', async () => {
+    const clickAt = setup('clickAt')
+    const atResult = await executeTool(clickAt.tools, 'browser_tool', { command: 'click-at 10 10' })
+    expect(atResult.content[0].text).toContain('Popup opened: browser-1-popup-1 https://example.com/image')
+
+    const key = setup('sendKey')
+    const keyResult = await executeTool(key.tools, 'browser_tool', { command: 'key Enter' })
+    expect(keyResult.content[0].text).toContain('Popup opened: browser-1-popup-1 https://example.com/image')
+  })
+
+  it('click without a pop-up adds no pop-up line', async () => {
+    const { tools } = setup('none')
+    const result = await executeTool(tools, 'browser_tool', { command: 'click @e1' })
+    expect(result.content[0].text).not.toContain('Popup opened')
+  })
+
+  it('a pop-up already open before the click is not reported again', async () => {
+    const { tools, mockFns } = setup('none')
+    mockFns.listWindows = async () => [opener, popup]
+    const result = await executeTool(tools, 'browser_tool', { command: 'click @e1' })
+    expect(result.content[0].text).not.toContain('Popup opened')
+  })
+
+  it('windows lists the pop-up with its parent and focus reports it as the target', async () => {
+    const { tools, mockFns } = setup('none')
+    mockFns.listWindows = async () => [opener, popup]
+    const listed = await executeTool(tools, 'browser_tool', { command: 'windows' })
+    expect(listed.content[0].text).toContain('- browser-1-popup-1')
+    expect(listed.content[0].text).toContain('parent: browser-1')
+
+    mockFns.focusWindow = async (id?: string) => ({ instanceId: id ?? 'browser-1', title: 'Image', url: popup.url })
+    const focused = await executeTool(tools, 'browser_tool', { command: 'focus browser-1-popup-1' })
+    expect(focused.content[0].text).toContain('Focused pop-up browser-1-popup-1 (opened by browser-1)')
+  })
+})
+
+describe('browser_tool access-denied pages', () => {
+  it('keeps control and labels the page instead of asking for verification', async () => {
+    const mockFns = createMockFns()
+    let released = false
+    mockFns.releaseControl = async () => { released = true; return { action: 'released' as const, affectedIds: [] } }
+    mockFns.detectChallenge = async () => ({ detected: false, provider: 'access-denied', signals: ['text:access-denied'] })
+    const tools = createBrowserTools({ sessionId: 'test-session', getBrowserPaneFns: () => mockFns })
+
+    const result = await executeTool(tools, 'browser_tool', { command: 'navigate example.com/Forbidden.aspx' })
+    expect(result.content[0].text).toContain('Page refused access (access-denied)')
+    expect(result.content[0].text).not.toContain('Security verification detected')
+    expect(released).toBe(false)
+  })
+})

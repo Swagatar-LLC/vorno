@@ -533,11 +533,13 @@ Examples:
 - \`key Enter\`
 - \`key k meta\`
 - \`downloads wait 15000\`
-- \`focus [windowId]\` — focus existing browser window (no new window)
-- \`windows\` — list current browser windows and ownership state
+- \`focus [windowId]\` — focus a browser window or pop-up; later commands act on it
+- \`windows\` — list current browser windows, pop-ups (with their parent) and ownership state
 - \`release\` — dismiss the agent control overlay when done
 - \`close\` — close and destroy the browser window
-- \`hide\` — hide the window while preserving state`,
+- \`hide\` — hide the window while preserving state
+
+Pop-ups: when a page opens a window (window.open), click/key results print \`Popup opened: <id> <url>\`. Commands keep acting on the current window until you run \`focus <id>\`; \`focus <opener id>\` goes back, and closing the pop-up returns commands to its opener.`,
 
   call_llm: `Invoke a secondary LLM for focused subtasks. Use for:
 - Cost optimization: use a smaller model for simple tasks (summarization, classification)

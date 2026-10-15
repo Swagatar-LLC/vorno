@@ -233,6 +233,7 @@ import { buildGuardedModeCheck } from '../decisions/guarded-mode'
 import { assessPermissionRisks } from '../decisions/permission-risks'
 import { checkAutomationCondition } from '../decisions/automation-condition'
 import { validateArchiveTarget } from './archive-guards'
+import { isBrowserWindowVisibleToSession, pickImplicitLifecycleTarget } from './browser-popup-visibility'
 import { shareApiBase } from './share-target'
 
 // Import from server-core domain utilities
@@ -5857,8 +5858,13 @@ export class SessionManager implements ISessionManager {
           return instanceId
         }
 
+        // A pop-up a page opened belongs to the session that owns its opener:
+        // no other session lists, focuses or closes it.
+        const listSessionWindows = async () =>
+          (await bpm.listInstancesAsync()).filter((w) => isBrowserWindowVisibleToSession(w, sid, workspaceId))
+
         const resolveLifecycleWindowTarget = async (command: 'release' | 'close' | 'hide', requestedInstanceId?: string) => {
-          const windows = await bpm.listInstancesAsync()
+          const windows = await listSessionWindows()
 
           if (windows.length === 0) {
             return { windows, reason: 'No browser windows are available. Use "open" first.' }
@@ -5888,8 +5894,15 @@ export class SessionManager implements ISessionManager {
             return { windows, target: validated.target }
           }
 
-          const fallbackTarget = windows.find((w) => w.boundSessionId === sid)
-            ?? windows.find((w) => w.ownerSessionId === sid)
+          // close/hide act on the session's selected pop-up, like other
+          // session-resolved commands; release always acts on the window.
+          const picked: { target?: (typeof windows)[number]; reason?: string } = command === 'release'
+            ? { target: windows.find((w) => w.boundSessionId === sid) ?? windows.find((w) => w.ownerSessionId === sid) }
+            : pickImplicitLifecycleTarget(windows, sid)
+          if (picked.reason) {
+            return { windows, reason: picked.reason }
+          }
+          const fallbackTarget = picked.target
 
           if (!fallbackTarget) {
             return { windows, reason: `No ${command} target is currently associated with this session. Use "windows", then "${command} <id>".` }
@@ -6007,14 +6020,14 @@ export class SessionManager implements ISessionManager {
               return bpm.evaluate(instanceId, expression)
             },
             focusWindow: async (targetInstanceId) => {
-              const windows = await bpm.listInstancesAsync()
+              const windows = await listSessionWindows()
               if (windows.length === 0) {
                 throw new Error('No browser windows available to focus. Use "open" first.')
               }
 
               const target = targetInstanceId
                 ? windows.find(w => w.id === targetInstanceId)
-                : windows.find(w => w.boundSessionId === sid || w.ownerSessionId === sid)
+                : windows.find(w => !w.parentInstanceId && (w.boundSessionId === sid || w.ownerSessionId === sid))
 
               if (!target) {
                 if (targetInstanceId) {
@@ -6127,7 +6140,7 @@ export class SessionManager implements ISessionManager {
               }
             },
             listWindows: async () => {
-              return bpm.listInstancesAsync()
+              return listSessionWindows()
             },
             detectChallenge: async () => {
               const instanceId = await resolveSessionBrowserInstance('browser_detect_challenge')
