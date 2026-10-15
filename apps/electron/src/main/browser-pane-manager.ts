@@ -9,7 +9,7 @@
 import { join, parse as parsePath } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
-import { BrowserView, BrowserWindow, app, ipcMain, nativeTheme, session, shell, type Session as ElectronSession } from 'electron'
+import { BrowserView, BrowserWindow, app, ipcMain, nativeTheme, session, shell, type Session as ElectronSession, type WebContents } from 'electron'
 import { mainLog } from './logger'
 import type { WindowManager } from './window-manager'
 import { BrowserCDP, type AccessibilitySnapshot, type ElementGeometry } from './browser-cdp'
@@ -183,15 +183,34 @@ interface BrowserInstance {
    */
   partition: string
   window: BrowserWindow
-  toolbarView: BrowserView
-  pageView: BrowserView
+  /**
+   * Toolbar, page and overlay views exist only on top-level instances. A
+   * pop-up instance (`parentInstanceId` set) is the page's own native child
+   * window: its page is `window.webContents` and it has no Vorno chrome.
+   */
+  toolbarView: BrowserView | null
+  pageView: BrowserView | null
+  /** The page's webContents: `pageView.webContents`, or the pop-up window's own. */
+  pageWebContents: WebContents
+  /**
+   * Set when this instance is a pop-up the page opened with `window.open`: the
+   * id of the instance whose page opened it. A pop-up inherits its opener's
+   * partition and session ownership and closes with it.
+   */
+  parentInstanceId: string | null
+  /**
+   * Top-level instances only: the pop-up the owning session selected with
+   * `focus`, which session-resolved commands then act on. Null targets this
+   * instance. Cleared when that pop-up closes or the opener is focused.
+   */
+  activePopupId: string | null
   /**
    * `pageView.webContents.id`, captured at creation. Lookups and teardown use
    * this copy because reading `webContents` on a destroyed window throws
    * "Object has been destroyed" (OSS #1059).
    */
   pageWebContentsId: number
-  nativeOverlayView: BrowserView
+  nativeOverlayView: BrowserView | null
   cdp: BrowserCDP
   currentUrl: string
   title: string
@@ -392,6 +411,7 @@ interface LastBrowserAction {
 }
 
 let instanceCounter = 0
+let popupCounter = 0
 
 export class BrowserPaneManager implements IBrowserPaneManager {
   private instances: Map<string, BrowserInstance> = new Map()
@@ -534,6 +554,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       window,
       toolbarView,
       pageView,
+      pageWebContents: pageView.webContents,
+      parentInstanceId: null,
+      activePopupId: null,
       nativeOverlayView,
       cdp,
       currentUrl: 'about:blank',
@@ -868,7 +891,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     try {
       return await this.guardInstanceOp(instance, async () => {
-        const loaded = instance.pageView.webContents.loadURL(normalizedUrl)
+        const loaded = instance.pageWebContents.loadURL(normalizedUrl)
         const timeout = new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(() => reject(new Error(`Navigation to "${normalizedUrl}" timed out after ${timeoutMs / 1000}s`)), timeoutMs)
         })
@@ -887,8 +910,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   async goBack(id: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
     return this.guardInstanceOp(instance, async () => {
-      if (instance.pageView.webContents.canGoBack()) {
-        instance.pageView.webContents.goBack()
+      if (instance.pageWebContents.canGoBack()) {
+        instance.pageWebContents.goBack()
       }
     })
   }
@@ -896,8 +919,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   async goForward(id: string): Promise<void> {
     const instance = this.requireAliveInstance(id)
     return this.guardInstanceOp(instance, async () => {
-      if (instance.pageView.webContents.canGoForward()) {
-        instance.pageView.webContents.goForward()
+      if (instance.pageWebContents.canGoForward()) {
+        instance.pageWebContents.goForward()
       }
     })
   }
@@ -905,13 +928,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   reload(id: string): void {
     const instance = this.instances.get(id)
     if (!instance || instance.window.isDestroyed()) return
-    instance.pageView.webContents.reload()
+    instance.pageWebContents.reload()
   }
 
   stop(id: string): void {
     const instance = this.instances.get(id)
     if (!instance || instance.window.isDestroyed()) return
-    instance.pageView.webContents.stop()
+    instance.pageWebContents.stop()
   }
 
   focus(id: string): void {
@@ -920,6 +943,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const win = instance.window
     if (win.isDestroyed()) return
+
+    // Focusing a pop-up makes it the session's command target; focusing a
+    // top-level window targets that window itself again.
+    const root = this.rootInstanceOf(instance)
+    root.activePopupId = root === instance ? null : instance.id
 
     // If toolbar hasn't painted yet, defer showing until markToolbarReady runs.
     // Token guard prevents stale deferred focus from showing after hide/destroy.
@@ -966,7 +994,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // and kill the main process.
     if (instance.isLoading) {
       try {
-        const pageWc = instance.pageView.webContents
+        const pageWc = instance.pageWebContents
         if (!pageWc.isDestroyed()) pageWc.stop()
       } catch (error) {
         mainLog.warn(`[browser-pane] failed to stop page load before hide id=${id}: ${(error as Error)?.message ?? error}`)
@@ -1087,7 +1115,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         if (waitFor === 'navigation') {
           const timeoutMs = Math.max(100, options?.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS)
           await new Promise<void>((resolve, reject) => {
-            const pageWc = instance.pageView.webContents
+            const pageWc = instance.pageWebContents
 
             const timer = setTimeout(() => {
               cleanup()
@@ -1190,7 +1218,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const shouldSuspend = !!instance.agentControl?.active
       && instance.nativeOverlayReady
 
-    if (!shouldSuspend) return false
+    if (!shouldSuspend || !instance.nativeOverlayView) return false
 
     instance.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     return true
@@ -1574,8 +1602,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       : undefined
 
     let image = options.rect
-      ? await instance.pageView.webContents.capturePage(options.rect, captureOpts)
-      : await instance.pageView.webContents.capturePage(undefined, captureOpts)
+      ? await instance.pageWebContents.capturePage(options.rect, captureOpts)
+      : await instance.pageWebContents.capturePage(undefined, captureOpts)
 
     if (image.isEmpty()) {
       return null
@@ -1696,7 +1724,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const selector = args.value?.trim()
       if (!selector) throw new Error('browser_wait selector requires value')
       return until(async () => {
-        const exists = await instance.pageView.webContents.executeJavaScript(
+        const exists = await instance.pageWebContents.executeJavaScript(
           `Boolean(document.querySelector(${JSON.stringify(selector)}))`
         )
         return Boolean(exists)
@@ -1707,7 +1735,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       const text = args.value?.trim()
       if (!text) throw new Error('browser_wait text requires value')
       return until(async () => {
-        const found = await instance.pageView.webContents.executeJavaScript(
+        const found = await instance.pageWebContents.executeJavaScript(
           `document.body && document.body.innerText && document.body.innerText.includes(${JSON.stringify(text)})`
         )
         return Boolean(found)
@@ -1743,12 +1771,12 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const modifiers = (args.modifiers ?? []) as Array<'shift' | 'control' | 'alt' | 'meta'>
 
     await this.guardInstanceOp(instance, async () => {
-      instance.pageView.webContents.sendInputEvent({
+      instance.pageWebContents.sendInputEvent({
         type: 'keyDown',
         keyCode: key,
         modifiers,
       } as any)
-      instance.pageView.webContents.sendInputEvent({
+      instance.pageWebContents.sendInputEvent({
         type: 'keyUp',
         keyCode: key,
         modifiers,
@@ -1804,7 +1832,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const requestedViewportWidth = Math.max(320, Math.floor(width))
     const requestedViewportHeight = Math.max(240, Math.floor(height))
-    instance.window.setContentSize(requestedViewportWidth, requestedViewportHeight + TOOLBAR_HEIGHT)
+    // A pop-up's page fills its window; only top-level windows carry the toolbar.
+    const chromeHeight = instance.toolbarView ? TOOLBAR_HEIGHT : 0
+    instance.window.setContentSize(requestedViewportWidth, requestedViewportHeight + chromeHeight)
 
     this.layoutAllViews(instance)
 
@@ -1812,13 +1842,13 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const [appliedContentWidth, appliedContentHeight] = instance.window.getContentSize()
     return {
       width: Math.max(0, Math.floor(appliedContentWidth)),
-      height: Math.max(0, Math.floor(appliedContentHeight - TOOLBAR_HEIGHT)),
+      height: Math.max(0, Math.floor(appliedContentHeight - chromeHeight)),
     }
   }
 
   async evaluate(id: string, expression: string): Promise<unknown> {
     const instance = this.requireAliveInstance(id)
-    return this.guardInstanceOp(instance, () => instance.pageView.webContents.executeJavaScript(expression))
+    return this.guardInstanceOp(instance, () => instance.pageWebContents.executeJavaScript(expression))
   }
 
   async detectSecurityChallenge(id: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
@@ -1854,7 +1884,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     // DOM-based detection via JS evaluation
     try {
-      const domSignals = await instance.pageView.webContents.executeJavaScript(`(() => {
+      const domSignals = await instance.pageWebContents.executeJavaScript(`(() => {
         const signals = [];
         const bodyText = (document.body?.innerText || '').slice(0, 2000);
         if (/Verify you are human/i.test(bodyText)) signals.push('text:verify-human');
@@ -1864,6 +1894,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         if (document.querySelector('#turnstile-wrapper')) signals.push('dom:turnstile-wrapper');
         if (document.querySelector('.cf-turnstile')) signals.push('dom:cf-turnstile');
         if (document.querySelector('iframe[src*="challenges.cloudflare.com"]')) signals.push('dom:cf-challenge-iframe');
+        if (/cannot be opened directly|access denied|403 forbidden|^\\s*forbidden\\b/im.test(bodyText + '\\n' + document.title)) signals.push('text:access-denied');
         return signals;
       })()`) as string[]
 
@@ -1894,6 +1925,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // AX snapshot can fail transiently during navigation; ignore
     }
 
+    // A site's own refusal page ("cannot be opened directly", Access Denied) is
+    // sparse like a challenge page but is not one: nothing for a person to
+    // clear. Report it under its own label and leave control with the agent.
+    const verificationSignals = signals.filter((s) => s !== 'text:access-denied' && !s.startsWith('ax:near-empty'))
+    if (signals.includes('text:access-denied') && verificationSignals.length === 0) {
+      mainLog.info(`[browser-pane] access-denied page id=${instance.id} signals=[${signals.join(', ')}]`)
+      return { detected: false, provider: 'access-denied', signals }
+    }
+
     const detected = signals.length > 0
     const isCloudflare = signals.some(s =>
       s.includes('cf-') || s.includes('challenge') || s.includes('turnstile') || s === 'title:just-a-moment'
@@ -1914,7 +1954,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const deltaY = direction === 'up' ? -amount : direction === 'down' ? amount : 0
 
     await this.guardInstanceOp(instance, () =>
-      instance.pageView.webContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`))
+      instance.pageWebContents.executeJavaScript(`window.scrollBy(${deltaX}, ${deltaY})`))
   }
 
   bindSession(id: string, sessionId: string, options?: { workspaceId?: string | null }): void {
@@ -1937,6 +1977,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
         instance.workspaceId = options.workspaceId
       }
       this.emitStateChange(instance)
+      // A window's pop-ups belong to whoever holds the window.
+      for (const popup of this.descendantPopupsOf(instance)) {
+        if (popup.boundSessionId === sessionId) continue
+        this.bindSession(popup.id, sessionId, options)
+      }
     }
   }
 
@@ -1948,6 +1993,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       // Preserve ownerSessionId as last-known owner for lifecycle targeting.
       instance.lastActivityAt = Date.now()
       this.emitStateChange(instance)
+      for (const popup of this.descendantPopupsOf(instance)) {
+        if (popup.boundSessionId !== null) this.unbindSession(popup.id)
+      }
     }
   }
 
@@ -1968,6 +2016,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   getBoundForSession(sessionId: string, workspaceId?: string | null): string | null {
     for (const instance of this.instances.values()) {
+      // Pop-ups are reached through their opener (resolveCommandTarget).
+      if (instance.parentInstanceId) continue
       // Same workspace-tiebreak as reuse: session ids are only unique within
       // a workspace, so when both sides carry a workspace they must match.
       if (
@@ -2008,6 +2058,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       (i) =>
         i.boundSessionId === null &&
         i.ownerType === 'manual' &&
+        i.parentInstanceId === null &&
         !i.window.isDestroyed(),
     )
 
@@ -2048,16 +2099,18 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const workspaceId = options?.workspaceId ?? null
     const existing = this.getBoundForSession(sessionId, workspaceId)
     if (existing) {
+      const instance = this.instances.get(existing)
       // Already bound — adopt the workspace if the caller provided one and the
       // existing instance was bound before we knew about its workspace.
       if (options?.workspaceId !== undefined) {
-        const instance = this.instances.get(existing)
         if (instance) instance.workspaceId = options.workspaceId
       }
+      // Commands go to the pop-up the session focused, if any.
+      const target = instance ? this.resolveCommandTarget(instance).id : existing
       if (options?.show) {
-        this.focus(existing)
+        this.focus(target)
       }
-      return existing
+      return target
     }
 
     // Reuse an unbound/manual window before creating a new one — local
@@ -2069,15 +2122,16 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       if (reusable) {
         const reclaimedOwn = reusable.ownerSessionId === sessionId
         this.bindSession(reusable.id, sessionId, { workspaceId })
+        const target = this.resolveCommandTarget(reusable).id
         if (options?.show) {
-          this.focus(reusable.id)
+          this.focus(target)
         }
         mainLog.info(
           reclaimedOwn
             ? `[browser-pane] Session ${sessionId} reclaimed its own former window ${reusable.id} (workspace=${workspaceId ?? 'none'})`
             : `[browser-pane] Session ${sessionId} adopted ownerless window ${reusable.id} (workspace=${workspaceId ?? 'none'})`,
         )
-        return reusable.id
+        return target
       }
     }
 
@@ -2101,7 +2155,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   getBoundInstanceId(sessionId: string): string | null {
     for (const [id, instance] of this.instances) {
-      if (instance.boundSessionId === sessionId) {
+      if (instance.boundSessionId === sessionId && !instance.parentInstanceId) {
         if (instance.window.isDestroyed()) {
           this.cleanupDestroyedInstance(instance, `getBoundInstanceId(${sessionId})`)
           continue
@@ -2220,6 +2274,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 </html>`
 
     try {
+      if (!instance.nativeOverlayView) return
       await instance.nativeOverlayView.webContents.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`)
       instance.nativeOverlayReady = true
       mainLog.info(`[browser-pane] native overlay ready id=${instance.id} platform=${liveFxPlatform} corners=${cornerRadii.bottomLeft}/${cornerRadii.bottomRight}`)
@@ -2240,9 +2295,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private layoutToolbarView(instance: BrowserInstance): void {
     const [width] = instance.window.getContentSize()
     const toolbarHeight = this.getToolbarEffectiveHeight(instance)
+    const toolbarView = instance.toolbarView
+    if (!toolbarView) return
 
-    instance.toolbarView.setBounds({ x: 0, y: 0, width, height: toolbarHeight })
-    instance.toolbarView.setAutoResize({ width: true, height: false })
+    toolbarView.setBounds({ x: 0, y: 0, width, height: toolbarHeight })
+    toolbarView.setAutoResize({ width: true, height: false })
   }
 
   private updateNativeOverlayState(instance: BrowserInstance): void {
@@ -2254,24 +2311,28 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     // A destroyed window's views may already be torn down — touching their
     // bounds mid-teardown throws, and this runs from finalize/destroy paths.
     if (instance.window.isDestroyed()) return
+    // Pop-up instances have no overlay or toolbar views.
+    const overlayView = instance.nativeOverlayView
+    const toolbarView = instance.toolbarView
+    if (!overlayView || !toolbarView) return
 
     if (!shouldShow || !instance.nativeOverlayReady) {
-      instance.nativeOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-      instance.window.setTopBrowserView(instance.toolbarView)
+      overlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+      instance.window.setTopBrowserView(toolbarView)
       return
     }
 
     const [width, height] = instance.window.getContentSize()
     const overlayHeight = Math.max(100, height - TOOLBAR_HEIGHT)
-    instance.nativeOverlayView.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width, height: overlayHeight })
-    instance.nativeOverlayView.setAutoResize({ width: true, height: true })
-    instance.window.setTopBrowserView(instance.toolbarView)
+    overlayView.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width, height: overlayHeight })
+    overlayView.setAutoResize({ width: true, height: true })
+    instance.window.setTopBrowserView(toolbarView)
 
     if (agentActive) {
       const label = this.getAgentControlLabel(control)
       const accent = this.getResolvedAccentColor()
 
-      void instance.nativeOverlayView.webContents.executeJavaScript(`(() => {
+      void overlayView.webContents.executeJavaScript(`(() => {
         const overlay = document.getElementById('overlay');
         const chip = document.getElementById('chip');
         const shield = document.getElementById('shield');
@@ -2289,7 +2350,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     }
 
     // Menu mode: transparent full-page tap-catcher, no visuals
-    void instance.nativeOverlayView.webContents.executeJavaScript(`(() => {
+    void overlayView.webContents.executeJavaScript(`(() => {
       const overlay = document.getElementById('overlay');
       const chip = document.getElementById('chip');
       const shield = document.getElementById('shield');
@@ -2469,22 +2530,27 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.runCleanupStep(instance.id, 'applyAgentControlLock', () => this.applyAgentControlLock(instance, false))
     this.runCleanupStep(instance.id, 'updateNativeOverlayState', () => this.updateNativeOverlayState(instance))
     this.runCleanupStep(instance.id, 'cdp.detach', () => instance.cdp.detach())
+    if (instance.parentInstanceId) {
+      this.runCleanupStep(instance.id, 'releasePopupTarget', () => this.releasePopupTarget(instance))
+    }
     this.instances.delete(instance.id)
     this.removedCallback?.(instance.id)
     mainLog.info(`[browser-pane] Destroyed instance: ${instance.id} (${source})`)
   }
 
   private layoutPageView(instance: BrowserInstance): void {
+    const pageView = instance.pageView
+    if (!pageView) return
     const [width, height] = instance.window.getContentSize()
-    instance.pageView.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width, height: Math.max(100, height - TOOLBAR_HEIGHT) })
-    instance.pageView.setAutoResize({ width: true, height: true })
+    pageView.setBounds({ x: 0, y: TOOLBAR_HEIGHT, width, height: Math.max(100, height - TOOLBAR_HEIGHT) })
+    pageView.setAutoResize({ width: true, height: true })
     this.updateNativeOverlayState(instance)
   }
 
   private layoutAllViews(instance: BrowserInstance): void {
     this.layoutToolbarView(instance)
     this.layoutPageView(instance)
-    if (!instance.window.isDestroyed()) {
+    if (!instance.window.isDestroyed() && instance.toolbarView) {
       instance.window.setTopBrowserView(instance.toolbarView)
     }
   }
@@ -2499,7 +2565,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     instance.toolbarMenuOverlayActive = false
     this.layoutAllViews(instance)
 
-    if (!instance.window.isDestroyed() && !instance.toolbarView.webContents.isDestroyed()) {
+    if (!instance.window.isDestroyed() && instance.toolbarView && !instance.toolbarView.webContents.isDestroyed()) {
       instance.toolbarView.webContents.send(TOOLBAR_CHANNELS.FORCE_CLOSE_MENU, { reason })
     }
   }
@@ -2518,11 +2584,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
   private async loadEmptyStatePage(instance: BrowserInstance): Promise<void> {
     if (VITE_DEV_SERVER_URL) {
-      await instance.pageView.webContents.loadURL(`${VITE_DEV_SERVER_URL}/${BROWSER_EMPTY_STATE_PAGE}`)
+      await instance.pageWebContents.loadURL(`${VITE_DEV_SERVER_URL}/${BROWSER_EMPTY_STATE_PAGE}`)
       return
     }
 
-    await instance.pageView.webContents.loadFile(join(__dirname, `renderer/${BROWSER_EMPTY_STATE_PAGE}`))
+    await instance.pageWebContents.loadFile(join(__dirname, `renderer/${BROWSER_EMPTY_STATE_PAGE}`))
   }
 
   private async handleDeepLinkUrl(url: string): Promise<void> {
@@ -2576,7 +2642,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     const handled = await this.triggerEmptyStateRouteLaunch(instance, route, token, 'hash')
 
     try {
-      await instance.pageView.webContents.executeJavaScript(
+      await instance.pageWebContents.executeJavaScript(
         "if (window.location.hash.includes('launch=')) history.replaceState(null, '', window.location.pathname + window.location.search);",
       )
     } catch {
@@ -2589,13 +2655,15 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private async loadToolbarPage(instance: BrowserInstance): Promise<void> {
     const query = `instanceId=${encodeURIComponent(instance.id)}`
     let lastError: unknown = null
+    const toolbarView = instance.toolbarView
+    if (!toolbarView) return
 
     for (let attempt = 0; attempt <= TOOLBAR_LOAD_MAX_RETRIES; attempt++) {
       try {
         if (VITE_DEV_SERVER_URL) {
-          await instance.toolbarView.webContents.loadURL(`${VITE_DEV_SERVER_URL}/browser-toolbar.html?${query}`)
+          await toolbarView.webContents.loadURL(`${VITE_DEV_SERVER_URL}/browser-toolbar.html?${query}`)
         } else {
-          await instance.toolbarView.webContents.loadFile(
+          await toolbarView.webContents.loadFile(
             join(__dirname, 'renderer/browser-toolbar.html'),
             { query: { instanceId: instance.id } },
           )
@@ -2651,6 +2719,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 </html>`
 
     try {
+      if (!instance.toolbarView) return
       await instance.toolbarView.webContents.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`)
       mainLog.warn(`[browser-pane] Loaded toolbar fallback id=${instance.id}`)
     } catch (error) {
@@ -2663,7 +2732,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private pushToolbarState(instance: BrowserInstance): void {
-    if (instance.window.isDestroyed() || instance.toolbarView.webContents.isDestroyed()) return
+    if (instance.window.isDestroyed() || !instance.toolbarView || instance.toolbarView.webContents.isDestroyed()) return
     const state = {
       url: instance.currentUrl,
       title: instance.title,
@@ -3222,10 +3291,11 @@ export class BrowserPaneManager implements IBrowserPaneManager {
    * Guards against stale extraction (URL change during async executeJavaScript).
    */
   private async extractThemeColor(instance: BrowserInstance): Promise<void> {
+    if (!instance.toolbarView) return // pop-up: no toolbar to tint, so never script its page for it
     if (instance.themeColor) return // already set by did-change-theme-color or observer
     const urlAtStart = instance.currentUrl
     try {
-      const color = await instance.pageView.webContents.executeJavaScript(`(${THEME_COLOR_EXTRACTOR_FN})()`)
+      const color = await instance.pageWebContents.executeJavaScript(`(${THEME_COLOR_EXTRACTOR_FN})()`)
       // Guard: if user navigated away during extraction, discard stale result
       if (instance.currentUrl !== urlAtStart) return
       if (typeof color === 'string' && color.length > 0) {
@@ -3239,18 +3309,19 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private applyThemeColor(instance: BrowserInstance, color: string | null): void {
     if (instance.themeColor === color) return
     instance.themeColor = color
-    if (!instance.window.isDestroyed() && !instance.toolbarView.webContents.isDestroyed()) {
+    if (!instance.window.isDestroyed() && instance.toolbarView && !instance.toolbarView.webContents.isDestroyed()) {
       instance.toolbarView.webContents.send(TOOLBAR_CHANNELS.THEME_COLOR, color)
     }
     this.emitStateChange(instance)
   }
 
   private installThemeObserver(instance: BrowserInstance, allowRetry = true): void {
+    if (!instance.toolbarView) return
     const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     const urlAtInstall = instance.currentUrl
     instance.themeObserverToken = token
 
-    void instance.pageView.webContents.executeJavaScript(`
+    void instance.pageWebContents.executeJavaScript(`
       (() => {
         const token = ${JSON.stringify(token)};
         const prefix = ${JSON.stringify(THEME_COLOR_SIGNAL_PREFIX)} + token + ':';
@@ -3394,31 +3465,159 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     this.popupParentByWebContentsId.set(popupWcId, parentInstance.id)
 
     const initialUrl = sourceUrl || popupWindow.webContents.getURL?.() || 'about:blank'
-    mainLog.info(`[browser-pane] popup created parent=${parentInstance.id} popupWebContentsId=${popupWcId} url=${initialUrl}`)
 
-    popupWindow.webContents.on('did-navigate', (_event, urlFromEvent) => {
-      const popupUrl = typeof popupWindow.webContents.getURL === 'function'
-        ? popupWindow.webContents.getURL()
-        : (urlFromEvent || initialUrl)
-      mainLog.info(`[browser-pane] popup did-navigate parent=${parentInstance.id} popupWebContentsId=${popupWcId} url=${popupUrl}`)
-    })
+    const existing = this.findInstanceByPageWebContentsId(popupWcId)
+    if (existing) {
+      existing.parentInstanceId = parentInstance.id
+      mainLog.info(`[browser-pane] popup reparented id=${existing.id} parent=${parentInstance.id}`)
+      return
+    }
 
-    popupWindow.webContents.on('did-redirect-navigation', (_event, popupUrl, isInPlace, isMainFrame) => {
-      mainLog.info(
-        `[browser-pane] popup redirect parent=${parentInstance.id} popupWebContentsId=${popupWcId} url=${popupUrl} inPlace=${isInPlace} mainFrame=${isMainFrame}`,
-      )
-    })
-
-    popupWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-      if (!isMainFrame) return
-      mainLog.warn(
-        `[browser-pane] popup did-fail-load parent=${parentInstance.id} popupWebContentsId=${popupWcId} code=${errorCode} url=${validatedURL} error=${errorDescription}`,
-      )
-    })
+    const popup = this.createPopupInstance(parentInstance, popupWindow, initialUrl)
+    mainLog.info(`[browser-pane] popup created id=${popup.id} parent=${parentInstance.id} popupWebContentsId=${popupWcId} owner=${popup.ownerSessionId ?? 'none'} url=${initialUrl}`)
 
     popupWindow.on('closed', () => {
       this.unregisterPopupWindow(popupWindow, 'closed')
+      this.finalizeDestroyedInstance(popup, 'closed')
     })
+  }
+
+  /**
+   * Register a page-opened pop-up as a child browser instance. It keeps the
+   * opener's partition (the window was created on it) and copies the opener's
+   * session ownership, so the owning session can list, focus and drive it and
+   * no other session can. The native window itself is left as Electron made
+   * it: the page relationship (`window.opener`) is what sites check.
+   */
+  private createPopupInstance(parent: BrowserInstance, popupWindow: BrowserWindow, initialUrl: string): BrowserInstance {
+    const pageWebContents = popupWindow.webContents
+    const popup: BrowserInstance = {
+      id: `${parent.id}-popup-${++popupCounter}`,
+      partition: parent.partition,
+      window: popupWindow,
+      toolbarView: null,
+      pageView: null,
+      pageWebContents,
+      parentInstanceId: parent.id,
+      activePopupId: null,
+      pageWebContentsId: pageWebContents.id,
+      nativeOverlayView: null,
+      cdp: new BrowserCDP(pageWebContents),
+      currentUrl: initialUrl,
+      title: initialUrl,
+      favicon: null,
+      isLoading: true,
+      canGoBack: false,
+      canGoForward: false,
+      boundSessionId: parent.boundSessionId,
+      ownerType: parent.ownerType,
+      ownerSessionId: parent.ownerSessionId,
+      // Lifetime is the opener's: the idle reaper skips it, and it closes with the opener.
+      sessionCreated: false,
+      inFlightOps: 0,
+      lastActivityAt: Date.now(),
+      workspaceId: parent.workspaceId,
+      isVisible: !popupWindow.isDestroyed() && (typeof popupWindow.isVisible === 'function' ? popupWindow.isVisible() : true),
+      isHiding: false,
+      keepAliveOnWindowClose: false,
+      // No toolbar to wait for: focus() may show the window immediately.
+      toolbarReady: true,
+      toolbarMenuOpen: false,
+      toolbarMenuHeight: 0,
+      toolbarMenuOverlayActive: false,
+      showOnCreate: false,
+      pendingShowOnReady: false,
+      pendingShowToken: 0,
+      lastAction: null,
+      agentControl: null,
+      lockState: {
+        active: false,
+        previousResizable: this.getWindowResizable(popupWindow),
+      },
+      nativeOverlayReady: false,
+      themeColor: null,
+      inPageThemeTimer: null,
+      themeObserverToken: null,
+      consoleLogs: [],
+      networkLogs: [],
+      downloads: [],
+      lastLaunchToken: null,
+    }
+
+    this.setupPageListeners(popup)
+    popupWindow.on('focus', () => {
+      this.interactedCallback?.(popup.id)
+    })
+    popupWindow.on('show', () => {
+      popup.isVisible = true
+      this.emitStateChange(popup)
+    })
+    popupWindow.on('hide', () => {
+      popup.isVisible = false
+      this.emitStateChange(popup)
+    })
+
+    this.instances.set(popup.id, popup)
+    this.emitStateChange(popup)
+    return popup
+  }
+
+  /**
+   * A pop-up is closing: if its session was targeting it, target falls back
+   * to the pop-up that opened it, or to the top-level opener.
+   */
+  private releasePopupTarget(popup: BrowserInstance): void {
+    const root = this.rootInstanceOf(popup)
+    if (root === popup) return
+    if (root.activePopupId === popup.id) {
+      const parent = popup.parentInstanceId ? this.instances.get(popup.parentInstanceId) : undefined
+      root.activePopupId = parent && parent !== root && !parent.window.isDestroyed() ? parent.id : null
+    }
+    mainLog.info(`[browser-pane] popup closed id=${popup.id} parent=${popup.parentInstanceId} target=${root.activePopupId ?? root.id}`)
+  }
+
+  /** The top-level instance a pop-up chain hangs off (itself for a top-level instance). */
+  private rootInstanceOf(instance: BrowserInstance): BrowserInstance {
+    let current = instance
+    const seen = new Set<string>()
+    while (current.parentInstanceId && !seen.has(current.id)) {
+      seen.add(current.id)
+      const parent = this.instances.get(current.parentInstanceId)
+      if (!parent) break
+      current = parent
+    }
+    return current
+  }
+
+  /** Pop-ups opened (directly or through other pop-ups) by `instance`. */
+  private descendantPopupsOf(instance: BrowserInstance): BrowserInstance[] {
+    const out: BrowserInstance[] = []
+    const queue = [instance.id]
+    while (queue.length > 0) {
+      const id = queue.shift()!
+      for (const candidate of this.instances.values()) {
+        if (candidate.parentInstanceId === id && !out.includes(candidate)) {
+          out.push(candidate)
+          queue.push(candidate.id)
+        }
+      }
+    }
+    return out
+  }
+
+  /**
+   * The instance session-resolved commands act on: the pop-up the session
+   * focused, while it is alive, else the top-level instance itself.
+   */
+  private resolveCommandTarget(instance: BrowserInstance): BrowserInstance {
+    const activeId = instance.activePopupId
+    if (!activeId) return instance
+    const popup = this.instances.get(activeId)
+    if (!popup || popup.window.isDestroyed() || this.rootInstanceOf(popup) !== instance) {
+      instance.activePopupId = null
+      return instance
+    }
+    return popup
   }
 
   private unregisterPopupWindow(popupWindow: BrowserWindow, reason: 'closed' | 'parent_destroy' | 'reparented'): void {
@@ -3449,11 +3648,14 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     for (const popupWindow of Array.from(popups)) {
       const popupWcId = this.popupWebContentsIdByWindow.get(popupWindow)
+      const popupInstance = popupWcId === undefined ? undefined : this.findInstanceByPageWebContentsId(popupWcId)
       this.unregisterPopupWindow(popupWindow, reason)
       try {
         if (!popupWindow.isDestroyed()) {
           popupWindow.destroy()
         }
+        // `closed` normally finalizes it; a window destroyed out of band never fires it.
+        if (popupInstance) this.finalizeDestroyedInstance(popupInstance, 'destroy')
       } catch (error) {
         mainLog.warn(
           `[browser-pane] popup destroy failed parent=${parentId} popupWebContentsId=${popupWcId} reason=${reason} error=${error instanceof Error ? error.message : String(error)}`,
@@ -3680,7 +3882,9 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private setupWindowListeners(instance: BrowserInstance): void {
-    const pageWc = instance.pageView.webContents
+    if (!instance.toolbarView || !instance.nativeOverlayView) {
+      throw new Error(`[browser-pane] setupWindowListeners needs a top-level instance (id=${instance.id})`)
+    }
     const toolbarWc = instance.toolbarView.webContents
     const overlayWc = instance.nativeOverlayView.webContents
 
@@ -3721,6 +3925,58 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       mainLog.warn(`[browser-pane] toolbar did-fail-load id=${instance.id} code=${errorCode} url=${validatedURL} error=${errorDescription}`)
     })
 
+    toolbarWc.on('before-input-event', (event) => {
+      if (instance.lockState.active) {
+        event.preventDefault()
+      }
+    })
+
+    overlayWc.on('before-input-event', (event, input) => {
+      if (!instance.toolbarMenuOverlayActive) return
+
+      const inputType = input.type || ''
+      if (inputType === 'mouseDown' || inputType === 'touchStart' || inputType === 'pointerDown') {
+        event.preventDefault()
+        this.forceCloseToolbarMenu(instance, 'overlay-tap')
+      }
+    })
+
+    this.setupPageListeners(instance)
+
+    instance.window.on('focus', () => {
+      this.interactedCallback?.(instance.id)
+    })
+
+    instance.window.on('show', () => {
+      instance.isVisible = true
+      this.emitStateChange(instance)
+      this.reapplyAgentControlVisual(instance)
+      this.pushToolbarState(instance)
+      this.updateNativeOverlayState(instance)
+      if (!instance.themeColor) {
+        void this.extractThemeColor(instance)
+      }
+    })
+
+    instance.window.on('hide', () => {
+      instance.isVisible = false
+      this.emitStateChange(instance)
+      this.updateNativeOverlayState(instance)
+    })
+
+    instance.window.on('closed', () => {
+      this.finalizeDestroyedInstance(instance, 'closed')
+    })
+  }
+
+  /**
+   * Page-level listeners, shared by top-level instances and pop-ups: load and
+   * navigation state, console capture, deep links, and window.open handling
+   * (so a pop-up's own pop-ups become instances too).
+   */
+  private setupPageListeners(instance: BrowserInstance): void {
+    const pageWc = instance.pageWebContents
+
     pageWc.on('did-start-loading', () => {
       instance.isLoading = true
       this.emitStateChange(instance)
@@ -3748,22 +4004,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     pageWc.on('before-input-event', (_event, _input) => {
       if (instance.lockState.active) {
         _event.preventDefault()
-      }
-    })
-
-    toolbarWc.on('before-input-event', (event) => {
-      if (instance.lockState.active) {
-        event.preventDefault()
-      }
-    })
-
-    overlayWc.on('before-input-event', (event, input) => {
-      if (!instance.toolbarMenuOverlayActive) return
-
-      const inputType = input.type || ''
-      if (inputType === 'mouseDown' || inputType === 'touchStart' || inputType === 'pointerDown') {
-        event.preventDefault()
-        this.forceCloseToolbarMenu(instance, 'overlay-tap')
       }
     })
 
@@ -3940,31 +4180,6 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     pageWc.on('focus', () => {
       this.interactedCallback?.(instance.id)
     })
-
-    instance.window.on('focus', () => {
-      this.interactedCallback?.(instance.id)
-    })
-
-    instance.window.on('show', () => {
-      instance.isVisible = true
-      this.emitStateChange(instance)
-      this.reapplyAgentControlVisual(instance)
-      this.pushToolbarState(instance)
-      this.updateNativeOverlayState(instance)
-      if (!instance.themeColor) {
-        void this.extractThemeColor(instance)
-      }
-    })
-
-    instance.window.on('hide', () => {
-      instance.isVisible = false
-      this.emitStateChange(instance)
-      this.updateNativeOverlayState(instance)
-    })
-
-    instance.window.on('closed', () => {
-      this.finalizeDestroyedInstance(instance, 'closed')
-    })
   }
 
   private toInfo(instance: BrowserInstance): BrowserInstanceInfo {
@@ -3983,6 +4198,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       agentControlActive: !!instance.agentControl?.active,
       themeColor: instance.themeColor,
       workspaceId: instance.workspaceId,
+      parentInstanceId: instance.parentInstanceId,
     }
   }
 

@@ -1914,7 +1914,10 @@ describe('BrowserPaneManager popup teardown after the popup window was destroyed
 
     expect(() => manager.destroyInstance('popup-then-terminate')).not.toThrow()
     expect(manager.listInstances()).toHaveLength(0)
-    expect(removed).toEqual(['popup-then-terminate'])
+    // The pop-up is an instance of its own, removed when it closed.
+    expect(removed).toHaveLength(2)
+    expect(removed[0]).toMatch(/^popup-then-terminate-popup-\d+$/)
+    expect(removed[1]).toBe('popup-then-terminate')
 
     // The next browser_tool open must get a working window.
     manager.createInstance('popup-then-terminate')
@@ -1959,5 +1962,203 @@ describe('BrowserPaneManager popup teardown after the popup window was destroyed
     })
     expect((manager as any).findInstanceByPageWebContentsId(wcId)).toBe(instance)
     expect((manager as any).findInstanceByPageWebContentsId(wcId + 1000)).toBeUndefined()
+  })
+})
+
+// Pop-ups a page opens with window.open become child instances of the session
+// that owns the opener: listed with a parent, targeted after `focus`, gone
+// (with targeting back on the opener) once closed, and never offered to
+// another session.
+describe('BrowserPaneManager page pop-ups as child instances', () => {
+  let manager: InstanceType<typeof BrowserPaneManager>
+
+  beforeEach(() => {
+    createdWindows.length = 0
+    partitionSessions.clear()
+    toolbarLoadFailuresRemaining = 0
+    manager = new BrowserPaneManager()
+  })
+
+  /** Simulate the page calling window.open: Electron creates the window and fires did-create-window. */
+  function openPopupFrom(instanceId: string, url = 'https://example.com/popup') {
+    const opener = (manager as any).instances.get(instanceId)
+    const popupWindow = createMockWindow({ width: 520, height: 720 })
+    emitDidCreateWindow(opener.pageWebContents, popupWindow, { url })
+    const popupInfo = manager.listInstances().find((w) => w.parentInstanceId === instanceId && w.url === url)
+    if (!popupInfo) throw new Error('pop-up was not registered')
+    return { popupWindow, popupId: popupInfo.id }
+  }
+
+  it('registers a pop-up as a listed child instance owned by the opener session', () => {
+    const openerId = manager.createForSession('sess-a', { workspaceId: 'ws-1' })
+    const { popupId } = openPopupFrom(openerId)
+
+    const list = manager.listInstances()
+    expect(list).toHaveLength(2)
+    const popup = list.find((w) => w.id === popupId)!
+    expect(popupId).toMatch(new RegExp(`^${openerId}-popup-\\d+$`))
+    expect(popup.parentInstanceId).toBe(openerId)
+    expect(popup.url).toBe('https://example.com/popup')
+    expect(popup.boundSessionId).toBe('sess-a')
+    expect(popup.ownerSessionId).toBe('sess-a')
+    expect(popup.workspaceId).toBe('ws-1')
+    expect(list.find((w) => w.id === openerId)!.parentInstanceId).toBeNull()
+
+    const opener = (manager as any).instances.get(openerId)
+    const popupInstance = (manager as any).instances.get(popupId)
+    expect(popupInstance.partition).toBe(opener.partition)
+  })
+
+  it('targets the pop-up after focus and returns to the opener on focus or close', async () => {
+    const removed: string[] = []
+    manager.onRemoved((id) => removed.push(id))
+    const openerId = manager.createForSession('sess-a')
+    const { popupWindow, popupId } = openPopupFrom(openerId)
+    const opener = (manager as any).instances.get(openerId)
+    const popup = (manager as any).instances.get(popupId)
+
+    // Opening alone does not move the target.
+    expect(manager.createForSession('sess-a')).toBe(openerId)
+
+    manager.focus(popupId)
+    expect(popupWindow.show).toHaveBeenCalled()
+    const target = manager.createForSession('sess-a')
+    expect(target).toBe(popupId)
+
+    // Commands resolved for the session act on the pop-up's own page.
+    await manager.getAccessibilitySnapshot(target)
+    expect(popup.cdp.getAccessibilitySnapshot).toHaveBeenCalledTimes(1)
+    expect(opener.cdp.getAccessibilitySnapshot).not.toHaveBeenCalled()
+    await manager.clickElement(target, '@e1')
+    expect(popup.cdp.clickElement).toHaveBeenCalledTimes(1)
+    expect(opener.cdp.clickElement).not.toHaveBeenCalled()
+    expect(await manager.evaluate(target, '6 * 7')).toBe(42)
+    expect(popupWindow.webContents.executeJavaScript).toHaveBeenCalledWith('6 * 7')
+    await manager.navigate(target, 'https://example.com/next')
+    expect(popupWindow.webContents.loadURL).toHaveBeenCalledWith('https://example.com/next')
+    const shot = await manager.screenshot(target)
+    expect(shot.imageBuffer.length).toBeGreaterThan(0)
+    expect(popupWindow.webContents.capturePage).toHaveBeenCalled()
+    expect(await manager.getDownloads(target)).toEqual([])
+
+    // Focusing the opener targets it again; focusing the pop-up again re-selects it.
+    manager.focus(openerId)
+    expect(manager.createForSession('sess-a')).toBe(openerId)
+    manager.focus(popupId)
+    expect(manager.createForSession('sess-a')).toBe(popupId)
+
+    // The page closes its pop-up: it is removed and commands return to the opener.
+    popupWindow.destroy()
+    expect(removed).toEqual([popupId])
+    expect(manager.listInstances().map((w) => w.id)).toEqual([openerId])
+    expect(manager.createForSession('sess-a')).toBe(openerId)
+  })
+
+  it('closing a focused pop-up through destroyInstance also returns targeting to the opener', () => {
+    const openerId = manager.createForSession('sess-a')
+    const { popupId } = openPopupFrom(openerId)
+    manager.focus(popupId)
+
+    manager.destroyInstance(popupId)
+
+    expect(manager.listInstances().map((w) => w.id)).toEqual([openerId])
+    expect(manager.createForSession('sess-a')).toBe(openerId)
+  })
+
+  it('a pop-up opened from a pop-up is a child of it; closing it falls back to its opener pop-up', () => {
+    const openerId = manager.createForSession('sess-a')
+    const { popupId: firstId } = openPopupFrom(openerId, 'https://example.com/search')
+    const { popupWindow: secondWindow, popupId: secondId } = openPopupFrom(firstId, 'https://example.com/image')
+
+    expect(manager.listInstances().find((w) => w.id === secondId)!.parentInstanceId).toBe(firstId)
+    manager.focus(secondId)
+    expect(manager.createForSession('sess-a')).toBe(secondId)
+
+    secondWindow.destroy()
+    expect(manager.createForSession('sess-a')).toBe(firstId)
+
+    // Destroying the top-level opener closes the whole chain.
+    manager.destroyInstance(openerId)
+    expect(manager.listInstances()).toHaveLength(0)
+  })
+
+  it('pop-ups follow their opener through turn-end unbind and the next turn rebind', () => {
+    const openerId = manager.createForSession('sess-a')
+    const { popupId } = openPopupFrom(openerId)
+    manager.focus(popupId)
+
+    manager.unbindAllForSession('sess-a')
+    expect(manager.listInstances().every((w) => w.boundSessionId === null)).toBe(true)
+
+    // Next turn: the session reclaims its window and the pop-up it had focused.
+    expect(manager.createForSession('sess-a')).toBe(popupId)
+    const popup = manager.listInstances().find((w) => w.id === popupId)!
+    expect(popup.boundSessionId).toBe('sess-a')
+  })
+
+  it('never hands a pop-up to another session', async () => {
+    const openerId = manager.createForSession('sess-a')
+    const { popupId } = openPopupFrom(openerId)
+    manager.focus(popupId)
+
+    const otherId = manager.createForSession('sess-b')
+    expect(otherId).not.toBe(popupId)
+    expect(otherId).not.toBe(openerId)
+    expect(manager.createForSession('sess-a')).toBe(popupId)
+
+    // An ownerless (user-opened) window's pop-up is not adoptable on its own.
+    manager.createInstance('manual-1')
+    const { popupId: manualPopupId } = openPopupFrom('manual-1')
+    expect(manager.createForSession('sess-c')).toBe('manual-1')
+    expect(manager.listInstances().find((w) => w.id === manualPopupId)!.boundSessionId).toBe('sess-c')
+  })
+
+  it('remote sessions only see and focus pop-ups of windows they own', async () => {
+    const ownerReq = { v: 1, workspaceId: 'ws-r', sessionId: 'sess-r1' }
+    const openerId = await (manager as any).dispatchCapability({ ...ownerReq, method: 'createForSession', args: ['sess-r1'] })
+    const { popupId } = openPopupFrom(openerId)
+
+    const ownList = await (manager as any).dispatchCapability({ ...ownerReq, method: 'listInstances', args: [] })
+    expect(ownList.map((w: any) => w.id).sort()).toEqual([openerId, popupId].sort())
+    expect(ownList.find((w: any) => w.id === popupId).parentInstanceId).toBe(openerId)
+
+    await (manager as any).dispatchCapability({ ...ownerReq, method: 'focus', args: [popupId] })
+    expect(await (manager as any).dispatchCapability({ ...ownerReq, method: 'createForSession', args: ['sess-r1'] })).toBe(popupId)
+
+    const otherReq = { v: 1, workspaceId: 'ws-r', sessionId: 'sess-r2' }
+    const otherList = await (manager as any).dispatchCapability({ ...otherReq, method: 'listInstances', args: [] })
+    expect(otherList.some((w: any) => w.id === popupId)).toBe(false)
+    await expect((manager as any).dispatchCapability({ ...otherReq, method: 'focus', args: [popupId] }))
+      .rejects.toThrow(/not owned/)
+  })
+})
+
+describe('BrowserPaneManager security-challenge labels', () => {
+  it("labels a site's own refusal page access-denied, not a verification check", async () => {
+    const manager = new BrowserPaneManager()
+    manager.createInstance('denied')
+    const instance = (manager as any).instances.get('denied')
+    instance.pageWebContents.executeJavaScript = mock(async () => ['text:access-denied'])
+    instance.cdp.getAccessibilitySnapshot = mock(async () => ({
+      url: 'https://example.com/Forbidden.aspx',
+      title: 'Access Denied',
+      nodes: [{ ref: '@e1', role: 'heading', name: 'Access Denied' }, { ref: '@e2', role: 'link', name: 'Home' }],
+    }))
+
+    const result = await manager.detectSecurityChallenge('denied')
+    expect(result.detected).toBe(false)
+    expect(result.provider).toBe('access-denied')
+    expect(result.signals).toContain('text:access-denied')
+  })
+
+  it('still reports a real challenge when refusal text appears alongside verification signals', async () => {
+    const manager = new BrowserPaneManager()
+    manager.createInstance('challenge')
+    const instance = (manager as any).instances.get('challenge')
+    instance.pageWebContents.executeJavaScript = mock(async () => ['text:access-denied', 'dom:cf-turnstile'])
+
+    const result = await manager.detectSecurityChallenge('challenge')
+    expect(result.detected).toBe(true)
+    expect(result.provider).toBe('cloudflare')
   })
 })

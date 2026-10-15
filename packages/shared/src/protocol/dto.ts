@@ -1005,6 +1005,12 @@ export interface BrowserInstanceInfo {
    * and main processes that pre-date the field working unchanged.
    */
   workspaceId?: string | null
+  /**
+   * Set when this instance is a pop-up a page opened with `window.open`: the
+   * id of the instance that opened it. Pop-ups share the opener's storage and
+   * session ownership. Missing/null means a top-level browser window.
+   */
+  parentInstanceId?: string | null
 }
 
 export interface DeepLinkNavigation {
