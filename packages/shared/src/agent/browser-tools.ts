@@ -181,6 +181,8 @@ export interface BrowserPaneFns {
     ownerSessionId: string | null;
     boundSessionId: string | null;
     agentControlActive?: boolean;
+    /** Set for a pop-up the page opened: the id of the window that opened it. */
+    parentInstanceId?: string | null;
   }>>;
   detectChallenge: () => Promise<{ detected: boolean; provider: string; signals: string[] }>;
 }
@@ -243,8 +245,10 @@ Examples:
 - \`key Enter\`
 - \`key k meta\`
 - \`downloads wait 15000\`
-- \`focus [windowId]\` — focus existing browser window (no new window)
-- \`windows\` — list current browser windows and ownership state
+- \`focus [windowId]\` — focus a browser window or pop-up; later commands act on it
+- \`windows\` — list current browser windows, pop-ups (with their parent) and ownership state
+
+Pop-ups: when a page opens a window (window.open), click/key results print \`Popup opened: <id> <url>\`. Commands keep acting on the current window until you run \`focus <id>\`; \`focus <opener id>\` goes back, and closing the pop-up returns commands to its opener.
 - \`release [windowId|all]\` — dismiss the agent control overlay when done
 - \`close [windowId]\` — close and destroy the browser window
 - \`hide [windowId]\` — hide the window while preserving state`;

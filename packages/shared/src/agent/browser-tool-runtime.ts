@@ -71,7 +71,7 @@ export function getBrowserToolHelp(): string {
     '  back',
     '  forward',
     '  evaluate <expression>',
-    '  focus [windowId]                               focus existing browser window (no new window)',
+    '  focus [windowId]                               focus a window or pop-up; later commands act on it',
     '  windows',
     '  release [windowId|all]                         dismiss agent overlay (user keeps browsing)',
     '  close [windowId]                               close & destroy the browser window',
@@ -109,7 +109,13 @@ export function getBrowserToolHelp(): string {
     '  downloads wait 15000',
     '  focus',
     '  focus browser-1',
+    '  focus browser-1-popup-2                        act on a pop-up the page opened',
     '  windows',
+    '',
+    'Pop-ups: a page that opens a window (window.open) gets a pop-up window listed',
+    'in "windows" with a parent. Click/key results print "Popup opened: <id> <url>".',
+    'Run "focus <id>" to act on it, "focus <opener id>" to go back. Closing the',
+    'pop-up returns commands to its opener.',
   ].join('\n');
 }
 
@@ -247,6 +253,57 @@ function summarizeWindows(windows: Awaited<ReturnType<BrowserPaneFns['listWindow
   const locked = windows.filter((w) => !!w.boundSessionId).length;
   const withOverlay = windows.filter((w) => !!w.agentControlActive).length;
   return `total=${windows.length}, visible=${visible}, locked=${locked}, overlays=${withOverlay}`;
+}
+
+type BrowserWindowList = Awaited<ReturnType<BrowserPaneFns['listWindows']>>;
+
+/** How long a click/key result waits for a pop-up the page opened, if none is listed yet. */
+const POPUP_SETTLE_MS = 150;
+
+async function listWindowIds(fns: BrowserPaneFns): Promise<Set<string> | null> {
+  try {
+    return new Set((await fns.listWindows()).map((w) => w.id));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Lines naming the pop-ups that appeared since `before` (window ids listed
+ * before the action). The page opens them asynchronously, so an empty first
+ * read gets one short second look.
+ */
+async function describeOpenedPopups(fns: BrowserPaneFns, before: Set<string> | null): Promise<string[]> {
+  if (!before) return [];
+  const read = async (): Promise<BrowserWindowList> => {
+    try {
+      return (await fns.listWindows()).filter((w) => !!w.parentInstanceId && !before.has(w.id));
+    } catch {
+      return [];
+    }
+  };
+  let opened = await read();
+  if (opened.length === 0) {
+    await new Promise((resolve) => setTimeout(resolve, POPUP_SETTLE_MS));
+    opened = await read();
+  }
+  if (opened.length === 0) return [];
+  return [
+    ...opened.map((w) => `Popup opened: ${w.id} ${w.url || 'about:blank'}`),
+    `Commands still act on the current window. Run "focus ${opened[0]!.id}" to act on the pop-up.`,
+  ];
+}
+
+/**
+ * Note for a site's own refusal page, which the challenge detector labels
+ * `access-denied` instead of treating it as a verification check.
+ */
+function accessDeniedLines(challenge: { detected: boolean; provider: string }): string[] {
+  if (challenge.detected || challenge.provider !== 'access-denied') return [];
+  return [
+    'Page refused access (access-denied). This is the site\'s own error page, not a verification check.',
+    'Some pages only open from their own link or pop-up, not by typing their address.',
+  ];
 }
 
 function getOpenVisibilitySettleTimeoutMs(override?: number): number {
@@ -776,6 +833,7 @@ async function executeSingleCommand(args: {
     if (after) {
       lines.push(`Viewport: ${after.viewportWidth}x${after.viewportHeight}, scroll=(${after.scrollX}, ${after.scrollY})`);
     }
+    lines.push(...accessDeniedLines(challenge));
 
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
@@ -852,6 +910,11 @@ async function executeSingleCommand(args: {
         };
       }
 
+      const deniedLines = accessDeniedLines(challenge);
+      if (deniedLines.length > 0) {
+        lines.push('', ...deniedLines);
+      }
+
       if (snapshot.nodes.length === 0) {
         lines.push('');
         lines.push('No accessibility elements were detected on this view.');
@@ -924,10 +987,12 @@ async function executeSingleCommand(args: {
       throw new Error(`Invalid click timeout "${timeoutRaw}". Expected a number.`);
     }
 
+    const windowsBefore = await listWindowIds(fns);
     const before = await getPageMetrics(fns);
     const started = Date.now();
     await fns.click(ref, { waitFor, timeoutMs });
     const elapsedMs = Date.now() - started;
+    const popupLines = await describeOpenedPopups(fns, windowsBefore);
     const after = await getPageMetrics(fns);
 
     const urlChanged = before && after ? before.url !== after.url : false;
@@ -941,6 +1006,7 @@ async function executeSingleCommand(args: {
           `Clicked element ${ref} — security challenge detected (${challenge.provider}).`,
           `URL changed: ${urlChanged}`,
           `Signals: ${challenge.signals.join(', ')}`,
+          ...popupLines,
           '',
           'Browser shown — please complete the verification check.',
           'After verification, run "snapshot" to continue.',
@@ -958,6 +1024,8 @@ async function executeSingleCommand(args: {
     if (before && after) {
       lines.push(`Scroll Y: ${Math.round(before.scrollY)} → ${Math.round(after.scrollY)}`);
     }
+    lines.push(...accessDeniedLines(challenge));
+    lines.push(...popupLines);
 
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
@@ -972,10 +1040,12 @@ async function executeSingleCommand(args: {
       throw new Error('click-at coordinates must be numbers. Example: click-at 350 200');
     }
 
+    const windowsBefore = await listWindowIds(fns);
     const before = await getPageMetrics(fns);
     const started = Date.now();
     await fns.clickAt(x, y);
     const elapsedMs = Date.now() - started;
+    const popupLines = await describeOpenedPopups(fns, windowsBefore);
     const after = await getPageMetrics(fns);
 
     const lines = [
@@ -987,6 +1057,7 @@ async function executeSingleCommand(args: {
     if (before && after) {
       lines.push(`Scroll Y: ${Math.round(before.scrollY)} → ${Math.round(after.scrollY)}`);
     }
+    lines.push(...popupLines);
 
     return { output: lines.join('\n'), appendReleaseHint: true };
   }
@@ -1463,8 +1534,10 @@ async function executeSingleCommand(args: {
       }
     }
 
+    const windowsBefore = await listWindowIds(fns);
     const before = await getPageMetrics(fns);
     await fns.sendKey({ key, modifiers });
+    const popupLines = await describeOpenedPopups(fns, windowsBefore);
     const after = await getPageMetrics(fns);
 
     return {
@@ -1472,6 +1545,7 @@ async function executeSingleCommand(args: {
         `Key sent: ${key}${modifiers.length ? ` (${modifiers.join('+')})` : ''}`,
         `Active element before: ${describeActive(before)}`,
         `Active element after: ${describeActive(after)}`,
+        ...popupLines,
       ].join('\n'),
       appendReleaseHint: true,
     };
@@ -1610,7 +1684,9 @@ async function executeSingleCommand(args: {
     const target = windows.find((w) => w.id === result.instanceId);
 
     const lines = [
-      `Focused browser window ${result.instanceId}`,
+      target?.parentInstanceId
+        ? `Focused pop-up ${result.instanceId} (opened by ${target.parentInstanceId}); commands now act on it`
+        : `Focused browser window ${result.instanceId}`,
       `Title: ${result.title || 'New Tab'}`,
       `URL: ${result.url || 'about:blank'}`,
       `Session windows: ${summarizeWindows(windows)}`,
@@ -1647,6 +1723,9 @@ async function executeSingleCommand(args: {
         `  availableToSession: ${availableToSession}`,
         `  agentControlActive: ${!!w.agentControlActive}`,
       );
+      if (w.parentInstanceId) {
+        lines.push(`  parent: ${w.parentInstanceId} (pop-up; "focus ${w.id}" to act on it)`);
+      }
     }
 
     return { output: lines.join('\n'), appendReleaseHint: false };

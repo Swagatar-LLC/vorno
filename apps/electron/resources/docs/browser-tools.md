@@ -183,12 +183,55 @@ Debug runtime issues, requests, synchronization points, and download progress.
 `downloads` output includes the resolved local `savePath` when available so you can reference the downloaded file directly.
 
 ### `focus [windowId]` / `windows`
-Manage and inspect browser window ownership and visibility.
+Manage and inspect browser window ownership and visibility. `focus <id>` also
+selects which window later commands act on (see Pop-up windows below); `focus`
+with no id returns to the session's main window.
 
 ### Lifecycle commands
 - `release` — dismiss agent overlay, keep window visible for user
 - `hide` — hide window but preserve session state
 - `close` — close and destroy window
+
+---
+
+## Pop-up windows
+
+Some sites open features in a separate window with `window.open` (image
+viewers, search forms, older index pages, sign-in flows). That window opens
+as a **pop-up** of the window whose page opened it:
+
+- It shares the opener's cookies and logins, and the page keeps its
+  `window.opener` link, so pages that refuse to be opened directly still work.
+- It belongs to the session that owns the opener. No other session lists it
+  or can focus it.
+- `windows` lists it with its own id (for example `browser-3-popup-1`) and a
+  `parent:` line naming the opener.
+
+When a `click`, `click-at` or `key` opens one, the result says so:
+
+```
+Popup opened: browser-3-popup-1 https://example.com/viewer
+Commands still act on the current window. Run "focus browser-3-popup-1" to act on the pop-up.
+```
+
+Commands keep acting on the opener until you switch:
+
+```
+browser_tool({ command: "focus browser-3-popup-1" })   // target the pop-up
+browser_tool({ command: "snapshot" })                   // reads the pop-up
+browser_tool({ command: "focus browser-3" })            // back to the opener
+```
+
+While a pop-up is focused, every command (`snapshot`, `find`, `click`,
+`click-at`, `fill`, `type`, `key`, `select`, `wait`, `evaluate`, `screenshot`,
+`screenshot-region`, `console`, `network`, `downloads`, ...) acts on it. A
+pop-up the pop-up itself opens is listed the same way, with the first pop-up
+as its parent.
+
+When a pop-up closes (the page closes it, the user closes it, or
+`close <popup id>`), it disappears from `windows` and commands return to the
+window that opened it. Closing or destroying the opener closes its pop-ups.
+`open --foreground` while a pop-up is focused brings that pop-up forward.
 
 ---
 
