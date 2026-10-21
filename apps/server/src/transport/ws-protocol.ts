@@ -27,7 +27,7 @@ import { getWorkspaceByNameOrId } from '@craft-agent/shared/config';
 import type { AgentEvent } from '@craft-agent/core/types';
 
 import { validateApiKey, loadServerConfig, type ServerConfig } from '../config.ts';
-import type { SessionPool } from '../services/session-pool.ts';
+import type { SessionPool, PoolSession } from '../services/session-pool.ts';
 import type { EventBus } from '../services/event-bus.ts';
 import { hasWorkspaceAccess, getEffectivePolicy, type AuthContext } from '../middleware/auth.ts';
 import { ClientRegistry } from './client-registry.ts';
@@ -292,7 +292,7 @@ export class WsProtocol {
           break;
 
         case RPC.sessions.DELETE:
-          result = this.rpcDeleteSession(auth, args);
+          result = await this.rpcDeleteSession(auth, args);
           break;
 
         case RPC.sessions.SEND_MESSAGE:
@@ -386,16 +386,29 @@ export class WsProtocol {
     return this.pool.listSessions().filter(s => s.apiKeyId === auth.apiKey.id);
   }
 
-  private rpcDeleteSession(auth: AuthContext, args?: unknown[]): any {
+  /**
+   * fork(PLAN-057): a session only when the calling key created it. Routed
+   * sessions are desktop sessions, so another key must not reach them over WS
+   * either; one key's id is indistinguishable from a missing session.
+   */
+  private ownedSession(auth: AuthContext, sessionId: string): PoolSession | undefined {
+    if (this.pool.getOwner(sessionId) !== auth.apiKey.id) return undefined;
+    return this.pool.get(sessionId);
+  }
+
+  private async rpcDeleteSession(auth: AuthContext, args?: unknown[]): Promise<any> {
     const sessionId = args?.[0] as string;
     if (!sessionId) {
       throw Object.assign(new Error('sessionId is required'), { code: 'HANDLER_ERROR' });
     }
 
-    if (!this.pool.has(sessionId)) {
+    const session = this.ownedSession(auth, sessionId);
+    if (!session) {
       throw Object.assign(new Error(`Session '${sessionId}' not found`), { code: 'HANDLER_ERROR' });
     }
 
+    // fork(PLAN-057): mirrors REST: a routed session is deleted in the desktop too.
+    if (session.destroy) await session.destroy();
     this.pool.remove(sessionId);
     return { deleted: true };
   }
@@ -411,7 +424,7 @@ export class WsProtocol {
       throw Object.assign(new Error('sessionId and content are required'), { code: 'HANDLER_ERROR' });
     }
 
-    const session = this.pool.get(opts.sessionId);
+    const session = this.ownedSession(auth, opts.sessionId);
     if (!session) {
       throw Object.assign(new Error(`Session '${opts.sessionId}' not found`), { code: 'HANDLER_ERROR' });
     }
@@ -446,7 +459,7 @@ export class WsProtocol {
       throw Object.assign(new Error('sessionId is required'), { code: 'HANDLER_ERROR' });
     }
 
-    const session = this.pool.get(sessionId);
+    const session = this.ownedSession(auth, sessionId);
     if (!session) {
       throw Object.assign(new Error(`Session '${sessionId}' not found`), { code: 'HANDLER_ERROR' });
     }
@@ -469,12 +482,18 @@ export class WsProtocol {
       );
     }
 
-    const session = this.pool.get(opts.sessionId);
+    const session = this.ownedSession(auth, opts.sessionId);
     if (!session) {
       throw Object.assign(new Error(`Session '${opts.sessionId}' not found`), { code: 'HANDLER_ERROR' });
     }
 
-    session.respondToPermission(opts.requestId, opts.allowed);
+    const result = session.respondToPermission(opts.requestId, opts.allowed);
+    if (result === 'forbidden') {
+      throw Object.assign(
+        new Error("Approving this request exceeds this API key's permission policy"),
+        { code: 'HANDLER_ERROR' },
+      );
+    }
     return { responded: true };
   }
 

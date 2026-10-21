@@ -27,6 +27,8 @@
  * any pre-PLAN-014 reference keeps resolving. The seam shape is unchanged.
  */
 import type { WebhookReceivedPayload } from '@craft-agent/shared/automations';
+import type { AgentEvent } from '@craft-agent/core/types';
+import type { PermissionMode } from '@craft-agent/shared/agent/mode-types';
 export type { WebhookReceivedPayload };
 
 export interface WebhookIngestEvent {
@@ -61,28 +63,81 @@ export interface HostBridge {
   onWebhookEvent?: (workspaceId: string, payload: WebhookReceivedPayload) => void | Promise<void>;
 
   /**
-   * Optional session-creation route-through (open question 2 in PLAN-012).
+   * fork(PLAN-057): session-creation route-through (PLAN-012 open question 2).
    *
-   * v1 embedded + standalone both keep the core's own SessionPool for REST/WS
-   * session creation (behavior parity). This member is the reserved seam so a
-   * future version can route REST session creation through the desktop
-   * SessionManager (sessions visible in the live UI) WITHOUT reshaping the
-   * bridge — the core does not call it yet.
+   * When the host provides this AND the persisted server config has
+   * `routeSessionsToDesktop: true`, `POST /api/sessions` creates the session
+   * through the host (the desktop SessionManager: browser, skills, sources, and
+   * the session is visible in the UI) instead of the core's own SessionPool.
+   * The core still owns auth, the workspace check, the policy cap, per-key
+   * concurrency and ownership: it adopts the returned handle into its pool.
+   *
+   * The standalone host leaves this unset, so it always uses the core pool.
    */
   createSession?: (opts: HostCreateSessionOptions) => Promise<HostCreatedSession>;
 }
 
-/** Reserved shape for the optional createSession route-through (unused in v1). */
+/** The REST permission policy, already capped by the API key (getEffectivePolicy). */
+export type RestPermissionPolicy = 'deny-all' | 'allow-safe' | 'allow-all';
+
+/** fork(PLAN-057): what the core asks the host to create. */
 export interface HostCreateSessionOptions {
   workspaceId: string;
   model?: string;
-  permissionPolicy?: 'deny-all' | 'allow-safe' | 'allow-all';
+  /** Effective (capped) policy. The host maps it with {@link policyToPermissionMode}. */
+  permissionPolicy: RestPermissionPolicy;
   enabledSources?: string[];
   workingDirectory?: string;
+  /** Display name of the API key that created the session, for labelling. Never the key itself. */
+  apiKeyName: string;
 }
 
-/** Reserved return shape for the optional createSession route-through (unused in v1). */
+/** Status the REST routes report for a session. */
+export type HostSessionStatus = 'idle' | 'processing' | 'disposed';
+
+/**
+ * fork(PLAN-057): a live handle on a host-owned session. The core wraps it in a
+ * RoutedSession and keeps it in its SessionPool like any other session.
+ *
+ * Events are wire `AgentEvent`s (same contract as the core pool's sessions).
+ * The host emits `permission_request` events and does NOT answer them itself;
+ * the core applies the key's policy and routes the rest to the REST
+ * pending/permissions endpoints.
+ */
 export interface HostCreatedSession {
   sessionId: string;
   workspaceId: string;
+  /**
+   * Send one user message and stream the turn. The iterator ends after it
+   * yields `complete` or `error` (an interrupted turn yields `complete`).
+   */
+  chat(content: string): AsyncIterable<AgentEvent>;
+  /** Stop the current turn, if any. */
+  abort(): Promise<void>;
+  /** Answer a permission request. Returns false when it is no longer pending. */
+  respondToPermission(requestId: string, allowed: boolean): boolean;
+  getStatus(): HostSessionStatus;
+  getSdkSessionId(): string | undefined;
+  getLastActivityAt(): number;
+  /** Detach from the REST API (idle eviction, server stop). The session stays in the desktop. */
+  release(): void;
+  /** DELETE /api/sessions/:id — remove the session from the desktop too. */
+  delete(): Promise<void>;
+}
+
+/**
+ * Map the REST policy onto a session permission mode. Same mapping the core
+ * pool's AgentSession uses: deny-all → safe (Explore, read-only), allow-safe →
+ * ask, allow-all → allow-all.
+ */
+export function policyToPermissionMode(policy: RestPermissionPolicy | undefined): PermissionMode {
+  switch (policy) {
+    case 'allow-all':
+      return 'allow-all';
+    case 'allow-safe':
+      return 'ask';
+    case 'deny-all':
+    default:
+      return 'safe';
+  }
 }

@@ -2,8 +2,19 @@ import { getWorkspaceByNameOrId } from '@craft-agent/shared/config';
 import type { AgentEvent } from '@craft-agent/core/types';
 import { jsonResponse, errorResponse, sseResponse } from '../middleware/error.ts';
 import { hasWorkspaceAccess, getEffectivePolicy, type AuthContext } from '../middleware/auth.ts';
-import type { SessionPool } from '../services/session-pool.ts';
+import type { SessionPool, PoolSession } from '../services/session-pool.ts';
+import type { HostBridge } from '../core/host-bridge.ts'; // fork(PLAN-057)
+import { RoutedSession } from '../services/routed-session.ts'; // fork(PLAN-057)
 import type { ServerConfig } from '../config.ts';
+
+/**
+ * fork(PLAN-057): the session, only when it belongs to the calling key. A session
+ * owned by another key is indistinguishable from a missing one (Session Isolation).
+ */
+function getOwnedSession(pool: SessionPool, auth: AuthContext, sessionId: string): PoolSession | undefined {
+  if (pool.getOwner(sessionId) !== auth.apiKey.id) return undefined;
+  return pool.get(sessionId);
+}
 
 /**
  * POST /api/sessions — Create a new session
@@ -12,7 +23,8 @@ export async function handleCreateSession(
   request: Request,
   auth: AuthContext,
   pool: SessionPool,
-  config: ServerConfig
+  config: ServerConfig,
+  hostBridge?: HostBridge // fork(PLAN-057)
 ): Promise<Response> {
   let body: {
     workspaceId: string;
@@ -52,6 +64,33 @@ export async function handleCreateSession(
   }
 
   const effectivePolicy = getEffectivePolicy(auth, body.permissionPolicy);
+
+  // fork(PLAN-057): route through the desktop SessionManager when the host offers
+  // it and the persisted setting is on. Everything above (auth, workspace, limits,
+  // policy cap) already ran; the pool path below is untouched.
+  if (config.routeSessionsToDesktop === true && hostBridge?.createSession) {
+    try {
+      const handle = await hostBridge.createSession({
+        workspaceId: workspace.id,
+        model: body.model,
+        permissionPolicy: effectivePolicy,
+        enabledSources: body.enabledSources,
+        workingDirectory: body.workingDirectory,
+        apiKeyName: auth.apiKey.name,
+      });
+      const routed = new RoutedSession(handle, effectivePolicy);
+      pool.adopt(routed, auth.apiKey.id);
+      return jsonResponse({
+        sessionId: routed.sessionId,
+        workspaceId: body.workspaceId,
+        permissionPolicy: effectivePolicy,
+        status: routed.getStatus(),
+      }, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create session';
+      return errorResponse(500, message);
+    }
+  }
 
   try {
     let sessionId = 'unknown';
@@ -107,7 +146,7 @@ export function handleGetSession(
   auth: AuthContext,
   pool: SessionPool
 ): Response {
-  const session = pool.get(sessionId);
+  const session = getOwnedSession(pool, auth, sessionId);
   if (!session) {
     return errorResponse(404, `Session '${sessionId}' not found`);
   }
@@ -123,15 +162,25 @@ export function handleGetSession(
 /**
  * DELETE /api/sessions/:id — Delete a session
  */
-export function handleDeleteSession(
+export async function handleDeleteSession(
   sessionId: string,
   auth: AuthContext,
   pool: SessionPool
-): Response {
-  if (!pool.has(sessionId)) {
+): Promise<Response> {
+  const session = getOwnedSession(pool, auth, sessionId);
+  if (!session) {
     return errorResponse(404, `Session '${sessionId}' not found`);
   }
 
+  // fork(PLAN-057): routed sessions delete the desktop session too; remove() then
+  // only detaches (dispose is a no-op after destroy).
+  if (session.destroy) {
+    try {
+      await session.destroy();
+    } catch (err) {
+      return errorResponse(500, err instanceof Error ? err.message : 'Failed to delete session');
+    }
+  }
   pool.remove(sessionId);
   return jsonResponse({ deleted: true });
 }
@@ -145,7 +194,7 @@ export async function handleSendMessage(
   auth: AuthContext,
   pool: SessionPool
 ): Promise<Response> {
-  const session = pool.get(sessionId);
+  const session = getOwnedSession(pool, auth, sessionId);
   if (!session) {
     return errorResponse(404, `Session '${sessionId}' not found`);
   }
@@ -203,17 +252,17 @@ export async function handleSendMessage(
 /**
  * POST /api/sessions/:id/abort — Abort current generation
  */
-export function handleAbort(
+export async function handleAbort(
   sessionId: string,
   auth: AuthContext,
   pool: SessionPool
-): Response {
-  const session = pool.get(sessionId);
+): Promise<Response> {
+  const session = getOwnedSession(pool, auth, sessionId);
   if (!session) {
     return errorResponse(404, `Session '${sessionId}' not found`);
   }
 
-  session.abort();
+  await session.abort();
   return jsonResponse({ aborted: true });
 }
 
@@ -225,7 +274,7 @@ export function handleSessionEvents(
   auth: AuthContext,
   pool: SessionPool
 ): Response {
-  const session = pool.get(sessionId);
+  const session = getOwnedSession(pool, auth, sessionId);
   if (!session) {
     return errorResponse(404, `Session '${sessionId}' not found`);
   }
@@ -273,13 +322,13 @@ export function handleGetPending(
   auth: AuthContext,
   pool: SessionPool
 ): Response {
-  const session = pool.get(sessionId);
+  const session = getOwnedSession(pool, auth, sessionId);
   if (!session) {
     return errorResponse(404, `Session '${sessionId}' not found`);
   }
 
-  // TODO: Track pending permission requests in AgentSession
-  return jsonResponse({ pending: [] });
+  // Pool (AgentSession) sessions do not track pending requests; routed ones do.
+  return jsonResponse({ pending: session.getPending?.() ?? [] });
 }
 
 /**
@@ -291,7 +340,7 @@ export async function handleRespondPermission(
   auth: AuthContext,
   pool: SessionPool
 ): Promise<Response> {
-  const session = pool.get(sessionId);
+  const session = getOwnedSession(pool, auth, sessionId);
   if (!session) {
     return errorResponse(404, `Session '${sessionId}' not found`);
   }
@@ -307,6 +356,13 @@ export async function handleRespondPermission(
     return errorResponse(400, 'requestId and decision are required');
   }
 
-  session.respondToPermission(body.requestId, body.decision === 'allow');
+  const result = session.respondToPermission(body.requestId, body.decision === 'allow');
+  if (result === 'forbidden') {
+    return errorResponse(403, "Approving this request exceeds this API key's permission policy");
+  }
+  // fork(PLAN-057): sessions that track pending requests 404 an unknown id.
+  if (session.getPending && result === false) {
+    return errorResponse(404, `Permission request '${body.requestId}' not found`);
+  }
   return jsonResponse({ responded: true });
 }

@@ -328,6 +328,8 @@ export interface RemoteAccessConfig {
   port: number
   apiKeys: RemoteAccessApiKeyInfo[]
   rateLimits: { requestsPerMinute: number; concurrentSessions: number }
+  /** fork(PLAN-057): run API sessions as desktop sessions. Applies to new sessions without a restart. */
+  routeSessionsToDesktop: boolean
 }
 
 export type RemoteAccessState = 'stopped' | 'starting' | 'running' | 'stopping' | 'error'

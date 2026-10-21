@@ -1052,6 +1052,20 @@ describe('createBrowserTools', () => {
       const result = await executeTool(errorTools, 'browser_tool', { command: 'navigate test.com' })
       expect(result.isError).toBe(true)
       expect(result.content[0].text).toContain('Error')
+      expect(result.content[0].text).toContain('Browser window controls are not available')
+    })
+
+    // fork(PLAN-057): a core-pool session has no browserPaneFns; a desktop-routed one does.
+    it('is unavailable without browserPaneFns and calls through once they exist', async () => {
+      let fns: BrowserPaneFns | undefined
+      const lateTools = createBrowserTools({ sessionId: 'test', getBrowserPaneFns: () => fns })
+      const without = await executeTool(lateTools, 'browser_tool', { command: 'navigate test.com' })
+      expect(without.isError).toBe(true)
+      expect(without.content[0].text).toContain('Browser window controls are not available')
+
+      fns = mockFns
+      const withFns = await executeTool(lateTools, 'browser_tool', { command: 'navigate test.com' })
+      expect(withFns.isError).toBeFalsy()
     })
 
     it('catches and wraps thrown errors', async () => {

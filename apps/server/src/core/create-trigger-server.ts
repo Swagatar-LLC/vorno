@@ -11,7 +11,7 @@
  *    node `ws` adapter drives `wsProtocol` (PLAN-012).
  *
  * The core takes a {@link HostBridge} so host-specific capabilities (the webhook
- * seam, later optional session routing) are injected, never assumed. Nothing
+ * seam, optional session routing) are injected, never assumed. Nothing
  * here may reference Electron, Bun, or node HTTP specifics.
  */
 
@@ -81,7 +81,7 @@ export function createTriggerServer(
     registry,
     getConfig: options.getConfig,
   });
-  const router = createRouter(pool, registry, options.webhooks); // fork(PLAN-014)
+  const router = createRouter(pool, registry, options.webhooks, hostBridge); // fork(PLAN-014, PLAN-057)
 
   const fetchHandler = (request: Request): Promise<Response> => router(request);
 
@@ -100,8 +100,8 @@ export function createTriggerServer(
     await pool.drainAll();
   };
 
-  // hostBridge is retained for the webhook receiver (VOR-33) and future session
-  // routing; the core keeps its own SessionPool for REST/WS in v1 (parity).
+  // config is read per request by the router (loadServerConfig), so the
+  // routeSessionsToDesktop setting takes effect without a restart.
   void config;
 
   return {

@@ -101,3 +101,45 @@ describe('WsProtocol close codes (runtime-neutral)', () => {
     expect(protocol.clientCount).toBe(0);
   });
 });
+
+// fork(PLAN-057): routed (desktop) sessions share the pool, so WS session RPCs
+// must enforce the same per-key ownership the REST routes do.
+describe('WsProtocol session ownership', () => {
+  test('another key cannot delete, message, cancel or answer a session', async () => {
+    const { generateApiKey } = await import('../../src/config');
+    const keyA = generateApiKey('ws-a', { workspaceIds: [], permissionPolicy: 'allow-all', maxConcurrentSessions: 2 });
+    const keyB = generateApiKey('ws-b', { workspaceIds: [], permissionPolicy: 'allow-all', maxConcurrentSessions: 2 });
+    const config: ServerConfig = { ...EMPTY_CONFIG, apiKeys: [keyA.stored, keyB.stored] };
+    const eventBus = new EventBus();
+    const pool = new SessionPool(eventBus);
+    const calls: string[] = [];
+    pool.adopt({
+      sessionId: 'owned-by-a',
+      getStatus: () => 'idle',
+      getSdkSessionId: () => undefined,
+      getLastActivityAt: () => Date.now(),
+      async *chat() { calls.push('chat'); },
+      abort: () => { calls.push('abort'); },
+      dispose: () => { calls.push('dispose'); },
+      respondToPermission: () => { calls.push('respond'); return true; },
+    }, keyA.stored.id);
+    const protocol = new WsProtocol({ pool, eventBus, registry: new ClientRegistry(), getConfig: () => config });
+    const sock = new FakeSocket();
+    const send = (envelope: MessageEnvelope) => protocol.handleMessage(sock, serializeEnvelope(envelope));
+    await send({ id: 'h', type: 'handshake', protocolVersion: PROTOCOL_VERSION, token: keyB.fullKey } as MessageEnvelope);
+    const requests: Array<[string, unknown[]]> = [
+      ['sessions:delete', ['owned-by-a']],
+      ['sessions:sendMessage', [{ sessionId: 'owned-by-a', content: 'hi' }]],
+      ['sessions:cancel', ['owned-by-a']],
+      ['sessions:respondToPermission', [{ sessionId: 'owned-by-a', requestId: 'r', allowed: true }]],
+    ];
+    for (const [channel, args] of requests) {
+      await send({ id: channel, type: 'request', channel, args } as MessageEnvelope);
+    }
+    const errors = sock.sent.filter((e) => e.type === 'response' && (e as { error?: unknown }).error);
+    expect(errors.length).toBe(requests.length);
+    expect(calls).toEqual([]);
+    expect(pool.has('owned-by-a')).toBe(true);
+    protocol.shutdown();
+  });
+});

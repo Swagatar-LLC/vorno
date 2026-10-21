@@ -1,4 +1,5 @@
 import { AgentSession, type AgentSessionConfig } from '../orchestrator/index.ts';
+import type { AgentEvent } from '@craft-agent/core/types';
 import { EventBus } from './event-bus.ts';
 
 export interface PoolStats {
@@ -7,8 +8,40 @@ export interface PoolStats {
   totalEvicted: number;
 }
 
+/**
+ * fork(PLAN-057): the subset of a session the routes, WS protocol and pool use.
+ * AgentSession satisfies it structurally; RoutedSession (a desktop-owned session
+ * adopted into the pool) implements it too. For a routed session dispose()
+ * means release (detach), never delete; destroy() is the real delete.
+ */
+export interface PoolSession {
+  readonly sessionId: string;
+  getStatus(): 'idle' | 'processing' | 'disposed';
+  getSdkSessionId(): string | undefined;
+  getLastActivityAt(): number;
+  chat(content: string, ...rest: any[]): AsyncIterable<AgentEvent>;
+  abort(): void | Promise<void>;
+  dispose(): void;
+  /** false: unknown request id. 'forbidden': approval exceeds the key's policy (routed only). */
+  respondToPermission(requestId: string, allowed: boolean, ...rest: any[]): void | boolean | 'forbidden';
+  /** The session belongs to the host (desktop); drain releases it and never aborts its turn. */
+  readonly hostOwned?: boolean;
+  /** Pending permission requests awaiting a REST answer (routed sessions only). */
+  getPending?(): PendingPermission[];
+  /** DELETE semantics for sessions whose dispose() only detaches. */
+  destroy?(): Promise<void>;
+}
+
+export interface PendingPermission {
+  requestId: string;
+  toolName: string;
+  command?: string;
+  description: string;
+  permissionType?: string;
+}
+
 interface ManagedPoolEntry {
-  session: AgentSession;
+  session: PoolSession;
   apiKeyId: string;
   createdAt: number;
 }
@@ -48,8 +81,22 @@ export class SessionPool {
   /**
    * Get an active session by ID.
    */
-  get(sessionId: string): AgentSession | undefined {
+  get(sessionId: string): PoolSession | undefined {
     return this.sessions.get(sessionId)?.session;
+  }
+
+  /**
+   * fork(PLAN-057): register an already-created session (a routed, desktop-owned
+   * one). Counts toward totals and per-key concurrency like a created session.
+   */
+  adopt(session: PoolSession, apiKeyId: string): void {
+    this.sessions.set(session.sessionId, { session, apiKeyId, createdAt: Date.now() });
+    this.totalCreated++;
+  }
+
+  /** fork(PLAN-057): the API key id that owns a session, if it is in the pool. */
+  getOwner(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.apiKeyId;
   }
 
   /**
@@ -91,8 +138,10 @@ export class SessionPool {
     const evicted: string[] = [];
 
     for (const [sessionId, entry] of this.sessions) {
-      if (entry.session.getStatus() === 'idle' &&
-          now - entry.session.getLastActivityAt() > maxIdleMs) {
+      const status = entry.session.getStatus();
+      // fork(PLAN-057): a disposed entry (e.g. deleted in the desktop) is always evicted.
+      if (status === 'disposed' ||
+          (status === 'idle' && now - entry.session.getLastActivityAt() > maxIdleMs)) {
         entry.session.dispose();
         this.eventBus.removeSession(sessionId);
         this.sessions.delete(sessionId);
@@ -111,7 +160,8 @@ export class SessionPool {
     const disposePromises: Promise<void>[] = [];
 
     for (const [sessionId, entry] of this.sessions) {
-      entry.session.abort();
+      // fork(PLAN-057): a host-owned session keeps running in the desktop; only release it.
+      if (!entry.session.hostOwned) entry.session.abort();
       // Give abort a moment to take effect
       disposePromises.push(
         new Promise<void>(resolve => {
