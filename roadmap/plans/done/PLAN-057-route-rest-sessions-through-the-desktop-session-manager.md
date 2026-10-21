@@ -7,7 +7,7 @@ owner: jh
 created: 2026-10-21
 updated: 2026-10-21
 related: [PLAN-012, PLAN-013, PLAN-014, ADR-0007]
-related-suvs: [SUV-0074-run-api-sessions-in-the-desktop-app.md]
+related-suvs: [SUV-0074-run-api-sessions-in-the-desktop-app.md, SUV-0075-name-place-and-pin-api-sessions.md]
 blocked-by: []
 ---
 
