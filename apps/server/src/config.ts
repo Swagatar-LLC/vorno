@@ -88,6 +88,12 @@ export interface ServerConfig {
   rateLimits: RateLimits;
   /** fork(PLAN-020): WebUI listener config block. */
   webui: WebUiConfig;
+  /**
+   * fork(PLAN-057): when true AND the host provides `HostBridge.createSession`
+   * (the desktop app), REST sessions run as desktop SessionManager sessions.
+   * Default false. The standalone server ignores it. Read per request.
+   */
+  routeSessionsToDesktop?: boolean;
 }
 
 // fork(PLAN-022): default tunnel config — no tunnel until the user opts in.
@@ -118,6 +124,7 @@ const DEFAULT_CONFIG: ServerConfig = {
     concurrentSessions: 5,
   },
   webui: { ...DEFAULT_WEBUI_CONFIG },
+  routeSessionsToDesktop: false, // fork(PLAN-057)
 };
 
 const CONFIG_PATH = join(CONFIG_DIR, 'server-config.json');
@@ -217,6 +224,8 @@ export function loadServerConfig(): ServerConfig {
       // fork(PLAN-020): nested merge so files predating the `webui` block pick up
       // new sub-fields (and defaults) instead of inheriting `undefined`.
       config.webui = { ...DEFAULT_WEBUI_CONFIG, ...(parsed.webui ?? {}) };
+      // fork(PLAN-057): only a literal `true` opts in.
+      config.routeSessionsToDesktop = parsed.routeSessionsToDesktop === true;
       // fork(PLAN-022): second-level merge so files predating the `tunnel`
       // sub-object (spread above would inherit `undefined` from parsed.webui)
       // pick up `{ provider: 'none' }` and any future tunnel sub-fields.
