@@ -295,14 +295,18 @@ The effective policy (the requested policy capped by the key) maps to the deskto
 | REST policy | Desktop mode | Permission requests |
 |-------------|--------------|---------------------|
 | `allow-all` | allow-all | Approved automatically |
-| `allow-safe` | ask | Safe commands (`ls`, `cat`, `grep`, ...) approved automatically; anything else is held as pending |
+| `allow-safe` | ask | Safe commands (`ls`, `cat`, `grep`, ...) approved automatically; anything else is held as pending. A command counts as safe only if its first word is on the safe list and it contains none of `; | & $ ( ) \` < >` or a newline |
 | `deny-all` | safe (read-only) | Always held as pending |
 
-A pending request is sent on the SSE stream as a `permission_request` event and listed by `GET /api/sessions/:id/pending` (`requestId`, `toolName`, `command`, `description`, `permissionType`). Answer it with `POST /api/sessions/:id/permissions` (`{"requestId": "...", "decision": "allow" | "deny"}`). An unknown `requestId` returns 404. Abort, delete, eviction and server stop deny whatever is pending.
+A pending request is sent on the SSE stream as a `permission_request` event and listed by `GET /api/sessions/:id/pending` (`requestId`, `toolName`, `command`, `description`, `permissionType`).
+
+The REST client can only deny a pending request. `POST /api/sessions/:id/permissions` with `{"requestId": "...", "decision": "deny"}` works. With `"decision": "allow"` on a session whose policy is not `allow-all`, it returns 403 `Approving this request exceeds this API key's permission policy` and the request stays pending; the WebSocket `sessions:respondToPermission` call refuses the same way. The desktop user can still approve or deny it in the app: that is the desktop owner's authority, not the key's. A request nobody answers within 5 minutes is denied. An unknown `requestId` returns 404. Abort, delete and the end of the turn deny whatever is still pending.
+
+Eviction (idle or deleted in the desktop) and server stop only detach the REST API from the desktop session. They do not delete it and do not stop its running turn. If the session is deleted in the desktop app, a running stream ends with an `error` event and the session is evicted.
 
 ### Ownership and deletion
 
-The session is owned by the key that created it (see Session Isolation) and is labelled in the desktop app with that key's name. `DELETE /api/sessions/:id` removes it from the desktop app too.
+The session is owned by the key that created it (see Session Isolation) and is labelled in the desktop app with that key's name. `DELETE /api/sessions/:id` removes it from the desktop app too, and so does the WebSocket `sessions:delete` call.
 
 ### Manual check
 

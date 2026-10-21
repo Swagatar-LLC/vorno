@@ -18,6 +18,9 @@ import {
   type HostCreatedSession,
   type HostSessionStatus,
 } from '../../src/core/host-bridge';
+import { RoutedSession, isSafeCommand } from '../../src/services/routed-session';
+import { WsProtocol } from '../../src/transport/ws-protocol';
+import { ClientRegistry } from '../../src/transport/client-registry';
 import type { PoolSession } from '../../src/services/session-pool';
 
 const WS_ID = 'ws-routed-test';
@@ -92,6 +95,10 @@ class FakeHandle implements HostCreatedSession {
   release() { this.released++; }
   async delete() { this.deleted++; }
 }
+
+const wsFor = (c: TriggerServerCore) => new WsProtocol({
+  pool: c.pool, eventBus: c.pool.getEventBus(), registry: new ClientRegistry(), getConfig: () => ({} as never),
+});
 
 const perm = (requestId: string, command: string): AgentEvent =>
   ({ type: 'permission_request', requestId, toolName: 'Bash', command, description: 'run' }) as AgentEvent;
@@ -289,9 +296,51 @@ describe('permission routing', () => {
     expect(handle.responses).toEqual([]);
     const pending = await (await req(keyA, 'GET', `/api/sessions/${id}/pending`)).json() as any;
     expect(pending.pending).toHaveLength(1);
-    await req(keyA, 'POST', `/api/sessions/${id}/permissions`, { requestId: 'p1', decision: 'allow' });
-    expect(handle.responses).toEqual([['p1', true]]);
+    const allow = await req(keyA, 'POST', `/api/sessions/${id}/permissions`, { requestId: 'p1', decision: 'allow' });
+    expect(allow.status).toBe(403);
+    expect(((await allow.json()) as any).error).toBe("Approving this request exceeds this API key's permission policy");
+    expect(handle.responses).toEqual([]);
+    const still = await (await req(keyA, 'GET', `/api/sessions/${id}/pending`)).json() as any;
+    expect(still.pending).toHaveLength(1);
+    const deny = await req(keyA, 'POST', `/api/sessions/${id}/permissions`, { requestId: 'p1', decision: 'deny' });
+    expect(deny.status).toBe(200);
+    expect(handle.responses).toEqual([['p1', false]]);
     await (await msg).text();
+  });
+
+  test('allow-safe: REST allow above the policy is 403 and stays pending; deny works', async () => {
+    const { id, handle, msg } = await turn('allow-safe', 'rm x');
+    const allow = await req(keyA, 'POST', `/api/sessions/${id}/permissions`, { requestId: 'p1', decision: 'allow' });
+    expect(allow.status).toBe(403);
+    expect(handle.responses).toEqual([]);
+    expect(((await (await req(keyA, 'GET', `/api/sessions/${id}/pending`)).json()) as any).pending).toHaveLength(1);
+    expect((await req(keyA, 'POST', `/api/sessions/${id}/permissions`, { requestId: 'p1', decision: 'deny' })).status).toBe(200);
+    expect(handle.responses).toEqual([['p1', false]]);
+    await (await msg).text();
+  });
+
+  test('WS respondToPermission allow is refused above the policy, deny is accepted', async () => {
+    const { id, handle, msg } = await turn('allow-safe', 'rm x');
+    const ws = wsFor(core);
+    const call = (allowed: boolean) => (ws as any).rpcRespondPermission(
+      { apiKey: keyA.stored }, [{ sessionId: id, requestId: 'p1', allowed }]);
+    expect(() => call(true)).toThrow(/exceeds this API key/);
+    expect(handle.responses).toEqual([]);
+    expect(call(false)).toEqual({ responded: true });
+    expect(handle.responses).toEqual([['p1', false]]);
+    await (await msg).text();
+  });
+
+  test('a request left pending is denied after the timeout', async () => {
+    const h = new FakeHandle('t1');
+    h.script = [perm('p1', 'rm x'), { type: 'complete' } as AgentEvent];
+    const rs = new RoutedSession(h, 'deny-all', 20);
+    const done = (async () => { for await (const _ of rs.chat('go')) { /* drain */ } })();
+    await Bun.sleep(80);
+    expect(h.responses).toEqual([['p1', false]]);
+    expect(rs.getPending()).toEqual([]);
+    expect(rs.respondToPermission('p1', false)).toBe(false); // late answer is harmless
+    await done;
   });
 
   test('abort denies pending requests, then aborts the handle', async () => {
@@ -321,11 +370,48 @@ describe('lifecycle', () => {
     for (const h of handles) { expect(h.released).toBe(1); expect(h.deleted).toBe(0); }
   });
 
+  test('evictIdle removes a disposed session', async () => {
+    await create(keyA);
+    handles[0].status = 'disposed';
+    expect(core.pool.evictIdle(1e12)).toEqual(['routed-1']);
+    expect(core.pool.has('routed-1')).toBe(false);
+  });
+
+  test('drainAll does not abort a host-owned session', async () => {
+    await create(keyA);
+    await core.pool.drainAll();
+    expect(handles[0].aborted).toBe(0);
+  });
+
+  test('WS delete destroys the host session', async () => {
+    const { json } = await create(keyA);
+    const ws = wsFor(core);
+    expect(await (ws as any).rpcDeleteSession({ apiKey: keyA.stored }, [json.sessionId])).toEqual({ deleted: true });
+    expect(handles[0].deleted).toBe(1);
+    expect(core.pool.has(json.sessionId)).toBe(false);
+  });
+
   test('drainAll releases, never deletes', async () => {
     await create(keyA);
     await core.pool.drainAll();
     expect(handles[0].released).toBe(1);
     expect(handles[0].deleted).toBe(0);
+  });
+});
+
+describe('isSafeCommand', () => {
+  test.each([
+    ['ls -la', true],
+    ['  ls', true],
+    ['ls; rm -rf x', false],
+    ['cat a | sh', false],
+    ['echo $(id)', false],
+    ['ls\nrm x', false],
+    ['cat a > b', false],
+    ['rm x', false],
+    ['', false],
+  ] as const)('%j -> %s', (cmd, expected) => {
+    expect(isSafeCommand(cmd)).toBe(expected);
   });
 });
 

@@ -52,10 +52,14 @@ both kinds ──▶ SessionPool entry {session, apiKeyId}  ◀── all /api/s
 
 Policy mapping (same as the core pool): deny-all → `safe`, allow-safe → `ask`,
 allow-all → `allow-all`. Permission requests during a REST turn: allow-all
-approves; allow-safe approves the pool's read-only command allowlist; every
-other request is held as pending for the REST client (`GET /pending`,
-`POST /permissions`) and is never approved silently. Releasing, aborting or
-deleting the session denies whatever is still pending.
+approves; allow-safe approves a command only when its first word is on the
+read-only allowlist and it has no shell metacharacters or newline. Every other
+request is held as pending: the REST client can see it (`GET /pending`, SSE) and
+can only deny it (`POST /permissions` allow returns 403, same for the WS call).
+The desktop user can approve it in the app. A request still pending after 5
+minutes is denied. Aborting or deleting the session denies whatever is pending.
+Eviction and drain release the session without stopping its desktop turn; a WS
+delete removes the desktop session like REST.
 
 ## Acceptance
 

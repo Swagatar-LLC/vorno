@@ -292,7 +292,7 @@ export class WsProtocol {
           break;
 
         case RPC.sessions.DELETE:
-          result = this.rpcDeleteSession(auth, args);
+          result = await this.rpcDeleteSession(auth, args);
           break;
 
         case RPC.sessions.SEND_MESSAGE:
@@ -396,16 +396,19 @@ export class WsProtocol {
     return this.pool.get(sessionId);
   }
 
-  private rpcDeleteSession(auth: AuthContext, args?: unknown[]): any {
+  private async rpcDeleteSession(auth: AuthContext, args?: unknown[]): Promise<any> {
     const sessionId = args?.[0] as string;
     if (!sessionId) {
       throw Object.assign(new Error('sessionId is required'), { code: 'HANDLER_ERROR' });
     }
 
-    if (!this.ownedSession(auth, sessionId)) {
+    const session = this.ownedSession(auth, sessionId);
+    if (!session) {
       throw Object.assign(new Error(`Session '${sessionId}' not found`), { code: 'HANDLER_ERROR' });
     }
 
+    // fork(PLAN-057): mirrors REST: a routed session is deleted in the desktop too.
+    if (session.destroy) await session.destroy();
     this.pool.remove(sessionId);
     return { deleted: true };
   }
@@ -484,7 +487,13 @@ export class WsProtocol {
       throw Object.assign(new Error(`Session '${opts.sessionId}' not found`), { code: 'HANDLER_ERROR' });
     }
 
-    session.respondToPermission(opts.requestId, opts.allowed);
+    const result = session.respondToPermission(opts.requestId, opts.allowed);
+    if (result === 'forbidden') {
+      throw Object.assign(
+        new Error("Approving this request exceeds this API key's permission policy"),
+        { code: 'HANDLER_ERROR' },
+      );
+    }
     return { responded: true };
   }
 

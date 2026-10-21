@@ -11,6 +11,7 @@
  * Deps are a narrow interface so this runs under bun test without Electron.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { AgentEvent } from '@craft-agent/core/types';
 import type { PermissionMode } from '@craft-agent/shared/agent/mode-types';
 import type { SessionEvent } from '@craft-agent/shared/protocol';
@@ -31,7 +32,8 @@ export interface DesktopSessionDeps {
     workingDirectory?: string;
     name: string;
   }): Promise<{ id: string }>;
-  sendMessage(sessionId: string, content: string): Promise<unknown>;
+  /** options.optimisticMessageId comes back on this message's user_message events. */
+  sendMessage(sessionId: string, content: string, options?: { optimisticMessageId?: string }): Promise<unknown>;
   cancelProcessing(sessionId: string): Promise<unknown>;
   respondToPermission(sessionId: string, requestId: string, allowed: boolean, alwaysAllow: boolean): boolean;
   deleteSession(sessionId: string): Promise<unknown>;
@@ -122,12 +124,22 @@ export function createDesktopSessionRoute(deps: DesktopSessionDeps): NonNullable
               if (terminal) finish(); else poke();
             };
 
+            const messageId = `api-${randomUUID()}`;
+
             const onEvent: SessionEventListener = (e) => {
               lastActivityAt = now();
+              if (e.type === 'session_deleted') {
+                push({ type: 'error', message: 'Session was deleted in the desktop app' }, true);
+                return;
+              }
               if (e.type === 'user_message') {
-                if (e.message?.content === content) {
+                if (e.optimisticMessageId === messageId) {
                   if (e.status === 'queued') waitingForOwnTurn = true;
                   else if (e.status === 'processing') waitingForOwnTurn = false;
+                } else if (e.status === 'processing' && !waitingForOwnTurn) {
+                  // SessionManager skips `complete` when a queued message follows and
+                  // starts that message's turn: ours is over.
+                  push({ type: 'complete' }, true);
                 }
                 return;
               }
@@ -140,7 +152,7 @@ export function createDesktopSessionRoute(deps: DesktopSessionDeps): NonNullable
             const unsub = deps.subscribe(sessionId, onEvent);
             unsubs.add(finish);
 
-            deps.sendMessage(sessionId, content).catch((err: unknown) => {
+            deps.sendMessage(sessionId, content, { optimisticMessageId: messageId }).catch((err: unknown) => {
               push({ type: 'error', message: err instanceof Error ? err.message : String(err) }, true);
             });
 

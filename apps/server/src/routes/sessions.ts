@@ -357,6 +357,9 @@ export async function handleRespondPermission(
   }
 
   const result = session.respondToPermission(body.requestId, body.decision === 'allow');
+  if (result === 'forbidden') {
+    return errorResponse(403, "Approving this request exceeds this API key's permission policy");
+  }
   // fork(PLAN-057): sessions that track pending requests 404 an unknown id.
   if (session.getPending && result === false) {
     return errorResponse(404, `Permission request '${body.requestId}' not found`);

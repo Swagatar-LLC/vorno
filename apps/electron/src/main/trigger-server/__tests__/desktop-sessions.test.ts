@@ -11,7 +11,7 @@ import { createSessionEventTap } from '../session-event-tap';
 
 const clock = { t: 1000 };
 
-function setup(opts: { sendMessage?: (id: string, c: string) => Promise<unknown>; status?: 'idle' | 'processing' | 'disposed' } = {}) {
+function setup(opts: { sendMessage?: (id: string, c: string, o?: { optimisticMessageId?: string }) => Promise<unknown>; status?: 'idle' | 'processing' | 'disposed' } = {}) {
   const tap = createSessionEventTap();
   const forwarded: unknown[][] = [];
   const sink = tap.wrapSink((...args: unknown[]) => { forwarded.push(args); });
@@ -20,7 +20,7 @@ function setup(opts: { sendMessage?: (id: string, c: string) => Promise<unknown>
   let status: 'idle' | 'processing' | 'disposed' = opts.status ?? 'idle';
   const deps: DesktopSessionDeps = {
     async createSession(ws, o) { calls.create!.push([ws, o]); return { id: 's1' }; },
-    async sendMessage(id, c) { calls.send!.push([id, c]); return opts.sendMessage ? opts.sendMessage(id, c) : undefined; },
+    async sendMessage(id, c, o) { calls.send!.push([id, c]); return opts.sendMessage ? opts.sendMessage(id, c, o) : undefined; },
     async cancelProcessing(id) { calls.cancel!.push([id]); },
     respondToPermission(id, rid, allowed, always) { calls.respond!.push([id, rid, allowed, always]); return true; },
     async deleteSession(id) { calls.del!.push([id]); },
@@ -134,18 +134,45 @@ describe('chat', () => {
   });
 
   test('a send queued behind a running turn ignores that turn and ends with its own', async () => {
-    const s = setup({ sendMessage: async () => {
-      s.emit({ type: 'user_message', sessionId: 's1', message: { content: 'mine' } as never, status: 'queued' });
+    let mine: string | undefined;
+    const s = setup({ sendMessage: async (_id, _c, o) => {
+      mine = o?.optimisticMessageId;
+      s.emit({ type: 'user_message', sessionId: 's1', message: { content: 'mine' } as never, status: 'queued', optimisticMessageId: mine });
     } });
     const h = await s.create();
     const p = collect(h.chat('mine'));
     await tick();
+    expect(mine).toBeTruthy();
     s.emit({ type: 'text_delta', sessionId: 's1', delta: 'old turn' });
     s.emit({ type: 'complete', sessionId: 's1' }); // the UI turn ends
-    s.emit({ type: 'user_message', sessionId: 's1', message: { content: 'mine' } as never, status: 'processing' });
+    s.emit({ type: 'user_message', sessionId: 's1', message: { content: 'mine' } as never, status: 'processing', optimisticMessageId: mine });
     s.emit({ type: 'text_delta', sessionId: 's1', delta: 'new' });
     s.emit({ type: 'complete', sessionId: 's1' });
     expect(await p).toEqual([{ type: 'text_delta', text: 'new', turnId: undefined }, { type: 'complete' }]);
+  });
+
+  test('a later queued message starting its turn ends ours, matched by id not content', async () => {
+    let mine: string | undefined;
+    const s = setup({ sendMessage: async (_id, _c, o) => {
+      mine = o?.optimisticMessageId;
+      s.emit({ type: 'user_message', sessionId: 's1', message: { content: 'same' } as never, status: 'accepted', optimisticMessageId: mine });
+      s.emit({ type: 'user_message', sessionId: 's1', message: { content: 'same' } as never, status: 'processing', optimisticMessageId: mine });
+      s.emit({ type: 'text_delta', sessionId: 's1', delta: 'ours' });
+      // no `complete`: a queued message follows
+      s.emit({ type: 'user_message', sessionId: 's1', message: { content: 'same' } as never, status: 'processing', optimisticMessageId: 'other-id' });
+      s.emit({ type: 'text_delta', sessionId: 's1', delta: 'theirs' });
+    } });
+    const h = await s.create();
+    expect(await collect(h.chat('same'))).toEqual([{ type: 'text_delta', text: 'ours', turnId: undefined }, { type: 'complete' }]);
+  });
+
+  test('session_deleted ends the stream with an error', async () => {
+    const s = setup();
+    const h = await s.create();
+    const p = collect(h.chat('x'));
+    await tick();
+    s.emit({ type: 'session_deleted', sessionId: 's1' });
+    expect(await p).toEqual([{ type: 'error', message: 'Session was deleted in the desktop app' }]);
   });
 
   test('release ends a chat in flight without answering it', async () => {

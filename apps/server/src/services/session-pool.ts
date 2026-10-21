@@ -22,7 +22,10 @@ export interface PoolSession {
   chat(content: string, ...rest: any[]): AsyncIterable<AgentEvent>;
   abort(): void | Promise<void>;
   dispose(): void;
-  respondToPermission(requestId: string, allowed: boolean, ...rest: any[]): void | boolean;
+  /** false: unknown request id. 'forbidden': approval exceeds the key's policy (routed only). */
+  respondToPermission(requestId: string, allowed: boolean, ...rest: any[]): void | boolean | 'forbidden';
+  /** The session belongs to the host (desktop); drain releases it and never aborts its turn. */
+  readonly hostOwned?: boolean;
   /** Pending permission requests awaiting a REST answer (routed sessions only). */
   getPending?(): PendingPermission[];
   /** DELETE semantics for sessions whose dispose() only detaches. */
@@ -135,8 +138,10 @@ export class SessionPool {
     const evicted: string[] = [];
 
     for (const [sessionId, entry] of this.sessions) {
-      if (entry.session.getStatus() === 'idle' &&
-          now - entry.session.getLastActivityAt() > maxIdleMs) {
+      const status = entry.session.getStatus();
+      // fork(PLAN-057): a disposed entry (e.g. deleted in the desktop) is always evicted.
+      if (status === 'disposed' ||
+          (status === 'idle' && now - entry.session.getLastActivityAt() > maxIdleMs)) {
         entry.session.dispose();
         this.eventBus.removeSession(sessionId);
         this.sessions.delete(sessionId);
@@ -155,7 +160,8 @@ export class SessionPool {
     const disposePromises: Promise<void>[] = [];
 
     for (const [sessionId, entry] of this.sessions) {
-      entry.session.abort();
+      // fork(PLAN-057): a host-owned session keeps running in the desktop; only release it.
+      if (!entry.session.hostOwned) entry.session.abort();
       // Give abort a moment to take effect
       disposePromises.push(
         new Promise<void>(resolve => {
