@@ -13,6 +13,7 @@ related-plans:
   # Phase 0 (ADR-0013) remains authoritative; Phases 1-3 are carried by
   # PLAN-041-server-homed-instances-with-auth.md under DIR-05.
   - PLAN-030-session-lifecycle-automation.md
+  - PLAN-057-route-rest-sessions-through-the-desktop-session-manager.md
   - PLAN-031-status-invariants-at-the-choke-point.md
   - PLAN-033-hermetic-config-dir-for-test-runs.md
   - PLAN-036-vorno-owned-oauth-redirect-relay.md

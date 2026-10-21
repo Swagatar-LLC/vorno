@@ -14,7 +14,10 @@ export type {
   WebhookIngestEvent,
   HostCreateSessionOptions,
   HostCreatedSession,
+  HostSessionStatus, // fork(PLAN-057)
+  RestPermissionPolicy, // fork(PLAN-057)
 } from './host-bridge.ts';
+export { policyToPermissionMode } from './host-bridge.ts'; // fork(PLAN-057)
 
 // Re-export the transport pieces the embedded host needs to build a node adapter.
 export {
