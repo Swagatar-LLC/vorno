@@ -222,6 +222,10 @@ export default function RemoteAccessSettingsPage() {
                           title={t('settings.remoteAccess.explainer.webhooksTitle')}
                           body={t('settings.remoteAccess.explainer.webhooksBody')}
                         />
+                        <ExplainerBlock
+                          title={t('settings.remoteAccess.explainer.desktopSessionsTitle')}
+                          body={t('settings.remoteAccess.explainer.desktopSessionsBody')}
+                        />
                       </div>
                     </motion.div>
                   )}
@@ -290,6 +294,18 @@ export default function RemoteAccessSettingsPage() {
                       Warning: Binding to 0.0.0.0 exposes the agent to your local network.
                     </div>
                   )}
+                </SettingsCard>
+              </SettingsSection>
+
+              {/* API sessions (fork(PLAN-057)) — applies to new sessions, no restart */}
+              <SettingsSection title={t('settings.remoteAccess.apiSessions.title')}>
+                <SettingsCard>
+                  <SettingsToggle
+                    label={t('settings.remoteAccess.apiSessions.toggleLabel')}
+                    description={t('settings.remoteAccess.apiSessions.toggleDescription')}
+                    checked={config.routeSessionsToDesktop}
+                    onCheckedChange={routeSessionsToDesktop => handleUpdateConfig({ routeSessionsToDesktop })}
+                  />
                 </SettingsCard>
               </SettingsSection>
 

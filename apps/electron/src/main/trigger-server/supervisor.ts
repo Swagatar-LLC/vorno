@@ -147,6 +147,8 @@ export class TriggerServerSupervisor {
     if (typeof updates.enabled === 'boolean') next.enabled = updates.enabled;
     if (typeof updates.host === 'string') next.host = updates.host;
     if (typeof updates.port === 'number') next.port = updates.port;
+    // fork(PLAN-057): read per request by the core, so it never marks the config stale.
+    if (typeof updates.routeSessionsToDesktop === 'boolean') next.routeSessionsToDesktop = updates.routeSessionsToDesktop;
     if (updates.rateLimits) {
       next.rateLimits = {
         requestsPerMinute: updates.rateLimits.requestsPerMinute ?? current.rateLimits.requestsPerMinute,
@@ -428,5 +430,6 @@ function toRemoteAccessConfig(config: ServerConfig): RemoteAccessConfig {
       requestsPerMinute: config.rateLimits.requestsPerMinute,
       concurrentSessions: config.rateLimits.concurrentSessions,
     },
+    routeSessionsToDesktop: config.routeSessionsToDesktop === true, // fork(PLAN-057)
   };
 }

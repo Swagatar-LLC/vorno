@@ -87,6 +87,8 @@ import { TriggerServerSupervisor } from './trigger-server/supervisor'
 import { TriggerServerTray } from './trigger-server/tray'
 import { createEmbeddedWebhooks, type EmbeddedWebhooks } from './trigger-server/webhooks' // fork(PLAN-014)
 import type { HostBridge } from '@craft-agent/http-trigger/core'
+import { createSessionEventTap } from './trigger-server/session-event-tap' // fork(PLAN-057)
+import { createDesktopSessionRoute } from './trigger-server/desktop-sessions' // fork(PLAN-057)
 import { registerCoreRpcHandlers, cleanupSessionFileWatchForClient } from '@craft-agent/server-core/handlers/rpc'
 import type { PlatformServices } from '../runtime/platform'
 import { createElectronPlatform } from './platform'
@@ -245,6 +247,8 @@ let moduleClientResolver: ((webContentsId: number) => string | undefined) | null
 // through createMessagingBootstrap — do not construct MessagingGatewayRegistry
 // directly.
 let messagingHandle: MessagingBootstrapHandle | null = null
+// fork(PLAN-057): per-session tap on the SessionManager event sink (REST route-through).
+const sessionEventTap = createSessionEventTap()
 
 // fork(PLAN-012): embedded HTTP trigger-server supervisor + macOS tray. Created
 // after bootstrapServer resolves; single source of runtime truth for the server.
@@ -1037,7 +1041,7 @@ app.whenReady().then(async () => {
         // Always install — this lets workspaces enable messaging at runtime
         // without a process restart.
         const baseSink = instance.wsServer.push.bind(instance.wsServer)
-        instance.sessionManager.setEventSink(messagingHandle.wrapSink(baseSink))
+        instance.sessionManager.setEventSink(sessionEventTap.wrapSink(messagingHandle.wrapSink(baseSink))) // fork(PLAN-057)
         if (messagingHandle.registry.size > 0) {
           mainLog.info(`[messaging] Fan-out sink active for ${messagingHandle.registry.size} workspace(s)`)
         }
@@ -1378,6 +1382,20 @@ app.whenReady().then(async () => {
         const hostBridge: HostBridge = {
           onWebhookEvent: embeddedWebhooks.dispatch,
         }
+        // fork(PLAN-057): the core uses this only when routeSessionsToDesktop is on.
+        const sm = instance.sessionManager
+        hostBridge.createSession = createDesktopSessionRoute({
+          createSession: (workspaceId, options) => sm.createSession(workspaceId, options),
+          sendMessage: (id, content) => sm.sendMessage(id, content),
+          cancelProcessing: (id) => sm.cancelProcessing(id),
+          respondToPermission: (id, requestId, allowed, always) => sm.respondToPermission(id, requestId, allowed, always),
+          deleteSession: (id) => sm.deleteSession(id),
+          getStatus: (id) => {
+            if (!sm.getSessionPath(id)) return 'disposed'
+            return sm.getActiveSessionsInfo().some((s) => s.sessionId === id && s.status === 'processing') ? 'processing' : 'idle'
+          },
+          subscribe: sessionEventTap.subscribe,
+        })
 
         const supervisor = new TriggerServerSupervisor({
           hostBridge,

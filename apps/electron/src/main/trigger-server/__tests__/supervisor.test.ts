@@ -199,3 +199,32 @@ describe('TriggerServerSupervisor state machine', () => {
     expect(sup.revokeApiKey(created.info.id)).toBe(true);
   });
 });
+
+// fork(PLAN-057)
+describe('routeSessionsToDesktop setting', () => {
+  test('defaults to false and round-trips through updateConfig/getConfig', () => {
+    writeConfig(false);
+    const sup = new TriggerServerSupervisor({ hostFactory: () => makeFakeHost().host, healthProbe: okProbe });
+    active = sup;
+    expect(sup.getConfig().routeSessionsToDesktop).toBe(false);
+    expect(sup.updateConfig({ routeSessionsToDesktop: true }).routeSessionsToDesktop).toBe(true);
+    expect(sup.getConfig().routeSessionsToDesktop).toBe(true);
+    expect(loadServerConfig().routeSessionsToDesktop).toBe(true);
+    // An update that omits it leaves it alone.
+    sup.updateConfig({ port: 4001 });
+    expect(sup.getConfig().routeSessionsToDesktop).toBe(true);
+    sup.updateConfig({ routeSessionsToDesktop: false });
+    expect(sup.getConfig().routeSessionsToDesktop).toBe(false);
+  });
+
+  test('toggling while running does not set configStale', async () => {
+    writeConfig(false);
+    const sup = new TriggerServerSupervisor({ hostFactory: () => makeFakeHost().host, healthProbe: okProbe });
+    active = sup;
+    await sup.start();
+    sup.updateConfig({ routeSessionsToDesktop: true });
+    expect(sup.getStatus().configStale).toBeUndefined();
+    sup.updateConfig({ port: 4002 });
+    expect(sup.getStatus().configStale).toBe(true);
+  });
+});
