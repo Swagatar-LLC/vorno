@@ -58,8 +58,15 @@ describe('createSession', () => {
     const [ws, o] = s.calls.create![0]!;
     expect(ws).toBe('w1');
     expect(o).toEqual({ permissionMode: 'ask', model: 'm1', enabledSourceSlugs: ['a', 'b'], workingDirectory: '/tmp/x', name: 'API · Nightly' });
+    expect((o as { projectId?: string }).projectId).toBeUndefined();
     expect(h.sessionId).toBe('s1');
     expect(h.workspaceId).toBe('w1');
+  });
+
+  test('passes projectId through to SessionManager.createSession', async () => {
+    const s = setup();
+    await s.create({ projectId: 'proj_6d91a3f0' });
+    expect((s.calls.create![0]![1] as { projectId?: string }).projectId).toBe('proj_6d91a3f0');
   });
 });
 

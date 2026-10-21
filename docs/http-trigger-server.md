@@ -286,7 +286,15 @@ By default `POST /api/sessions` creates a headless session inside the server's o
 
 - Setting: Settings → Remote Access → "Run API sessions in the desktop app". Persisted as `routeSessionsToDesktop` in `server-config.json`. Default off. Desktop app only; the standalone server always uses its own pool.
 - It applies to new sessions without a restart. Existing sessions keep the path they were created on.
-- The request and response shapes do not change. Auth, workspace access, the per-key concurrency limit and the policy cap all run before routing.
+- The response shape does not change. The request may also carry `projectId` (below). Auth, workspace access, the per-key concurrency limit and the policy cap all run before routing.
+
+### Creating a session in a project
+
+`POST /api/sessions` accepts an optional `projectId` (a project id such as `proj_6d91a3f0`, not a slug). The session is affiliated with that project exactly like a desktop session created in it: `projectId` is written to the session header, and the project's working directory is inherited when the request has no `workingDirectory`.
+
+- An unknown `projectId` returns 400 and creates nothing.
+- `projectId` needs the setting above. Without it (headless pool, standalone server) the request returns 400, because pool sessions are not persisted.
+- Omitted, behaviour is unchanged.
 
 ### Policy mapping
 

@@ -88,6 +88,8 @@ export interface HostCreateSessionOptions {
   permissionPolicy: RestPermissionPolicy;
   enabledSources?: string[];
   workingDirectory?: string;
+  /** Workspace project id to affiliate the session with; already validated by the core. */
+  projectId?: string;
   /** Display name of the API key that created the session, for labelling. Never the key itself. */
   apiKeyName: string;
 }

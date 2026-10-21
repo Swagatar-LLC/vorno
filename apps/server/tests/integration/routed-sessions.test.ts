@@ -8,6 +8,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'no
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { AgentEvent } from '@craft-agent/core/types';
+import { createProject } from '@craft-agent/shared/projects';
 import { CONFIG_DIR } from '@craft-agent/shared/config/paths';
 import { generateApiKey, type StoredApiKey } from '../../src/config';
 import { createTriggerServer, type TriggerServerCore } from '../../src/core/create-trigger-server';
@@ -186,6 +187,43 @@ describe('routing decision', () => {
     const { res } = await create(keyA);
     expect(res.status).toBe(201);
     expect(created()).toBe(1);
+  });
+
+  test('projectId: validated against the workspace and passed to the host', async () => {
+    const project = createProject(wsRoot, { name: 'Api Test Project' });
+    const ok = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, projectId: project.id });
+    expect(ok.status).toBe(201);
+    expect(calls[0]!.projectId).toBe(project.id);
+  });
+
+  test('projectId: omitted is passed as undefined', async () => {
+    await create(keyA);
+    expect(calls[0]!.projectId).toBeUndefined();
+  });
+
+  test('projectId: unknown project (or a slug) is 400 and nothing is created', async () => {
+    createProject(wsRoot, { name: 'Slug Project' });
+    for (const projectId of ['proj_00000000', 'slug-project']) {
+      const res = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, projectId });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain('not found');
+    }
+    expect(calls).toHaveLength(0);
+    expect(core.pool.activeCount).toBe(0);
+  });
+
+  test('projectId: non-string is 400', async () => {
+    const res = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, projectId: 5 });
+    expect(res.status).toBe(400);
+  });
+
+  test('projectId: pool path rejects it with 400', async () => {
+    writeServerConfig(false);
+    const project = createProject(wsRoot, { name: 'Pool Project' });
+    const res = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, projectId: project.id });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).error).toContain('routeSessionsToDesktop');
+    expect(calls).toHaveLength(0);
   });
 
   test('host error becomes 500 with the message and nothing is adopted', async () => {

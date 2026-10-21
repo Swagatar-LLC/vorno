@@ -1,4 +1,5 @@
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config';
+import { loadProjectById } from '@craft-agent/shared/projects'; // fork(PLAN-057)
 import type { AgentEvent } from '@craft-agent/core/types';
 import { jsonResponse, errorResponse, sseResponse } from '../middleware/error.ts';
 import { hasWorkspaceAccess, getEffectivePolicy, type AuthContext } from '../middleware/auth.ts';
@@ -32,6 +33,7 @@ export async function handleCreateSession(
     permissionPolicy?: 'deny-all' | 'allow-safe' | 'allow-all';
     enabledSources?: string[];
     workingDirectory?: string;
+    projectId?: string; // fork(PLAN-057): routed sessions only
   };
 
   try {
@@ -53,6 +55,22 @@ export async function handleCreateSession(
     return errorResponse(404, `Workspace '${body.workspaceId}' not found`);
   }
 
+  // fork(PLAN-057): optional project affiliation (id only, as the desktop persists it).
+  // Only the desktop SessionManager persists sessions, so the headless pool cannot
+  // honour it; reject rather than silently drop it. Unknown project: 400, no orphan binding.
+  const routeToDesktop = config.routeSessionsToDesktop === true && !!hostBridge?.createSession;
+  if (body.projectId !== undefined) {
+    if (typeof body.projectId !== 'string' || !body.projectId) {
+      return errorResponse(400, 'projectId must be a non-empty string');
+    }
+    if (!routeToDesktop) {
+      return errorResponse(400, 'projectId requires "Run API sessions in the desktop app" (routeSessionsToDesktop)');
+    }
+    if (!loadProjectById(workspace.rootPath, body.projectId)) {
+      return errorResponse(400, `Project '${body.projectId}' not found in workspace '${body.workspaceId}'`);
+    }
+  }
+
   // Check concurrency limits
   const currentCount = pool.countByApiKey(auth.apiKey.id);
   const maxSessions = Math.min(
@@ -68,7 +86,7 @@ export async function handleCreateSession(
   // fork(PLAN-057): route through the desktop SessionManager when the host offers
   // it and the persisted setting is on. Everything above (auth, workspace, limits,
   // policy cap) already ran; the pool path below is untouched.
-  if (config.routeSessionsToDesktop === true && hostBridge?.createSession) {
+  if (routeToDesktop && hostBridge?.createSession) {
     try {
       const handle = await hostBridge.createSession({
         workspaceId: workspace.id,
@@ -76,6 +94,7 @@ export async function handleCreateSession(
         permissionPolicy: effectivePolicy,
         enabledSources: body.enabledSources,
         workingDirectory: body.workingDirectory,
+        projectId: body.projectId,
         apiKeyName: auth.apiKey.name,
       });
       const routed = new RoutedSession(handle, effectivePolicy);

@@ -160,7 +160,8 @@ Content-Type: application/json
   "model": "claude-sonnet-4-6",
   "permissionPolicy": "allow-safe",
   "enabledSources": ["github", "linear"],
-  "workingDirectory": "/path/to/project"
+  "workingDirectory": "/path/to/project",
+  "projectId": "proj_6d91a3f0"   // optional; desktop-routed sessions only, 400 if unknown
 }
 
 # Response (201):
