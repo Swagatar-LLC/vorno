@@ -1,7 +1,7 @@
 ---
 id: PLAN-057
 title: Route REST API sessions through the desktop SessionManager
-status: in-progress
+status: done
 direction: DIR-03
 owner: jh
 created: 2026-10-21
@@ -63,14 +63,15 @@ delete removes the desktop session like REST.
 
 ## Acceptance
 
-- [ ] Setting off (default) or standalone: REST sessions use the core pool, unchanged.
-- [ ] Setting on: `POST /api/sessions` creates a SessionManager session; all session routes work on it.
-- [ ] Workspace check, policy cap, per-key concurrency and per-key ownership hold for routed sessions.
-- [ ] `browser_tool` is available in a routed session; a pool session still reports it unavailable.
-- [ ] Tests for the route-through (both settings), policy mapping, and browser-tool difference.
-- [ ] `docs/http-trigger-server.md` documents the setting and a placeholder-only curl check.
+- [x] Setting off (default) or standalone: REST sessions use the core pool, unchanged.
+- [x] Setting on: `POST /api/sessions` creates a SessionManager session; all session routes work on it.
+- [x] Workspace check, policy cap, per-key concurrency and per-key ownership hold for routed sessions.
+- [x] `browser_tool` is available in a routed session; a pool session still reports it unavailable.
+- [x] Tests for the route-through (both settings), policy mapping, and browser-tool difference.
+- [x] `docs/http-trigger-server.md` documents the setting and a placeholder-only curl check.
 
 ## Status log
 
 - `2026-10-21` — created in `planned/`
 - `2026-10-21` — moved from planned to in-progress
+- `2026-10-21` — moved from in-progress to done: merged in #238; release notes in 0.22.0-beta.11
