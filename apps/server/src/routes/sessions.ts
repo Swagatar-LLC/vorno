@@ -2,6 +2,7 @@ import { getWorkspaceByNameOrId } from '@craft-agent/shared/config';
 import { loadProjectById } from '@craft-agent/shared/projects'; // fork(PLAN-057)
 import { getLlmConnections, getLlmConnection, getDefaultLlmConnection } from '@craft-agent/shared/config/storage'; // fork(PLAN-057)
 import { getDefaultModelsForConnection } from '@craft-agent/shared/config/llm-connections'; // fork(PLAN-057)
+import { normalizeDeprecatedModelId } from '@craft-agent/shared/config/models'; // fork(PLAN-057)
 import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'; // fork(PLAN-057)
 import type { AgentEvent } from '@craft-agent/core/types';
 import { jsonResponse, errorResponse, sseResponse } from '../middleware/error.ts';
@@ -47,7 +48,8 @@ function validateConnectionAndModel(workspaceRoot: string, slug?: string, model?
     : getDefaultModelsForConnection(conn.providerType, conn.piAuthProvider);
   const ids = list.map(m => (typeof m === 'string' ? m : m.id));
   // pi_compat connections have a dynamic model list; nothing to validate against.
-  if (ids.length === 0 || ids.includes(model)) return null;
+  // The desktop translates deprecated ids (e.g. pi/deepseek-v4-flash -> pi/deepseek-flash); accept either form.
+  if (ids.length === 0 || ids.includes(model) || ids.includes(normalizeDeprecatedModelId(model))) return null;
   return `Model '${model}' is not available on connection '${conn.slug}'. Available models: ${ids.join(', ')}`;
 }
 

@@ -54,6 +54,7 @@ const CONNECTIONS = {
   llmConnections: [
     { slug: 'chatgpt-plus', name: 'ChatGPT Plus', providerType: 'pi_compat', authType: 'none', models: ['gpt-5', 'gpt-5-mini'], createdAt: 1 },
     { slug: 'claude-max', name: 'Claude Max', providerType: 'anthropic', authType: 'oauth', models: [{ id: 'claude-sonnet-5', name: 'Sonnet 5' }], createdAt: 1 },
+    { slug: 'pi-deepseek', name: 'Pi DeepSeek', providerType: 'pi', authType: 'none', models: ['pi/deepseek-flash'], createdAt: 1 },
   ],
   defaultLlmConnection: 'chatgpt-plus',
 };
@@ -308,6 +309,14 @@ describe('routing decision', () => {
       const bad = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, llmConnection: 'claude-max', model: 'gpt-5' });
       expect(bad.status).toBe(400);
       expect(((await bad.json()) as any).error).toContain('claude-max');
+    });
+
+    test('deprecated model id that normalizes to a listed id is accepted', async () => {
+      const res = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, llmConnection: 'pi-deepseek', model: 'pi/deepseek-v4-flash' });
+      expect(res.status).toBe(201);
+      expect(calls[0]!.model).toBe('pi/deepseek-v4-flash');
+      const bad = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, llmConnection: 'pi-deepseek', model: 'pi/deepseek-v9' });
+      expect(bad.status).toBe(400);
     });
 
     test.each(['gpt-5', 'fast', 'default'])('model %s is accepted on the default connection', async (model) => {
