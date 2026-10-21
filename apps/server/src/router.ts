@@ -3,6 +3,7 @@ import { handlePreflight, corsHeaders } from './middleware/cors.ts';
 import { errorResponse } from './middleware/error.ts';
 import { loadServerConfig, type ServerConfig } from './config.ts';
 import type { SessionPool } from './services/session-pool.ts';
+import type { HostBridge } from './core/host-bridge.ts'; // fork(PLAN-057)
 import type { ClientRegistry } from './transport/client-registry.ts';
 
 // Route handlers
@@ -47,7 +48,12 @@ function matchRoute(path: string, pattern: string): Record<string, string> | nul
 /**
  * Create the request router.
  */
-export function createRouter(pool: SessionPool, registry?: ClientRegistry, webhooks?: WebhooksHandle) {
+export function createRouter(
+  pool: SessionPool,
+  registry?: ClientRegistry,
+  webhooks?: WebhooksHandle,
+  hostBridge?: HostBridge, // fork(PLAN-057)
+) {
   return async function router(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
@@ -117,7 +123,7 @@ export function createRouter(pool: SessionPool, registry?: ClientRegistry, webho
 
     // --- Session routes ---
     if (method === 'POST' && path === '/api/sessions') {
-      return handleCreateSession(request, auth, pool, config);
+      return handleCreateSession(request, auth, pool, config, hostBridge);
     }
 
     if (method === 'GET' && path === '/api/sessions') {

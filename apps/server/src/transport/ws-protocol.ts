@@ -27,7 +27,7 @@ import { getWorkspaceByNameOrId } from '@craft-agent/shared/config';
 import type { AgentEvent } from '@craft-agent/core/types';
 
 import { validateApiKey, loadServerConfig, type ServerConfig } from '../config.ts';
-import type { SessionPool } from '../services/session-pool.ts';
+import type { SessionPool, PoolSession } from '../services/session-pool.ts';
 import type { EventBus } from '../services/event-bus.ts';
 import { hasWorkspaceAccess, getEffectivePolicy, type AuthContext } from '../middleware/auth.ts';
 import { ClientRegistry } from './client-registry.ts';
@@ -386,13 +386,23 @@ export class WsProtocol {
     return this.pool.listSessions().filter(s => s.apiKeyId === auth.apiKey.id);
   }
 
+  /**
+   * fork(PLAN-057): a session only when the calling key created it. Routed
+   * sessions are desktop sessions, so another key must not reach them over WS
+   * either; one key's id is indistinguishable from a missing session.
+   */
+  private ownedSession(auth: AuthContext, sessionId: string): PoolSession | undefined {
+    if (this.pool.getOwner(sessionId) !== auth.apiKey.id) return undefined;
+    return this.pool.get(sessionId);
+  }
+
   private rpcDeleteSession(auth: AuthContext, args?: unknown[]): any {
     const sessionId = args?.[0] as string;
     if (!sessionId) {
       throw Object.assign(new Error('sessionId is required'), { code: 'HANDLER_ERROR' });
     }
 
-    if (!this.pool.has(sessionId)) {
+    if (!this.ownedSession(auth, sessionId)) {
       throw Object.assign(new Error(`Session '${sessionId}' not found`), { code: 'HANDLER_ERROR' });
     }
 
@@ -411,7 +421,7 @@ export class WsProtocol {
       throw Object.assign(new Error('sessionId and content are required'), { code: 'HANDLER_ERROR' });
     }
 
-    const session = this.pool.get(opts.sessionId);
+    const session = this.ownedSession(auth, opts.sessionId);
     if (!session) {
       throw Object.assign(new Error(`Session '${opts.sessionId}' not found`), { code: 'HANDLER_ERROR' });
     }
@@ -446,7 +456,7 @@ export class WsProtocol {
       throw Object.assign(new Error('sessionId is required'), { code: 'HANDLER_ERROR' });
     }
 
-    const session = this.pool.get(sessionId);
+    const session = this.ownedSession(auth, sessionId);
     if (!session) {
       throw Object.assign(new Error(`Session '${sessionId}' not found`), { code: 'HANDLER_ERROR' });
     }
@@ -469,7 +479,7 @@ export class WsProtocol {
       );
     }
 
-    const session = this.pool.get(opts.sessionId);
+    const session = this.ownedSession(auth, opts.sessionId);
     if (!session) {
       throw Object.assign(new Error(`Session '${opts.sessionId}' not found`), { code: 'HANDLER_ERROR' });
     }

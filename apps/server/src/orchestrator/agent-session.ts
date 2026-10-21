@@ -14,7 +14,8 @@ import type {
 import { mkdirSync } from 'fs';
 
 // Safe commands that can be auto-allowed with 'allow-safe' policy
-const SAFE_COMMANDS = new Set([
+// fork(PLAN-057): exported so RoutedSession shares the one definition.
+export const SAFE_COMMANDS = new Set([
   'ls', 'cat', 'head', 'tail', 'grep', 'find', 'pwd', 'echo', 'which',
   'wc', 'sort', 'uniq', 'diff', 'file', 'stat', 'tree', 'less', 'more',
 ]);

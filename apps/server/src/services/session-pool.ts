@@ -1,4 +1,5 @@
 import { AgentSession, type AgentSessionConfig } from '../orchestrator/index.ts';
+import type { AgentEvent } from '@craft-agent/core/types';
 import { EventBus } from './event-bus.ts';
 
 export interface PoolStats {
@@ -7,8 +8,37 @@ export interface PoolStats {
   totalEvicted: number;
 }
 
+/**
+ * fork(PLAN-057): the subset of a session the routes, WS protocol and pool use.
+ * AgentSession satisfies it structurally; RoutedSession (a desktop-owned session
+ * adopted into the pool) implements it too. For a routed session dispose()
+ * means release (detach), never delete; destroy() is the real delete.
+ */
+export interface PoolSession {
+  readonly sessionId: string;
+  getStatus(): 'idle' | 'processing' | 'disposed';
+  getSdkSessionId(): string | undefined;
+  getLastActivityAt(): number;
+  chat(content: string, ...rest: any[]): AsyncIterable<AgentEvent>;
+  abort(): void | Promise<void>;
+  dispose(): void;
+  respondToPermission(requestId: string, allowed: boolean, ...rest: any[]): void | boolean;
+  /** Pending permission requests awaiting a REST answer (routed sessions only). */
+  getPending?(): PendingPermission[];
+  /** DELETE semantics for sessions whose dispose() only detaches. */
+  destroy?(): Promise<void>;
+}
+
+export interface PendingPermission {
+  requestId: string;
+  toolName: string;
+  command?: string;
+  description: string;
+  permissionType?: string;
+}
+
 interface ManagedPoolEntry {
-  session: AgentSession;
+  session: PoolSession;
   apiKeyId: string;
   createdAt: number;
 }
@@ -48,8 +78,22 @@ export class SessionPool {
   /**
    * Get an active session by ID.
    */
-  get(sessionId: string): AgentSession | undefined {
+  get(sessionId: string): PoolSession | undefined {
     return this.sessions.get(sessionId)?.session;
+  }
+
+  /**
+   * fork(PLAN-057): register an already-created session (a routed, desktop-owned
+   * one). Counts toward totals and per-key concurrency like a created session.
+   */
+  adopt(session: PoolSession, apiKeyId: string): void {
+    this.sessions.set(session.sessionId, { session, apiKeyId, createdAt: Date.now() });
+    this.totalCreated++;
+  }
+
+  /** fork(PLAN-057): the API key id that owns a session, if it is in the pool. */
+  getOwner(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.apiKeyId;
   }
 
   /**

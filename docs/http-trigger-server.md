@@ -273,12 +273,50 @@ Key: deny-all, Request: allow-all  → Effective: deny-all
 ### Session Isolation
 
 - Sessions are scoped to the API key that created them
-- One API key cannot list, access, or modify another key's sessions
+- One API key cannot list, access, or modify another key's sessions: every `/api/sessions/:id` route (GET, DELETE, `messages`, `abort`, `events`, `pending`, `permissions`) answers `404 Session '<id>' not found` for a session another key owns
 - Concurrent session limits are enforced per-key and globally
 
 ### Idle Session Eviction
 
-Sessions idle for 30 minutes are automatically disposed (every 5-minute sweep). This prevents resource leaks from abandoned sessions.
+Sessions idle for 30 minutes are automatically disposed (every 5-minute sweep). This prevents resource leaks from abandoned sessions. A session routed to the desktop app (below) is only detached from the REST API on eviction or server stop; it stays in the desktop app.
+
+## Running API sessions in the desktop app
+
+By default `POST /api/sessions` creates a headless session inside the server's own pool. The desktop app can instead create it through its own session manager, so the session has the browser tool, skills and sources, and shows up in the desktop UI.
+
+- Setting: Settings → Remote Access → "Run API sessions in the desktop app". Persisted as `routeSessionsToDesktop` in `server-config.json`. Default off. Desktop app only; the standalone server always uses its own pool.
+- It applies to new sessions without a restart. Existing sessions keep the path they were created on.
+- The request and response shapes do not change. Auth, workspace access, the per-key concurrency limit and the policy cap all run before routing.
+
+### Policy mapping
+
+The effective policy (the requested policy capped by the key) maps to the desktop session's permission mode:
+
+| REST policy | Desktop mode | Permission requests |
+|-------------|--------------|---------------------|
+| `allow-all` | allow-all | Approved automatically |
+| `allow-safe` | ask | Safe commands (`ls`, `cat`, `grep`, ...) approved automatically; anything else is held as pending |
+| `deny-all` | safe (read-only) | Always held as pending |
+
+A pending request is sent on the SSE stream as a `permission_request` event and listed by `GET /api/sessions/:id/pending` (`requestId`, `toolName`, `command`, `description`, `permissionType`). Answer it with `POST /api/sessions/:id/permissions` (`{"requestId": "...", "decision": "allow" | "deny"}`). An unknown `requestId` returns 404. Abort, delete, eviction and server stop deny whatever is pending.
+
+### Ownership and deletion
+
+The session is owned by the key that created it (see Session Isolation) and is labelled in the desktop app with that key's name. `DELETE /api/sessions/:id` removes it from the desktop app too.
+
+### Manual check
+
+```bash
+export VORNO_KEY='<your-craft_sk_-key>'   # from Settings → Remote Access; never commit it
+curl -s -X POST http://127.0.0.1:3847/api/sessions \
+  -H "Authorization: Bearer $VORNO_KEY" -H 'Content-Type: application/json' \
+  -d '{"workspaceId":"<workspace-id>","permissionPolicy":"allow-safe"}'
+curl -N -X POST http://127.0.0.1:3847/api/sessions/<session-id>/messages \
+  -H "Authorization: Bearer $VORNO_KEY" -H 'Content-Type: application/json' \
+  -d '{"content":"Open https://example.com with the browser tool and tell me the page title."}'
+```
+
+Expect the session in the desktop app's session list, named for the key. With the setting on, the browser tool opens the page and the stream reports its title. With the setting off, the tool fails with "Browser window controls are not available".
 
 ## Upstream Protocol Compatibility
 
