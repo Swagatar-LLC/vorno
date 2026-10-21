@@ -166,6 +166,19 @@ describe('chat', () => {
     expect(await collect(h.chat('same'))).toEqual([{ type: 'text_delta', text: 'ours', turnId: undefined }, { type: 'complete' }]);
   });
 
+  test('a merged queue replay announcing another message before the turn does not end ours', async () => {
+    let mine: string | undefined;
+    const s = setup({ sendMessage: async (_id, _c, o) => {
+      mine = o?.optimisticMessageId;
+      s.emit({ type: 'user_message', sessionId: 's1', message: { content: 'mine' } as never, status: 'processing', optimisticMessageId: mine });
+      s.emit({ type: 'user_message', sessionId: 's1', message: { content: 'typed' } as never, status: 'processing', optimisticMessageId: 'merged-id' });
+      s.emit({ type: 'text_delta', sessionId: 's1', delta: 'both' });
+      s.emit({ type: 'complete', sessionId: 's1' });
+    } });
+    const h = await s.create();
+    expect(await collect(h.chat('mine'))).toEqual([{ type: 'text_delta', text: 'both', turnId: undefined }, { type: 'complete' }]);
+  });
+
   test('session_deleted ends the stream with an error', async () => {
     const s = setup();
     const h = await s.create();

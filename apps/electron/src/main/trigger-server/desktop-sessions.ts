@@ -116,6 +116,10 @@ export function createDesktopSessionRoute(deps: DesktopSessionDeps): NonNullable
             // A send to a busy session is queued by SessionManager; until our message
             // starts its own turn, the running turn's events are not ours.
             let waitingForOwnTurn = false;
+            // Set by the first turn event after our message is processing. A queued
+            // replay announces each merged message back to back before the turn
+            // starts, so another message's `processing` ends ours only after this.
+            let ownTurnStarted = false;
             const poke = () => { const w = wake; wake = null; w?.(); };
             const finish = () => { done = true; unsub(); unsubs.delete(finish); poke(); };
             const push = (ev: AgentEvent, terminal: boolean) => {
@@ -136,7 +140,7 @@ export function createDesktopSessionRoute(deps: DesktopSessionDeps): NonNullable
                 if (e.optimisticMessageId === messageId) {
                   if (e.status === 'queued') waitingForOwnTurn = true;
                   else if (e.status === 'processing') waitingForOwnTurn = false;
-                } else if (e.status === 'processing' && !waitingForOwnTurn) {
+                } else if (e.status === 'processing' && !waitingForOwnTurn && ownTurnStarted) {
                   // SessionManager skips `complete` when a queued message follows and
                   // starts that message's turn: ours is over.
                   push({ type: 'complete' }, true);
@@ -146,6 +150,7 @@ export function createDesktopSessionRoute(deps: DesktopSessionDeps): NonNullable
               if (waitingForOwnTurn) return;
               const ev = toAgentEvent(e);
               if (!ev) return;
+              ownTurnStarted = true;
               push(ev, ev.type === 'complete' || ev.type === 'error');
             };
 
