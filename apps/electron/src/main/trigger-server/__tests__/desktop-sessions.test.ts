@@ -63,6 +63,18 @@ describe('createSession', () => {
     expect(h.workspaceId).toBe('w1');
   });
 
+  test('passes name and llmConnection through; defaults stay unchanged when omitted', async () => {
+    const s = setup();
+    await s.create({ name: 'Nightly triage', llmConnection: 'claude-max' });
+    const o = s.calls.create![0]![1] as { name: string; llmConnection?: string };
+    expect(o.name).toBe('Nightly triage');
+    expect(o.llmConnection).toBe('claude-max');
+    await s.create({ apiKeyName: 'CI' });
+    const d = s.calls.create![1]![1] as { name: string; llmConnection?: string };
+    expect(d.name).toBe('API · CI');
+    expect(d.llmConnection).toBeUndefined();
+  });
+
   test('passes projectId through to SessionManager.createSession', async () => {
     const s = setup();
     await s.create({ projectId: 'proj_6d91a3f0' });

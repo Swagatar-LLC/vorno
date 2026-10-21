@@ -42,14 +42,27 @@ function writeServerConfig(routeSessionsToDesktop: boolean, keys: StoredApiKey[]
   }));
 }
 
+function writeStoredConfig(extra: Record<string, unknown> = {}) {
+  writeFileSync(storedConfigPath, JSON.stringify({
+    workspaces: [{ id: WS_ID, name: 'Routed Test', rootPath: wsRoot, createdAt: 1 }],
+    activeWorkspaceId: WS_ID,
+    ...extra,
+  }));
+}
+
+const CONNECTIONS = {
+  llmConnections: [
+    { slug: 'chatgpt-plus', name: 'ChatGPT Plus', providerType: 'pi_compat', authType: 'none', models: ['gpt-5', 'gpt-5-mini'], createdAt: 1 },
+    { slug: 'claude-max', name: 'Claude Max', providerType: 'anthropic', authType: 'oauth', models: [{ id: 'claude-sonnet-5', name: 'Sonnet 5' }], createdAt: 1 },
+  ],
+  defaultLlmConnection: 'chatgpt-plus',
+};
+
 beforeAll(() => {
   savedStored = existsSync(storedConfigPath) ? readFileSync(storedConfigPath, 'utf-8') : null;
   savedServer = existsSync(serverConfigPath) ? readFileSync(serverConfigPath, 'utf-8') : null;
   wsRoot = mkdtempSync(join(tmpdir(), 'vorno-routed-ws-'));
-  writeFileSync(storedConfigPath, JSON.stringify({
-    workspaces: [{ id: WS_ID, name: 'Routed Test', rootPath: wsRoot, createdAt: 1 }],
-    activeWorkspaceId: WS_ID,
-  }));
+  writeStoredConfig();
 });
 
 afterAll(() => {
@@ -224,6 +237,84 @@ describe('routing decision', () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).error).toContain('routeSessionsToDesktop');
     expect(calls).toHaveLength(0);
+  });
+
+  test('name: trimmed and passed to the host; omitted is undefined', async () => {
+    const ok = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, name: '  Nightly triage ' });
+    expect(ok.status).toBe(201);
+    expect(calls[0]!.name).toBe('Nightly triage');
+    await create(keyA);
+    expect(calls[1]!.name).toBeUndefined();
+  });
+
+  test('name: empty, blank, non-string or over 200 chars is 400', async () => {
+    for (const name of ['', '   ', 5, 'x'.repeat(201)]) {
+      const res = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, name });
+      expect(res.status).toBe(400);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  test('name and llmConnection: pool path rejects them with 400', async () => {
+    writeServerConfig(false);
+    for (const extra of [{ name: 'n' }, { llmConnection: 'claude-max' }]) {
+      const res = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, ...extra });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as any).error).toContain('routeSessionsToDesktop');
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  describe('llmConnection and model validation', () => {
+    beforeEach(() => writeStoredConfig(CONNECTIONS));
+    afterAll(() => writeStoredConfig());
+
+    test('llmConnection is passed to the host; omitted is undefined', async () => {
+      const ok = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, llmConnection: 'claude-max' });
+      expect(ok.status).toBe(201);
+      expect(calls[0]!.llmConnection).toBe('claude-max');
+      await create(keyA);
+      expect(calls[1]!.llmConnection).toBeUndefined();
+    });
+
+    test('unknown llmConnection is 400 listing the valid slugs', async () => {
+      const res = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, llmConnection: 'nope' });
+      expect(res.status).toBe(400);
+      const err = ((await res.json()) as any).error as string;
+      expect(err).toContain('nope');
+      expect(err).toContain('chatgpt-plus');
+      expect(err).toContain('claude-max');
+      expect(calls).toHaveLength(0);
+    });
+
+    test('llmConnection: non-string is 400', async () => {
+      const res = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, llmConnection: 5 });
+      expect(res.status).toBe(400);
+    });
+
+    test('model not on the default connection is 400 naming model, connection and available ids', async () => {
+      const res = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, model: 'claude-sonnet-5' });
+      expect(res.status).toBe(400);
+      const err = ((await res.json()) as any).error as string;
+      expect(err).toContain('claude-sonnet-5');
+      expect(err).toContain('chatgpt-plus');
+      expect(err).toContain('gpt-5-mini');
+      expect(calls).toHaveLength(0);
+    });
+
+    test('model is validated against the given llmConnection', async () => {
+      const ok = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, llmConnection: 'claude-max', model: 'claude-sonnet-5' });
+      expect(ok.status).toBe(201);
+      const bad = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, llmConnection: 'claude-max', model: 'gpt-5' });
+      expect(bad.status).toBe(400);
+      expect(((await bad.json()) as any).error).toContain('claude-max');
+    });
+
+    test.each(['gpt-5', 'fast', 'default'])('model %s is accepted on the default connection', async (model) => {
+      const res = await req(keyA, 'POST', '/api/sessions', { workspaceId: WS_ID, model });
+      expect(res.status).toBe(201);
+      expect(calls[0]!.model).toBe(model);
+    });
   });
 
   test('host error becomes 500 with the message and nothing is adopted', async () => {

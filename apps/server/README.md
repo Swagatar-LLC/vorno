@@ -161,7 +161,9 @@ Content-Type: application/json
   "permissionPolicy": "allow-safe",
   "enabledSources": ["github", "linear"],
   "workingDirectory": "/path/to/project",
-  "projectId": "proj_6d91a3f0"   // optional; desktop-routed sessions only, 400 if unknown
+  "projectId": "proj_6d91a3f0",  // optional; desktop-routed sessions only, 400 if unknown
+  "name": "Nightly triage",      // optional; desktop-routed only; default "API · <key name>"
+  "llmConnection": "claude-max"  // optional; desktop-routed only; 400 if unknown slug
 }
 
 # Response (201):

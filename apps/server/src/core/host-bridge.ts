@@ -90,6 +90,10 @@ export interface HostCreateSessionOptions {
   workingDirectory?: string;
   /** Workspace project id to affiliate the session with; already validated by the core. */
   projectId?: string;
+  /** Display name for the desktop session list; already trimmed and length-checked. Default: "API · <key name>". */
+  name?: string;
+  /** LLM connection slug; already validated against the configured connections. */
+  llmConnection?: string;
   /** Display name of the API key that created the session, for labelling. Never the key itself. */
   apiKeyName: string;
 }
