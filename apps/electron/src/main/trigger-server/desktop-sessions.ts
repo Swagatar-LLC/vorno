@@ -30,6 +30,8 @@ export interface DesktopSessionDeps {
     model?: string;
     enabledSourceSlugs?: string[];
     workingDirectory?: string;
+    projectId?: string;
+    llmConnection?: string;
     name: string;
   }): Promise<{ id: string }>;
   /** options.optimisticMessageId comes back on this message's user_message events. */
@@ -96,7 +98,9 @@ export function createDesktopSessionRoute(deps: DesktopSessionDeps): NonNullable
       model: opts.model,
       enabledSourceSlugs: opts.enabledSources,
       workingDirectory: opts.workingDirectory,
-      name: apiSessionName(opts.apiKeyName),
+      projectId: opts.projectId,
+      llmConnection: opts.llmConnection,
+      name: opts.name ?? apiSessionName(opts.apiKeyName),
     });
     const sessionId = created.id;
     let lastActivityAt = now();

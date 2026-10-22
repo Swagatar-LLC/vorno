@@ -286,7 +286,24 @@ By default `POST /api/sessions` creates a headless session inside the server's o
 
 - Setting: Settings → Remote Access → "Run API sessions in the desktop app". Persisted as `routeSessionsToDesktop` in `server-config.json`. Default off. Desktop app only; the standalone server always uses its own pool.
 - It applies to new sessions without a restart. Existing sessions keep the path they were created on.
-- The request and response shapes do not change. Auth, workspace access, the per-key concurrency limit and the policy cap all run before routing.
+- The response shape does not change. The request may also carry `projectId`, `name` and `llmConnection` (below). Auth, workspace access, the per-key concurrency limit and the policy cap all run before routing.
+
+### Creating a session in a project
+
+`POST /api/sessions` accepts an optional `projectId` (a project id such as `proj_6d91a3f0`, not a slug). The session is affiliated with that project exactly like a desktop session created in it: `projectId` is written to the session header, and the project's working directory is inherited when the request has no `workingDirectory`.
+
+- An unknown `projectId` returns 400 and creates nothing.
+- `projectId` needs the setting above. Without it (headless pool, standalone server) the request returns 400, because pool sessions are not persisted.
+- Omitted, behaviour is unchanged.
+
+### Naming a session and choosing its LLM connection
+
+`POST /api/sessions` also accepts two optional fields, both needing the setting above (the headless pool returns 400 naming `routeSessionsToDesktop`):
+
+- `name`: the session's title in the desktop list. A non-empty string, trimmed, at most 200 characters; otherwise 400. Omitted, the title stays `API · <key name>`.
+- `llmConnection`: a connection slug such as `claude-max` or `chatgpt-plus`. An unknown slug returns 400 listing the valid slugs. Omitted, the workspace default connection applies, then the global default.
+
+`model` is checked against the resolved connection (the given `llmConnection`, else the workspace default, else the global default). A model id the connection does not offer returns 400 naming the model, the connection and its available model ids, instead of silently running on the connection's default model. The tier hints `fast` and `default` are always accepted. Connections with a dynamic model list are not checked.
 
 ### Policy mapping
 

@@ -1,4 +1,9 @@
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config';
+import { loadProjectById } from '@craft-agent/shared/projects'; // fork(PLAN-057)
+import { getLlmConnections, getLlmConnection, getDefaultLlmConnection } from '@craft-agent/shared/config/storage'; // fork(PLAN-057)
+import { getDefaultModelsForConnection } from '@craft-agent/shared/config/llm-connections'; // fork(PLAN-057)
+import { normalizeDeprecatedModelId } from '@craft-agent/shared/config/models'; // fork(PLAN-057)
+import { loadWorkspaceConfig } from '@craft-agent/shared/workspaces'; // fork(PLAN-057)
 import type { AgentEvent } from '@craft-agent/core/types';
 import { jsonResponse, errorResponse, sseResponse } from '../middleware/error.ts';
 import { hasWorkspaceAccess, getEffectivePolicy, type AuthContext } from '../middleware/auth.ts';
@@ -14,6 +19,38 @@ import type { ServerConfig } from '../config.ts';
 function getOwnedSession(pool: SessionPool, auth: AuthContext, sessionId: string): PoolSession | undefined {
   if (pool.getOwner(sessionId) !== auth.apiKey.id) return undefined;
   return pool.get(sessionId);
+}
+
+const MAX_SESSION_NAME_LENGTH = 200; // fork(PLAN-057)
+
+/**
+ * fork(PLAN-057): the routed path used to fall back silently to the connection's default
+ * model when `model` was not offered by the resolved connection. Resolution order matches
+ * SessionManager (resolveSessionConnection): given slug > workspace default > global default.
+ * Tier hints 'fast' / 'default' resolve per connection and are always allowed.
+ * Returns an error message, or null when valid.
+ */
+function validateConnectionAndModel(workspaceRoot: string, slug?: string, model?: string): string | null {
+  if (slug && !getLlmConnection(slug)) {
+    const valid = getLlmConnections().map(c => c.slug);
+    return `Unknown llmConnection '${slug}'. Valid connections: ${valid.length ? valid.join(', ') : '(none configured)'}`;
+  }
+  if (!model || model === 'fast' || model === 'default') return null;
+  const wsDefault = loadWorkspaceConfig(workspaceRoot)?.defaults?.defaultLlmConnection;
+  const globalDefault = getDefaultLlmConnection();
+  const conn = (slug && getLlmConnection(slug))
+    || (wsDefault && getLlmConnection(wsDefault))
+    || (globalDefault && getLlmConnection(globalDefault))
+    || null;
+  if (!conn) return null; // no connection configured: nothing to validate against
+  const list = conn.models && conn.models.length > 0
+    ? conn.models
+    : getDefaultModelsForConnection(conn.providerType, conn.piAuthProvider);
+  const ids = list.map(m => (typeof m === 'string' ? m : m.id));
+  // pi_compat connections have a dynamic model list; nothing to validate against.
+  // The desktop translates deprecated ids (e.g. pi/deepseek-v4-flash -> pi/deepseek-flash); accept either form.
+  if (ids.length === 0 || ids.includes(model) || ids.includes(normalizeDeprecatedModelId(model))) return null;
+  return `Model '${model}' is not available on connection '${conn.slug}'. Available models: ${ids.join(', ')}`;
 }
 
 /**
@@ -32,6 +69,9 @@ export async function handleCreateSession(
     permissionPolicy?: 'deny-all' | 'allow-safe' | 'allow-all';
     enabledSources?: string[];
     workingDirectory?: string;
+    projectId?: string; // fork(PLAN-057): routed sessions only
+    name?: string; // fork(PLAN-057): routed sessions only
+    llmConnection?: string; // fork(PLAN-057): routed sessions only
   };
 
   try {
@@ -53,6 +93,49 @@ export async function handleCreateSession(
     return errorResponse(404, `Workspace '${body.workspaceId}' not found`);
   }
 
+  // fork(PLAN-057): optional project affiliation (id only, as the desktop persists it).
+  // Only the desktop SessionManager persists sessions, so the headless pool cannot
+  // honour it; reject rather than silently drop it. Unknown project: 400, no orphan binding.
+  const routeToDesktop = config.routeSessionsToDesktop === true && !!hostBridge?.createSession;
+  if (body.projectId !== undefined) {
+    if (typeof body.projectId !== 'string' || !body.projectId) {
+      return errorResponse(400, 'projectId must be a non-empty string');
+    }
+    if (!routeToDesktop) {
+      return errorResponse(400, 'projectId requires "Run API sessions in the desktop app" (routeSessionsToDesktop)');
+    }
+    if (!loadProjectById(workspace.rootPath, body.projectId)) {
+      return errorResponse(400, `Project '${body.projectId}' not found in workspace '${body.workspaceId}'`);
+    }
+  }
+
+  // fork(PLAN-057): optional display name and LLM connection, routed sessions only.
+  let sessionName: string | undefined;
+  if (body.name !== undefined) {
+    if (typeof body.name !== 'string' || !body.name.trim()) {
+      return errorResponse(400, 'name must be a non-empty string');
+    }
+    sessionName = body.name.trim();
+    if (sessionName.length > MAX_SESSION_NAME_LENGTH) {
+      return errorResponse(400, `name must be at most ${MAX_SESSION_NAME_LENGTH} characters`);
+    }
+    if (!routeToDesktop) {
+      return errorResponse(400, 'name requires "Run API sessions in the desktop app" (routeSessionsToDesktop)');
+    }
+  }
+  if (body.llmConnection !== undefined) {
+    if (typeof body.llmConnection !== 'string' || !body.llmConnection) {
+      return errorResponse(400, 'llmConnection must be a non-empty string');
+    }
+    if (!routeToDesktop) {
+      return errorResponse(400, 'llmConnection requires "Run API sessions in the desktop app" (routeSessionsToDesktop)');
+    }
+  }
+  if (routeToDesktop) {
+    const bad = validateConnectionAndModel(workspace.rootPath, body.llmConnection, body.model);
+    if (bad) return errorResponse(400, bad);
+  }
+
   // Check concurrency limits
   const currentCount = pool.countByApiKey(auth.apiKey.id);
   const maxSessions = Math.min(
@@ -68,7 +151,7 @@ export async function handleCreateSession(
   // fork(PLAN-057): route through the desktop SessionManager when the host offers
   // it and the persisted setting is on. Everything above (auth, workspace, limits,
   // policy cap) already ran; the pool path below is untouched.
-  if (config.routeSessionsToDesktop === true && hostBridge?.createSession) {
+  if (routeToDesktop && hostBridge?.createSession) {
     try {
       const handle = await hostBridge.createSession({
         workspaceId: workspace.id,
@@ -76,6 +159,9 @@ export async function handleCreateSession(
         permissionPolicy: effectivePolicy,
         enabledSources: body.enabledSources,
         workingDirectory: body.workingDirectory,
+        projectId: body.projectId,
+        name: sessionName,
+        llmConnection: body.llmConnection,
         apiKeyName: auth.apiKey.name,
       });
       const routed = new RoutedSession(handle, effectivePolicy);
