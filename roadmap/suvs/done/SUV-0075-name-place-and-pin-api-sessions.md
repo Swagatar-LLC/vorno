@@ -1,7 +1,7 @@
 ---
 id: SUV-0075
 title: Name, place and pin API sessions
-status: in-progress
+status: done
 plan: PLAN-057
 direction: DIR-03
 owner: jh
@@ -28,11 +28,12 @@ offer instead of silently falling back.
 
 ## Acceptance
 
-- [ ] `cd apps/server && bun test` passes with cases for unknown project, unknown connection, unavailable model and pool rejection.
-- [ ] Electron main tests show `name`, `projectId` and `llmConnection` reach `SessionManager.createSession`.
-- [ ] Docs describe the three fields and the 400 cases.
+- [x] `cd apps/server && bun test` passes with cases for unknown project, unknown connection, unavailable model and pool rejection.
+- [x] Electron main tests show `name`, `projectId` and `llmConnection` reach `SessionManager.createSession`.
+- [x] Docs describe the three fields and the 400 cases.
 
 ## Status log
 
 - `2026-10-21` — created in `planned/`
 - `2026-10-21` — moved from planned to in-progress
+- `2026-10-21` — moved from in-progress to done: merged in #241; release notes in 0.22.0-beta.12
